@@ -1,0 +1,13 @@
+node_modules/
+.claude/
+.env
+.env.local
+credentials/
+*.credentials.json
+secrets/
+
+# Downloaded payroll data — never commit business/PII data
+downloads/
+*.csv
+*.xlsx
+*.pdf
