@@ -1,0 +1,5 @@
+{
+  "_comment": "THE single web-app deployment. scripts/deploy.sh updates this ONE deployment in place (clasp redeploy) and never creates another. deploymentId is filled on the first deploy; do not edit or blank it manually, or a new /exec URL will be minted.",
+  "deploymentId": null,
+  "execUrl": null
+}

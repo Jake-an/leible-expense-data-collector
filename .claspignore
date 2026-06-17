@@ -1,0 +1,4 @@
+# Keep the Node-only unit test out of the Apps Script project (it uses require/
+# process and is never run inside GAS). Patterns are relative to rootDir.
+**/test_code.js
+**/*.test.js

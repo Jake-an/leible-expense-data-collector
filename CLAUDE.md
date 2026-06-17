@@ -33,14 +33,18 @@ Labour/payroll is **not** a connector here — it's owned by `LEIBLE_Payroll`; t
 - **Git push only when Jake says "lets stop here."** Always fetch+rebase before push (teammate safety).
 - Only operate on Jake's own / authorized accounts.
 
-## Git Safety
-Before any push: `git fetch origin main` → if behind, `git pull --rebase --autostash` → on conflict, abort and ask Jake. Never force-push. See `docs/rules.md`.
+## Canonical IDs
+- **Sheet:** `13h4BNTrj5UhHo-XCFdOjimaCOTx4hjhTxR-m-OkvFdI` · **scriptId:** `1Wc6QMqEGWX6cTTcVnrgE3Fynj7R-TeDudgzmjGALsOFYxc13qJ_jTBwn` (tracked in `config/clasp.json`).
+- **One project, one deployment.** Never `clasp create-script` again; never mint a new deployment. The single deployment id lives in `config/deployment.json` and is updated in place (`clasp redeploy`).
+
+## Git Safety + Deploy
+"**lets stop here**" = **push to git AND deploy to GAS**. Run `bash scripts/deploy.sh` (teammate-safe fetch→rebase→push, then `clasp push` + redeploy the one deployment). Before any push: fetch → if behind, rebase --autostash → on conflict, abort and ask Jake. Never force-push. See `docs/rules.md`.
 
 ## Commands
 ```
 python scripts/execute.py <phase-dir>          # Run a connector phase
-python scripts/execute.py <phase-dir> --push   # Run + push branch
-python scripts/pre_push_sync.py                # Teammate-safe sync before push
+bash scripts/deploy.sh                          # "lets stop here": push git + deploy GAS (one deployment id)
+python scripts/pre_push_sync.py                # Teammate-safe sync (git-only, no deploy)
 ```
 
 ## Docs Index (lazy-load)
