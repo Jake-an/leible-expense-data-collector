@@ -1,5 +1,5 @@
 {
   "_comment": "THE single web-app deployment. scripts/deploy.sh updates this ONE deployment in place (clasp redeploy) and never creates another. deploymentId is filled on the first deploy; do not edit or blank it manually, or a new /exec URL will be minted.",
-  "deploymentId": null,
-  "execUrl": null
+  "deploymentId": "AKfycbypZzsO8Rz9Mm7tUVva4Ic2RvmEVRsBbaTiOFVdam86bmYDWe6dInPpdpDU1MmgnwfM",
+  "execUrl": "https://script.google.com/macros/s/AKfycbypZzsO8Rz9Mm7tUVva4Ic2RvmEVRsBbaTiOFVdam86bmYDWe6dInPpdpDU1MmgnwfM/exec"
 }

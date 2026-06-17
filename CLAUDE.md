@@ -37,14 +37,15 @@ Labour/payroll is **not** a connector here — it's owned by `LEIBLE_Payroll`; t
 - **Sheet:** `13h4BNTrj5UhHo-XCFdOjimaCOTx4hjhTxR-m-OkvFdI` · **scriptId:** `1Wc6QMqEGWX6cTTcVnrgE3Fynj7R-TeDudgzmjGALsOFYxc13qJ_jTBwn` (tracked in `config/clasp.json`).
 - **One project, one deployment.** Never `clasp create-script` again; never mint a new deployment. The single deployment id lives in `config/deployment.json` and is updated in place (`clasp redeploy`).
 
-## Git Safety + Deploy
-"**lets stop here**" = **push to git AND deploy to GAS**. Run `bash scripts/deploy.sh` (teammate-safe fetch→rebase→push, then `clasp push` + redeploy the one deployment). Before any push: fetch → if behind, rebase --autostash → on conflict, abort and ask Jake. Never force-push. See `docs/rules.md`.
+## Git push vs Deploy (separate triggers)
+- "**lets stop here**" = **git push only** (`python scripts/pre_push_sync.py` → fetch → if behind, rebase --autostash → abort on conflict; never force-push). Nothing else.
+- **Deploy to GAS** happens **when GAS coding is finished** — its own step, not tied to the push phrase: `bash scripts/deploy.sh` (`clasp push` + redeploy the ONE deployment).
 
 ## Commands
 ```
 python scripts/execute.py <phase-dir>          # Run a connector phase
-bash scripts/deploy.sh                          # "lets stop here": push git + deploy GAS (one deployment id)
-python scripts/pre_push_sync.py                # Teammate-safe sync (git-only, no deploy)
+python scripts/pre_push_sync.py                # "lets stop here": teammate-safe git push only
+bash scripts/deploy.sh                          # Deploy GAS after finishing code (one deployment id, no git)
 ```
 
 ## Docs Index (lazy-load)
