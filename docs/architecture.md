@@ -1,61 +1,95 @@
-# Architecture & Core Idea
+# Architecture
 
-> Captured 2026-06-17. The mental model behind this project, worked out with Jake.
+## Overview
 
-## The core realization
+Two runtimes feeding one Google Sheet. GAS handles API-native and email sources plus all normalization/writes. Playwright handles browser-based portal logins locally and POSTs raw rows to a GAS web-app endpoint. The Sheet has two tabs: `Suppliers` (invoice-level) and `Sales` (Square daily gross). See `docs/schema.md`.
 
-OpenClaw (the "lobster" 🦞) and Claude Code are **two different AI runtimes**:
-
-- **OpenClaw** — separate product (v2026.6.6), npm-installed, runs as an always-on
-  gateway daemon (Windows Scheduled Task, `localhost:18789`), wired to WhatsApp,
-  thinks with **Gemini Flash**. Cheap, persistent, channel-facing, has a persona/SOUL.
-- **Claude Code** — Opus/Haiku/Sonnet. Powerful, runs in bursts when triggered.
-  Has native tools (browser, files, skills, memory).
-
-They are **neighbors, not nested.** Claude can *operate* OpenClaw via its CLI, but
-OpenClaw is not "inside" Claude and vice-versa.
-
-## What OpenClaw uniquely had — and how we replaced each piece
-
-| OpenClaw feature | Claude equivalent | Status |
-|---|---|---|
-| Cheap to run 24/7 (Gemini Flash) | **Haiku 4.5** — same cost ballpark | ✅ solves cost |
-| Browser automation to scrape sites | Claude's **native browser tools** — no setup needed | ✅ already built in |
-| Always-listening inbound channel | **Telegram bridge** at `~/.claude/channels/telegram` (bot + allowlist) | ✅ Jake already set this up |
-| Persona / SOUL | (not needed for this use case) | n/a |
-
-**Conclusion:** a DIY "OpenClaw on Claude" is not only possible, it's *simpler and
-smarter-per-dollar*, because Haiku-in-Claude-Code already has the browser tools that
-OpenClaw would need a whole setup project to gain.
-
-## The target architecture
-
+## Directory Structure
 ```
-Telegram (Jake, from phone)
-      ↓   [bot + allowlist — already built at ~/.claude/channels/telegram]
-Claude Code on Haiku   ← cheap, always-available worker, full native tools
-      ↓
-Does the job → replies on Telegram
-      +
-Cron-scheduled Haiku runs recurring jobs (e.g. BrightHR download) unattended
-      +
-Claude Opus = plan, harden recipes/skills, fix when something breaks
+├── scripts/
+│   ├── execute.py              # Harness step executor (runs phases)
+│   ├── pre_push_sync.py        # Fetch+rebase teammate safety gate
+│   └── test_execute.py         # Executor tests
+├── connectors/
+│   ├── gas/                    # Google Apps Script source (pushed via clasp)
+│   │   ├── Code.gs             # doPost endpoint, normalization, dedup, ensureSheet
+│   │   ├── square.gs           # Square API connector → Sales tab
+│   │   ├── myers.gs            # Gmail invoice parser → Suppliers tab
+│   │   ├── test_code.js        # Node-mock unit tests (run locally, no clasp)
+│   │   └── appsscript.json     # GAS manifest
+│   └── playwright/             # Local browser automation
+│       ├── base_connector.py   # Shared session/login/read/POST logic
+│       ├── ordermentum.py      # Tuga Pastry + Butterboy (same app, two accounts)
+│       ├── food_dairy_co.py    # Food and Dairy Co portal
+│       ├── fresh_and_chill.py  # Fresh and Chill portal
+│       └── kent_paper.py       # Kent Paper portal
+├── phases/                     # Harness phase definitions (index.json + stepN.md)
+├── docs/                       # Architecture, ADR, PRD, schema, rules, clickpath-*
+├── config/                     # clasp.json (scriptId), gitignored secrets
+└── sessions/                   # Saved Playwright browser sessions (gitignored)
 ```
 
-## Division of labor (the operating principle)
+Labour/payroll is **not** a connector here — it is owned by `LEIBLE_Payroll`. There is no `brighthr.py` in this repo; the collector links to Payroll's output (ADR-007).
 
-- **Opus (me)** — planning, hardening click-paths into reliable recipes, fixing breakage.
-- **Haiku** — executing the proven recipe on a schedule or on-demand. Cheap. Follows the
-  recipe; escalates when something looks wrong rather than improvising.
-- **The lobster (OpenClaw)** — only still needed if a Gemini-based / WhatsApp-native
-  front desk is specifically wanted. Otherwise Telegram + Haiku covers it.
+## Two Runtimes
 
-## Key nuance: it's "writing a recipe," not "training"
+### Runtime A — Google Apps Script (cloud, always-on)
+Runs on Google's servers via time-driven triggers or the `doPost` web-app endpoint.
 
-Handing a task to Haiku/the lobster does **not** change the model (no training, no weights).
-It's writing a precise **skill** (markdown step-by-step) that the cheap model *follows*.
-Brittle if the target site changes — which is why Opus hardens it first and stays on call.
+**Handles:**
+- **Square** — `UrlFetchApp` + API key → daily **gross** sales per location → `Sales` tab. The API wrapper (`callSquareAPI`/`searchOrders`/`listLocations`) is **reused from `LEIBLE_GM_COST_MONITOR/SquareAPI.gs`** (ADR-001).
+- **Myers** — `GmailApp` → parse chocolate invoice emails → `Suppliers` tab
+- **Normalization** — raw rows from any source → two-tab schema (see `docs/schema.md`)
+- **Sheet writes** — append normalized rows; dedup before insert
+- **doPost ingest** — web-app endpoint that receives raw supplier rows from Playwright connectors
 
-## First concrete use case
+**Cannot do:** log into third-party portals (no browser on Google's servers).
 
-Automate BrightHR payroll roster download — see `../CLAUDE.md` and `../TODO.md`.
+### Runtime B — Python + Playwright (local machine)
+Runs on Jake's machine, triggered manually or by the harness.
+
+**Handles:**
+- **Portal logins** — Food & Dairy Co, Fresh & Chill, Kent Paper, Ordermentum (Tuga + Butterboy)
+- **Session persistence** — saves browser cookies/storage to `sessions/` after attended login; reuses for unattended runs
+- **Data extraction** — reads the on-screen invoice/order list table
+- **POST to GAS** — sends raw invoice rows to the GAS `doPost` endpoint for normalization + `Suppliers` write
+
+**Cannot do:** run 24/7 unattended unless the machine is awake (future: move to an always-on box).
+
+## Data Flow
+```
+Portal sources (4 supplier connectors)
+    ↓ Playwright logs in (saved session), reads invoice list
+    ↓ HTTP POST (JSON, invoice-level rows)
+    ↓
+GAS doPost ──→ normalizeSupplierRow() ──→ dedup ──→ append to `Suppliers`
+    ↑
+    ├── Square: UrlFetchApp → /orders/search → sum gross/location/day → `Sales`
+    └── Myers:  GmailApp → parse invoice → normalizeSupplierRow() → `Suppliers`
+```
+
+## Session Lifecycle (portal auth)
+
+1. **First run (attended):** real browser window opens, Jake logs in + passes any Cloudflare/MFA challenge
+2. **Save:** Playwright writes session state (cookies, localStorage) to `sessions/<connector>.json`
+3. **Repeat runs (unattended):** Playwright loads the saved session, skips login, reads the invoice list
+4. **Expiry:** session expires → connector can't get in → marks itself `blocked` → Jake re-auths
+
+## POST Bridge Contract
+
+Playwright connectors POST to the GAS web-app URL with this shape (invoice-level):
+```json
+{
+  "source": "food_dairy_co",
+  "rows": [
+    {"date": "2026-06-15", "total": 245.50, "invoice_ref": "INV-10293", "location": "York St"}
+  ],
+  "extracted_at": "2026-06-17T09:30:00+10:00"
+}
+```
+`location` is optional. GAS resolves the canonical `supplier` from `source`, normalizes each row to the `Suppliers` schema, and appends. Duplicates are detected by the **`source + invoice_ref`** composite key and silently skipped.
+
+## State Management
+- **Sheet** is the single source of truth (`Suppliers` + `Sales` tabs; `_staging` for test ingestion)
+- **`phases/` JSON files** track harness execution state (pending/completed/error/blocked)
+- **`sessions/`** holds browser auth state (gitignored — contains cookies)

@@ -1,13 +1,34 @@
 node_modules/
-.claude/
+
+# Share team-facing Claude config (settings, hooks, commands); ignore everything
+# else under .claude/ (memory, personal state, credentials).
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/commands/
+
 .env
 .env.local
 credentials/
 *.credentials.json
 secrets/
 
-# Downloaded payroll data — never commit business/PII data
+# Downloaded business data — never commit PII or financials
 downloads/
 *.csv
 *.xlsx
 *.pdf
+
+# Playwright saved sessions (contain auth cookies)
+sessions/
+
+# Harness phase execution outputs (contain stdout/stderr dumps)
+phases/**/step*-output.json
+
+# clasp config (transient, per-env)
+.clasp.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
