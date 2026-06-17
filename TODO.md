@@ -3,7 +3,7 @@
 ## Done — at a glance
 - Project scaffolded (git, gitignore, CLAUDE.md, docs, harness framework)
 - Scaffold revised to the two-tab schema (`Suppliers` + `Sales`); Order-app `.claude` hook suite + team-share `.gitignore` adopted
-- Phase 0 GAS hub, Phase 1 Square pilot, Phase 2 Myers built + Node-mock tested (code-complete; live deploy blocked on Jake's Step 0)
+- Phase 0 GAS hub, Phase 1 Square pilot, Phase 2 Mayers built + Node-mock tested (code-complete; live deploy blocked on Jake's Step 0)
 - Playwright base + 4 portal skeletons scaffolded (click-paths TODO, awaiting attended login)
 
 ## Active
@@ -18,9 +18,11 @@
 - [ ] Live-verify `squareDailyPull()` → one gross row per location in `Sales`; re-run → dedup skips
 - [ ] Install daily ~3am trigger; confirm next-day auto-run
 
-### Phase 2 — Myers (email connector, GAS-native)
-- [ ] Live-verify `myersDailyPull()` against real Myers invoice emails; tune the parse + Gmail query
-- [ ] Install daily trigger
+### Phase 2 — Mayers (PDF-invoice connector, GAS-native + Drive OCR)
+- [ ] **(Jake)** Set up email forward: `jake@leiblecoffee.com.au` → `mio.jake+mayers@gmail.com` (normal forward, not "forward as attachment")
+- [ ] Live-verify `mayersDailyPull()` — forward a real Mayers invoice, run from editor, confirm row in `Suppliers` + dedup on re-run
+- [ ] If OCR text differs from fixture, tune `parseMayersInvoice_` regexes + update test fixture
+- [ ] Install daily trigger (`installMayersTrigger()`)
 
 ### Phase 3 — Ordermentum (Tuga Pastry + Butterboy)
 - [ ] **(Jake)** Attended first login → seed `sessions/`; map click-path → `docs/clickpath-ordermentum.md`

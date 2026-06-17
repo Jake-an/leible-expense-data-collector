@@ -28,7 +28,7 @@ var SUPPLIER_NAMES = {
   food_dairy_co: 'Food and Dairy Co',
   fresh_and_chill: 'Fresh and Chill',
   kent_paper: 'Kent Paper',
-  myers: 'Myers'
+  mayers: 'Mayers'
 };
 
 /* ------------------------------------------------------------------ *
@@ -169,6 +169,31 @@ function rowKey_(rowArray, keyCols) {
 
 function appendNewRows_(sheet, rows) {
   for (var i = 0; i < rows.length; i++) sheet.appendRow(rows[i]);
+}
+
+/* ------------------------------------------------------------------ *
+ * One-time / idempotent setup
+ * ------------------------------------------------------------------ */
+
+/**
+ * setupSheets — materialize the two-tab schema in the hub Sheet.
+ * Idempotent: ensureSheet only creates + formats tabs that are missing, so
+ * running this repeatedly is safe and never touches existing data.
+ * Run once from the Apps Script editor (or `clasp run setupSheets`) to seed
+ * headers; doPost/connectors also call ensureSheet lazily on first write.
+ *   Suppliers : date | supplier | total | invoice_ref | location | source | extracted_at
+ *   Sales     : date | location | gross_sales | source | extracted_at
+ *   _staging  : same columns as Suppliers (scratch area, see docs/schema.md)
+ * @returns {string} human-readable summary of which tabs exist
+ */
+function setupSheets() {
+  var ss = getHubSpreadsheet_();
+  ensureSheet(ss, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(ss, SALES_TAB, SALES_HEADERS);
+  ensureSheet(ss, STAGING_TAB, SUPPLIERS_HEADERS);
+  var summary = 'Tabs ready: ' + SUPPLIERS_TAB + ', ' + SALES_TAB + ', ' + STAGING_TAB;
+  Logger.log(summary);
+  return summary;
 }
 
 /* ------------------------------------------------------------------ *

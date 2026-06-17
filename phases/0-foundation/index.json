@@ -5,6 +5,6 @@
     { "step": 0, "name": "sheet-and-gas-setup", "status": "blocked", "blocked_reason": "Jake must create the Google Sheet (Suppliers/Sales/_staging tabs) + GAS project, add the 4 Square tokens to Script Properties, and provide the scriptId for config/clasp.json." },
     { "step": 1, "name": "dopost-endpoint", "status": "completed", "summary": "doPost + validateIngest_ + ensureSheet + appsscript.json built (two-tab contract)." },
     { "step": 2, "name": "normalize-and-dedup", "status": "completed", "summary": "normalizeSupplierRow + ingestSupplierRows + source+invoice_ref dedup; appendSalesRow_ for Sales." },
-    { "step": 3, "name": "integration-test", "status": "completed", "summary": "test_code.js: 16 Node-mock tests passing (normalize/dedup/doPost/square gross/myers parse)." }
+    { "step": 3, "name": "integration-test", "status": "completed", "summary": "test_code.js: 18 Node-mock tests passing (normalize/dedup/doPost/square gross/mayers PDF-invoice parse)." }
   ]
 }

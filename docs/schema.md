@@ -13,7 +13,7 @@ A third tab `_staging` is a scratch area to test ingestion before trusting a con
 | `total` | number | yes | Invoice total in AUD (positive = expense, negative = credit) |
 | `invoice_ref` | string | yes | Invoice or order number (also the dedup key) |
 | `location` | string | no | Delivery site, where the source exposes it |
-| `source` | string | yes | Connector identifier (`food_dairy_co`, `myers`, …) |
+| `source` | string | yes | Connector identifier (`food_dairy_co`, `mayers`, …) |
 | `extracted_at` | datetime (ISO 8601) | yes | When the connector pulled this row |
 
 **Dedup key:** `source + invoice_ref`. Invoice-level granularity makes this a clean natural key. Duplicates are silently skipped on insert (not an error).
@@ -39,7 +39,7 @@ A third tab `_staging` is a scratch area to test ingestion before trusting a con
 | kent_paper | Kent Paper |
 | ordermentum (Tuga) | Tuga Pastry |
 | ordermentum (Butterboy) | Butterboy |
-| myers | Myers |
+| mayers | Mayers |
 
 GAS resolves `supplier` from the `source` field via a `SUPPLIER_NAMES` map in `connectors/gas/Code.gs`. Ordermentum carries the canonical name per-account in the POST payload (Tuga vs Butterboy share `source: "ordermentum"`).
 

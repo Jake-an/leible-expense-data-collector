@@ -12,7 +12,7 @@ Central hub that pulls expense + sales data from multiple suppliers into one Goo
 | Source | Type | Runtime |
 |---|---|---|
 | Square | API (key) | GAS |
-| Myers (chocolate) | Email invoice | GAS (GmailApp) |
+| Mayers (chocolate) | PDF invoice (email attachment) | GAS (GmailApp + Drive OCR) |
 | Food and Dairy Co | Portal login | Playwright |
 | Fresh and Chill | Portal login | Playwright |
 | Kent Paper | Portal login | Playwright |
@@ -22,7 +22,7 @@ Central hub that pulls expense + sales data from multiple suppliers into one Goo
 Labour/payroll is **not** a connector here — it's owned by `LEIBLE_Payroll`; this collector links to its output (see `docs/ADR.md` ADR-007).
 
 ## Architecture (two runtimes)
-- **GAS** handles: Square API pulls, Myers email parsing, normalization, Sheet writes, `doPost` ingest endpoint, scheduling
+- **GAS** handles: Square API pulls, Mayers PDF-invoice parsing (Drive OCR), normalization, Sheet writes, `doPost` ingest endpoint, scheduling
 - **Playwright** handles: portal logins with saved sessions → downloads raw data → POSTs to GAS endpoint
 - Full detail: `docs/ARCHITECTURE.md`
 

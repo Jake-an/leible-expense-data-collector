@@ -70,6 +70,9 @@ global.Utilities = { formatDate: () => '2026-06-17T00:00:00+10:00' };
 global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp not mocked'); } };
 global.ScriptApp = { getProjectTriggers: () => [] };
 global.GmailApp = {};
+global.Drive = { Files: { insert: function () { throw new Error('Drive not mocked'); } } };
+global.DocumentApp = { openById: function () { throw new Error('DocumentApp not mocked'); } };
+global.DriveApp = { getFileById: function () { throw new Error('DriveApp not mocked'); } };
 
 /* ------------------------------------------------------------------ *
  * Load the GAS source into the global scope (indirect eval)
@@ -82,7 +85,7 @@ function load(file) {
 }
 load('Code.gs');
 load('square.gs');
-load('myers.gs');
+load('mayers.gs');
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -179,14 +182,31 @@ eq('sums total_money.amount (cents) → dollars, ignores malformed',
   13.5);
 eq('empty → 0', squareSumOrderGross_([]), 0);
 
-console.log('parseMyersInvoice_');
-eq('parses ref + total + DD/MM/YYYY date',
-  parseMyersInvoice_('Invoice INV-2026-22 from Myers', 'Total: $1,234.56\nDate: 15/06/2026', '2026-06-17'),
-  { date: '2026-06-15', total: 1234.56, invoice_ref: 'INV-2026-22' });
+console.log('parseMayersInvoice_');
+var mayersFixture = [
+  'F.Mayer Imports Pty Ltd TAX INVOICE',
+  'Invoice No: 3429816',
+  'Invoice Date: 17-JUN-26',
+  'Bill To: LEIBLE COFFEE',
+  'Ordere Picked Item Code Item Description Shipped Qty Unit Price Disc CD Net Price Line Total',
+  '1 1CTN 8232BU76 CAL MILK CALLET 33.6% 8X2.5KG 1.00 CTN 890.89 21.00% 0.00 703.80 703.80',
+  '1 1CTN #SP250 SANPEL 24X250ML 1.00 CTN 29.94 12.00% 3.60 29.95 29.95',
+  'Pay Ref: 3429816',
+  'Ex Tax: 733.75',
+  'GST 2.99',
+  'Total: 736.74'
+].join('\n');
+eq('parses real Mayers invoice — ref, date (DD-MMM-YY), total',
+  parseMayersInvoice_(mayersFixture, '2026-06-17'),
+  { date: '2026-06-17', total: 736.74, invoice_ref: '3429816' });
+eq('does not grab Ex Tax or Line Total as the total',
+  parseMayersInvoice_(mayersFixture, '2026-06-17').total, 736.74);
+eq('does not grab Pay Ref as the invoice ref',
+  parseMayersInvoice_(mayersFixture, '2026-06-17').invoice_ref, '3429816');
 check('falls back to received date when no date in text',
-  parseMyersInvoice_('Invoice #M-77', 'Amount due: $42.00', '2026-06-17').date === '2026-06-17');
+  parseMayersInvoice_('Invoice No: 9999999\nTotal: 50.00', '2026-06-17').date === '2026-06-17');
 check('returns null when no total/ref found',
-  parseMyersInvoice_('Hello', 'just a friendly note', '2026-06-17') === null);
+  parseMayersInvoice_('Hello, just a friendly note', '2026-06-17') === null);
 
 /* ------------------------------------------------------------------ */
 

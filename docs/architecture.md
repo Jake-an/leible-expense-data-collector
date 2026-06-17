@@ -14,7 +14,7 @@ Two runtimes feeding one Google Sheet. GAS handles API-native and email sources 
 │   ├── gas/                    # Google Apps Script source (pushed via clasp)
 │   │   ├── Code.gs             # doPost endpoint, normalization, dedup, ensureSheet
 │   │   ├── square.gs           # Square API connector → Sales tab
-│   │   ├── myers.gs            # Gmail invoice parser → Suppliers tab
+│   │   ├── mayers.gs            # PDF-invoice parser (Drive OCR) → Suppliers tab
 │   │   ├── test_code.js        # Node-mock unit tests (run locally, no clasp)
 │   │   └── appsscript.json     # GAS manifest
 │   └── playwright/             # Local browser automation
@@ -38,7 +38,7 @@ Runs on Google's servers via time-driven triggers or the `doPost` web-app endpoi
 
 **Handles:**
 - **Square** — `UrlFetchApp` + API key → daily **gross** sales per location → `Sales` tab. The API wrapper (`callSquareAPI`/`searchOrders`/`listLocations`) is **reused from `LEIBLE_GM_COST_MONITOR/SquareAPI.gs`** (ADR-001).
-- **Myers** — `GmailApp` → parse chocolate invoice emails → `Suppliers` tab
+- **Mayers** — `GmailApp` + Drive OCR → extract PDF-attachment invoice text → `Suppliers` tab
 - **Normalization** — raw rows from any source → two-tab schema (see `docs/schema.md`)
 - **Sheet writes** — append normalized rows; dedup before insert
 - **doPost ingest** — web-app endpoint that receives raw supplier rows from Playwright connectors
@@ -65,7 +65,7 @@ Portal sources (4 supplier connectors)
 GAS doPost ──→ normalizeSupplierRow() ──→ dedup ──→ append to `Suppliers`
     ↑
     ├── Square: UrlFetchApp → /orders/search → sum gross/location/day → `Sales`
-    └── Myers:  GmailApp → parse invoice → normalizeSupplierRow() → `Suppliers`
+    └── Mayers: GmailApp → PDF attachment → Drive OCR → parseMayersInvoice_() → `Suppliers`
 ```
 
 ## Session Lifecycle (portal auth)
