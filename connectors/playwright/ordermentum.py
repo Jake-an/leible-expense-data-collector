@@ -25,6 +25,13 @@ from base_connector import BaseConnector, cli_main
 
 API_BASE = "https://app.ordermentum.com"
 
+# Only pull invoices from these suppliers (case-insensitive substring match).
+SUPPLIER_FILTER = [
+    "tuga",
+    "alie",
+    "butterboy",
+]
+
 # Active venues Jake confirmed 2026-06-18.
 # venue_id → canonical shop name (for the `location` column).
 VENUES = {
@@ -72,7 +79,11 @@ class OrdermentumConnector(BaseConnector):
             print(f"  [{self.NAME}] WARNING: marketplaces returned {resp.status} for venue {venue_id}")
             return []
         data = resp.json().get("data", [])
-        return [(m["supplierId"], m["supplier"]["name"]) for m in data]
+        all_suppliers = [(m["supplierId"], m["supplier"]["name"]) for m in data]
+        return [
+            (sid, name) for sid, name in all_suppliers
+            if any(kw in name.lower() for kw in SUPPLIER_FILTER)
+        ]
 
     def _get_invoices(self, page: Page, venue_id: str, supplier_id: str) -> list[dict]:
         resp = page.request.get(
