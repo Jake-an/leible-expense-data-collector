@@ -1,95 +1,94 @@
-"""Ordermentum portal connector — Tuga Pastry + Butterboy.
+"""Ordermentum connector — API-first invoice reader.
 
-Both suppliers sell through the same Ordermentum app, so one connector serves two
-accounts. Each account has its own saved session (sessions/ordermentum_<acct>.json)
-and stamps its canonical supplier name onto every row via the `supplier` field —
-the GAS hub keys both under source `ordermentum` but resolves the name per row
-(see Code.gs canonicalSupplier_).
+One Ordermentum login covers all venues and suppliers. The connector:
+  1. Loads saved cookies from sessions/ordermentum.json
+  2. Extracts the Bearer JWT from the `session` cookie
+  3. Hits the Ordermentum JSON API directly (no DOM scraping)
+  4. Iterates active venues → suppliers → invoices
+  5. POSTs to GAS doPost
 
-Skeleton awaiting attended click-path mapping: LOGIN_URL and the
-is_logged_in / read_invoices selectors are filled in after Jake's attended login
-(record the path in docs/clickpath-ordermentum.md first).
+Attended first login uses the base_connector flow (headed browser, Jake logs in,
+cookies saved). All subsequent runs are API-only via the saved JWT.
 
 Usage:
-    python connectors/playwright/ordermentum.py --attended              # both accounts, headed
-    python connectors/playwright/ordermentum.py --attended --account tuga
-    python connectors/playwright/ordermentum.py                         # both, unattended
+    python connectors/playwright/ordermentum.py --attended   # first login, saves session
+    python connectors/playwright/ordermentum.py              # unattended API read
 """
 
 from __future__ import annotations
 
-import argparse
-import sys
-
+import json
+import re
 from playwright.sync_api import Page
-from base_connector import BaseConnector, BlockedError
 
-# account key → canonical supplier name (written to each row's `supplier`).
-ACCOUNTS = {
-    "tuga": "Tuga Pastry",
-    "butterboy": "Butterboy",
+from base_connector import BaseConnector, cli_main
+
+API_BASE = "https://app.ordermentum.com"
+
+# Active venues Jake confirmed 2026-06-18.
+# venue_id → canonical shop name (for the `location` column).
+VENUES = {
+    "73cb4dc6-bc70-431c-bfad-186f05e8851b": "Leible York",
+    "c2942ee1-acb5-45a1-b8df-72c5e5f03aa3": "Leible Pitt",
+    "73904d83-094a-4764-9da9-cfa61231001c": "Leible Crowsnest",
+    "5dc2803b-51e2-4415-8484-edb4cdf40517": "Leible North",
 }
-
-LOGIN_URL = ""  # TODO(attended-mapping): Ordermentum login URL, filled after attended login
 
 
 class OrdermentumConnector(BaseConnector):
+    NAME = "ordermentum"
     SOURCE = "ordermentum"
-    LOGIN_URL = LOGIN_URL
-
-    def __init__(self, account_key: str, exec_url: str | None = None):
-        if account_key not in ACCOUNTS:
-            raise ValueError(f"unknown Ordermentum account: {account_key}")
-        self.account_key = account_key
-        self.supplier_name = ACCOUNTS[account_key]
-        # per-account session file: ordermentum_tuga.json / ordermentum_butterboy.json
-        self.NAME = f"ordermentum_{account_key}"
-        super().__init__(exec_url=exec_url)
+    LOGIN_URL = "https://app.ordermentum.com"
 
     def is_logged_in(self, page: Page) -> bool:
-        # TODO(attended-mapping): check a post-login Ordermentum landmark (e.g. the
-        # account switcher or an orders nav link). Return False for now so unattended
-        # runs fail safe to `blocked` until the selector is discovered.
-        #   return page.query_selector("[data-testid='orders-nav']") is not None
-        return False
+        resp = page.request.get(f"{API_BASE}/v1/profiles/")
+        return resp.status == 200
 
     def read_invoices(self, page: Page) -> list[dict]:
-        # TODO(attended-mapping): open the order/invoice list, read the table, and
-        # map each raw record to {date, total, invoice_ref}. Stamp the account's
-        # supplier name so the hub can tell Tuga from Butterboy.
-        #
-        # Intended implementation (sketch):
-        #     raw = self.read_table_rows(page, row_selector=".order-row", cell_selectors={
-        #         "date_str": ".order-date", "total_str": ".order-total", "ref": ".order-number",
-        #     })
-        #     return [{
-        #         "date": parse_date(r["date_str"]),          # → YYYY-MM-DD
-        #         "total": float(r["total_str"].lstrip("$").replace(",", "")),
-        #         "invoice_ref": r["ref"],
-        #         "supplier": self.supplier_name,
-        #     } for r in raw]
-        #
-        # See docs/clickpath-ordermentum.md for discovered selectors.
-        return []
+        rows: list[dict] = []
+        for venue_id, shop in VENUES.items():
+            suppliers = self._get_suppliers(page, venue_id)
+            for sid, sname in suppliers:
+                invoices = self._get_invoices(page, venue_id, sid)
+                for inv in invoices:
+                    if inv.get("cancelled"):
+                        continue
+                    rows.append({
+                        "date": inv["date"][:10],
+                        "total": inv["total"],
+                        "invoice_ref": inv["number"],
+                        "supplier": sname,
+                        "location": shop,
+                    })
+            print(f"  [{self.NAME}] {shop}: {len(suppliers)} suppliers")
+        return rows
 
+    def _get_suppliers(self, page: Page, venue_id: str) -> list[tuple[str, str]]:
+        resp = page.request.get(
+            f"{API_BASE}/v2/marketplaces",
+            params={"retailerId": venue_id, "disabled": "false"},
+        )
+        if resp.status != 200:
+            print(f"  [{self.NAME}] WARNING: marketplaces returned {resp.status} for venue {venue_id}")
+            return []
+        data = resp.json().get("data", [])
+        return [(m["supplierId"], m["supplier"]["name"]) for m in data]
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Ordermentum connector (Tuga Pastry + Butterboy)")
-    parser.add_argument("--attended", action="store_true",
-                        help="headed first login; save session for later unattended runs")
-    parser.add_argument("--account", choices=list(ACCOUNTS), default=None,
-                        help="run a single account (default: all accounts)")
-    args = parser.parse_args()
-
-    account_keys = [args.account] if args.account else list(ACCOUNTS)
-    exit_code = 0
-    for key in account_keys:
-        try:
-            OrdermentumConnector(key).run(attended=args.attended)
-        except BlockedError:
-            exit_code = 2  # one account blocked; keep going, report at the end
-    sys.exit(exit_code)
+    def _get_invoices(self, page: Page, venue_id: str, supplier_id: str) -> list[dict]:
+        resp = page.request.get(
+            f"{API_BASE}/v2/invoices",
+            params={
+                "supplierId": supplier_id,
+                "retailerId": venue_id,
+                "sortBy[dueAt]": "-1",
+                "pageNo": "1",
+            },
+        )
+        if resp.status != 200:
+            print(f"  [{self.NAME}] WARNING: invoices returned {resp.status}")
+            return []
+        return resp.json().get("data", [])
 
 
 if __name__ == "__main__":
-    main()
+    cli_main(OrdermentumConnector)

@@ -92,7 +92,7 @@ class BaseConnector:
             context.close()
 
         result = self.post(rows)
-        print(f"[{self.NAME}] read {len(rows)} rows → POST {result}")
+        print(f"[{self.NAME}] read {len(rows)} rows -> POST {result}")
         return {"rows": len(rows), "post": result}
 
     def _new_context(self, pw, headed: bool) -> BrowserContext:
@@ -121,7 +121,7 @@ class BaseConnector:
             "rows": rows,
             "extracted_at": datetime.now(SYD_TZ).isoformat(timespec="seconds"),
         }
-        resp = requests.post(self.exec_url, json=payload, timeout=60)
+        resp = requests.post(self.exec_url, json=payload, timeout=300)
         resp.raise_for_status()
         try:
             return resp.json()

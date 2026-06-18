@@ -32,3 +32,4 @@ phases/**/step*-output.json
 __pycache__/
 *.pyc
 .venv/
+logs/
