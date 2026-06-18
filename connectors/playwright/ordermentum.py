@@ -25,10 +25,15 @@ from base_connector import BaseConnector, cli_main
 
 API_BASE = "https://app.ordermentum.com"
 
-# Only pull invoices from these suppliers (case-insensitive substring match).
+# Only pull invoices from these suppliers (case-insensitive substring match,
+# tested against BOTH the legal name and the Ordermentum tradingName).
+# NB: some suppliers bill under an unrelated legal entity — e.g. Butterboy
+# invoices as "Wholesale Cookies PTY LTD" (tradingName "Butterboy"), so matching
+# the legal name alone silently drops them. Keep keywords aligned to a name the
+# supplier actually shows: "allie" (not "alie") matches "Allie's Foods".
 SUPPLIER_FILTER = [
     "tuga",
-    "alie",
+    "allie",
     "butterboy",
 ]
 
@@ -79,11 +84,18 @@ class OrdermentumConnector(BaseConnector):
             print(f"  [{self.NAME}] WARNING: marketplaces returned {resp.status} for venue {venue_id}")
             return []
         data = resp.json().get("data", [])
-        all_suppliers = [(m["supplierId"], m["supplier"]["name"]) for m in data]
-        return [
-            (sid, name) for sid, name in all_suppliers
-            if any(kw in name.lower() for kw in SUPPLIER_FILTER)
-        ]
+        out: list[tuple[str, str]] = []
+        for m in data:
+            sid = m["supplierId"]
+            supplier = m.get("supplier", {})
+            legal = supplier.get("name", "")
+            trading = supplier.get("tradingName") or ""
+            haystack = f"{legal} {trading}".lower()
+            if any(kw in haystack for kw in SUPPLIER_FILTER):
+                # Prefer the tradingName as the Sheet label — it's the recognisable
+                # name (e.g. "Butterboy", not "Wholesale Cookies PTY LTD").
+                out.append((sid, (trading or legal).strip()))
+        return out
 
     def _get_invoices(self, page: Page, venue_id: str, supplier_id: str) -> list[dict]:
         resp = page.request.get(

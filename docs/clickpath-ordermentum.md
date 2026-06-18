@@ -18,7 +18,21 @@ Discovered 2026-06-18 via attended login + chrome-devtools network capture.
 GET /v2/marketplaces?retailerId={venue_id}&disabled=false
 ```
 
-Returns `{ meta, data: [{ supplierId, supplier: { name }, retailerId, retailer: { tradingName } }] }`
+Returns `{ meta, data: [{ supplierId, supplier: { name, tradingName }, retailerId, retailer: { tradingName } }] }`
+
+> **Supplier identity gotcha (2026-06-18).** A supplier's `supplier.name` is its
+> *legal entity*, which can be unrelated to the brand you order from. Butterboy
+> bills as **`Wholesale Cookies PTY LTD`** with **`tradingName: "Butterboy"`**.
+> Match `SUPPLIER_FILTER` against **both** `name` and `tradingName`, and use
+> `tradingName` as the Sheet's `supplier` label. (Likewise `"alie"` does not
+> substring-match `"Allie's Foods"` — the keyword is `"allie"`.)
+>
+> Also: `marketplaces?disabled=false` (catalog-connected suppliers) is a
+> *different set* from who has actually invoiced a venue — e.g. Crowsnest's
+> invoice feed includes `Mama Ka'z` / `Small Talk Coffee`, which marketplaces
+> omits. We filter to a known shortlist, so marketplaces is sufficient here; if
+> the scope ever widens to "all suppliers", derive the list from `/v2/invoices?retailerId=`
+> (paged) instead.
 
 ### 2. List invoices for a supplier+venue
 

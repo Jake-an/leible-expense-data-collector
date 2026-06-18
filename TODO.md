@@ -25,10 +25,11 @@
 - [ ] If OCR text differs from fixture, tune `parseMayersInvoice_` regexes + update test fixture
 - [ ] Install daily trigger (`installMayersTrigger()`)
 
-### Phase 3 — Ordermentum (Tuga Pastry + Butterboy) — built; needs coverage fixes
+### Phase 3 — Ordermentum (Tuga Pastry + Butterboy) — built; coverage fixed
 - Connector + session + `docs/clickpath-ordermentum.md` exist (API-first).
-- [ ] **NEXT SESSION — Butterboy:** active at Crowsnest but missing from the data. Root cause: Butterboy isn't returned by `GET /v2/marketplaces?disabled=false`, so that endpoint isn't a complete supplier list. Find the true supplier-discovery source (e.g. order history / `/v2/orders`) so the connector catches it.
-- [ ] **Widen `SUPPLIER_FILTER`:** currently pulls only `tuga/alie/butterboy` (2 of ~11 active suppliers). Decide with Jake whether to capture ALL Ordermentum suppliers (PFD, Sonoma, Patricks, Brooklyn Boy Bagels, Wholesale Cookies, etc.) — they're all real expenses.
+- [x] **Butterboy fixed (2026-06-18):** root cause was NOT discovery — Butterboy *is* in `marketplaces?disabled=false`, billing as legal entity **`Wholesale Cookies PTY LTD`** (`tradingName: "Butterboy"`). The filter matched the legal `name` only, so it (and Allie's, via the `"alie"`→`"allie"` typo) were silently dropped. Fix: match `SUPPLIER_FILTER` against `name`+`tradingName`, emit `tradingName` as label. Read-only verified: Butterboy 40 invoices recovered (74→114 rows). See clickpath "Supplier identity gotcha".
+- [ ] **Live POST verify:** run the connector unattended (with `GAS_EXEC_URL`) once the GAS hub is live → confirm Butterboy rows land in `Suppliers` + dedup on re-run.
+- [ ] **(decision deferred)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? Jake chose to keep the tuga/allie/butterboy shortlist for now. If revisited, derive the supplier list from `/v2/invoices?retailerId=` (paged), not marketplaces.
 
 ### Phase 4 — Food and Dairy Co — ✅ DONE (2026-06-18)
 - Route resolved: **not** on Ordermentum; FDCo app is white-labeled **Pepper** → web twin `fooddairyco.pepr.app` (Cognito auth, `api-aus.usepepper.com/v1/graphql`).
