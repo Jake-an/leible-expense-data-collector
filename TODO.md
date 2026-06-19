@@ -3,21 +3,23 @@
 ## Done — at a glance
 - Project scaffolded (git, gitignore, CLAUDE.md, docs, harness framework)
 - Scaffold revised to the two-tab schema (`Suppliers` + `Sales`); Order-app `.claude` hook suite + team-share `.gitignore` adopted
-- Phase 0 GAS hub, Phase 1 Square pilot, Phase 2 Mayers built + Node-mock tested (code-complete; live deploy blocked on Jake's Step 0)
-- Playwright base + 4 portal skeletons scaffolded (click-paths TODO, awaiting attended login)
-- **Food and Dairy Co connector built + live-tested 2026-06-18** (Pepper web `fooddairyco.pepr.app`, Cognito+GraphQL; 326 invoices across 4 venues → GAS, dedup verified)
+- **Phase 0 GAS hub LIVE** — Sheet, GAS project, doPost, dedup, deploy pipeline all operational (proven by FDCo + Ordermentum + Square data in production)
+- Playwright base + 4 portal skeletons scaffolded
+- **Food and Dairy Co connector built + live-tested 2026-06-18** (326 invoices, dedup verified)
+- **Ordermentum connector live-tested 2026-06-18** — Butterboy fix verified (tradingName match), 114 rows (74 Tuga + 40 Butterboy); cleanup deployed to relabel "Wholesale Cookies PTY LTD" → "Butterboy" and delete out-of-filter suppliers
 
 ## Active
 
-### Phase 0 — Foundation
-- [ ] **(Jake)** Create the Google Sheet "LEIBLE Expense Hub" with `Suppliers` / `Sales` / `_staging` tabs + headers
-- [ ] **(Jake)** Create the bound GAS project; share scriptId for `config/clasp.json`
-- [ ] **(Jake)** Add Square tokens (`SQUARE_ACCESS_TOKEN_YORK/NORTH_SYDNEY/CROWSNEST/PITT`) to Script Properties
-- [ ] `clasp push` the GAS hub; live-verify `doPost` → `Suppliers` (POST sample payload, confirm dedup)
+### Phase 0 — Foundation — ✅ DONE
+- [x] Sheet "LEIBLE Expense Hub" created with `Suppliers` / `Sales` / `_staging` tabs + headers
+- [x] Bound GAS project created; scriptId + deploymentId in `config/`
+- [x] `doPost` → `Suppliers` dedup proven (FDCo 326 rows, Ordermentum 114 rows, re-runs skip)
+- [x] Square tokens in Script Properties; `squareDailyPull()` already ran (4 Sales rows for 2026-06-16)
+- [ ] **(Jake)** Install daily triggers: run `installSquareTrigger()` + `installMayersTrigger()` from the editor
 
-### Phase 1 — Square pilot (GAS-native)
-- [ ] Live-verify `squareDailyPull()` → one gross row per location in `Sales`; re-run → dedup skips
-- [ ] Install daily ~3am trigger; confirm next-day auto-run
+### Phase 1 — Square pilot (GAS-native) — ✅ LIVE (data present)
+- [x] `squareDailyPull()` already ran — 4 Sales rows (York/North/Crowsnest/Pitt) for 2026-06-16 in Sheet
+- [ ] **(Jake)** Install daily trigger: run `installSquareTrigger()` from the editor (3am AEST); confirm next-day auto-run
 
 ### Phase 2 — Mayers (PDF-invoice connector, GAS-native + Drive OCR)
 - [ ] **(Jake)** Set up email forward: `jake@leiblecoffee.com.au` → `mio.jake+mayers@gmail.com` (normal forward, not "forward as attachment")
@@ -25,11 +27,13 @@
 - [ ] If OCR text differs from fixture, tune `parseMayersInvoice_` regexes + update test fixture
 - [ ] Install daily trigger (`installMayersTrigger()`)
 
-### Phase 3 — Ordermentum (Tuga Pastry + Butterboy) — built; coverage fixed
+### Phase 3 — Ordermentum (Tuga Pastry + Butterboy) — ✅ LIVE (2026-06-18)
 - Connector + session + `docs/clickpath-ordermentum.md` exist (API-first).
-- [x] **Butterboy fixed (2026-06-18):** root cause was NOT discovery — Butterboy *is* in `marketplaces?disabled=false`, billing as legal entity **`Wholesale Cookies PTY LTD`** (`tradingName: "Butterboy"`). The filter matched the legal `name` only, so it (and Allie's, via the `"alie"`→`"allie"` typo) were silently dropped. Fix: match `SUPPLIER_FILTER` against `name`+`tradingName`, emit `tradingName` as label. Read-only verified: Butterboy 40 invoices recovered (74→114 rows). See clickpath "Supplier identity gotcha".
-- [ ] **Live POST verify:** run the connector unattended (with `GAS_EXEC_URL`) once the GAS hub is live → confirm Butterboy rows land in `Suppliers` + dedup on re-run.
-- [ ] **(decision deferred)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? Jake chose to keep the tuga/allie/butterboy shortlist for now. If revisited, derive the supplier list from `/v2/invoices?retailerId=` (paged), not marketplaces.
+- [x] **Butterboy fixed (2026-06-18):** `tradingName` match + relabel. See clickpath "Supplier identity gotcha".
+- [x] **Live POST verified (2026-06-18):** run 1 → `rowsAdded:1, duplicatesSkipped:113`; run 2 → `rowsAdded:0, duplicatesSkipped:114` (dedup idempotent).
+- [ ] **(Jake)** Run `cleanupOrdermentumRows()` from the Apps Script editor — relabels "Wholesale Cookies PTY LTD" → "Butterboy", deletes out-of-filter suppliers (Sonoma, Brooklyn Boy, etc.). Then **delete the function** from Code.gs (one-shot).
+- [ ] **(Jake)** Register `scripts/run_ordermentum.cmd` in Windows Task Scheduler (daily). Session ~15-day JWT refresh; re-run `--attended` when it `blocks`.
+- [ ] **(decision deferred)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? Kept narrow for now.
 
 ### Phase 4 — Food and Dairy Co — ✅ DONE (2026-06-18)
 - Route resolved: **not** on Ordermentum; FDCo app is white-labeled **Pepper** → web twin `fooddairyco.pepr.app` (Cognito auth, `api-aus.usepepper.com/v1/graphql`).

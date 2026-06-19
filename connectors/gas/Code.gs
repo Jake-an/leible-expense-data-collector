@@ -228,6 +228,58 @@ function ensureSheet(ss, sheetName, headers) {
   return sheet;
 }
 
+/**
+ * ONE-SHOT cleanup: fix Ordermentum supplier labels + delete rows from
+ * suppliers outside the tuga/allie/butterboy filter.
+ * Run once from the Apps Script editor, then delete this function.
+ */
+function cleanupOrdermentumRows() {
+  var RENAME = {
+    'Wholesale Cookies PTY LTD': 'Butterboy',
+    'Tuga Pastries Australia Pty Ltd': 'Tuga Pastries Australia'
+  };
+  var KEEP = ['butterboy', 'tuga pastries australia', "allie's foods"];
+
+  var ss = getHubSpreadsheet_();
+  var sheet = ss.getSheetByName(SUPPLIERS_TAB);
+  if (!sheet) { Logger.log('No Suppliers tab'); return; }
+
+  var data = sheet.getDataRange().getValues();
+  var supplierCol = 1; // B
+  var sourceCol = 5;   // F
+
+  var renamed = 0, deleted = 0;
+
+  // Pass 1: rename (top-down is fine for in-place edits)
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][sourceCol]).toLowerCase() !== 'ordermentum') continue;
+    var old = String(data[r][supplierCol]);
+    if (RENAME[old]) {
+      sheet.getRange(r + 1, supplierCol + 1).setValue(RENAME[old]);
+      data[r][supplierCol] = RENAME[old]; // update local copy for pass 2
+      renamed++;
+    }
+  }
+
+  // Pass 2: delete non-allowed ordermentum rows (bottom-up to avoid row-shift)
+  for (var r = data.length - 1; r >= 1; r--) {
+    if (String(data[r][sourceCol]).toLowerCase() !== 'ordermentum') continue;
+    var name = String(data[r][supplierCol]).toLowerCase();
+    var allowed = false;
+    for (var k = 0; k < KEEP.length; k++) {
+      if (name === KEEP[k]) { allowed = true; break; }
+    }
+    if (!allowed) {
+      sheet.deleteRow(r + 1);
+      deleted++;
+    }
+  }
+
+  var msg = 'Cleanup done: renamed=' + renamed + ', deleted=' + deleted;
+  Logger.log(msg);
+  return msg;
+}
+
 function jsonOut_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
