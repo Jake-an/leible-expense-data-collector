@@ -280,6 +280,35 @@ function cleanupOrdermentumRows() {
   return msg;
 }
 
+/**
+ * One-shot fix for the 2026-06-22 Fresh & Chill North mis-seed: the North session
+ * was accidentally a different shop's account, so rows tagged location='Leible North'
+ * are actually another shop's orders. Delete them all; a fresh connector run then
+ * repopulates correct North orders (and un-blocks the other shop's real rows).
+ * Run once from the Apps Script editor, then delete this function.
+ */
+function cleanupFreshNorthRows() {
+  var ss = getHubSpreadsheet_();
+  var sheet = ss.getSheetByName(SUPPLIERS_TAB);
+  if (!sheet) { Logger.log('No Suppliers tab'); return; }
+
+  var data = sheet.getDataRange().getValues();
+  var locationCol = 4; // E
+  var sourceCol = 5;   // F
+
+  var deleted = 0;
+  for (var r = data.length - 1; r >= 1; r--) { // bottom-up to avoid row-shift
+    if (String(data[r][sourceCol]).toLowerCase() !== 'fresh_and_chill') continue;
+    if (String(data[r][locationCol]) !== 'Leible North') continue;
+    sheet.deleteRow(r + 1);
+    deleted++;
+  }
+
+  var msg = 'Fresh North cleanup done: deleted=' + deleted;
+  Logger.log(msg);
+  return msg;
+}
+
 function jsonOut_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))

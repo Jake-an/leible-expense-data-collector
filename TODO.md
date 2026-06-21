@@ -7,6 +7,7 @@
 - Playwright base + 4 portal skeletons scaffolded
 - **Food and Dairy Co connector built + live-tested 2026-06-18** (326 invoices, dedup verified)
 - **Ordermentum connector live-tested 2026-06-18** — Butterboy fix verified (tradingName match), 114 rows (74 Tuga + 40 Butterboy); cleanup deployed to relabel "Wholesale Cookies PTY LTD" → "Butterboy" and delete out-of-filter suppliers
+- **Fresh and Chill connector built + live-tested 2026-06-22** — Zupply web app (not WhatsApp); York 36 orders, dedup verified; 3 shops left to seed
 
 ## Active
 
@@ -41,9 +42,12 @@
 - Live-tested end-to-end: 326 invoices (North 86 / Pitt 96 / Crowsnest 65 / York 79) → GAS `rowsAdded:326`; re-run `duplicatesSkipped:326` (dedup OK).
 - [ ] **(Jake)** Register `scripts/run_food_dairy_co.cmd` in Windows Task Scheduler (daily). Session ~30-day Cognito refresh; re-run `--attended` (phone OTP) when it `blocks`.
 
-### Phase 5 — Fresh and Chill
-- [ ] **(Jake)** Attended login + click-path map → `docs/clickpath-fresh_and_chill.md`
-- [ ] Fill selectors in `fresh_and_chill.py`; test full flow
+### Phase 5 — Fresh and Chill — ✅ LIVE (2026-06-22)
+- Route resolved: **not** WhatsApp after all — F&C now has a web app **`shop.zupply.com.au`** (Zupply Chef, Rails/Devise, plain user+pass, no MFA). **One login per shop** (4 separate accounts).
+- Built `connectors/playwright/fresh_and_chill.py` (DOM scrape of `/orders` table; per-shop session loop), `docs/clickpath-fresh_and_chill.md`.
+- Delivery date + globally-unique `PO#` ref + GST-inc total from the orders list; credit notes on a separate page (excluded); pagination handled.
+- **All 4 shops live 2026-06-22:** seeded (each has its own credentials) + full run → York 36 / North 35 / Crowsnest 23 / Pitt 35 = 129 orders; `rowsAdded:58, duplicatesSkipped:71` (York pre-loaded, dedup OK).
+- [ ] **(Jake, later)** Add a `scripts/run_fresh_and_chill.cmd` + Task Scheduler entry if/when moving off manual runs.
 
 ### Phase 6 — Kent Paper — ⏸️ DEFERRED (2026-06-18)
 - Portal (`kentpaper.com.au/ecommerce`) does **not** expose full order history — only recent orders. Weak/incomplete source; skipped for now. Revisit only if a better data route (full history export, email invoices) turns up.
