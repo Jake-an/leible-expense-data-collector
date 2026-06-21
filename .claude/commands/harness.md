@@ -25,6 +25,7 @@ Design principles:
 5. **AC as executable commands** — `python -m pytest`, `python -c "..."`, `grep -q`, etc.
 6. **Specific prohibitions** — "Do not do X. Reason: Y."
 7. **Naming** — kebab-case slugs: `dopost-endpoint`, `square-connector`, `session-manager`.
+8. **TDD per step** — Mark each step `tdd: true`/`false`. Logic-bearing steps (business rules, data transforms, endpoints, validation) must be `tdd: true` (test-first); pure scaffolding may be `false`. For `tdd: true` steps, enumerate the concrete test cases in that step's Acceptance Criteria *at design time* — written before the implementation. See `docs/harness-workflow.md`.
 
 ### D. File Creation
 
@@ -39,7 +40,7 @@ Design principles:
   "project": "leible-expense-data-collector",
   "phase": "<task-name>",
   "steps": [
-    { "step": 0, "name": "setup", "status": "pending" }
+    { "step": 0, "name": "setup", "status": "pending", "tdd": false }
   ]
 }
 ```
