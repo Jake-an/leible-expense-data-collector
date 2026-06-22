@@ -194,7 +194,20 @@ var mayersFixture = [
   'F.Mayer Imports Pty Ltd TAX INVOICE',
   'Invoice No: 3429816',
   'Invoice Date: 17-JUN-26',
-  'Bill To: LEIBLE COFFEE',
+  'Bill To :',
+  'LEIBLE COFFEE',
+  'KAFFAPRO PTY LTD',
+  '89 YORK ST',
+  'LEIBLE COFFEE, GROUND LEVEL',
+  'SYDNEY',
+  'NSW              2000',
+  'Deliver To:',
+  'LEIBLE COFFEE',
+  '89 YORK ST',
+  'LEIBLE COFFEE, GROUND LEVEL',
+  'SYDNEY',
+  'NSW                 2000',
+  'Account:                    LEI05D',
   'Ordere Picked Item Code Item Description Shipped Qty Unit Price Disc CD Net Price Line Total',
   '1 1CTN 8232BU76 CAL MILK CALLET 33.6% 8X2.5KG 1.00 CTN 890.89 21.00% 0.00 703.80 703.80',
   '1 1CTN #SP250 SANPEL 24X250ML 1.00 CTN 29.94 12.00% 3.60 29.95 29.95',
@@ -203,9 +216,9 @@ var mayersFixture = [
   'GST 2.99',
   'Total: 736.74'
 ].join('\n');
-eq('parses real Mayers invoice — ref, date (DD-MMM-YY), total',
+eq('parses real Mayers invoice — ref, date, total, location',
   parseMayersInvoice_(mayersFixture, '2026-06-17'),
-  { date: '2026-06-17', total: 736.74, invoice_ref: '3429816' });
+  { date: '2026-06-17', total: 736.74, invoice_ref: '3429816', location: 'Leible York' });
 eq('does not grab Ex Tax or Line Total as the total',
   parseMayersInvoice_(mayersFixture, '2026-06-17').total, 736.74);
 eq('does not grab Pay Ref as the invoice ref',
@@ -214,6 +227,16 @@ check('falls back to received date when no date in text',
   parseMayersInvoice_('Invoice No: 9999999\nTotal: 50.00', '2026-06-17').date === '2026-06-17');
 check('returns null when no total/ref found',
   parseMayersInvoice_('Hello, just a friendly note', '2026-06-17') === null);
+
+console.log('mayersShopFromText_');
+eq('York St → Leible York', mayersShopFromText_('Deliver To:\n89 YORK ST\nSYDNEY'), 'Leible York');
+eq('Pitt St → Leible Pitt', mayersShopFromText_('130 PITT ST\nSYDNEY NSW 2000'), 'Leible Pitt');
+eq('Blue St → Leible North', mayersShopFromText_('BLUE ST\nNORTH SYDNEY NSW 2060'), 'Leible North');
+eq('Burlington → Leible Crowsnest', mayersShopFromText_('4 BURLINGTON ST\nCROWS NEST'), 'Leible Crowsnest');
+eq('Crows Nest keyword → Leible Crowsnest', mayersShopFromText_('CROWS NEST NSW 2065'), 'Leible Crowsnest');
+check('unknown address → UNMAPPED prefix',
+  mayersShopFromText_('Deliver To:\n99 GEORGE ST\nSYDNEY').indexOf('UNMAPPED:') === 0);
+eq('no address at all → empty string', mayersShopFromText_('just some random text'), '');
 
 /* ------------------------------------------------------------------ *
  * Summary API tests

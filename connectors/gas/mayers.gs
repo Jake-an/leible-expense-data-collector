@@ -21,6 +21,13 @@ var MONTH_MAP_ = {
   'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
 };
 
+var MAYERS_SHOP_RULES_ = [
+  { re: /\bYORK\s*ST/i,                 shop: 'Leible York' },
+  { re: /\bPITT\s*ST/i,                 shop: 'Leible Pitt' },
+  { re: /\bBLUE\s*ST/i,                 shop: 'Leible North' },
+  { re: /\bBURLINGTON|\bCROWS\s*NEST/i, shop: 'Leible Crowsnest' }
+];
+
 /* ------------------------------------------------------------------ *
  * Entry points
  * ------------------------------------------------------------------ */
@@ -98,7 +105,7 @@ function firstPdfAttachment_(msg) {
  * Extract invoice data from a PDF attachment.
  * @param {GoogleAppsScript.Gmail.GmailAttachment} pdfBlob
  * @param {string} fallbackDate — 'YYYY-MM-DD'
- * @returns {Object|null} { date, total, invoice_ref } or null
+ * @returns {Object|null} { date, total, invoice_ref, location } or null
  */
 function extractMayersInvoiceFromPdf_(pdfBlob, fallbackDate) {
   var text = null;
@@ -149,7 +156,7 @@ function extractPdfText_(pdfBlob) {
  * ------------------------------------------------------------------ */
 
 /**
- * Extract { date, total, invoice_ref } from Mayers invoice text.
+ * Extract { date, total, invoice_ref, location } from Mayers invoice text.
  * @param {string} text — extracted/linearized PDF text
  * @param {string} fallbackDate — 'YYYY-MM-DD' if no date in text
  * @returns {Object|null} or null if ref or total can't be found
@@ -170,8 +177,18 @@ function parseMayersInvoice_(text, fallbackDate) {
   return {
     date: date,
     total: Number(totalMatch[1].replace(/,/g, '')),
-    invoice_ref: refMatch[1]
+    invoice_ref: refMatch[1],
+    location: mayersShopFromText_(text)
   };
+}
+
+function mayersShopFromText_(text) {
+  for (var i = 0; i < MAYERS_SHOP_RULES_.length; i++) {
+    if (MAYERS_SHOP_RULES_[i].re.test(text)) return MAYERS_SHOP_RULES_[i].shop;
+  }
+  var deliv = text.match(/Deliver\s*To[:\s]*([\s\S]{0,120})/i);
+  var hint = deliv ? deliv[1].replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+  return hint ? 'UNMAPPED: ' + hint : '';
 }
 
 /**
