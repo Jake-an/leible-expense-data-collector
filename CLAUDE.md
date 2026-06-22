@@ -54,5 +54,6 @@ bash scripts/deploy.sh                          # Deploy GAS after finishing cod
 - `docs/PRD.md` — goal, sources, scope. *Load when scoping new connectors.*
 - `docs/rules.md` — full operating rules. *Load before automating or scheduling.*
 - `docs/schema.md` — two-tab Sheet spec (`Suppliers` + `Sales`). *Load when writing connectors or normalization.*
+- `docs/api.md` — read API (doGet) endpoint, auth, params, response format. *Load when building consumers or modifying the summary endpoint.*
 - `docs/harness-workflow.md` — how to use the phase/step runner. *Load when creating or running phases.*
 - `TODO.md` — active work items.

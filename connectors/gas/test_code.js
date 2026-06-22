@@ -28,10 +28,12 @@ function makeSheet(headers) {
     setBackground() { return chain; },
     setFontColor() { return chain; },
     setFontWeight() { return chain; },
+    setValue() { return chain; },
   };
   return {
     _rows: rows,
     appendRow: (a) => rows.push(a.slice()),
+    deleteRow: (rowNum) => rows.splice(rowNum - 1, 1),
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
     getRange: () => chain,
     setFrozenRows() {},
@@ -68,7 +70,12 @@ global.Logger = { log: () => {} };
 // Stubs so the connector modules load cleanly (their callers aren't tested here).
 global.Utilities = { formatDate: () => '2026-06-17T00:00:00+10:00' };
 global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp not mocked'); } };
-global.ScriptApp = { getProjectTriggers: () => [] };
+global.ScriptApp = {
+  getProjectTriggers: () => [],
+  newTrigger: () => ({ timeBased: () => ({ onWeekDay: () => ({ atHour: () => ({ inTimezone: () => ({ create: () => {} }) }) }), everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }), atHour: () => ({ everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }) }) }) }),
+  deleteTrigger: () => {},
+  WeekDay: { MONDAY: 2 }
+};
 global.GmailApp = {};
 global.Drive = { Files: { insert: function () { throw new Error('Drive not mocked'); } } };
 global.DocumentApp = { openById: function () { throw new Error('DocumentApp not mocked'); } };
@@ -207,6 +214,169 @@ check('falls back to received date when no date in text',
   parseMayersInvoice_('Invoice No: 9999999\nTotal: 50.00', '2026-06-17').date === '2026-06-17');
 check('returns null when no total/ref found',
   parseMayersInvoice_('Hello, just a friendly note', '2026-06-17') === null);
+
+/* ------------------------------------------------------------------ *
+ * Summary API tests
+ * ------------------------------------------------------------------ */
+
+console.log('coerceDateStr_');
+eq('string passes through', coerceDateStr_('2026-06-15'), '2026-06-15');
+(function () {
+  // Date object built from local components → same Y-M-D back (no UTC shift)
+  var d = new Date(2026, 5, 15, 0, 0, 0); // local midnight Jun 15 (month is 0-based)
+  eq('Date object → local YYYY-MM-DD (no off-by-one)', coerceDateStr_(d), '2026-06-15');
+})();
+
+console.log('aggregateSupplierRows_ with Date-object dates');
+(function () {
+  var rows = [
+    [new Date(2026, 5, 16, 0, 0, 0), 'Food and Dairy Co', 100, 'FDC-1', 'York St', 'food_dairy_co', 'TS'],
+    [new Date(2026, 5, 17, 0, 0, 0), 'Food and Dairy Co', 200, 'FDC-2', 'York St', 'food_dairy_co', 'TS'],
+  ];
+  var result = aggregateSupplierRows_(rows, '2026-06-15', '2026-06-21');
+  eq('Date-object rows aggregate into the week', result.length, 1);
+  eq('Date-object rows summed', result[0].total_spend, 300);
+})();
+
+console.log('weekStartForDate_');
+eq('Monday returns itself', weekStartForDate_('2026-06-22'), '2026-06-22');
+eq('Wednesday returns Monday', weekStartForDate_('2026-06-24'), '2026-06-22');
+eq('Sunday returns previous Monday', weekStartForDate_('2026-06-28'), '2026-06-22');
+eq('Saturday returns Monday', weekStartForDate_('2026-06-27'), '2026-06-22');
+eq('Tuesday returns Monday', weekStartForDate_('2026-06-23'), '2026-06-22');
+
+console.log('getLastCompletedWeek_');
+(function () {
+  // On Monday 2026-06-22, last completed week = Mon Jun 15 → Sun Jun 21
+  var w = getLastCompletedWeek_('2026-06-22');
+  eq('Monday: last week start', w.start, '2026-06-15');
+  eq('Monday: last week end', w.end, '2026-06-21');
+  // On Wednesday 2026-06-24
+  var w2 = getLastCompletedWeek_('2026-06-24');
+  eq('Wednesday: last week start', w2.start, '2026-06-15');
+  eq('Wednesday: last week end', w2.end, '2026-06-21');
+  // On Sunday 2026-06-28 (end of current week)
+  var w3 = getLastCompletedWeek_('2026-06-28');
+  eq('Sunday: last week start', w3.start, '2026-06-15');
+  eq('Sunday: last week end', w3.end, '2026-06-21');
+})();
+
+console.log('aggregateSupplierRows_');
+(function () {
+  var rows = [
+    // [date, supplier, total, invoice_ref, location, source, extracted_at]
+    ['2026-06-16', 'Food and Dairy Co', 100, 'FDC-1', 'York St', 'food_dairy_co', 'TS'],
+    ['2026-06-17', 'Food and Dairy Co', 200, 'FDC-2', 'York St', 'food_dairy_co', 'TS'],
+    ['2026-06-16', 'Food and Dairy Co', 50,  'FDC-3', 'North',   'food_dairy_co', 'TS'],
+    ['2026-06-18', 'Butterboy',         80,  'BB-1',  'York St', 'ordermentum',   'TS'],
+    ['2026-06-10', 'Food and Dairy Co', 999, 'FDC-0', 'York St', 'food_dairy_co', 'TS'], // outside week
+    ['2026-06-25', 'Food and Dairy Co', 888, 'FDC-9', 'York St', 'food_dairy_co', 'TS'], // outside week
+  ];
+  var result = aggregateSupplierRows_(rows, '2026-06-15', '2026-06-21');
+  eq('groups into 3 buckets (FDC-York, FDC-North, Butterboy-York)', result.length, 3);
+
+  // Sorted by key: Butterboy||York St, Food and Dairy Co||North, Food and Dairy Co||York St
+  eq('Butterboy York total', result[0].total_spend, 80);
+  eq('Butterboy York supplier', result[0].supplier, 'Butterboy');
+  eq('FDC North total', result[1].total_spend, 50);
+  eq('FDC York total (100+200)', result[2].total_spend, 300);
+
+  var empty = aggregateSupplierRows_([], '2026-06-15', '2026-06-21');
+  eq('empty rows → empty result', empty.length, 0);
+})();
+
+console.log('checkReadToken_');
+(function () {
+  // No token in Script Properties → deny
+  scriptProps = {};
+  check('no stored token → unauthorized', checkReadToken_({ token: 'abc' }).ok === false);
+
+  // Stored token but caller sends nothing
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  check('no caller token → unauthorized', checkReadToken_({}).ok === false);
+  check('empty caller token → unauthorized', checkReadToken_({ token: '' }).ok === false);
+
+  // Wrong token
+  check('wrong token → unauthorized', checkReadToken_({ token: 'wrong' }).ok === false);
+
+  // Correct token
+  check('correct token → ok', checkReadToken_({ token: 'secret123' }).ok === true);
+})();
+
+console.log('summaryDataToObjects_');
+(function () {
+  var data = [
+    ['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at'],
+    ['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'York St', 300, '2026-06-22T04:00:00+10:00'],
+    ['2026-06-15', '2026-06-21', 'Butterboy', 'York St', 80, '2026-06-22T04:00:00+10:00'],
+  ];
+  var objs = summaryDataToObjects_(data);
+  eq('returns 2 objects', objs.length, 2);
+  eq('first obj supplier', objs[0].supplier, 'Food and Dairy Co');
+  eq('first obj total_spend', objs[0].total_spend, 300);
+  eq('second obj week_start', objs[1].week_start, '2026-06-15');
+})();
+
+console.log('filterSummaryByDateRange_');
+(function () {
+  var rows = [
+    { week_start: '2026-06-08', supplier: 'A', total_spend: 10 },
+    { week_start: '2026-06-15', supplier: 'B', total_spend: 20 },
+    { week_start: '2026-06-22', supplier: 'C', total_spend: 30 },
+  ];
+  eq('from filter', filterSummaryByDateRange_(rows, '2026-06-15', null).length, 2);
+  eq('to filter', filterSummaryByDateRange_(rows, null, '2026-06-15').length, 2);
+  eq('from+to filter', filterSummaryByDateRange_(rows, '2026-06-15', '2026-06-15').length, 1);
+  eq('no filter', filterSummaryByDateRange_(rows, null, null).length, 3);
+})();
+
+console.log('archiveAndPurge_');
+(function () {
+  var source = makeSheet(SUPPLIERS_HEADERS);
+  var archive = makeSheet(SUPPLIERS_HEADERS);
+  // Add rows: 2 old, 1 recent
+  source.appendRow(['2026-01-01', 'Old Co', 50, 'OLD-1', '', 'test', 'TS']);
+  source.appendRow(['2026-01-15', 'Old Co', 60, 'OLD-2', '', 'test', 'TS']);
+  source.appendRow(['2026-06-15', 'Recent Co', 100, 'NEW-1', '', 'test', 'TS']);
+
+  var count = archiveAndPurge_(source, archive, '2026-03-01');
+  eq('archived 2 old rows', count, 2);
+  eq('source has header + 1 recent row', source._rows.length, 2);
+  eq('source remaining row is recent', source._rows[1][0], '2026-06-15');
+  eq('archive has header + 2 archived rows', archive._rows.length, 3);
+  eq('archive first row date (bottom-up order)', archive._rows[1][0], '2026-01-15');
+})();
+
+console.log('doGet (integration)');
+freshSheets();
+(function () {
+  // Setup: create Summary tab with data
+  var summSheet = makeSheet(['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at']);
+  summSheet.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'York St', 300, 'TS']);
+  summSheet.appendRow(['2026-06-15', '2026-06-21', 'Butterboy', 'York St', 80, 'TS']);
+  summSheet.appendRow(['2026-06-08', '2026-06-14', 'Food and Dairy Co', 'York St', 250, 'TS']);
+  currentSS._sheets['Summary'] = summSheet;
+
+  // No token → error
+  scriptProps = {};
+  var r1 = JSON.parse(doGet({ parameter: { token: 'abc' } }).getContent());
+  eq('no stored token → error', r1.result, 'error');
+
+  // Wrong token → error
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  var r2 = JSON.parse(doGet({ parameter: { token: 'wrong' } }).getContent());
+  eq('wrong token → error', r2.result, 'error');
+
+  // Valid token, explicit date range
+  var r3 = JSON.parse(doGet({ parameter: { token: 'secret123', from: '2026-06-15', to: '2026-06-21' } }).getContent());
+  eq('valid token + date range → ok', r3.result, 'ok');
+  eq('returns 2 rows for week Jun 15', r3.count, 2);
+  eq('first row supplier', r3.rows[0].supplier, 'Food and Dairy Co');
+
+  // Valid token, wider range → all 3 rows
+  var r4 = JSON.parse(doGet({ parameter: { token: 'secret123', from: '2026-06-01', to: '2026-06-30' } }).getContent());
+  eq('wider range → 3 rows', r4.count, 3);
+})();
 
 /* ------------------------------------------------------------------ */
 

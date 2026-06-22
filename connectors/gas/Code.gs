@@ -14,6 +14,12 @@
 var SUPPLIERS_TAB = 'Suppliers';
 var SALES_TAB = 'Sales';
 var STAGING_TAB = '_staging';
+var SUMMARY_TAB = 'Summary';
+var ARCHIVE_TAB = '_archive';
+
+var SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at'];
+
+var ARCHIVE_RETENTION_DAYS = 183;
 
 var SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location', 'source', 'extracted_at'];
 var SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'];
@@ -308,6 +314,246 @@ function cleanupFreshNorthRows() {
   Logger.log(msg);
   return msg;
 }
+
+/* ------------------------------------------------------------------ *
+ * Read API (doGet) — token-gated, serves weekly summaries
+ * ------------------------------------------------------------------ */
+
+function doGet(e) {
+  try {
+    var params = (e && e.parameter) || {};
+    var tokenCheck = checkReadToken_(params);
+    if (!tokenCheck.ok) return jsonOut_({ result: 'error', message: tokenCheck.message });
+
+    var ss = getHubSpreadsheet_();
+    var sheet = ss.getSheetByName(SUMMARY_TAB);
+    if (!sheet) return jsonOut_({ result: 'error', message: 'Summary tab not found. Run weeklySummarize() first.' });
+
+    var data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return jsonOut_({ result: 'ok', count: 0, rows: [] });
+
+    var from = params.from || null;
+    var to = params.to || null;
+
+    if (!from && !to) {
+      var lastWeek = getLastCompletedWeek_(todayStr_());
+      from = lastWeek.start;
+      to = lastWeek.end;
+    }
+
+    var rows = summaryDataToObjects_(data);
+    if (from || to) {
+      rows = filterSummaryByDateRange_(rows, from, to);
+    }
+
+    return jsonOut_({
+      result: 'ok',
+      week_start: from || null,
+      week_end: to || null,
+      count: rows.length,
+      rows: rows
+    });
+  } catch (err) {
+    return jsonOut_({ result: 'error', message: String((err && err.message) || err) });
+  }
+}
+
+function checkReadToken_(params) {
+  var stored = PropertiesService.getScriptProperties().getProperty('API_READ_TOKEN');
+  if (!stored) return { ok: false, message: 'unauthorized' };
+  if (!params.token) return { ok: false, message: 'unauthorized' };
+  if (params.token !== stored) return { ok: false, message: 'unauthorized' };
+  return { ok: true };
+}
+
+function todayStr_() {
+  return Utilities.formatDate(new Date(), 'Australia/Sydney', 'yyyy-MM-dd');
+}
+
+/* ------------------------------------------------------------------ *
+ * Date helpers (pure, unit-tested)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Coerce a Sheet cell value to a 'YYYY-MM-DD' string. Google auto-converts
+ * date-looking text into real Date objects, so reads come back as Dates. Use
+ * local date components (NOT toISOString, which shifts AEST midnight to the
+ * previous UTC day — an off-by-one). Strings pass through unchanged.
+ */
+function coerceDateStr_(v) {
+  if (v instanceof Date) {
+    var y = v.getFullYear();
+    var m = v.getMonth() + 1;
+    var d = v.getDate();
+    return y + '-' + (m < 10 ? '0' + m : m) + '-' + (d < 10 ? '0' + d : d);
+  }
+  return String(v);
+}
+
+function weekStartForDate_(dateStr) {
+  var d = new Date(dateStr + 'T12:00:00Z');
+  var day = d.getUTCDay(); // 0=Sun, 1=Mon, …
+  var diff = (day === 0) ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function getLastCompletedWeek_(todayStr) {
+  var today = new Date(todayStr + 'T12:00:00Z');
+  var day = today.getUTCDay();
+  var diffToMonday = (day === 0) ? 6 : day - 1;
+  var thisMonday = new Date(today);
+  thisMonday.setUTCDate(today.getUTCDate() - diffToMonday);
+  var lastMonday = new Date(thisMonday);
+  lastMonday.setUTCDate(thisMonday.getUTCDate() - 7);
+  var lastSunday = new Date(lastMonday);
+  lastSunday.setUTCDate(lastMonday.getUTCDate() + 6);
+  return {
+    start: lastMonday.toISOString().slice(0, 10),
+    end: lastSunday.toISOString().slice(0, 10)
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Summary aggregation (pure, unit-tested)
+ * ------------------------------------------------------------------ */
+
+function aggregateSupplierRows_(rows, weekStart, weekEnd) {
+  var groups = {};
+  for (var i = 0; i < rows.length; i++) {
+    var date = coerceDateStr_(rows[i][0]);
+    if (date < weekStart || date > weekEnd) continue;
+    var supplier = String(rows[i][1]);
+    var total = Number(rows[i][2]);
+    var location = String(rows[i][4]);
+    var key = supplier + '||' + location;
+    if (!groups[key]) groups[key] = { supplier: supplier, location: location, total: 0 };
+    groups[key].total += total;
+  }
+
+  var result = [];
+  var keys = Object.keys(groups).sort();
+  for (var k = 0; k < keys.length; k++) {
+    var g = groups[keys[k]];
+    result.push({
+      supplier: g.supplier,
+      location: g.location,
+      total_spend: Math.round(g.total * 100) / 100
+    });
+  }
+  return result;
+}
+
+function summaryDataToObjects_(values) {
+  var headers = values[0];
+  var result = [];
+  for (var r = 1; r < values.length; r++) {
+    var obj = {};
+    for (var c = 0; c < headers.length; c++) {
+      var val = values[r][c];
+      if (val instanceof Date) val = coerceDateStr_(val);
+      obj[headers[c]] = val;
+    }
+    result.push(obj);
+  }
+  return result;
+}
+
+function filterSummaryByDateRange_(rows, from, to) {
+  var filtered = [];
+  for (var i = 0; i < rows.length; i++) {
+    var ws = String(rows[i].week_start);
+    if (from && ws < from) continue;
+    if (to && ws > to) continue;
+    filtered.push(rows[i]);
+  }
+  return filtered;
+}
+
+/* ------------------------------------------------------------------ *
+ * Weekly summarize + archive/purge
+ * ------------------------------------------------------------------ */
+
+function weeklySummarize() {
+  var ss = getHubSpreadsheet_();
+  var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  if (!suppSheet) { Logger.log('weeklySummarize: no Suppliers tab'); return; }
+
+  var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
+  var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+
+  var today = todayStr_();
+  var week = getLastCompletedWeek_(today);
+  var extractedAt = Utilities.formatDate(new Date(), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+
+  var allData = suppSheet.getDataRange().getValues();
+  var dataRows = allData.slice(1);
+
+  var summaries = aggregateSupplierRows_(dataRows, week.start, week.end);
+
+  var existingSummary = summSheet.getDataRange().getValues();
+  var existingKeys = {};
+  for (var i = 1; i < existingSummary.length; i++) {
+    existingKeys[String(existingSummary[i][0]) + '||' + String(existingSummary[i][2]) + '||' + String(existingSummary[i][3])] = true;
+  }
+
+  var added = 0;
+  for (var s = 0; s < summaries.length; s++) {
+    var key = week.start + '||' + summaries[s].supplier + '||' + summaries[s].location;
+    if (existingKeys[key]) continue;
+    summSheet.appendRow([
+      week.start, week.end, summaries[s].supplier, summaries[s].location,
+      summaries[s].total_spend, extractedAt
+    ]);
+    added++;
+  }
+
+  var cutoffDate = new Date(today + 'T12:00:00Z');
+  cutoffDate.setUTCDate(cutoffDate.getUTCDate() - ARCHIVE_RETENTION_DAYS);
+  var cutoffStr = cutoffDate.toISOString().slice(0, 10);
+
+  archiveAndPurge_(suppSheet, archSheet, cutoffStr);
+
+  Logger.log('weeklySummarize: week ' + week.start + ' → ' + week.end + ', added=' + added + ', cutoff=' + cutoffStr);
+  return { weekStart: week.start, weekEnd: week.end, summariesAdded: added };
+}
+
+function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
+  var data = sourceSheet.getDataRange().getValues();
+  var archived = 0;
+
+  for (var r = data.length - 1; r >= 1; r--) {
+    var rowDate = coerceDateStr_(data[r][0]);
+    if (rowDate <= cutoffDateStr) {
+      archiveSheet.appendRow(data[r]);
+      sourceSheet.deleteRow(r + 1);
+      archived++;
+    }
+  }
+
+  Logger.log('archiveAndPurge_: archived=' + archived + ' rows older than ' + cutoffDateStr);
+  return archived;
+}
+
+function installWeeklySummarizeTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'weeklySummarize') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('weeklySummarize')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(4)
+    .inTimezone('Australia/Sydney')
+    .create();
+  Logger.log('installWeeklySummarizeTrigger: Monday 4am Australia/Sydney trigger installed');
+}
+
+/* ------------------------------------------------------------------ *
+ * JSON output helper
+ * ------------------------------------------------------------------ */
 
 function jsonOut_(obj) {
   return ContentService

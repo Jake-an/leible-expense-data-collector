@@ -8,6 +8,7 @@
 - **Food and Dairy Co connector built + live-tested 2026-06-18** (326 invoices, dedup verified)
 - **Ordermentum connector live-tested 2026-06-18** — Butterboy fix verified (tradingName match), 114 rows (74 Tuga + 40 Butterboy); cleanup deployed to relabel "Wholesale Cookies PTY LTD" → "Butterboy" and delete out-of-filter suppliers
 - **Fresh and Chill connector built + live-tested 2026-06-22** — Zupply web app (not WhatsApp); York 36 orders, dedup verified; 3 shops left to seed
+- **Read API + weekly summary built 2026-06-22** — token-gated `doGet`, `weeklySummarize()` with 6-month archive/purge, 59 tests green
 
 ## Active
 
@@ -54,10 +55,21 @@
 - [ ] **(Jake)** Attended login + click-path map → `docs/clickpath-kent_paper.md`
 - [ ] Fill selectors in `kent_paper.py`; test full flow
 
-### Phase 7 — Labour link (Payroll output)
+### Phase 7 — Read API + Weekly Summary — ✅ BUILT (2026-06-22)
+- Token-gated `doGet` serves weekly summaries (supplier + location + total_spend) from `Summary` tab.
+- `weeklySummarize()` aggregates last Mon–Sun into `Summary`, archives raw rows > 6mo to `_archive`, purges originals.
+- Default (no params) = last completed week; override with `?from=...&to=...`.
+- 59 unit tests green (all existing + 40 new).
+- [x] Code + tests written (`Code.gs`, `test_code.js`)
+- [x] API docs written (`docs/api.md`)
+- [ ] **(Jake)** Set `API_READ_TOKEN` in Script Properties (Apps Script editor → Project Settings → Script Properties)
+- [ ] **(Jake)** Deploy: `bash scripts/deploy.sh` (clasp push + redeploy the ONE deployment)
+- [ ] **(Jake)** Install weekly trigger: run `installWeeklySummarizeTrigger()` from the editor (Monday 4am AEST)
+- [ ] **(Jake)** Run `weeklySummarize()` once manually from the editor to seed the first Summary rows, then confirm `doGet` returns them
+
+### Phase 8 — Labour link (Payroll output)
 - [ ] Document/reference `LEIBLE_Payroll`'s labour-cost output (date × location, gross+super+penalties, no tax). No recompute. Depends on Payroll reaching Gate 10.
 
 ## Future
 - Move Playwright runners to an always-on box
 - Telegram notifications when connectors go `blocked`
-- Dashboard / reporting view on top of the Sheet
