@@ -19,7 +19,7 @@ Central hub that pulls expense + sales data from multiple suppliers into one Goo
 | Tuga Pastry | Ordermentum app | Playwright |
 | Butterboy | Ordermentum app | Playwright |
 
-Labour/payroll is **not** a connector here — it's owned by `LEIBLE_Payroll`; this collector links to its output (see `docs/ADR.md` ADR-007).
+Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staff_Onboarding_App`; this collector reads its `LABOUR_COST` sheet via `LABOUR_SHEET_ID` script property (see `docs/ADR.md` ADR-007).
 
 ## Architecture (two runtimes)
 - **GAS** handles: Square API pulls, Mayers PDF-invoice parsing (Drive OCR), normalization, Sheet writes, `doPost` ingest endpoint, scheduling

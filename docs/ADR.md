@@ -40,10 +40,11 @@ Get expense data flowing into one Sheet as fast as possible. Minimize infrastruc
 **Reason**: Proven pattern — sequential steps with self-correction (3 retries), context accumulation, and `blocked` for human-needed situations. Fits the "portal needs a human for auth" model perfectly.
 **Trade-offs**: Adds structure overhead for simple connectors. Pays off when connectors break and need debuggable, retryable execution.
 
-### ADR-007: Labour cost owned by LEIBLE_Payroll, not reimplemented here
-**Decision**: This collector does **not** pull BrightHR or compute labour cost. Labour (date × location: gross + super + weekend/PH penalties, no tax) is owned by the `LEIBLE_Payroll` project. The collector links to Payroll's output sheet.
-**Reason**: Payroll already builds this (~85% done, 435 tests). Reimplementing it would duplicate a hard, well-tested calculation and risk divergence. There is no `brighthr.py` here.
-**Trade-offs**: The expense hub depends on a second project's output. Acceptable — Payroll is Jake's and the link is one-directional (read Payroll's sheet). The link is meaningful only once Payroll reaches Gate 10.
+### ADR-007: Labour cost read from LEIBLE Onboarding app (not recomputed here)
+**Decision**: This collector does **not** compute labour cost. Labour (ISO week × location: gross + super, no tax) is owned by the `LEIBLE_New_Staff_Onboarding_App`; the collector reads its `LABOUR_COST` sheet via `LABOUR_SHEET_ID` script property and pulls into the `Labour` tab + `Summary` tab during `weeklySummarize()`.
+**Reason**: The labour-cost engine was ported from `LEIBLE_Payroll` into the Onboarding app (2026-06-23) because Payroll was parked. The Onboarding app is the authoritative compute source; this collector only reads its output. One-directional read keeps the boundary clean.
+**Trade-offs**: The expense hub depends on a second project's output being current. Acceptable — the Onboarding app is Jake's, the link is read-only, and `labourWeeklyPull_` is empty-safe (skips gracefully if the source sheet is empty or the property is unset).
+**Script property required**: `LABOUR_SHEET_ID` = Onboarding DEV spreadsheet ID (`1SUg3rE5V46HQ7JtZzqus960KdLjxJd6AdcrYDq8zyGs`) — set in Apps Script editor → Project Settings → Script Properties.
 
 ### ADR-008: Single environment (one Sheet, one GAS project)
 **Decision**: One Sheet, one bound GAS project, one set of Square tokens. No dev/prod profile split. A `_staging` tab absorbs test ingestion before a connector is trusted.

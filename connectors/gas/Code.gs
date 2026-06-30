@@ -2,9 +2,10 @@
  * Code.gs — LEIBLE Expense Hub core.
  *
  * doPost ingest endpoint + normalization + dedup + Sheet helpers, shared by
- * every connector. Two tabs (see docs/schema.md):
+ * every connector. Three tabs (see docs/schema.md):
  *   Suppliers : date | supplier | total | invoice_ref | location | source | extracted_at
  *   Sales     : date | location | gross_sales | source | extracted_at
+ *   Labour    : week_start | week_end | location | total | iso_week | pulled_at
  *
  * Pure logic (normalizeSupplierRow / ingestSupplierRows / validateIngest_ /
  * appendNewRows_) is exercised by connectors/gas/test_code.js under a Node mock
@@ -16,8 +17,10 @@ var SALES_TAB = 'Sales';
 var STAGING_TAB = '_staging';
 var SUMMARY_TAB = 'Summary';
 var ARCHIVE_TAB = '_archive';
+var LABOUR_TAB = 'Labour';
 
 var SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at'];
+var LABOUR_HEADERS = ['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at'];
 
 var ARCHIVE_RETENTION_DAYS = 183;
 
@@ -197,9 +200,106 @@ function setupSheets() {
   ensureSheet(ss, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
   ensureSheet(ss, SALES_TAB, SALES_HEADERS);
   ensureSheet(ss, STAGING_TAB, SUPPLIERS_HEADERS);
-  var summary = 'Tabs ready: ' + SUPPLIERS_TAB + ', ' + SALES_TAB + ', ' + STAGING_TAB;
+  ensureSheet(ss, LABOUR_TAB, LABOUR_HEADERS);
+  var summary = 'Tabs ready: ' + SUPPLIERS_TAB + ', ' + SALES_TAB + ', ' + STAGING_TAB + ', ' + LABOUR_TAB;
   Logger.log(summary);
   return summary;
+}
+
+/* ------------------------------------------------------------------ *
+ * Labour-cost pull (reads Onboarding app LABOUR_COST sheet)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Get the Onboarding app spreadsheet that owns LABOUR_COST.
+ * Requires script property LABOUR_SHEET_ID (DEV: 1SUg3rE5V46HQ7JtZzqus960KdLjxJd6AdcrYDq8zyGs).
+ * Returns null (never throws) so callers can guard cleanly.
+ */
+function getLabourSpreadsheet_() {
+  var id = PropertiesService.getScriptProperties().getProperty('LABOUR_SHEET_ID');
+  if (!id) { Logger.log('labourWeeklyPull_: LABOUR_SHEET_ID not set — skipping'); return null; }
+  try { return SpreadsheetApp.openById(id); }
+  catch (e) { Logger.log('labourWeeklyPull_: cannot open LABOUR_SHEET_ID — ' + e.message); return null; }
+}
+
+/**
+ * Pull labour cost for the given week from the Onboarding app LABOUR_COST sheet.
+ * Writes to the Labour tab (dedup week_start||location) AND to Summary (supplier='Labour').
+ * Safe to call with empty/missing source — logs and returns zeros without writing garbage.
+ *
+ * @param {{start:string,end:string}} week  ISO date strings (week.start, week.end)
+ * @param {Spreadsheet}              ss     Hub spreadsheet
+ * @param {Sheet}                    summSheet  Already-open Summary sheet
+ * @param {string}                   pulledAt   ISO timestamp string
+ * @returns {{labourAdded:number, summaryAdded:number}}
+ */
+function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
+  var labourSheet = ensureSheet(ss, LABOUR_TAB, LABOUR_HEADERS);
+
+  var srcSS = getLabourSpreadsheet_();
+  if (!srcSS) return { labourAdded: 0, summaryAdded: 0 };
+
+  var srcSheet = srcSS.getSheetByName('LABOUR_COST');
+  if (!srcSheet) {
+    Logger.log('labourWeeklyPull_: LABOUR_COST tab not found in source — skipping');
+    return { labourAdded: 0, summaryAdded: 0 };
+  }
+
+  var srcData = srcSheet.getDataRange().getValues();
+  if (srcData.length <= 1) {
+    Logger.log('labourWeeklyPull_: LABOUR_COST is empty — skipping');
+    return { labourAdded: 0, summaryAdded: 0 };
+  }
+
+  // Map source headers → column indexes
+  var hdr = srcData[0];
+  var col = {};
+  for (var h = 0; h < hdr.length; h++) col[String(hdr[h])] = h;
+
+  // Build dedup sets for Labour tab and Summary tab
+  var labourKeys = {};
+  var labourData = labourSheet.getDataRange().getValues();
+  for (var r = 1; r < labourData.length; r++) {
+    labourKeys[String(labourData[r][0]) + '||' + String(labourData[r][2])] = true;
+  }
+
+  var summData = summSheet.getDataRange().getValues();
+  var summKeys = {};
+  for (var r = 1; r < summData.length; r++) {
+    summKeys[String(summData[r][0]) + '||' + String(summData[r][2]) + '||' + String(summData[r][3])] = true;
+  }
+
+  var labourAdded = 0, summaryAdded = 0;
+
+  for (var i = 1; i < srcData.length; i++) {
+    var row = srcData[i];
+    var ws = coerceDateStr_(row[col['week_start']]);
+    if (ws !== week.start) continue;
+
+    var location = String(row[col['location']] || '');
+    var total    = Math.round(Number(row[col['total']] || 0) * 100) / 100;
+    var isoWeek  = String(row[col['iso_week']] || '');
+    var we       = coerceDateStr_(row[col['week_end']]);
+
+    // Write to Labour tab
+    var lKey = ws + '||' + location;
+    if (!labourKeys[lKey]) {
+      labourSheet.appendRow([ws, we, location, total, isoWeek, pulledAt]);
+      labourKeys[lKey] = true;
+      labourAdded++;
+    }
+
+    // Write to Summary as supplier='Labour'
+    var sKey = ws + '||Labour||' + location;
+    if (!summKeys[sKey]) {
+      summSheet.appendRow([ws, we, 'Labour', location, total, pulledAt]);
+      summKeys[sKey] = true;
+      summaryAdded++;
+    }
+  }
+
+  Logger.log('labourWeeklyPull_: week=' + week.start + ' labourAdded=' + labourAdded + ' summaryAdded=' + summaryAdded);
+  return { labourAdded: labourAdded, summaryAdded: summaryAdded };
 }
 
 /* ------------------------------------------------------------------ *
@@ -508,14 +608,25 @@ function weeklySummarize() {
     added++;
   }
 
+  var labourResult = labourWeeklyPull_(week, ss, summSheet, extractedAt);
+
   var cutoffDate = new Date(today + 'T12:00:00Z');
   cutoffDate.setUTCDate(cutoffDate.getUTCDate() - ARCHIVE_RETENTION_DAYS);
   var cutoffStr = cutoffDate.toISOString().slice(0, 10);
 
   archiveAndPurge_(suppSheet, archSheet, cutoffStr);
 
-  Logger.log('weeklySummarize: week ' + week.start + ' → ' + week.end + ', added=' + added + ', cutoff=' + cutoffStr);
-  return { weekStart: week.start, weekEnd: week.end, summariesAdded: added };
+  Logger.log('weeklySummarize: week ' + week.start + ' → ' + week.end +
+    ', supplierSummariesAdded=' + added +
+    ', labourTabAdded=' + labourResult.labourAdded +
+    ', labourSummaryAdded=' + labourResult.summaryAdded +
+    ', cutoff=' + cutoffStr);
+  return {
+    weekStart: week.start, weekEnd: week.end,
+    summariesAdded: added,
+    labourTabAdded: labourResult.labourAdded,
+    labourSummaryAdded: labourResult.summaryAdded
+  };
 }
 
 function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {

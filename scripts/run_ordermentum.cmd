@@ -5,6 +5,8 @@ REM On expired session, exits code 2 — check Task Scheduler history or the log
 
 cd /d "%~dp0.."
 
+if not exist logs mkdir logs
+
 REM Load env from .env if present (GAS_EXEC_URL, etc.)
 if exist .env (
     for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
