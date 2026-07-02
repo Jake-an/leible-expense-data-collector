@@ -434,8 +434,9 @@ class TestInvokeClaude:
         assert "-p" in cmd
         assert "--dangerously-skip-permissions" in cmd
         assert "--output-format" in cmd
-        assert "PREAMBLE" in cmd[-1]
-        assert "Implement the UI" in cmd[-1]
+        prompt = mock_run.call_args[1]["input"]  # stdin, not argv (Windows ~32k limit)
+        assert "PREAMBLE" in prompt
+        assert "Implement the UI" in prompt
 
     def test_saves_output_json(self, executor):
         mock_result = MagicMock(returncode=0, stdout='{"ok": true}', stderr="")
@@ -515,6 +516,111 @@ class TestMainCli:
 # ---------------------------------------------------------------------------
 # _check_blockers (formerly error/blocked check in main())
 # ---------------------------------------------------------------------------
+
+class TestResolveModel:
+    def test_default_is_sonnet(self, executor):
+        assert executor._resolve_model({}) == "sonnet"
+
+    def test_task_model_overrides_default(self, executor):
+        executor._task_model = "haiku"
+        assert executor._resolve_model({}) == "haiku"
+
+    def test_step_model_overrides_task(self, executor):
+        executor._task_model = "haiku"
+        assert executor._resolve_model({"model": "opus"}) == "opus"
+
+    def test_cli_model_overrides_all(self, executor):
+        executor._task_model = "haiku"
+        executor._cli_model = "sonnet"
+        assert executor._resolve_model({"model": "opus"}) == "sonnet"
+
+    def test_invoke_claude_passes_model_flag(self, executor):
+        mock_result = MagicMock(returncode=0, stdout="{}", stderr="")
+        step = {"step": 2, "name": "ui", "model": "opus"}
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            executor._invoke_claude(step, "preamble")
+        cmd = mock_run.call_args[0][0]
+        assert "--model" in cmd
+        assert cmd[cmd.index("--model") + 1] == "opus"
+
+
+class TestReviewGate:
+    def _arm(self, executor, diff_stdout="+ some change"):
+        """Mock git so base 'main' resolves and diff is non-empty."""
+        def fake_git(*args):
+            if args[0] == "rev-parse":
+                return MagicMock(returncode=0, stdout="main\n", stderr="")
+            if args[0] == "diff":
+                return MagicMock(returncode=0, stdout=diff_stdout, stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        executor._run_git = fake_git
+
+    def test_skipped_when_disabled_via_flag(self, executor, capsys):
+        executor._skip_review = True
+        executor._review_gate()
+        assert "disabled" in capsys.readouterr().out
+
+    def test_skipped_when_config_false(self, executor, capsys):
+        executor._review_cfg = False
+        executor._review_gate()
+        assert "disabled" in capsys.readouterr().out
+
+    def test_skipped_when_no_diff(self, executor, capsys):
+        self._arm(executor, diff_stdout="")
+        executor._review_gate()
+        assert "no diff" in capsys.readouterr().out
+
+    def test_approve_continues(self, executor, phase_dir, top_index):
+        self._arm(executor)
+        verdict = {"verdict": "approve", "issues": []}
+        def fake_claude(prompt, model, timeout=1800):
+            (phase_dir / "review-result.json").write_text(json.dumps(verdict))
+            return MagicMock(returncode=0, stdout="{}", stderr="")
+        executor._run_claude = fake_claude
+        executor._review_gate()  # should not raise
+        index = json.loads((phase_dir / "index.json").read_text())
+        assert index["review_result"]["verdict"] == "approve"
+
+    def test_revise_exits_1_and_records(self, executor, phase_dir, top_index):
+        self._arm(executor)
+        verdict = {"verdict": "revise",
+                   "issues": [{"severity": "critical", "file": "a.ts", "summary": "bug"}]}
+        def fake_claude(prompt, model, timeout=1800):
+            (phase_dir / "review-result.json").write_text(json.dumps(verdict))
+            return MagicMock(returncode=0, stdout="{}", stderr="")
+        executor._run_claude = fake_claude
+        with pytest.raises(SystemExit) as exc_info:
+            executor._review_gate()
+        assert exc_info.value.code == 1
+        index = json.loads((phase_dir / "index.json").read_text())
+        assert index["review_result"]["verdict"] == "revise"
+        top = json.loads(top_index.read_text())
+        mvp = next(p for p in top["phases"] if p["dir"] == "0-mvp")
+        assert mvp["status"] == "error"
+
+    def test_no_verdict_exits_2_blocked(self, executor, phase_dir, top_index):
+        self._arm(executor)
+        executor._run_claude = lambda prompt, model, timeout=1800: MagicMock(
+            returncode=0, stdout="{}", stderr="")
+        with pytest.raises(SystemExit) as exc_info:
+            executor._review_gate()
+        assert exc_info.value.code == 2
+        top = json.loads(top_index.read_text())
+        mvp = next(p for p in top["phases"] if p["dir"] == "0-mvp")
+        assert mvp["status"] == "blocked"
+
+    def test_default_review_model_is_opus(self, executor, phase_dir, top_index):
+        self._arm(executor)
+        seen = {}
+        def fake_claude(prompt, model, timeout=1800):
+            seen["model"] = model
+            (phase_dir / "review-result.json").write_text(
+                json.dumps({"verdict": "approve", "issues": []}))
+            return MagicMock(returncode=0, stdout="{}", stderr="")
+        executor._run_claude = fake_claude
+        executor._review_gate()
+        assert seen["model"] == "opus"
+
 
 class TestCheckBlockers:
     def _make_executor_with_steps(self, tmp_project, steps):

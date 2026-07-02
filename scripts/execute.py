@@ -3,7 +3,7 @@
 Harness Step Executor — sequentially executes steps within a phase and self-corrects.
 
 Usage:
-    python3 scripts/execute.py <phase-dir> [--push]
+    python scripts/execute.py <phase-dir> [--push] [--model <alias>] [--no-review]
 """
 
 import argparse
@@ -15,11 +15,19 @@ import sys
 import threading
 import time
 import types
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Windows consoles often default to cp1252, which can't print the status glyphs
+# (✓ ⏸ ◐) and crashes with UnicodeEncodeError. Force UTF-8, degrade gracefully.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 @contextlib.contextmanager
@@ -57,14 +65,20 @@ class StepExecutor:
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     TZ = timezone(timedelta(hours=9))
+    DEFAULT_MODEL = "sonnet"        # execution steps: plan is locked, favor speed
+    REVIEW_MODEL = "opus"           # review gate: judgment-heavy, favor quality
+    REVIEW_RESULT_FILE = "review-result.json"
 
-    def __init__(self, phase_dir_name: str, *, auto_push: bool = False):
+    def __init__(self, phase_dir_name: str, *, auto_push: bool = False,
+                 model: Optional[str] = None, skip_review: bool = False):
         self._root = str(ROOT)
         self._phases_dir = ROOT / "phases"
         self._phase_dir = self._phases_dir / phase_dir_name
         self._phase_dir_name = phase_dir_name
         self._top_index_file = self._phases_dir / "index.json"
         self._auto_push = auto_push
+        self._cli_model = model
+        self._skip_review = skip_review
 
         if not self._phase_dir.is_dir():
             print(f"ERROR: {self._phase_dir} not found")
@@ -78,6 +92,8 @@ class StepExecutor:
         idx = self._read_json(self._index_file)
         self._project = idx.get("project", "project")
         self._phase_name = idx.get("phase", phase_dir_name)
+        self._task_model = idx.get("model")
+        self._review_cfg = idx.get("review", {})
         self._total = len(idx["steps"])
 
     def run(self):
@@ -87,6 +103,8 @@ class StepExecutor:
         guardrails = self._load_guardrails()
         self._ensure_created_at()
         self._execute_all_steps(guardrails)
+        self._review_gate()
+        self._live_verification_gate()
         self._finalize()
 
     # --- timestamps ---
@@ -178,11 +196,11 @@ class StepExecutor:
         sections = []
         claude_md = ROOT / "CLAUDE.md"
         if claude_md.exists():
-            sections.append(f"## Project Rules (CLAUDE.md)\n\n{claude_md.read_text()}")
+            sections.append(f"## Project Rules (CLAUDE.md)\n\n{claude_md.read_text(encoding='utf-8')}")
         docs_dir = ROOT / "docs"
         if docs_dir.is_dir():
             for doc in sorted(docs_dir.glob("*.md")):
-                sections.append(f"## {doc.stem}\n\n{doc.read_text()}")
+                sections.append(f"## {doc.stem}\n\n{doc.read_text(encoding='utf-8')}")
         return "\n\n---\n\n".join(sections) if sections else ""
 
     @staticmethod
@@ -226,6 +244,19 @@ class StepExecutor:
 
     # --- Claude invocation ---
 
+    def _resolve_model(self, step: dict) -> str:
+        """Model precedence: CLI --model > step 'model' > task 'model' > default (sonnet)."""
+        return self._cli_model or step.get("model") or self._task_model or self.DEFAULT_MODEL
+
+    def _run_claude(self, prompt: str, model: str, timeout: int = 1800) -> subprocess.CompletedProcess:
+        # Prompt goes via stdin: guardrail-laden prompts exceed Windows' ~32k argv limit.
+        return subprocess.run(
+            ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json",
+             "--model", model],
+            input=prompt, cwd=self._root, capture_output=True, text=True,
+            encoding="utf-8", timeout=timeout,
+        )
+
     def _invoke_claude(self, step: dict, preamble: str) -> dict:
         step_num, step_name = step["step"], step["name"]
         step_file = self._phase_dir / f"step{step_num}.md"
@@ -234,11 +265,8 @@ class StepExecutor:
             print(f"  ERROR: {step_file} not found")
             sys.exit(1)
 
-        prompt = preamble + step_file.read_text()
-        result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json", prompt],
-            cwd=self._root, capture_output=True, text=True, timeout=1800,
-        )
+        prompt = preamble + step_file.read_text(encoding="utf-8")
+        result = self._run_claude(prompt, self._resolve_model(step))
 
         if result.returncode != 0:
             print(f"\n  WARN: Claude exited abnormally (code {result.returncode})")
@@ -251,7 +279,7 @@ class StepExecutor:
             "stdout": result.stdout, "stderr": result.stderr,
         }
         out_path = self._phase_dir / f"step{step_num}-output.json"
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
 
         return output
@@ -378,6 +406,248 @@ class StepExecutor:
 
             self._execute_single_step(pending, guardrails)
 
+    # --- review gate (phase gate, runs after all steps, before live verification) ---
+
+    def _resolve_review_base(self, base: str) -> Optional[str]:
+        for candidate in (base, "master"):
+            if self._run_git("rev-parse", "--verify", candidate).returncode == 0:
+                return candidate
+        return None
+
+    def _build_review_prompt(self, base: str, model: str) -> str:
+        result_rel = f"phases/{self._phase_dir_name}/{self.REVIEW_RESULT_FILE}"
+        return (
+            f"You are an independent code reviewer for the {self._project} project. "
+            f"Phase '{self._phase_name}' just completed on this branch. You did not write this code.\n\n"
+            f"1. Run `git diff {base}...HEAD` and read the changed files as needed for context.\n"
+            f"2. Review for:\n"
+            f"   - Correctness bugs (logic errors, edge cases, race conditions)\n"
+            f"   - Security issues (injection, secrets in code, missing auth)\n"
+            f"   - Silent failures (swallowed errors, bad fallbacks, missing error propagation)\n"
+            f"   - Architecture drift vs docs/ARCHITECTURE.md, docs/ADR.md, and CLAUDE.md CRITICAL rules\n"
+            f"   - UNTESTED LOGIC: business rules, data transforms, or handlers added without tests "
+            f"(audit the tdd:false escape hatch — flag logic that snuck into 'scaffolding' steps)\n"
+            f"3. Do NOT modify any code. Review only.\n"
+            f"4. Write your verdict to {result_rel} as JSON:\n"
+            f'   {{"verdict": "approve" | "revise", "issues": '
+            f'[{{"severity": "critical|major|minor", "file": "...", "summary": "..."}}]}}\n'
+            f"   Use \"revise\" only when there is at least one critical or major issue. "
+            f"List minor issues but still approve.\n"
+        )
+
+    def _read_review_result(self) -> Optional[dict]:
+        p = self._phase_dir / self.REVIEW_RESULT_FILE
+        if not p.exists():
+            return None
+        try:
+            data = self._read_json(p)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return data if data.get("verdict") in ("approve", "revise") else None
+
+    def _review_gate(self):
+        if self._skip_review or self._review_cfg is False:
+            print("  · Review gate: disabled — skipping.")
+            return
+        cfg = self._review_cfg if isinstance(self._review_cfg, dict) else {}
+
+        base = self._resolve_review_base(cfg.get("base", "main"))
+        if base is None:
+            print("  · Review gate: no base branch (main/master) — skipping.")
+            return
+        diff = self._run_git("diff", f"{base}...HEAD")
+        if diff.returncode != 0 or not diff.stdout.strip():
+            print("  · Review gate: no diff vs base — skipping.")
+            return
+
+        print("\n  ── Review gate ──")
+        model = cfg.get("model", self.REVIEW_MODEL)
+        (self._phase_dir / self.REVIEW_RESULT_FILE).unlink(missing_ok=True)
+        prompt = self._build_review_prompt(base, model)
+
+        result = None
+        for attempt in (1, 2):
+            with progress_indicator(f"Review ({model}, attempt {attempt}/2)") as pi:
+                self._run_claude(prompt, model)
+            result = self._read_review_result()
+            if result:
+                break
+
+        index = self._read_json(self._index_file)
+        ts = self._stamp()
+
+        if result is None:
+            index["review_result"] = {"verdict": "unavailable", "checked_at": ts}
+            self._write_json(self._index_file, index)
+            print("  ⏸ Review gate: reviewer produced no valid verdict — needs you.")
+            self._update_top_index("blocked")
+            sys.exit(2)
+
+        result["checked_at"] = ts
+        index["review_result"] = result
+        self._write_json(self._index_file, index)
+        issues = result.get("issues", [])
+
+        if result["verdict"] == "approve":
+            note = f" ({len(issues)} minor issue(s) noted)" if issues else ""
+            print(f"  ✓ Review gate passed{note}")
+            return
+
+        print(f"  ✗ Review gate: REVISE — {len(issues)} issue(s):")
+        for i in issues:
+            print(f"    [{i.get('severity', '?')}] {i.get('file', '?')}: {i.get('summary', '')}")
+        print("    Fix the issues, reset, and re-run. Finalize/push blocked.")
+        self._update_top_index("error")
+        sys.exit(1)
+
+    # --- live verification gate (phase gate, runs after all steps, before finalize) ---
+
+    @staticmethod
+    def _http_get_json(url: str, headers: dict, timeout: float) -> dict:
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    @staticmethod
+    def _eval_verdict(data: dict, threshold: int) -> tuple:
+        """Map a /__test response to (verdict, reason).
+
+        verdict ∈ {"pass", "fail", "retry", "escalate"}.
+        Pass rule: quality_score >= threshold AND every critical check passes.
+        A failure is "retry" only when the failing checks are async/pending
+        (eventual consistency); otherwise it is decisive ("fail") and stops early.
+        Unreachable checks → "escalate" (needs the user, not a failure).
+        """
+        checks = data.get("checks", [])
+        unreachable = [c for c in checks if c.get("status") == "unreachable"]
+        if data.get("escalate") or unreachable:
+            names = ", ".join(c.get("name", "?") for c in unreachable) or "see response"
+            return ("escalate", f"unreachable check(s): {names}")
+
+        failed_critical = [c for c in checks if c.get("critical") and not c.get("pass", False)]
+        if failed_critical:
+            retryable = all(c.get("async") for c in failed_critical)
+            names = ", ".join(c.get("name", "?") for c in failed_critical)
+            return (("retry" if retryable else "fail"), f"critical check(s) failed: {names}")
+
+        score = data.get("quality_score", data.get("score", 0))
+        if score < threshold:
+            pending = any(c.get("async") or c.get("status") == "pending"
+                          for c in checks if not c.get("pass", False))
+            return (("retry" if pending else "fail"), f"quality_score {score} < {threshold}")
+
+        return ("pass", "")
+
+    def _build_test_url(self, cfg: dict) -> tuple:
+        """Apply the auth key (from env) as a query param or header. Never log the key."""
+        url, headers = cfg["test_url"], {}
+        auth = cfg.get("auth") or {}
+        key = os.environ.get(auth["env"]) if auth.get("env") else None
+        if key:
+            if auth.get("header"):
+                headers[auth["header"]] = key
+            else:
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}{auth.get('query_param', 'key')}={key}"
+        return url, headers
+
+    def _run_probe(self, probe: dict, headers: dict, timeout: float) -> tuple:
+        """Independent anti-false-pass probe: real feature endpoint vs committed expectation."""
+        try:
+            actual = self._http_get_json(probe["url"], headers, timeout)
+        except Exception as e:
+            return (False, f"probe request failed: {e}")
+        expect_path = ROOT / probe["expect_file"]
+        if not expect_path.exists():
+            return (False, f"expected file missing: {probe['expect_file']}")
+        expected = json.loads(expect_path.read_text(encoding="utf-8"))
+        if actual != expected:
+            return (False, "probe response did not match committed expectation")
+        return (True, "")
+
+    def _record_verify(self, index: dict, result: dict):
+        index["verify_result"] = result
+        self._write_json(self._index_file, index)
+
+    def _live_verification_gate(self):
+        index = self._read_json(self._index_file)
+        cfg = index.get("verify")
+        if not cfg or not cfg.get("test_url"):
+            print("  · Live-verification: no 'verify' config — skipping gate.")
+            return
+
+        threshold = cfg.get("pass_threshold", 90)
+        max_attempts = cfg.get("max_attempts", 5)
+        wall_clock_ms = cfg.get("wall_clock_ms", 300000)
+        http_timeout = cfg.get("http_timeout_s", 30)
+
+        print("\n  ── Live-verification gate ──")
+
+        # 1. Deploy to Dev (optional — assumes already deployed if omitted)
+        deploy = cfg.get("deploy")
+        if deploy:
+            with progress_indicator(f"Deploy: {deploy}"):
+                r = subprocess.run(deploy, cwd=self._root, shell=True,
+                                   capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                self._record_verify(index, {"pass": False, "reason": "deploy failed",
+                                            "checked_at": self._stamp()})
+                print(f"  ✗ Deploy failed: {r.stderr.strip()[:300]}")
+                self._update_top_index("error")
+                sys.exit(1)
+            print("  ✓ Deployed to Dev")
+
+        # 2. Hit /__test, score the rubric (bounded by attempts + wall-clock)
+        url, headers = self._build_test_url(cfg)
+        deadline = time.monotonic() + wall_clock_ms / 1000.0
+        verdict, reason, attempts_used, data = "fail", "no attempts made", 0, {}
+
+        for attempt in range(1, max_attempts + 1):
+            if time.monotonic() > deadline:
+                verdict, reason = "fail", f"wall-clock cap ({wall_clock_ms}ms) exceeded"
+                break
+            attempts_used = attempt
+            try:
+                data = self._http_get_json(url, headers, http_timeout)
+            except Exception as e:
+                verdict, reason = "retry", f"/__test request failed: {e}"
+                time.sleep(min(2 ** attempt, 15))
+                continue
+
+            verdict, reason = self._eval_verdict(data, threshold)
+            if verdict == "escalate":
+                self._record_verify(index, {"pass": None, "escalate": True, "reason": reason,
+                                            "attempts": attempt, "checked_at": self._stamp()})
+                print(f"  ⏸ Live-verification needs you: {reason}")
+                self._update_top_index("blocked")
+                sys.exit(2)
+            if verdict in ("pass", "fail"):  # decisive — stop early
+                break
+            time.sleep(min(2 ** attempt, 15))  # retry (async/pending)
+
+        passed = verdict == "pass"
+
+        # 3. Independent probe (anti-false-pass) — only if the suite passed
+        if passed and cfg.get("probe"):
+            ok, preason = self._run_probe(cfg["probe"], headers, http_timeout)
+            if not ok:
+                passed, reason = False, f"independent probe failed: {preason}"
+
+        score = data.get("quality_score", data.get("score"))
+        self._record_verify(index, {
+            "pass": passed, "quality_score": score, "attempts": attempts_used,
+            "reason": "" if passed else reason, "checked_at": self._stamp(),
+        })
+
+        if passed:
+            print(f"  ✓ Live-verification passed (score {score}, {attempts_used} attempt(s))")
+            return
+
+        print(f"  ✗ Live-verification failed: {reason}")
+        print("    Fix, then reset and re-run. Finalize/push blocked.")
+        self._update_top_index("error")
+        sys.exit(1)
+
     def _finalize(self):
         index = self._read_json(self._index_file)
         index["completed_at"] = self._stamp()
@@ -408,9 +678,12 @@ def main():
     parser = argparse.ArgumentParser(description="Harness Step Executor")
     parser.add_argument("phase_dir", help="Phase directory name (e.g. 0-mvp)")
     parser.add_argument("--push", action="store_true", help="Push branch after completion")
+    parser.add_argument("--model", help="Override model for all steps (default: per-step/task config, else sonnet)")
+    parser.add_argument("--no-review", action="store_true", help="Skip the phase-end review gate")
     args = parser.parse_args()
 
-    StepExecutor(args.phase_dir, auto_push=args.push).run()
+    StepExecutor(args.phase_dir, auto_push=args.push, model=args.model,
+                 skip_review=args.no_review).run()
 
 
 if __name__ == "__main__":
