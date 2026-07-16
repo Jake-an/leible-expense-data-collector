@@ -22,6 +22,35 @@ const path = require('path');
 const SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location', 'source', 'extracted_at'];
 const SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'];
 
+// A real Sheet parses a bare 'yyyy-MM-dd' string on write and hands it back as a
+// Date. It does NOT parse an ISO datetime carrying a timezone offset
+// ('2026-06-25T10:32:24+10:00'), which stays text — the live _archive tab shows
+// exactly this split: date cells render as 16/11/2025, extracted_at keeps its
+// +10:00. Modelling only the bare-date case mirrors production.
+//
+// This is load-bearing, not cosmetic: storing dates as the strings they were
+// written as makes String(cell) round-trip cleanly in tests while the same
+// expression yields 'Mon Jun 15 2026 00:00:00 GMT+1000...' against a real Sheet.
+// A mock without this cannot fail on a missing coerceDateStr_(), which is how
+// the weeklySummarize dedup shipped broken under a green suite.
+const BARE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function sheetCoerceOnWrite(v) {
+  if (typeof v === 'string' && BARE_DATE_RE.test(v)) {
+    const [y, m, d] = v.split('-').map(Number);
+    return new Date(y, m - 1, d);   // local midnight, as Sheets stores it
+  }
+  return v;
+}
+
+// Read a date cell the way production does. Assertions must compare the coerced
+// value, not String(cell) — a Date stringifies to 'Mon Jun 15 2026 00:00:00
+// GMT+1000...' and would fail against a 'yyyy-MM-dd' literal for the wrong reason.
+function cellDate(v) {
+  if (!(v instanceof Date)) return String(v);
+  const y = v.getFullYear(), m = v.getMonth() + 1, d = v.getDate();
+  return y + '-' + (m < 10 ? '0' + m : m) + '-' + (d < 10 ? '0' + d : d);
+}
+
 function makeSheet(headers) {
   // A real insertSheet() yields an EMPTY sheet; ensureSheet then appends the
   // header row. Seeding [[]] here gave every inserted tab a phantom blank row 1,
@@ -35,7 +64,7 @@ function makeSheet(headers) {
   };
   return {
     _rows: rows,
-    appendRow: (a) => rows.push(a.slice()),
+    appendRow: (a) => rows.push(a.map(sheetCoerceOnWrite)),
     deleteRow: (rowNum) => rows.splice(rowNum - 1, 1),
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
     getRange: () => chain,
@@ -450,9 +479,9 @@ console.log('archiveAndPurge_');
   var count = archiveAndPurge_(source, archive, '2026-03-01');
   eq('archived 2 old rows', count, 2);
   eq('source has header + 1 recent row', source._rows.length, 2);
-  eq('source remaining row is recent', source._rows[1][0], '2026-06-15');
+  eq('source remaining row is recent', cellDate(source._rows[1][0]), '2026-06-15');
   eq('archive has header + 2 archived rows', archive._rows.length, 3);
-  eq('archive first row date (bottom-up order)', archive._rows[1][0], '2026-01-15');
+  eq('archive first row date (bottom-up order)', cellDate(archive._rows[1][0]), '2026-01-15');
 })();
 
 console.log('doGet (integration)');
@@ -570,10 +599,10 @@ freshSheets();
     // The row was really written — this is what corrupted the live Sales tab.
     var rows = currentSS.getSheetByName('Sales').getDataRange().getValues();
     eq('a Sales row WAS written (test is not vacuous)', rows.length, 2);
-    eq('written date cell is a real date', rows[1][0], '2026-07-15');
+    eq('written date cell is a real date', cellDate(rows[1][0]), '2026-07-15');
     check('date cell never carries the event object',
       String(rows[1][0]).indexOf('triggerUid') === -1);
-    check('date cell matches YYYY-MM-DD exactly', DATE_ARG_RE.test(String(rows[1][0])));
+    check('date cell matches YYYY-MM-DD exactly', DATE_ARG_RE.test(cellDate(rows[1][0])));
     check('the written row is NOT flagged corrupt by the cleanup predicate',
       !salesRowIsCorrupt_(rows[1]));
   });
@@ -583,7 +612,7 @@ freshSheets();
     armSquare();
     eq('explicit date still honoured', squareDailyPull('2026-07-01').date, '2026-07-01');
     eq('explicit date reaches the row',
-      currentSS.getSheetByName('Sales').getDataRange().getValues()[1][0], '2026-07-01');
+      cellDate(currentSS.getSheetByName('Sales').getDataRange().getValues()[1][0]), '2026-07-01');
   });
 
   // No argument at all (the intended manual call) → yesterday.
@@ -678,8 +707,8 @@ freshSheets();
   eq('apply deletes 8', applied.deleted, 8);
   var remaining = sales.getDataRange().getValues();
   eq('2 legitimate rows survive (+header)', remaining.length, 3);
-  eq('healthy row survived', remaining[1][0], '2026-07-14');
-  eq('closed-day $0 row survived', remaining[2][0], '2026-07-15');
+  eq('healthy row survived', cellDate(remaining[1][0]), '2026-07-14');
+  eq('closed-day $0 row survived', cellDate(remaining[2][0]), '2026-07-15');
   check('no corrupt row survived',
     remaining.every((r) => String(r[0]).indexOf('triggerUid') === -1));
 
@@ -695,6 +724,119 @@ freshSheets();
   CLEANUP_EXPECTED_CORRUPT_ROWS = 5;
   eq('retargeted guard → applies', cleanupCorruptSalesRows(false).deleted, 5);
   CLEANUP_EXPECTED_CORRUPT_ROWS = savedExpected;
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 7c — cleanupDuplicateSummaryRows (one-shot repair)
+ * ------------------------------------------------------------------ */
+
+(function testCleanupDuplicateSummaryRows() {
+  console.log('\ncleanupDuplicateSummaryRows:');
+
+  // Mirrors the live tab: the same week appended 3x by the broken dedup, plus
+  // Labour rows (distinct supplier key) that must survive untouched.
+  function seedSummary() {
+    currentSS = makeSpreadsheet();
+    const s = currentSS.insertSheet('Summary');
+    s.appendRow(SUMMARY_HEADERS);
+    for (const stamp of ['T1', 'T2', 'T3']) {
+      s.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'Leible Pitt', 263, stamp]);
+      s.appendRow(['2026-06-15', '2026-06-21', 'Fresh and Chill', 'Leible York', 960, stamp]);
+    }
+    s.appendRow(['2026-06-15', '2026-06-21', 'Labour', 'york', 4830.14, 'T3']);
+    return s;
+  }
+
+  var sheet = seedSummary();
+  eq('seeded 7 data rows (+header)', sheet._rows.length, 8);
+
+  // Dry run must report without touching anything.
+  var dry = cleanupDuplicateSummaryRows();
+  eq('dry run is the default (no arg)', dry.mode, 'dryRun');
+  eq('dry run finds 4 duplicates', dry.found, 4);
+  eq('dry run deletes nothing', dry.deleted, 0);
+  eq('dry run leaves the sheet intact', sheet._rows.length, 8);
+
+  // Apply: one row per key survives, Labour untouched.
+  var applied = cleanupDuplicateSummaryRows(false);
+  eq('apply deletes 4', applied.deleted, 4);
+  var rows = sheet.getDataRange().getValues();
+  eq('3 unique rows survive (+header)', rows.length, 4);
+  eq('first FDCo row kept', rows[1][5], 'T1');
+  eq('first F&C row kept', rows[2][5], 'T1');
+  eq('Labour row survived', rows[3][2], 'Labour');
+  eq('Labour total intact', rows[3][4], 4830.14);
+
+  // Idempotent — the whole point of a repair that may be re-run.
+  var again = cleanupDuplicateSummaryRows(false);
+  eq('re-apply finds nothing', again.found, 0);
+  eq('re-apply deletes nothing', again.deleted, 0);
+  eq('sheet unchanged by re-apply', sheet.getDataRange().getValues().length, 4);
+
+  // A same-key row with a DIFFERENT total is not a mechanical duplicate: deleting
+  // it would destroy a genuine correction. It must be reported and left alone.
+  sheet = seedSummary();
+  sheet.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'Leible Pitt', 999, 'T4']);
+  var conf = cleanupDuplicateSummaryRows(false);
+  eq('conflict is reported', conf.conflicts.length, 1);
+  eq('conflict names the differing total', conf.conflicts[0].thisTotal, 999);
+  eq('conflict row is NOT deleted',
+    sheet.getDataRange().getValues().some((r) => r[4] === 999), true);
+  eq('clean duplicates still removed alongside the conflict', conf.deleted, 4);
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 7b — labourWeeklyPull_ dedup
+ *
+ * The labour path is live in production (LABOUR_SHEET_ID is set, Labour rows
+ * are in the hub Sheet) but had no coverage at all — the only prior mention of
+ * it in this suite was a line switching it OFF. It keys both the Labour tab and
+ * its Summary rows on week_start read back from a Sheet, i.e. the same Date-vs-
+ * string trap that broke the supplier dedup, so it gets the same re-run test.
+ * ------------------------------------------------------------------ */
+
+(function testLabourWeeklyPullDedup() {
+  console.log('\nlabourWeeklyPull_ dedup:');
+
+  // openById returns the same mock spreadsheet, so LABOUR_COST lives alongside
+  // the hub tabs — fine here: the code only ever reads it by name.
+  function seedLabour() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { LABOUR_SHEET_ID: 'labour-sheet-id' };
+    const src = currentSS.insertSheet('LABOUR_COST');
+    src.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
+    src.appendRow(['2026-06-15', '2026-06-21', 'york', 4830.14, '2026-W25', 'x']);
+    src.appendRow(['2026-06-15', '2026-06-21', 'pitt', 6720.32, '2026-W25', 'x']);
+    const supp = currentSS.getSheetByName('Suppliers');
+    supp.appendRow(['2026-06-17', 'Food and Dairy Co', 100, 'A1', 'Leible York', 'food_dairy_co', 'x']);
+    return supp;
+  }
+
+  seedLabour();
+  var first = weeklySummarize('2026-06-15');
+  eq('labour rows written to Labour tab', first.labourTabAdded, 2);
+  eq('labour rows written to Summary', first.labourSummaryAdded, 2);
+
+  var labourTab = currentSS.getSheetByName('Labour').getDataRange().getValues();
+  eq('Labour tab has header + 2 rows', labourTab.length, 3);
+  eq('Labour row carries the week Monday', cellDate(labourTab[1][0]), '2026-06-15');
+  eq('labour total survives the round-trip', labourTab[1][3], 4830.14);
+
+  // The bug this guards: week_start returns from the Sheet as a Date, so a raw
+  // String() key never matches '2026-06-15' and every re-run re-appends.
+  var second = weeklySummarize('2026-06-15');
+  eq('re-run adds no Labour tab rows', second.labourTabAdded, 0);
+  eq('re-run adds no labour Summary rows', second.labourSummaryAdded, 0);
+  eq('Labour tab still has header + 2 rows',
+    currentSS.getSheetByName('Labour').getDataRange().getValues().length, 3);
+
+  // A missing LABOUR_SHEET_ID must skip cleanly rather than throw — the supplier
+  // summary still has to land when the labour source is unavailable.
+  seedLabour();
+  scriptProps = {};
+  var noLabour = weeklySummarize('2026-06-15');
+  eq('no LABOUR_SHEET_ID → labour skipped', noLabour.labourTabAdded, 0);
+  eq('no LABOUR_SHEET_ID → supplier summary still lands', noLabour.summariesAdded, 1);
 })();
 
 /* ------------------------------------------------------------------ *
@@ -724,7 +866,7 @@ freshSheets();
   eq('backlog week actually summarized', r.summariesAdded, 1);
 
   var summary = currentSS.getSheetByName('Summary').getDataRange().getValues();
-  eq('Summary row carries the snapped Monday', summary[1][0], '2026-06-15');
+  eq('Summary row carries the snapped Monday', cellDate(summary[1][0]), '2026-06-15');
   eq('spend aggregated for the week', summary[1][4], 150);
 
   // A Monday override stays put; a Sunday belongs to the week that started 6 days earlier.

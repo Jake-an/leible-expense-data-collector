@@ -262,16 +262,19 @@ function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
   for (var h = 0; h < hdr.length; h++) col[String(hdr[h])] = h;
 
   // Build dedup sets for Labour tab and Summary tab
+  // Both key sets read week_start back from a Sheet, which returns it as a Date —
+  // coerceDateStr_ before comparing or the key never matches its 'yyyy-MM-dd'
+  // counterpart and the dedup silently passes everything through.
   var labourKeys = {};
   var labourData = labourSheet.getDataRange().getValues();
   for (var r = 1; r < labourData.length; r++) {
-    labourKeys[String(labourData[r][0]) + '||' + String(labourData[r][2])] = true;
+    labourKeys[coerceDateStr_(labourData[r][0]) + '||' + String(labourData[r][2])] = true;
   }
 
   var summData = summSheet.getDataRange().getValues();
   var summKeys = {};
   for (var r = 1; r < summData.length; r++) {
-    summKeys[String(summData[r][0]) + '||' + String(summData[r][2]) + '||' + String(summData[r][3])] = true;
+    summKeys[coerceDateStr_(summData[r][0]) + '||' + String(summData[r][2]) + '||' + String(summData[r][3])] = true;
   }
 
   var labourAdded = 0, summaryAdded = 0;
@@ -503,6 +506,83 @@ function cleanupCorruptSalesRows(dryRun) {
 
   Logger.log('cleanupCorruptSalesRows: deleted=' + deleted);
   return { mode: 'apply', found: matches.length, deleted: deleted };
+}
+
+/**
+ * cleanupDuplicateSummaryRows — one-shot repair for the Summary rows appended by
+ * the broken week_start dedup (it keyed on String(Date), which never matched the
+ * 'yyyy-MM-dd' key, so every weeklySummarize run re-appended the whole week).
+ *
+ * Keeps the FIRST row for each week_start||supplier||location and removes the
+ * later copies. doGet sums Summary, so leaving them in over-reports spend by a
+ * factor of however many times the week was summarized.
+ *
+ * A later row is only ever deleted when its total MATCHES the row it duplicates.
+ * A same-key row with a different total is not a mechanical duplicate — it means
+ * the underlying spend changed between runs — so it is reported as a conflict and
+ * left alone rather than silently destroying the newer figure.
+ *
+ * Dry run by default, matching cleanupCorruptSalesRows: pass false to apply.
+ * Idempotent — a second apply finds nothing.
+ *
+ * @param {boolean} dryRun  false to actually delete; anything else = dry run
+ * @returns {Object} { mode, found, deleted, conflicts:[] }
+ */
+function cleanupDuplicateSummaryRows(dryRun) {
+  var isDryRun = (dryRun !== false);
+  var ss = getHubSpreadsheet_();
+  var sheet = ss.getSheetByName(SUMMARY_TAB);
+  if (!sheet) { Logger.log('cleanupDuplicateSummaryRows: no Summary tab'); return 'no-sheet'; }
+
+  var data = sheet.getDataRange().getValues();
+
+  // Pass 1: identify, in both modes, so an apply leaves the same audit trail.
+  var firstSeen = {};          // key -> { row, total }
+  var matches = [];
+  var conflicts = [];
+
+  for (var r = 1; r < data.length; r++) {
+    var key = coerceDateStr_(data[r][0]) + '||' + String(data[r][2]) + '||' + String(data[r][3]);
+    var total = Number(data[r][4]);
+
+    if (!firstSeen[key]) {
+      firstSeen[key] = { row: r, total: total };
+      continue;
+    }
+
+    var kept = firstSeen[key];
+    if (total !== kept.total) {
+      conflicts.push({ row: r + 1, key: key, keptTotal: kept.total, thisTotal: total });
+      Logger.log('cleanupDuplicateSummaryRows: CONFLICT row ' + (r + 1) + ' | ' + key +
+        ' | kept row ' + (kept.row + 1) + ' total=' + kept.total + ' vs this total=' + total +
+        ' — NOT deleted, resolve by hand');
+      continue;
+    }
+
+    matches.push(r);
+    Logger.log('cleanupDuplicateSummaryRows: dup row ' + (r + 1) + ' | ' + key +
+      ' | total=' + total + ' | duplicates row ' + (kept.row + 1));
+  }
+
+  Logger.log('cleanupDuplicateSummaryRows: ' + (isDryRun ? 'DRY RUN' : 'APPLY') +
+    ' — ' + matches.length + ' duplicate(s), ' + conflicts.length + ' conflict(s)');
+
+  if (isDryRun) {
+    return {
+      mode: 'dryRun', found: matches.length, deleted: 0, conflicts: conflicts,
+      rows: matches.map(function (r) { return r + 1; })
+    };
+  }
+
+  // Pass 2: delete bottom-up so pass-1 row numbers stay valid as rows shift.
+  var deleted = 0;
+  for (var m = matches.length - 1; m >= 0; m--) {
+    sheet.deleteRow(matches[m] + 1);
+    deleted++;
+  }
+
+  Logger.log('cleanupDuplicateSummaryRows: deleted=' + deleted);
+  return { mode: 'apply', found: matches.length, deleted: deleted, conflicts: conflicts };
 }
 
 /* ------------------------------------------------------------------ *
@@ -748,7 +828,11 @@ function weeklySummarize(weekStartOverride) {
   var existingSummary = summSheet.getDataRange().getValues();
   var existingKeys = {};
   for (var i = 1; i < existingSummary.length; i++) {
-    existingKeys[String(existingSummary[i][0]) + '||' + String(existingSummary[i][2]) + '||' + String(existingSummary[i][3])] = true;
+    // coerceDateStr_ is mandatory: week_start comes back from the Sheet as a Date,
+    // so String() yields 'Mon Jun 15 2026 00:00:00 GMT+1000...' which can never
+    // equal the 'yyyy-MM-dd' key built below. Without it the key never matches,
+    // nothing is ever deduped, and every run re-appends the whole week.
+    existingKeys[coerceDateStr_(existingSummary[i][0]) + '||' + String(existingSummary[i][2]) + '||' + String(existingSummary[i][3])] = true;
   }
 
   var added = 0;

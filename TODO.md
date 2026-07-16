@@ -55,24 +55,43 @@
 - [ ] **(Jake)** Attended login + click-path map → `docs/clickpath-kent_paper.md`
 - [ ] Fill selectors in `kent_paper.py`; test full flow
 
-### Phase 7 — Read API + Weekly Summary — ✅ BUILT (2026-06-22)
+### Phase 7 — Read API + Weekly Summary — ⚠️ DEPLOYED, TRIGGER STILL BLOCKED
 - Token-gated `doGet` serves weekly summaries (supplier + location + total_spend) from `Summary` tab.
 - `weeklySummarize()` aggregates last Mon–Sun into `Summary`, archives raw rows > 6mo to `_archive`, purges originals.
 - Default (no params) = last completed week; override with `?from=...&to=...`.
-- 59 unit tests green (all existing + 40 new).
 - [x] Code + tests written (`Code.gs`, `test_code.js`)
 - [x] API docs written (`docs/api.md`)
-- [ ] **(Jake)** Set `API_READ_TOKEN` in Script Properties (Apps Script editor → Project Settings → Script Properties)
-- [ ] **(Jake)** Deploy: `bash scripts/deploy.sh` (clasp push + redeploy the ONE deployment)
-- [ ] **(Jake)** Install weekly trigger: run `installWeeklySummarizeTrigger()` from the editor (Monday 4am AEST)
-- [ ] **(Jake)** Run `weeklySummarize()` once manually from the editor to seed the first Summary rows, then confirm `doGet` returns them
+- [x] Deployed — live `/exec` returns the token gate (verified 2026-07-16, version 17).
+- [x] **Summary dedup bug FIXED (2026-07-16)** — `weeklySummarize` keyed dedup on `String(week_start)`, but the
+      Sheet returns that cell as a **Date**, so the key never matched its `yyyy-MM-dd` counterpart and every run
+      re-appended the whole week. Live `Summary` shows the 06-15 week written **4×**; `doGet` sums `Summary`, so
+      spend was over-reported 4×. Same bug fixed in `labourWeeklyPull_` (Labour tab + Summary keys).
+      Root cause it survived 209 green tests: the Node mock stored appended dates as the strings they were
+      written as, so `String(cell)` round-tripped cleanly in tests and only broke against a real Sheet. Mock now
+      coerces bare `yyyy-MM-dd` on write, mirroring Sheets. See memory `sheet-date-coercion`.
+- [ ] **(Jake — editor)** Repair the live tab, IN THIS ORDER. `clasp run` is unavailable (script isn't an API
+      executable), so these must run from the Apps Script editor:
+    1. `cleanupDuplicateSummaryRows()` — dry run, deletes nothing. Read the Log: expect ~24 duplicates,
+       **0 conflicts**. If conflicts > 0, STOP and look — a same-key row with a different total is a real
+       data change, not a mechanical duplicate, and is deliberately left alone.
+    2. `cleanupDuplicateSummaryRows(false)` — apply. Idempotent; safe to re-run.
+    3. Backfill the 3 missed weeks (Summary is stale — newest `summarized_at` is 2026-06-25):
+       `weeklySummarize('2026-06-22')`, `weeklySummarize('2026-06-29')`, `weeklySummarize('2026-07-06')`.
+       Each should report `summariesAdded > 0` on the first call and `0` on a second (proves dedup works live).
+    4. `installWeeklySummarizeTrigger()` — **only after 1–3 are clean.** Installing it before the fix would have
+       automated a fresh duplicate set every Monday.
+- [ ] **(Jake)** Confirm `API_READ_TOKEN` is set in Script Properties — a bare `/exec` returns `unauthorized`
+      whether the property is set or missing, so this can't be verified from outside. Hit `/exec?token=...` to prove it.
 
-### Phase 8 — Labour link (Onboarding app LABOUR_COST sheet)
+### Phase 8 — Labour link (Onboarding app LABOUR_COST sheet) — ✅ LIVE
 - [x] `labourWeeklyPull_()` implemented in Code.gs — reads Onboarding app `LABOUR_COST`, writes `Labour` tab + `Summary` rows (`supplier='Labour'`), empty-safe
-- [ ] **(Jake)** Set `LABOUR_SHEET_ID = 1SUg3rE5V46HQ7JtZzqus960KdLjxJd6AdcrYDq8zyGs` in Script Properties (Expense Collector editor)
-- [ ] **(Jake)** Deploy: `bash scripts/deploy.sh`
-- [ ] **(Jake)** Run `setupSheets()` to materialise the `Labour` tab
-- [ ] Verify end-to-end: run `weeklySummarize()` once smoke-test data is in the Onboarding `LABOUR_COST` sheet
+- [x] `LABOUR_SHEET_ID` set — confirmed live: real Labour rows for week 2026-06-15 are in the hub Sheet (5 locations, $4,203–$7,245).
+- [x] Deployed; `Labour` tab materialised.
+- [x] **Test coverage added (2026-07-16)** — the labour path was running weekly against real data with **zero**
+      tests (its only mention in the suite was a line switching it OFF). Now covered: dedup re-run, Date
+      round-trip, and the missing-`LABOUR_SHEET_ID` skip path.
+- Note: labour rows only ever landed once, so unlike the supplier rows they were not duplicated — the same
+  latent Date-key bug was there, it just hadn't been re-run yet. Fixed before it could bite.
 
 ## Future
 - Move Playwright runners to an always-on box
