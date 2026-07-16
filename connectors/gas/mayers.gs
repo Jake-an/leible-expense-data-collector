@@ -70,6 +70,13 @@ function mayersDailyPull() {
 
   Logger.log('mayersDailyPull: ' + res.rowsAdded + ' added, ' + res.duplicatesSkipped +
     ' dup, ' + unparsed + ' unparsed, ' + threads.length + ' threads');
+
+  // Stamp even when no invoice arrived: for Mayers a quiet day is normal
+  // (no delivery ≠ broken), and GmailApp.search returning nothing is still a
+  // successful run. Unlike Square there is no credential that can silently
+  // revoke and fake success — a broken GmailApp scope throws instead.
+  stalenessStampHeartbeat_('mayers');
+
   return {
     rowsAdded: res.rowsAdded,
     duplicatesSkipped: res.duplicatesSkipped,

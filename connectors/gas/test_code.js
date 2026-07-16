@@ -23,7 +23,10 @@ const SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location
 const SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'];
 
 function makeSheet(headers) {
-  const rows = [headers.slice()];
+  // A real insertSheet() yields an EMPTY sheet; ensureSheet then appends the
+  // header row. Seeding [[]] here gave every inserted tab a phantom blank row 1,
+  // shifting headers to row 2 and all data down one.
+  const rows = (headers && headers.length) ? [headers.slice()] : [];
   const chain = {
     setBackground() { return chain; },
     setFontColor() { return chain; },
@@ -59,8 +62,49 @@ global.SpreadsheetApp = {
   getActiveSpreadsheet: () => currentSS,
   openById: () => currentSS,
 };
+// setProperty is REQUIRED, not optional: stalenessStampHeartbeat_ swallows its
+// own errors by design (the watchdog must never break ingest), so a missing
+// setProperty would throw a TypeError into that catch and every heartbeat test
+// would pass while proving nothing.
 global.PropertiesService = {
-  getScriptProperties: () => ({ getProperty: (k) => (k in scriptProps ? scriptProps[k] : null) }),
+  getScriptProperties: () => ({
+    getProperty: (k) => (k in scriptProps ? scriptProps[k] : null),
+    setProperty: (k, v) => { scriptProps[k] = String(v); },
+    deleteProperty: (k) => { delete scriptProps[k]; },
+  }),
+};
+
+// Calendar stub — captures created events so alert behaviour is assertable.
+let calendarEvents = [];
+let calendarFailMode = null;   // 'byId' | 'all' | null
+function makeCalEvent(title, date) {
+  const ev = {
+    _title: title, _date: date, _color: null, _description: '',
+    getTitle: () => ev._title,
+    setColor: (c) => { ev._color = c; return ev; },
+    setDescription: (d) => { ev._description = d; return ev; },
+  };
+  return ev;
+}
+global.CalendarApp = {
+  EventColor: { ORANGE: 'ORANGE' },
+  getCalendarById: (id) => {
+    if (calendarFailMode === 'byId' || calendarFailMode === 'all') return null;
+    return global.CalendarApp._cal(id);
+  },
+  getDefaultCalendar: () => {
+    if (calendarFailMode === 'all') throw new Error('no default calendar');
+    return global.CalendarApp._cal('default');
+  },
+  _cal: (id) => ({
+    _id: id,
+    getEventsForDay: () => calendarEvents.slice(),
+    createAllDayEvent: (title, date) => {
+      const ev = makeCalEvent(title, date);
+      calendarEvents.push(ev);
+      return ev;
+    },
+  }),
 };
 global.ContentService = {
   createTextOutput: (s) => ({ _s: s, setMimeType() { return this; }, getContent() { return this._s; } }),
@@ -68,7 +112,47 @@ global.ContentService = {
 };
 global.Logger = { log: () => {} };
 // Stubs so the connector modules load cleanly (their callers aren't tested here).
-global.Utilities = { formatDate: () => '2026-06-17T00:00:00+10:00' };
+//
+// formatDate is a REAL (if minimal) implementation, not a constant: the Fault 3
+// regression test needs squareDailyPull to derive a genuine 'yesterday', and
+// todayStr_ needs a real 'yyyy-MM-dd' rather than an ISO datetime. Only the
+// patterns this codebase actually passes are supported; anything else throws
+// loudly rather than returning a plausible lie.
+//
+// Timezone is modelled as a fixed +10:00 (AEST). Sydney DST (+11:00) is not
+// simulated — no test depends on the offset digits, and a wrong-by-an-hour
+// offset cannot change a 'yyyy-MM-dd' derived from a noon-UTC anchor.
+const TZ_OFFSET_MIN = 600;          // +10:00
+const TZ_OFFSET_STR = '+10:00';
+
+function pad2(n) { return n < 10 ? '0' + n : String(n); }
+
+function mockFormatDate(d, tz, pattern) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) {
+    throw new Error('mock formatDate: not a valid Date: ' + String(d));
+  }
+  const s = new Date(d.getTime() + TZ_OFFSET_MIN * 60000);
+  const ymd = s.getUTCFullYear() + '-' + pad2(s.getUTCMonth() + 1) + '-' + pad2(s.getUTCDate());
+  const hms = pad2(s.getUTCHours()) + ':' + pad2(s.getUTCMinutes()) + ':' + pad2(s.getUTCSeconds());
+  if (pattern === 'yyyy-MM-dd') return ymd;
+  if (pattern === 'XXX') return TZ_OFFSET_STR;
+  if (pattern === "yyyy-MM-dd'T'HH:mm:ssXXX") return ymd + 'T' + hms + TZ_OFFSET_STR;
+  throw new Error('mock formatDate: unsupported pattern ' + pattern);
+}
+
+global.Utilities = {
+  formatDate: mockFormatDate,
+  sleep: () => {},                  // mayers.gs:141 — never actually wait in tests
+};
+
+// Freeze Date.now() for the duration of fn. squareDailyPull derives 'yesterday'
+// from Date.now(), so this is what makes the Fault 3 regression deterministic.
+const REAL_DATE_NOW = Date.now;
+function withMockNow(isoInstant, fn) {
+  const ms = new Date(isoInstant).getTime();
+  Date.now = () => ms;
+  try { return fn(); } finally { Date.now = REAL_DATE_NOW; }
+}
 global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp not mocked'); } };
 global.ScriptApp = {
   getProjectTriggers: () => [],
@@ -93,6 +177,7 @@ function load(file) {
 load('Code.gs');
 load('square.gs');
 load('mayers.gs');
+load('staleness.gs');
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -399,6 +484,575 @@ freshSheets();
   // Valid token, wider range → all 3 rows
   var r4 = JSON.parse(doGet({ parameter: { token: 'secret123', from: '2026-06-01', to: '2026-06-30' } }).getContent());
   eq('wider range → 3 rows', r4.count, 3);
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 3 — resolveDateArg_ (Fault 3: trigger event object in a date arg)
+ * ------------------------------------------------------------------ */
+
+(function testResolveDateArg() {
+  console.log('\nresolveDateArg_:');
+
+  eq('valid date passes through', resolveDateArg_('2026-07-15', 'FB'), '2026-07-15');
+  eq('surrounding whitespace trimmed', resolveDateArg_('  2026-07-15  ', 'FB'), '2026-07-15');
+
+  eq('undefined → fallback', resolveDateArg_(undefined, 'FB'), 'FB');
+  eq('null → fallback', resolveDateArg_(null, 'FB'), 'FB');
+  eq('empty string → fallback', resolveDateArg_('', 'FB'), 'FB');
+
+  // THE REGRESSION: this exact shape corrupted 8 Sales rows.
+  var evt = { 'week-of-year': 27.0, triggerUid: '3647519953440997376', authMode: 'FULL' };
+  eq('trigger EVENT OBJECT → fallback', resolveDateArg_(evt, 'FB'), 'FB');
+
+  eq('Date object → fallback', resolveDateArg_(new Date(), 'FB'), 'FB');
+  eq('number → fallback', resolveDateArg_(20260715, 'FB'), 'FB');
+  eq('dd/mm/yyyy → fallback', resolveDateArg_('05/07/2026', 'FB'), 'FB');
+  eq('unpadded 2026-7-5 → fallback', resolveDateArg_('2026-7-5', 'FB'), 'FB');
+  eq('ISO datetime → fallback', resolveDateArg_('2026-07-15T00:00:00Z', 'FB'), 'FB');
+  eq("'yesterday' → fallback", resolveDateArg_('yesterday', 'FB'), 'FB');
+
+  // Regex-shaped but not real calendar dates
+  eq('2026-02-31 → fallback', resolveDateArg_('2026-02-31', 'FB'), 'FB');
+  eq('2026-13-01 → fallback', resolveDateArg_('2026-13-01', 'FB'), 'FB');
+  eq('non-leap 2026-02-29 → fallback', resolveDateArg_('2026-02-29', 'FB'), 'FB');
+  eq('leap 2028-02-29 is valid', resolveDateArg_('2028-02-29', 'FB'), '2028-02-29');
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 7 — addDaysStr_
+ * ------------------------------------------------------------------ */
+
+(function testAddDaysStr() {
+  console.log('\naddDaysStr_:');
+  eq('+6 days within month', addDaysStr_('2026-06-15', 6), '2026-06-21');
+  eq('+0 days is identity', addDaysStr_('2026-06-15', 0), '2026-06-15');
+  eq('month rollover', addDaysStr_('2026-06-29', 6), '2026-07-05');
+  eq('year rollover', addDaysStr_('2026-12-28', 6), '2027-01-03');
+  eq('leap-year February', addDaysStr_('2028-02-26', 6), '2028-03-03');
+  eq('negative days', addDaysStr_('2026-07-05', -6), '2026-06-29');
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 3 — squareDailyPull integration: the bug that started this
+ * ------------------------------------------------------------------ */
+
+(function testSquareDailyPullTriggerEvent() {
+  console.log('\nsquareDailyPull (Fault 3 regression):');
+
+  // A token MUST be present. With scriptProps={} every site hits the no-token
+  // `continue` and NO row is ever appended — so "no garbage row written" would
+  // pass identically against the buggy code. The whole point of Fault 3 is the
+  // CONTENT of a row that DOES get written, so we must actually write one.
+  const SITE_PROP = SQUARE_SITES[0].prop;   // only site 0 gets a token → exactly 1 row
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  function armSquare() {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    scriptProps[SITE_PROP] = 'fake-token';
+    // Minimal Square API: one location, zero orders → gross 0, one row written.
+    global.UrlFetchApp = {
+      fetch: (url) => ({
+        getResponseCode: () => 200,
+        getContentText: () => (String(url).indexOf('/locations') !== -1
+          ? JSON.stringify({ locations: [{ id: 'L1', name: 'Site' }] })
+          : JSON.stringify({ orders: [] })),
+      }),
+    };
+  }
+
+  withMockNow('2026-07-16T05:00:00Z', function () {   // 15:00 Sydney, Thu 16 Jul
+    armSquare();
+    var evt = { 'week-of-year': 27.0, triggerUid: '3647519953440997376', authMode: 'FULL' };
+    var res = squareDailyPull(evt);
+
+    eq('trigger event → yesterday, not the event object', res.date, '2026-07-15');
+
+    // The row was really written — this is what corrupted the live Sales tab.
+    var rows = currentSS.getSheetByName('Sales').getDataRange().getValues();
+    eq('a Sales row WAS written (test is not vacuous)', rows.length, 2);
+    eq('written date cell is a real date', rows[1][0], '2026-07-15');
+    check('date cell never carries the event object',
+      String(rows[1][0]).indexOf('triggerUid') === -1);
+    check('date cell matches YYYY-MM-DD exactly', DATE_ARG_RE.test(String(rows[1][0])));
+    check('the written row is NOT flagged corrupt by the cleanup predicate',
+      !salesRowIsCorrupt_(rows[1]));
+  });
+
+  // A real date argument must still be honoured, and reach the date cell.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    armSquare();
+    eq('explicit date still honoured', squareDailyPull('2026-07-01').date, '2026-07-01');
+    eq('explicit date reaches the row',
+      currentSS.getSheetByName('Sales').getDataRange().getValues()[1][0], '2026-07-01');
+  });
+
+  // No argument at all (the intended manual call) → yesterday.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    armSquare();
+    eq('no arg → yesterday', squareDailyPull().date, '2026-07-15');
+  });
+
+  global.UrlFetchApp = REAL_URL_FETCH;   // don't leak the fake into later suites
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 4 — salesRowIsCorrupt_ predicate (this one deletes real money data)
+ * ------------------------------------------------------------------ */
+
+(function testSalesRowIsCorrupt() {
+  console.log('\nsalesRowIsCorrupt_:');
+  // Sales row shape: [date, location, gross_sales, source, extracted_at]
+
+  check('healthy row (date as string) → keep',
+    !salesRowIsCorrupt_(['2026-07-15', 'Leible York', 1234.5, 'square', 'x']));
+
+  // Sheets hands dates back as Date objects, not strings.
+  check('healthy row (date as Date object) → keep',
+    !salesRowIsCorrupt_([new Date(2026, 6, 15), 'Leible York', 1234.5, 'square', 'x']));
+
+  // THE TARGET: stringified trigger event in the date column.
+  check('corrupt row (stringified event) → delete',
+    salesRowIsCorrupt_(['{week-of-year=27.0, triggerUid=3647519953440997376}', 'Leible York', 0.0, 'square', 'x']));
+
+  // The case that earns the predicate its keep: a genuinely closed trading day
+  // is $0 on a VALID date. Gross==0 must never imply corruption.
+  check('zero gross on a valid date → keep (closed day)',
+    !salesRowIsCorrupt_(['2026-07-15', 'Leible York', 0.0, 'square', 'x']));
+
+  check('blank date on a square row → delete',
+    salesRowIsCorrupt_(['', 'Leible York', 0.0, 'square', 'x']));
+
+  check('non-square source is never touched',
+    !salesRowIsCorrupt_(['{garbage}', 'Leible York', 0.0, 'manual', 'x']));
+
+  check('fully blank row → keep (source is not square)',
+    !salesRowIsCorrupt_(['', '', '', '', '']));
+
+  check('source matching is case/space tolerant',
+    salesRowIsCorrupt_(['{garbage}', 'Leible York', 0.0, ' Square ', 'x']));
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 4 — cleanupCorruptSalesRows: dry-run default, guard, deletion
+ * ------------------------------------------------------------------ */
+
+(function testCleanupCorruptSalesRows() {
+  console.log('\ncleanupCorruptSalesRows:');
+
+  const EVT = '{week-of-year=27.0, triggerUid=3647519953440997376}';
+  function seed(corruptCount) {
+    currentSS = makeSpreadsheet();
+    const sales = currentSS.getSheetByName('Sales');
+    sales.appendRow(['2026-07-14', 'Leible York', 100, 'square', 'x']);   // healthy
+    for (let i = 0; i < corruptCount; i++) {
+      sales.appendRow([EVT, 'Leible York', 0.0, 'square', 'x']);
+    }
+    sales.appendRow(['2026-07-15', 'Leible Pitt', 0.0, 'square', 'x']);   // closed day
+    return sales;
+  }
+
+  // Default = dry run. Nothing may be deleted.
+  var sales = seed(8);
+  var before = sales.getDataRange().getValues().length;
+  var dry = cleanupCorruptSalesRows();
+  eq('no-arg → dry run', dry.mode, 'dryRun');
+  eq('dry run finds all 8', dry.found, 8);
+  eq('dry run deletes nothing', sales.getDataRange().getValues().length, before);
+
+  // The editor Run button / a trigger event must NOT delete.
+  sales = seed(8);
+  before = sales.getDataRange().getValues().length;   // re-read: don't rely on the previous seed
+  eq('trigger event arg → still dry run',
+    cleanupCorruptSalesRows({ triggerUid: 'x', authMode: 'FULL' }).mode, 'dryRun');
+  eq('trigger event arg deletes nothing', sales.getDataRange().getValues().length, before);
+  eq('true → still dry run (only false applies)', cleanupCorruptSalesRows(true).mode, 'dryRun');
+  eq('truthy string "false" → still dry run', cleanupCorruptSalesRows('false').mode, 'dryRun');
+  eq('null → still dry run', cleanupCorruptSalesRows(null).mode, 'dryRun');
+  eq('0 → still dry run', cleanupCorruptSalesRows(0).mode, 'dryRun');
+  eq('after every non-false arg, nothing was deleted',
+    sales.getDataRange().getValues().length, before);
+
+  // Apply: deletes exactly the corrupt rows, keeps the healthy + closed-day rows.
+  sales = seed(8);
+  var applied = cleanupCorruptSalesRows(false);
+  eq('apply deletes 8', applied.deleted, 8);
+  var remaining = sales.getDataRange().getValues();
+  eq('2 legitimate rows survive (+header)', remaining.length, 3);
+  eq('healthy row survived', remaining[1][0], '2026-07-14');
+  eq('closed-day $0 row survived', remaining[2][0], '2026-07-15');
+  check('no corrupt row survived',
+    remaining.every((r) => String(r[0]).indexOf('triggerUid') === -1));
+
+  // Count guard: if the sheet doesn't look like we expect, refuse to delete.
+  sales = seed(5);
+  before = sales.getDataRange().getValues().length;
+  eq('count mismatch → aborted', cleanupCorruptSalesRows(false), 'aborted');
+  eq('aborted run deleted nothing', sales.getDataRange().getValues().length, before);
+
+  // The guard is a constant, not a magic number: retarget it and apply works.
+  sales = seed(5);
+  var savedExpected = CLEANUP_EXPECTED_CORRUPT_ROWS;
+  CLEANUP_EXPECTED_CORRUPT_ROWS = 5;
+  eq('retargeted guard → applies', cleanupCorruptSalesRows(false).deleted, 5);
+  CLEANUP_EXPECTED_CORRUPT_ROWS = savedExpected;
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 7 — weeklySummarize(weekStartOverride)
+ * ------------------------------------------------------------------ */
+
+(function testWeeklySummarizeOverride() {
+  console.log('\nweeklySummarize override:');
+
+  function seedSuppliers() {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};                       // no LABOUR_SHEET_ID → labour pull skips
+    const supp = currentSS.getSheetByName('Suppliers');
+    // Week of Mon 2026-06-15 … Sun 2026-06-21 (the backlog week).
+    supp.appendRow(['2026-06-17', 'Food and Dairy Co', 100, 'A1', 'Leible York', 'food_dairy_co', 'x']);
+    supp.appendRow(['2026-06-18', 'Food and Dairy Co', 50, 'A2', 'Leible York', 'food_dairy_co', 'x']);
+    return supp;
+  }
+
+  // Wednesday 2026-06-17 must SNAP BACK to Monday 2026-06-15. Without the snap
+  // it writes week_start='2026-06-17', which overlaps the trigger's Monday rows
+  // and double-counts spend in filterSummaryByDateRange_.
+  seedSuppliers();
+  var r = weeklySummarize('2026-06-17');
+  eq('Wednesday override snaps to Monday', r.weekStart, '2026-06-15');
+  eq('week end is the following Sunday', r.weekEnd, '2026-06-21');
+  eq('backlog week actually summarized', r.summariesAdded, 1);
+
+  var summary = currentSS.getSheetByName('Summary').getDataRange().getValues();
+  eq('Summary row carries the snapped Monday', summary[1][0], '2026-06-15');
+  eq('spend aggregated for the week', summary[1][4], 150);
+
+  // A Monday override stays put; a Sunday belongs to the week that started 6 days earlier.
+  seedSuppliers();
+  eq('Monday override is unchanged', weeklySummarize('2026-06-15').weekStart, '2026-06-15');
+  seedSuppliers();
+  eq('Sunday override snaps back to its Monday', weeklySummarize('2026-06-21').weekStart, '2026-06-15');
+
+  // A trigger event object must NOT be treated as a week.
+  seedSuppliers();
+  var evtRes = weeklySummarize({ 'week-of-year': 25.0, triggerUid: 'abc', authMode: 'FULL' });
+  eq('trigger event → falls back to last completed week',
+    evtRes.weekStart, getLastCompletedWeek_(todayStr_()).start);
+
+  // No-arg behaviour is unchanged (the Monday trigger's path).
+  seedSuppliers();
+  eq('no arg → last completed week',
+    weeklySummarize().weekStart, getLastCompletedWeek_(todayStr_()).start);
+
+  // Re-running the same week must not duplicate Summary rows (append-only tab).
+  seedSuppliers();
+  weeklySummarize('2026-06-15');
+  var second = weeklySummarize('2026-06-15');
+  eq('re-run adds nothing (dedup)', second.summariesAdded, 0);
+  eq('Summary still has exactly 1 data row',
+    currentSS.getSheetByName('Summary').getDataRange().getValues().length, 2);
+
+  /* --- an INCOMPLETE week must be refused ---------------------------- *
+   * Summary is append-only and dedup can only SKIP, never UPDATE. Summarizing
+   * a half-finished week freezes the partial total; the Monday trigger then
+   * skips it as "already done" and the rest of the week's spend vanishes.  */
+  var todayNow = todayStr_();
+  var thisMonday = weekStartForDate_(todayNow);
+
+  seedSuppliers();
+  var cur = weeklySummarize(todayNow);
+  eq('current week → refused', cur.refused, 'incomplete-week');
+  eq('refused run summarizes nothing', cur.summariesAdded, 0);
+  eq('refused run wrote no Summary rows',
+    currentSS.getSheetByName('Summary').getDataRange().getValues().length, 1);
+
+  seedSuppliers();
+  eq('this Monday (week still running) → refused',
+    weeklySummarize(thisMonday).refused, 'incomplete-week');
+
+  seedSuppliers();
+  eq('a future week → refused',
+    weeklySummarize(addDaysStr_(todayNow, 30)).refused, 'incomplete-week');
+
+  // The boundary: the week that ended yesterday IS complete and must proceed.
+  seedSuppliers();
+  var lastWeekMon = addDaysStr_(thisMonday, -7);
+  var lastWeek = weeklySummarize(lastWeekMon);
+  check('the most recently COMPLETED week is allowed', lastWeek.refused === undefined);
+  eq('completed week summarizes normally', lastWeek.weekStart, lastWeekMon);
+
+  /* --- an override run must NOT archive/purge ------------------------- *
+   * Purging on a backlog run eats the rows just summarized, so a rebuild
+   * silently returns summariesAdded:0 — "already done" vs "data is gone".  */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  var suppOld = currentSS.getSheetByName('Suppliers');
+  suppOld.appendRow(['2025-12-17', 'Food and Dairy Co', 100, 'B1', 'Leible York', 'food_dairy_co', 'x']);
+
+  var oldRes = weeklySummarize('2025-12-17');           // way past ARCHIVE_RETENTION_DAYS
+  eq('old backlog week still summarizes', oldRes.summariesAdded, 1);
+  eq('override run purged nothing (source row intact)',
+    currentSS.getSheetByName('Suppliers').getDataRange().getValues().length, 2);
+  eq('override run archived nothing',
+    currentSS.getSheetByName('_archive').getDataRange().getValues().length, 1);
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 4 (also) — archiveAndPurge_ must not eat blank rows
+ * ------------------------------------------------------------------ */
+
+(function testArchiveAndPurgeBlankRows() {
+  console.log('\narchiveAndPurge_ blank-row guard:');
+
+  const src = makeSheet(SUPPLIERS_HEADERS);
+  const arch = makeSheet(SUPPLIERS_HEADERS);
+  src.appendRow(['2020-01-01', 'Old Co', 10, 'R1', 'Leible York', 'food_dairy_co', 'x']);  // genuinely old
+  src.appendRow(['', '', '', '', '', '', '']);                                             // blank
+  src.appendRow(['2026-07-15', 'New Co', 20, 'R2', 'Leible York', 'food_dairy_co', 'x']);  // recent
+
+  var archived = archiveAndPurge_(src, arch, '2026-01-14');
+
+  eq('only the genuinely old row is archived', archived, 1);
+  eq('blank row survives the purge', src.getDataRange().getValues().length, 3);
+  eq('archive contains just the old row', arch.getDataRange().getValues().length, 2);
+  eq('archived row is the old one', arch.getDataRange().getValues()[1][1], 'Old Co');
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 5 — staleness watchdog
+ * ------------------------------------------------------------------ */
+
+const HOUR = 3600000;
+const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 16 Jul
+
+(function testStalenessPureHelpers() {
+  console.log('\nstaleness pure helpers:');
+
+  // --- stalenessParseTs_ : String AND Date (Sheets coerces date-ish text) ---
+  eq('parses an ISO string with offset',
+    stalenessParseTs_('2026-07-16T11:00:00+10:00'), new Date('2026-07-16T01:00:00Z').getTime());
+  eq('parses a Date object', stalenessParseTs_(new Date(NOW)), NOW);
+  eq('blank → null', stalenessParseTs_(''), null);
+  eq('null → null', stalenessParseTs_(null), null);
+  eq('undefined → null', stalenessParseTs_(undefined), null);
+  eq('garbage → null', stalenessParseTs_('not a date'), null);
+  eq('Invalid Date object → null', stalenessParseTs_(new Date('nope')), null);
+
+  // --- stalenessScanSheet_ : newest per source ---
+  const sCol = SUPPLIERS_HEADERS.indexOf('source');
+  const tCol = SUPPLIERS_HEADERS.indexOf('extracted_at');
+  const values = [
+    SUPPLIERS_HEADERS,
+    ['2026-07-10', 'X', 1, 'r1', 'York', 'food_dairy_co', '2026-07-10T03:00:00+10:00'],
+    ['2026-07-14', 'X', 1, 'r2', 'York', 'food_dairy_co', '2026-07-14T03:00:00+10:00'],  // newest FDCo
+    ['2026-07-12', 'X', 1, 'r3', 'York', 'food_dairy_co', '2026-07-12T03:00:00+10:00'],
+    ['2026-07-11', 'X', 1, 'r4', 'York', 'ordermentum', new Date('2026-07-11T03:00:00Z')], // Date cell
+    ['', '', '', '', '', '', ''],                                                          // blank row
+    ['2026-07-13', 'X', 1, 'r5', 'York', 'fresh_and_chill', 'garbage'],                    // unparseable ts
+  ];
+  const scan = stalenessScanSheet_(values, sCol, tCol);
+  eq('newest extracted_at per source wins',
+    scan['food_dairy_co'], new Date('2026-07-14T03:00:00+10:00').getTime());
+  eq('a Date-object timestamp is handled',
+    scan['ordermentum'], new Date('2026-07-11T03:00:00Z').getTime());
+  check('blank source row ignored', !('' in scan));
+  check('row with unparseable ts contributes nothing', !('fresh_and_chill' in scan));
+
+  eq('the Sales layout works too (different column indexes)',
+    stalenessScanSheet_(
+      [SALES_HEADERS, ['2026-07-15', 'York', 10, 'square', '2026-07-16T03:00:00+10:00']],
+      SALES_HEADERS.indexOf('source'), SALES_HEADERS.indexOf('extracted_at')
+    )['square'],
+    new Date('2026-07-16T03:00:00+10:00').getTime());
+
+  // --- stalenessMergeLastSeen_ ---
+  const merged = stalenessMergeLastSeen_([
+    { a: 100, b: 500 },
+    { a: 300, c: 900 },   // a is newer here
+  ]);
+  eq('merge keeps the NEWER timestamp', merged.a, 300);
+  eq('merge keeps non-overlapping keys', merged.b, 500);
+  eq('merge adds new keys', merged.c, 900);
+  eq('merging nothing → empty', JSON.stringify(stalenessMergeLastSeen_([])), '{}');
+
+  // --- stalenessEvaluate_ : the threshold boundary ---
+  const srcs = ['s1'];
+  eq('exactly 96h is FRESH (strictly greater is stale)',
+    stalenessEvaluate_({ s1: NOW - 96 * HOUR }, srcs, NOW, 96)[0].stale, false);
+  eq('97h is stale', stalenessEvaluate_({ s1: NOW - 97 * HOUR }, srcs, NOW, 96)[0].stale, true);
+  eq('1h is fresh', stalenessEvaluate_({ s1: NOW - 1 * HOUR }, srcs, NOW, 96)[0].stale, false);
+  eq('never seen → stale', stalenessEvaluate_({}, srcs, NOW, 96)[0].stale, true);
+  eq('never seen → ageHours null', stalenessEvaluate_({}, srcs, NOW, 96)[0].ageHours, null);
+  eq('age is reported', stalenessEvaluate_({ s1: NOW - 10 * HOUR }, srcs, NOW, 96)[0].ageHours, 10);
+
+  // --- THE false-positive regression: a normal Fri->Mon weekend gap ---
+  const friday3am = new Date('2026-07-10T03:00:00+10:00').getTime();     // Fri 03:00 Sydney
+  const monday11am = new Date('2026-07-13T11:00:00+10:00').getTime();    // Mon 11:00 Sydney
+  eq('Fri 03:00 → Mon 11:00 is 80h', Math.round((monday11am - friday3am) / HOUR), 80);
+  eq('a normal weekend gap does NOT alert',
+    stalenessEvaluate_({ s1: friday3am }, srcs, monday11am, 96)[0].stale, false);
+
+  const thursday3am = new Date('2026-07-09T03:00:00+10:00').getTime();
+  eq('Thu 03:00 → Mon 11:00 is 104h', Math.round((monday11am - thursday3am) / HOUR), 104);
+  eq('a genuine ~4-day outage DOES alert',
+    stalenessEvaluate_({ s1: thursday3am }, srcs, monday11am, 96)[0].stale, true);
+
+  // --- title is the idempotency key: stable, no varying number ---
+  eq('title is stable', stalenessEventTitle_('square'), 'LEIBLE expense stale: square');
+  check('title carries no age/number', !/\d/.test(stalenessEventTitle_('square')));
+})();
+
+(function testStalenessHeartbeat() {
+  console.log('\nstaleness heartbeat:');
+
+  scriptProps = {};
+  stalenessStampHeartbeat_('food_dairy_co');
+  check('heartbeat writes a Script Property',
+    typeof scriptProps['LAST_INGEST_food_dairy_co'] === 'string');
+  check('heartbeat value is a parseable timestamp',
+    stalenessParseTs_(scriptProps['LAST_INGEST_food_dairy_co']) !== null);
+
+  // The watchdog must NEVER break the thing it watches.
+  const savedPS = global.PropertiesService;
+  global.PropertiesService = { getScriptProperties: () => { throw new Error('props exploded'); } };
+  let threw = false;
+  try { stalenessStampHeartbeat_('square'); } catch (e) { threw = true; }
+  check('a failing Properties store cannot throw out of the heartbeat', !threw);
+  global.PropertiesService = savedPS;
+
+  // doPost stamps on ingest — and MUST stamp even when everything dedups.
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const payload = {
+    source: 'food_dairy_co',
+    extracted_at: '2026-07-16T11:00:00+10:00',
+    rows: [{ date: '2026-07-15', supplier: 'FDCo', total: 10, invoice_ref: 'INV1', location: 'Leible York' }],
+  };
+  const r1 = JSON.parse(doPost({ postData: { contents: JSON.stringify(payload) } }).getContent());
+  eq('doPost ingested', r1.rowsAdded, 1);
+  check('doPost stamped the heartbeat', 'LAST_INGEST_food_dairy_co' in scriptProps);
+
+  // An all-duplicate re-post is a SUCCESSFUL run and must advance the heartbeat.
+  scriptProps['LAST_INGEST_food_dairy_co'] = '2020-01-01T00:00:00+10:00';
+  const r2 = JSON.parse(doPost({ postData: { contents: JSON.stringify(payload) } }).getContent());
+  eq('re-post is all duplicates', r2.rowsAdded, 0);
+  check('an all-duplicate run STILL advances the heartbeat (kills the false positive)',
+    stalenessParseTs_(scriptProps['LAST_INGEST_food_dairy_co']) >
+    stalenessParseTs_('2020-01-01T00:00:00+10:00'));
+
+  // An invalid payload is not a successful run.
+  scriptProps = {};
+  doPost({ postData: { contents: JSON.stringify({ source: 'food_dairy_co' }) } });
+  check('an invalid payload stamps nothing', !('LAST_INGEST_food_dairy_co' in scriptProps));
+})();
+
+(function testStalenessSquareHeartbeatException() {
+  console.log('\nstaleness square-token exception:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  global.UrlFetchApp = {
+    fetch: (url) => ({
+      getResponseCode: () => 200,
+      getContentText: () => (String(url).indexOf('/locations') !== -1
+        ? JSON.stringify({ locations: [{ id: 'L1', name: 'S' }] })
+        : JSON.stringify({ orders: [] })),
+    }),
+  };
+
+  // A revoked token → every site skips → "ran fine, wrote nothing". Stamping
+  // here would make the watchdog silent forever on a dead credential.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const res = squareDailyPull();
+    eq('no token → no site processed', res.sitesWithToken, 0);
+    check('NO heartbeat when every Square site was skipped',
+      !('LAST_INGEST_square' in scriptProps));
+  });
+
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    scriptProps[SQUARE_SITES[0].prop] = 'tok';
+    const res = squareDailyPull();
+    eq('one token → one site processed', res.sitesWithToken, 1);
+    check('heartbeat stamped when a site really ran', 'LAST_INGEST_square' in scriptProps);
+  });
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+})();
+
+(function testStalenessAlerts() {
+  console.log('\nstaleness alerts:');
+
+  function reset() {
+    calendarEvents = [];
+    calendarFailMode = null;
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+  }
+
+  // All sources stale (nothing ever seen) → one event each, orange + all-day.
+  reset();
+  let res = stalenessRun_(NOW);
+  eq('every source is stale on a cold start', res.stale.length, STALENESS_SOURCES.length);
+  eq('one event per stale source', res.eventsCreated, STALENESS_SOURCES.length);
+  check('events are ORANGE', calendarEvents.every((e) => e._color === 'ORANGE'));
+  check('events carry a description', calendarEvents.every((e) => e._description.length > 0));
+  check('titles have no varying number', calendarEvents.every((e) => !/\d/.test(e._title)));
+
+  // Idempotency: running again the same day must not duplicate events.
+  const countAfterFirst = calendarEvents.length;
+  res = stalenessRun_(NOW);
+  eq('re-run creates no duplicate events', res.eventsCreated, 0);
+  eq('event count unchanged', calendarEvents.length, countAfterFirst);
+
+  // THE false-positive fix: a heartbeat alone clears staleness with ZERO new
+  // sheet rows — which is exactly what a healthy but quiet connector looks like.
+  reset();
+  for (const s of STALENESS_SOURCES) {
+    scriptProps['LAST_INGEST_' + s] = new Date(NOW - 1 * HOUR).toISOString();
+  }
+  res = stalenessRun_(NOW);
+  eq('fresh heartbeats → nothing stale', res.stale.length, 0);
+  eq('fresh heartbeats → no calendar events', res.eventsCreated, 0);
+  eq('no events created at all', calendarEvents.length, 0);
+
+  // The sheet alone can also prove freshness (before any heartbeat exists).
+  reset();
+  const supp = currentSS.getSheetByName('Suppliers');
+  supp.appendRow(['2026-07-15', 'FDCo', 10, 'r1', 'York', 'food_dairy_co',
+    new Date(NOW - 2 * HOUR).toISOString()]);
+  res = stalenessRun_(NOW);
+  const staleNames = res.stale.map((s) => s.source);
+  check('a recent sheet row alone marks that source fresh',
+    staleNames.indexOf('food_dairy_co') === -1);
+  check('other sources remain stale', staleNames.indexOf('ordermentum') !== -1);
+
+  // Heartbeat WINS over an older sheet row (the run happened, dedup wrote nothing).
+  reset();
+  const supp2 = currentSS.getSheetByName('Suppliers');
+  supp2.appendRow(['2026-06-01', 'FDCo', 10, 'r1', 'York', 'food_dairy_co',
+    new Date(NOW - 300 * HOUR).toISOString()]);           // ancient row
+  scriptProps['LAST_INGEST_food_dairy_co'] = new Date(NOW - 1 * HOUR).toISOString();  // ran 1h ago
+  res = stalenessRun_(NOW);
+  check('a fresh heartbeat overrides an ancient sheet row',
+    res.stale.map((s) => s.source).indexOf('food_dairy_co') === -1);
+
+  // Calendar unavailable → degrade to log-only, never throw.
+  reset();
+  calendarFailMode = 'all';
+  let threw = false;
+  try { res = stalenessRun_(NOW); } catch (e) { threw = true; }
+  check('a broken calendar does not throw', !threw);
+  eq('a broken calendar creates no events', res.eventsCreated, 0);
+  check('staleness is still reported when the calendar is down', res.stale.length > 0);
+
+  // Falls back to the default calendar if getCalendarById returns null.
+  reset();
+  calendarFailMode = 'byId';
+  res = stalenessRun_(NOW);
+  check('falls back to the default calendar', res.eventsCreated > 0);
 })();
 
 /* ------------------------------------------------------------------ */

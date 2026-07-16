@@ -60,6 +60,11 @@ function doPost(e) {
     var sheet = ensureSheet(ss, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
     var res = ingestSupplierRows(body.source, body.rows, body.extracted_at, sheet);
 
+    // Watchdog heartbeat: a run that reached here SUCCEEDED, even if dedup meant
+    // it wrote nothing. Stamping regardless of rowsAdded is what stops the
+    // staleness alert crying wolf on a quiet weekend. Never throws.
+    stalenessStampHeartbeat_(body.source);
+
     return jsonOut_({ result: 'ok', rowsAdded: res.rowsAdded, duplicatesSkipped: res.duplicatesSkipped });
   } catch (err) {
     return jsonOut_({ result: 'error', message: String((err && err.message) || err) });
@@ -415,6 +420,91 @@ function cleanupFreshNorthRows() {
   return msg;
 }
 
+var CLEANUP_EXPECTED_CORRUPT_ROWS = 8;   // module-level so tests can reassign it
+
+/**
+ * True if a Sales row is a trigger-event corruption (Fault 3): the date column
+ * holds a stringified trigger event object instead of a date.
+ *
+ * The date cell reads back as a Date for healthy rows and a String for corrupt
+ * ones, so normalize via coerceDateStr_ first. Narrowed to source='square' — a
+ * predicate that DELETES shouldn't assume nothing else ever writes Sales.
+ * Blank rows have source '' → never touched.
+ *
+ * gross_sales === 0 is deliberately NOT part of this: it's true of all 8 known
+ * corrupt rows, but it's a symptom, not the definition — a genuinely closed
+ * trading day is $0 on a valid date and must be kept. The date shape is the
+ * invariant.
+ */
+function salesRowIsCorrupt_(row) {
+  if (String(row[3]).trim().toLowerCase() !== 'square') return false;
+  return !DATE_ARG_RE.test(coerceDateStr_(row[0]));
+}
+
+/**
+ * ONE-SHOT (destructive): delete the Sales rows corrupted by the Fault 3 trigger.
+ *
+ * DRY RUN BY DEFAULT — only an explicit `false` deletes. The editor's Run button
+ * passes no argument, and a trigger would pass an event object; both are
+ * non-false → both dry-run. (That's Fault 3's own bug turned into a safety
+ * property.)
+ *
+ *   cleanupCorruptSalesRows()       → dry run, logs what it WOULD delete
+ *   cleanupCorruptSalesRows(false)  → actually deletes
+ *
+ * THE DRY RUN IS MANDATORY, NOT ADVISORY. salesRowIsCorrupt_ matches ANY
+ * source='square' row whose date isn't YYYY-MM-DD — a blank date, or a date
+ * stored as text ('15/07/2026'), would match too. The CLEANUP_EXPECTED_CORRUPT_ROWS
+ * guard is the only thing bounding that, so read the pass-1 log and confirm all
+ * 8 rows are genuinely the trigger-event corruption BEFORE passing false.
+ *
+ * Delete this function, salesRowIsCorrupt_ and CLEANUP_EXPECTED_CORRUPT_ROWS once
+ * it has been run — but KEEP DATE_ARG_RE and resolveDateArg_, which are
+ * load-bearing for the Fault 3 fix in squareDailyPull.
+ */
+function cleanupCorruptSalesRows(dryRun) {
+  var isDryRun = (dryRun !== false);
+  var ss = getHubSpreadsheet_();
+  var sheet = ss.getSheetByName(SALES_TAB);
+  if (!sheet) { Logger.log('cleanupCorruptSalesRows: no Sales tab'); return 'no-sheet'; }
+
+  var data = sheet.getDataRange().getValues();
+
+  // Pass 1: identify + log every match, in BOTH modes, so the destructive run
+  // leaves the same audit trail as the dry run.
+  var matches = [];
+  for (var r = 1; r < data.length; r++) {
+    if (!salesRowIsCorrupt_(data[r])) continue;
+    matches.push(r);
+    Logger.log('cleanupCorruptSalesRows: row ' + (r + 1) +
+      ' | location=' + String(data[r][1]) +
+      ' | gross=' + String(data[r][2]) +
+      ' | date=' + String(data[r][0]).slice(0, 60));
+  }
+
+  Logger.log('cleanupCorruptSalesRows: ' + (isDryRun ? 'DRY RUN' : 'APPLY') +
+    ' — found ' + matches.length + ' corrupt row(s)');
+
+  if (isDryRun) {
+    return { mode: 'dryRun', found: matches.length, rows: matches.map(function (r) { return r + 1; }) };
+  }
+
+  if (matches.length !== CLEANUP_EXPECTED_CORRUPT_ROWS) {
+    Logger.log('ABORT: expected ' + CLEANUP_EXPECTED_CORRUPT_ROWS + ', got ' + matches.length);
+    return 'aborted';
+  }
+
+  // Pass 2: delete bottom-up so pass-1 row numbers stay valid as rows shift.
+  var deleted = 0;
+  for (var m = matches.length - 1; m >= 0; m--) {
+    sheet.deleteRow(matches[m] + 1);
+    deleted++;
+  }
+
+  Logger.log('cleanupCorruptSalesRows: deleted=' + deleted);
+  return { mode: 'apply', found: matches.length, deleted: deleted };
+}
+
 /* ------------------------------------------------------------------ *
  * Read API (doGet) — token-gated, serves weekly summaries
  * ------------------------------------------------------------------ */
@@ -488,6 +578,34 @@ function coerceDateStr_(v) {
     return y + '-' + (m < 10 ? '0' + m : m) + '-' + (d < 10 ? '0' + d : d);
   }
   return String(v);
+}
+
+var DATE_ARG_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Resolve a caller/trigger-supplied date argument to 'YYYY-MM-DD'.
+ * A time-based trigger invokes its handler with an EVENT OBJECT as arg 1 — truthy,
+ * so `if (!arg)` lets it through and the stringified object lands in a date cell.
+ * Accept ONLY a real YYYY-MM-DD calendar date; anything else (event object,
+ * 'yesterday', '2026-7-5', '2026-02-31') falls back.
+ */
+function resolveDateArg_(arg, fallback) {
+  if (typeof arg !== 'string') return fallback;
+  var s = arg.trim();
+  if (!DATE_ARG_RE.test(s)) return fallback;
+  var d = new Date(s + 'T00:00:00Z');                    // regex admits 2026-02-31
+  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return fallback;
+  return s;
+}
+
+/**
+ * Add n days to a 'YYYY-MM-DD' string. Noon-UTC anchor mirrors weekStartForDate_
+ * so DST can never shift the result across a day boundary.
+ */
+function addDaysStr_(dateStr, n) {
+  var d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
 }
 
 function weekStartForDate_(dateStr) {
@@ -574,7 +692,15 @@ function filterSummaryByDateRange_(rows, from, to) {
  * Weekly summarize + archive/purge
  * ------------------------------------------------------------------ */
 
-function weeklySummarize() {
+/**
+ * Summarize one week into the Summary tab, then archive/purge old Suppliers rows.
+ *
+ * @param {string} [weekStartOverride] — any 'YYYY-MM-DD' inside the target week;
+ *   it is SNAPPED to that week's Monday. Used to summarize a backlog week that
+ *   the Monday trigger has already passed by. A non-date arg (e.g. a trigger
+ *   event object) falls back to the last completed week.
+ */
+function weeklySummarize(weekStartOverride) {
   var ss = getHubSpreadsheet_();
   var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
   if (!suppSheet) { Logger.log('weeklySummarize: no Suppliers tab'); return; }
@@ -582,8 +708,36 @@ function weeklySummarize() {
   var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
   var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
 
-  var today = todayStr_();
-  var week = getLastCompletedWeek_(today);
+  var today = todayStr_();                              // KEEP: still used for cutoffDate below
+  var ovr = resolveDateArg_(weekStartOverride, null);   // trigger-event safe
+  var week;
+  if (ovr) {
+    // Snap to Monday: an unsnapped week_start writes Summary rows that overlap
+    // the trigger's Monday-aligned rows -> filterSummaryByDateRange_ returns both
+    // -> double-counted spend. Dedup keys on week_start, so it would NOT save us.
+    var start = weekStartForDate_(ovr);
+    week = { start: start, end: addDaysStr_(start, 6) };
+
+    // Refuse a week that hasn't finished yet. Summary is append-only and dedup
+    // can only SKIP, never UPDATE: summarizing a partial week freezes the partial
+    // total under key week_start||supplier||location, and the Monday trigger then
+    // skips it as "already done". The rest of that week's spend is lost silently
+    // and permanently. Only a completed week may be summarized.
+    if (week.end >= today) {
+      Logger.log('weeklySummarize: REFUSED incomplete week ' + week.start + ' … ' + week.end +
+        ' (today=' + today + ') — a partial total would be frozen by dedup. ' +
+        'Re-run once the week has ended.');
+      return {
+        weekStart: week.start, weekEnd: week.end,
+        refused: 'incomplete-week',
+        summariesAdded: 0, labourTabAdded: 0, labourSummaryAdded: 0
+      };
+    }
+
+    Logger.log('weeklySummarize: override ' + ovr + ' → week ' + week.start + ' … ' + week.end);
+  } else {
+    week = getLastCompletedWeek_(today);
+  }
   var extractedAt = Utilities.formatDate(new Date(), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
 
   var allData = suppSheet.getDataRange().getValues();
@@ -614,7 +768,17 @@ function weeklySummarize() {
   cutoffDate.setUTCDate(cutoffDate.getUTCDate() - ARCHIVE_RETENTION_DAYS);
   var cutoffStr = cutoffDate.toISOString().slice(0, 10);
 
-  archiveAndPurge_(suppSheet, archSheet, cutoffStr);
+  // Archive/purge is weekly MAINTENANCE and belongs to the scheduled run only.
+  // On an override (backlog) run it would purge the very Suppliers rows just
+  // summarized — and since a re-run then reads an empty source, it would report
+  // summariesAdded:0, which reads as "already done" but actually means "the
+  // source data is gone". Manual backfills must be repeatable.
+  var archived = 0;
+  if (!ovr) {
+    archived = archiveAndPurge_(suppSheet, archSheet, cutoffStr);
+  } else {
+    Logger.log('weeklySummarize: override run — skipping archive/purge (maintenance is the trigger\'s job)');
+  }
 
   Logger.log('weeklySummarize: week ' + week.start + ' → ' + week.end +
     ', supplierSummariesAdded=' + added +
@@ -635,6 +799,9 @@ function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
 
   for (var r = data.length - 1; r >= 1; r--) {
     var rowDate = coerceDateStr_(data[r][0]);
+    // A blank date coerces to '' and '' <= any cutoff is TRUE, which would
+    // archive+purge every blank row. Only ever act on a real calendar date.
+    if (!DATE_ARG_RE.test(rowDate)) continue;
     if (rowDate <= cutoffDateStr) {
       archiveSheet.appendRow(data[r]);
       sourceSheet.deleteRow(r + 1);

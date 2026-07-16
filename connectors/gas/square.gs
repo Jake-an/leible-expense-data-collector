@@ -36,10 +36,15 @@ var SQUARE_TZ = 'Australia/Sydney';
  * @returns {{date:string, rowsWritten:number, duplicatesSkipped:number}}
  */
 function squareDailyPull(dateStr) {
-  if (!dateStr) {
-    var yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    dateStr = Utilities.formatDate(yesterday, SQUARE_TZ, 'yyyy-MM-dd');
+  // A time-based trigger passes its EVENT OBJECT here — truthy, so a bare
+  // `if (!dateStr)` let it through and the stringified object was written into
+  // the date column with gross_sales=0. Accept only a real date; else yesterday.
+  var yesterday = Utilities.formatDate(new Date(Date.now() - 24 * 60 * 60 * 1000), SQUARE_TZ, 'yyyy-MM-dd');
+  var resolved = resolveDateArg_(dateStr, yesterday);
+  if (dateStr !== undefined && resolved !== dateStr) {
+    Logger.log('squareDailyPull: ignoring non-date arg (' + String(dateStr).slice(0, 60) + ') — using ' + resolved);
   }
+  dateStr = resolved;
 
   var offset = Utilities.formatDate(new Date(dateStr + 'T12:00:00Z'), SQUARE_TZ, 'XXX'); // e.g. +10:00 / +11:00
   var startIso = dateStr + 'T00:00:00' + offset;
@@ -52,6 +57,7 @@ function squareDailyPull(dateStr) {
 
   var rowsWritten = 0;
   var duplicatesSkipped = 0;
+  var sitesWithToken = 0;
 
   for (var i = 0; i < SQUARE_SITES.length; i++) {
     var site = SQUARE_SITES[i];
@@ -60,6 +66,7 @@ function squareDailyPull(dateStr) {
       Logger.log('squareDailyPull: no token for ' + site.name + ' (' + site.prop + ') — skipping');
       continue;
     }
+    sitesWithToken++;
 
     var orders = [];
     var locations = squareListLocations_(token);
@@ -74,7 +81,21 @@ function squareDailyPull(dateStr) {
     Logger.log('squareDailyPull: ' + site.name + ' ' + dateStr + ' gross=$' + gross + ' from ' + orders.length + ' orders');
   }
 
-  return { date: dateStr, rowsWritten: rowsWritten, duplicatesSkipped: duplicatesSkipped };
+  // Heartbeat ONLY if at least one site actually had a token. A revoked token
+  // makes every site `continue`, so this function would otherwise return
+  // "successfully" having done nothing — and a heartbeat there would mean
+  // "ran fine, wrote nothing, watchdog silent forever": the month-of-silence
+  // failure in new clothes. No token → no heartbeat → the alert correctly fires.
+  if (sitesWithToken > 0) {
+    stalenessStampHeartbeat_('square');
+  } else {
+    Logger.log('squareDailyPull: NO site had a token — not stamping the heartbeat, so staleness will alert');
+  }
+
+  return {
+    date: dateStr, rowsWritten: rowsWritten, duplicatesSkipped: duplicatesSkipped,
+    sitesWithToken: sitesWithToken
+  };
 }
 
 /**
