@@ -142,6 +142,7 @@ class FreshAndChillConnector(BaseConnector):
 
     def run_unattended(self) -> dict:
         """Loop all shops, scrape orders, POST combined rows."""
+        self._require_exec_url()
         SESSIONS_DIR.mkdir(exist_ok=True)
         all_rows: list[dict] = []
         blocked_shops: list[str] = []

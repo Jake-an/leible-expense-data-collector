@@ -18,7 +18,8 @@ Run a connector:
     python connectors/playwright/<name>.py            # unattended (needs saved session)
     python connectors/playwright/<name>.py --attended # headed first login, saves session
 
-The GAS web-app URL is read from the GAS_EXEC_URL environment variable.
+The GAS web-app URL resolves from GAS_EXEC_URL (override) if set, else falls back
+to config/deployment.json's execUrl (see resolve_exec_url()).
 """
 
 from __future__ import annotations
@@ -37,6 +38,28 @@ from playwright.sync_api import sync_playwright, Page, BrowserContext
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SESSIONS_DIR = REPO_ROOT / "sessions"
 
+DEPLOYMENT_JSON = REPO_ROOT / "config" / "deployment.json"
+
+
+def resolve_exec_url() -> str:
+    """GAS /exec URL: GAS_EXEC_URL (override) → config/deployment.json execUrl.
+
+    Never raises — returns '' and lets post() own the single failure message, so a
+    corrupt config can't crash an --attended run that never POSTs.
+    """
+    env_url = os.environ.get("GAS_EXEC_URL", "").strip()
+    if env_url:
+        return env_url
+    try:
+        with DEPLOYMENT_JSON.open(encoding="utf-8") as fh:
+            return str(json.load(fh).get("execUrl", "") or "").strip()
+    except FileNotFoundError:
+        print(f"[base] no {DEPLOYMENT_JSON} — cannot resolve execUrl", file=sys.stderr)
+    except (json.JSONDecodeError, OSError, TypeError) as err:
+        print(f"[base] cannot read {DEPLOYMENT_JSON}: {err}", file=sys.stderr)
+    return ""
+
+
 # Australia/Sydney offset for extracted_at stamps. Australia observes DST; this is
 # a fixed +10:00 for simplicity — refine if exact AEDT stamping ever matters.
 SYD_TZ = timezone(timedelta(hours=10))
@@ -53,7 +76,7 @@ class BaseConnector:
     LOGIN_URL: str = ""           # portal login / landing URL
 
     def __init__(self, exec_url: str | None = None):
-        self.exec_url = exec_url or os.environ.get("GAS_EXEC_URL", "")
+        self.exec_url = exec_url or resolve_exec_url()
         self.session_path = SESSIONS_DIR / f"{self.NAME}.json"
 
     # ------------------------------------------------------------------ #
@@ -73,6 +96,8 @@ class BaseConnector:
     # Shared orchestration
     # ------------------------------------------------------------------ #
     def run(self, attended: bool = False) -> dict:
+        if not attended:
+            self._require_exec_url()
         SESSIONS_DIR.mkdir(exist_ok=True)
         with sync_playwright() as pw:
             context = self._new_context(pw, headed=attended)
@@ -111,11 +136,17 @@ class BaseConnector:
         if not self.is_logged_in(page):
             self.mark_blocked("still not logged in after attended login")
 
+    def _require_exec_url(self) -> None:
+        if not self.exec_url:
+            raise RuntimeError(
+                f"No GAS /exec URL: GAS_EXEC_URL is unset and {DEPLOYMENT_JSON} has no execUrl. "
+                f"Run bash scripts/deploy.sh, or export GAS_EXEC_URL."
+            )
+
     def post(self, rows: list[dict]) -> dict:
         if not rows:
             return {"result": "skipped", "reason": "no rows"}
-        if not self.exec_url:
-            raise RuntimeError("GAS_EXEC_URL not set — cannot POST to the hub")
+        self._require_exec_url()
         payload = {
             "source": self.SOURCE,
             "rows": rows,

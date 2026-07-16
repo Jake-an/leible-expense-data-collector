@@ -15,6 +15,7 @@ connector only supplies `NAME` / `SOURCE` / `LOGIN_URL` and two hooks:
 cd connectors/playwright
 pip install -r requirements.txt
 python -m playwright install chromium
+# Optional: export GAS_EXEC_URL to override config/deployment.json's execUrl.
 export GAS_EXEC_URL="https://script.google.com/macros/s/<deployment-id>/exec"
 ```
 
