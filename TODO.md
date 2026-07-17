@@ -113,19 +113,25 @@
 - Note: labour rows only ever landed once, so unlike the supplier rows they were not duplicated — the same
   latent Date-key bug was there, it just hadn't been re-run yet. Fixed before it could bite.
 
-### Phase 9 — Ingest watchdog (staleness.gs) — ⚠️ DEPLOYED, TRIGGER UNCONFIRMED
+### Phase 9 — Ingest watchdog (staleness.gs) — ✅ ARMED (2026-07-17)
 - `checkIngestStaleness` alerts (orange all-day Calendar events) when any of `food_dairy_co`, `fresh_and_chill`,
   `ordermentum`, `square`, `mayers` stops ingesting. Signal = max(newest sheet `extracted_at`, Script-Properties
   heartbeat) — the sheet alone measures last NEW DATA (dedup means a healthy quiet run writes nothing → cries
   wolf); the heartbeat alone doesn't exist until the first post-deploy run (→ everything alerts on day 1).
 - `staleness.gs` is deployed and stable (shipped in v17–19, `/exec` healthy throughout).
-- [ ] **(Jake)** Run `installStalenessTrigger()` from the editor — zero-arg, idempotent (deletes any existing
-      `checkIngestStaleness` handler before creating), installs daily 11:00 AEST. **Never recorded as installed
-      anywhere**, and GAS triggers can't be listed remotely, so its status is unknown. Running it is safe either
-      way. If the editor prompts for the CalendarApp scope, accept — `staleness.gs` is its only source.
-- **Why this matters now:** as of 2026-07-17 every source runs unattended. The file's own header records that
-  "every scheduled ingest failed silently for a month" because nothing was watching — an uninstalled watchdog
-  reproduces exactly that. This is the highest-value remaining item.
+- [x] `checkIngestStaleness` trigger installed 2026-07-17 (daily 11:00 AEST). The system is now automated AND
+      monitored — closing the gap the file's own header warns about ("every scheduled ingest failed silently for
+      a month" because nothing was watching).
+- Threshold is **96h** — deliberately silent through a normal Fri→Mon (80h), so a weekend never cries wolf.
+- Heartbeats are stamped by `doPost` (all Playwright sources), `mayers.gs`, and `square.gs`.
+- [ ] **(Jake)** First real run is 11:00 on 2026-07-18, by which time all 5 sources will have run. **Expect
+      silence.** Every source stamps a heartbeat on a healthy run, including quiet ones: `mayers` stamps even
+      with no invoice (a quiet day ≠ broken, and a broken Gmail scope throws rather than faking success), and
+      the Playwright three stamp via `doPost` regardless of dedup. **Any alert on 2026-07-18 is real** —
+      investigate, don't dismiss.
+- Deliberate asymmetry worth remembering: `square` stamps **only if at least one site had a token**. A revoked
+  token makes every site `continue`, so an unconditional stamp there would mean "ran fine, wrote nothing,
+  watchdog silent forever" — the month-of-silence failure in new clothes. No token → no heartbeat → alert fires.
 
 ## Future
 - Move Playwright runners to an always-on box
