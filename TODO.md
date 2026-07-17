@@ -33,7 +33,9 @@
 - [x] Email forward set up from Outlook: `jake@leiblecoffee.com.au` → `mio.jake+mayers@gmail.com` (2026-06-30).
 - [x] Live-verified on a real invoice — #3429816 (F.Mayer) delivered to `mio.jake+mayers@gmail.com` as a real `application/pdf` attachment, OCR-parsed and ingested (thread carries the success-gated `expense-ingested` label). Connector correctly ignores Outlook signature `image.png` attachments.
 - [x] No OCR tuning needed — real-invoice parse succeeded.
-- [ ] **(Jake)** Install daily trigger: run `installMayersTrigger()` from the editor (6am AEST). After the FIRST auto-forwarded invoice lands, sanity-check it parsed (Outlook rule format).
+- [x] Daily `mayersDailyPull` trigger installed 2026-07-17 (6am AEST) — every source is now unattended.
+- [ ] **(Jake)** After the FIRST auto-forwarded invoice lands, sanity-check it parsed (Outlook rule format may
+      differ from the manually-forwarded one that was verified).
 
 ### Phase 3 — Ordermentum (Tuga Pastry + Butterboy) — ✅ LIVE (2026-06-18)
 - Connector + session + `docs/clickpath-ordermentum.md` exist (API-first).
@@ -110,6 +112,20 @@
       round-trip, and the missing-`LABOUR_SHEET_ID` skip path.
 - Note: labour rows only ever landed once, so unlike the supplier rows they were not duplicated — the same
   latent Date-key bug was there, it just hadn't been re-run yet. Fixed before it could bite.
+
+### Phase 9 — Ingest watchdog (staleness.gs) — ⚠️ DEPLOYED, TRIGGER UNCONFIRMED
+- `checkIngestStaleness` alerts (orange all-day Calendar events) when any of `food_dairy_co`, `fresh_and_chill`,
+  `ordermentum`, `square`, `mayers` stops ingesting. Signal = max(newest sheet `extracted_at`, Script-Properties
+  heartbeat) — the sheet alone measures last NEW DATA (dedup means a healthy quiet run writes nothing → cries
+  wolf); the heartbeat alone doesn't exist until the first post-deploy run (→ everything alerts on day 1).
+- `staleness.gs` is deployed and stable (shipped in v17–19, `/exec` healthy throughout).
+- [ ] **(Jake)** Run `installStalenessTrigger()` from the editor — zero-arg, idempotent (deletes any existing
+      `checkIngestStaleness` handler before creating), installs daily 11:00 AEST. **Never recorded as installed
+      anywhere**, and GAS triggers can't be listed remotely, so its status is unknown. Running it is safe either
+      way. If the editor prompts for the CalendarApp scope, accept — `staleness.gs` is its only source.
+- **Why this matters now:** as of 2026-07-17 every source runs unattended. The file's own header records that
+  "every scheduled ingest failed silently for a month" because nothing was watching — an uninstalled watchdog
+  reproduces exactly that. This is the highest-value remaining item.
 
 ## Future
 - Move Playwright runners to an always-on box
