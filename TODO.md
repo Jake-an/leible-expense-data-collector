@@ -8,7 +8,13 @@
 - **Food and Dairy Co connector built + live-tested 2026-06-18** (326 invoices, dedup verified)
 - **Ordermentum connector live-tested 2026-06-18** — Butterboy fix verified (tradingName match), 114 rows (74 Tuga + 40 Butterboy); cleanup deployed to relabel "Wholesale Cookies PTY LTD" → "Butterboy" and delete out-of-filter suppliers
 - **Fresh and Chill connector built + live-tested 2026-06-22** — Zupply web app (not WhatsApp); York 36 orders, dedup verified; 3 shops left to seed
-- **Read API + weekly summary built 2026-06-22** — token-gated `doGet`, `weeklySummarize()` with 6-month archive/purge, 59 tests green
+- **Read API + weekly summary built 2026-06-22** — token-gated `doGet`, `weeklySummarize()` with 6-month archive/purge
+- **Summary dedup bug found + fixed + live-repaired 2026-07-17** — `String(week_start)` never matched a Sheet's
+  Date, so every run re-appended the whole week (06-15 written 4×; `doGet` over-reported spend 4×). Fixed at all
+  3 dedup sites, live tab repaired (24 dupes deleted, 2 weeks backfilled, verified 0 remaining), weekly trigger
+  installed. **237 tests green** — the mock now coerces dates on write, which is what had hidden it under 209 green tests.
+- **Phases 7 + 8 fully closed 2026-07-17** — `API_READ_TOKEN` + `LABOUR_SHEET_ID` set, weekly trigger live,
+  one-shots removed. The hub is end-to-end operational.
 
 ## Active
 
@@ -91,8 +97,9 @@
   `cleanupDuplicateSummaryRows(false)` / `weeklySummarize('2026-06-22')` are not runnable from it — and forcing
   it by editing the signature to `function f(false)` is a SyntaxError that blocks saving. Any hand-run function
   taking arguments needs a zero-arg wrapper. See global memory `gas-runtime-limitation-global`.
-- [ ] **(Jake)** Confirm `API_READ_TOKEN` is set in Script Properties — a bare `/exec` returns `unauthorized`
-      whether the property is set or missing, so this can't be verified from outside. Hit `/exec?token=...` to prove it.
+- [x] `API_READ_TOKEN` set in Script Properties (confirmed by Jake 2026-07-17). Note for future sessions: a bare
+      `/exec` returns `unauthorized` whether the property is set or missing, so this is **not** verifiable from
+      outside — only `/exec?token=...` distinguishes the two.
 
 ### Phase 8 — Labour link (Onboarding app LABOUR_COST sheet) — ✅ LIVE
 - [x] `labourWeeklyPull_()` implemented in Code.gs — reads Onboarding app `LABOUR_COST`, writes `Labour` tab + `Summary` rows (`supplier='Labour'`), empty-safe
