@@ -585,6 +585,67 @@ function cleanupDuplicateSummaryRows(dryRun) {
   return { mode: 'apply', found: matches.length, deleted: deleted, conflicts: conflicts };
 }
 
+/**
+ * runSummaryRepair — ONE-SHOT, zero-arg repair for the week_start dedup bug.
+ *
+ * WHY THIS WRAPPER EXISTS: the Apps Script editor's Run button cannot pass
+ * arguments — it only ever calls a function with none. So cleanupDuplicateSummaryRows(false)
+ * and weeklySummarize('2026-06-22') are not runnable from the editor, and trying to
+ * force it by editing the signature to `function f(false)` is a syntax error that
+ * blocks saving. Any argument-taking function that a human must trigger by hand
+ * needs a zero-arg wrapper like this one.
+ *
+ * Runs the whole repair in order, and re-verifies at the end:
+ *   1. delete the duplicate Summary rows the broken dedup appended
+ *   2. backfill the two weeks that were never summarized
+ *   3. dry-run the cleanup again — MUST report 0 duplicates
+ *
+ * Every step is idempotent, so re-running this is safe if it fails part-way.
+ *
+ * Backfill weeks are hardcoded because this is a one-shot for a known gap
+ * (Summary went stale after 2026-06-25; the 2026-07-06 week was already picked up
+ * by a manual no-arg run on 2026-07-17). DELETE this function once it has run clean.
+ *
+ * @returns {Object} { cleanup, backfilled:[], verify, ok:boolean }
+ */
+function runSummaryRepair() {
+  var BACKFILL_WEEKS = ['2026-06-22', '2026-06-29'];
+
+  Logger.log('runSummaryRepair: STEP 1 — applying duplicate cleanup');
+  var cleanup = cleanupDuplicateSummaryRows(false);
+  Logger.log('runSummaryRepair: cleanup deleted=' + cleanup.deleted +
+    ' conflicts=' + (cleanup.conflicts ? cleanup.conflicts.length : 0));
+
+  // A conflict means a same-key row carried a DIFFERENT total — a real data change,
+  // not a mechanical duplicate. Stop rather than backfill on top of an unresolved one.
+  if (cleanup.conflicts && cleanup.conflicts.length) {
+    Logger.log('runSummaryRepair: ABORT — ' + cleanup.conflicts.length +
+      ' conflict(s) need a human. Nothing backfilled.');
+    return { cleanup: cleanup, backfilled: [], verify: null, ok: false };
+  }
+
+  Logger.log('runSummaryRepair: STEP 2 — backfilling ' + BACKFILL_WEEKS.join(', '));
+  var backfilled = [];
+  for (var i = 0; i < BACKFILL_WEEKS.length; i++) {
+    var res = weeklySummarize(BACKFILL_WEEKS[i]);
+    Logger.log('runSummaryRepair: ' + BACKFILL_WEEKS[i] +
+      ' → summariesAdded=' + res.summariesAdded +
+      ' labourSummaryAdded=' + res.labourSummaryAdded +
+      (res.refused ? ' REFUSED=' + res.refused : ''));
+    backfilled.push(res);
+  }
+
+  // Step 3 proves the live dedup actually works now: a dry run over the repaired
+  // tab must find nothing. If this is non-zero the fix did not take.
+  Logger.log('runSummaryRepair: STEP 3 — verifying (dry run, expect 0 duplicates)');
+  var verify = cleanupDuplicateSummaryRows();
+  var ok = (verify.found === 0);
+  Logger.log('runSummaryRepair: verify found=' + verify.found +
+    ' → ' + (ok ? 'CLEAN ✅ — safe to delete runSummaryRepair()' : 'STILL DIRTY ❌ — do not delete, investigate'));
+
+  return { cleanup: cleanup, backfilled: backfilled, verify: verify, ok: ok };
+}
+
 /* ------------------------------------------------------------------ *
  * Read API (doGet) — token-gated, serves weekly summaries
  * ------------------------------------------------------------------ */

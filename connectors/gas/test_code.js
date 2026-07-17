@@ -727,6 +727,68 @@ freshSheets();
 })();
 
 /* ------------------------------------------------------------------ *
+ * Step 7d — runSummaryRepair (zero-arg editor wrapper)
+ *
+ * The editor's Run button passes no arguments, so the repair has to be reachable
+ * with none. These tests exist because the wrapper is the ONLY thing a human will
+ * actually click — if it silently skips a step the repair looks done and isn't.
+ * ------------------------------------------------------------------ */
+
+(function testRunSummaryRepair() {
+  console.log('\nrunSummaryRepair:');
+
+  // Mirrors the live tab as of 2026-07-17: the 06-15 week duplicated 3x over, and
+  // Suppliers rows for the two weeks that were never summarized.
+  function seedLive() {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const s = currentSS.insertSheet('Summary');
+    s.appendRow(SUMMARY_HEADERS);
+    for (const stamp of ['T1', 'T2', 'T3', 'T4']) {
+      s.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'Leible Pitt', 263.3, stamp]);
+      s.appendRow(['2026-06-15', '2026-06-21', 'Mayers', '', 736.74, stamp]);
+    }
+    const supp = currentSS.getSheetByName('Suppliers');
+    supp.appendRow(['2026-06-24', 'Food and Dairy Co', 80, 'B1', 'Leible York', 'food_dairy_co', 'x']);
+    supp.appendRow(['2026-07-01', 'Food and Dairy Co', 90, 'B2', 'Leible York', 'food_dairy_co', 'x']);
+    return s;
+  }
+
+  var sheet = seedLive();
+  eq('seeded 8 duplicate-laden rows (+header)', sheet._rows.length, 9);
+
+  var r = runSummaryRepair();
+  eq('repair reports ok', r.ok, true);
+  eq('cleanup deleted the 6 duplicates', r.cleanup.deleted, 6);
+  eq('both weeks backfilled', r.backfilled.length, 2);
+  eq('2026-06-22 week summarized', r.backfilled[0].weekStart, '2026-06-22');
+  eq('2026-06-29 week summarized', r.backfilled[1].weekStart, '2026-06-29');
+  eq('backfill actually added rows', r.backfilled[0].summariesAdded, 1);
+  eq('verify finds zero duplicates', r.verify.found, 0);
+
+  // The unique 06-15 rows survive alongside the 2 backfilled weeks.
+  var rows = sheet.getDataRange().getValues();
+  eq('4 unique rows remain (+header)', rows.length, 5);
+  eq('first 06-15 row kept', rows[1][5], 'T1');
+
+  // Idempotent: the whole wrapper can be re-run without damage.
+  var again = runSummaryRepair();
+  eq('re-run deletes nothing', again.cleanup.deleted, 0);
+  eq('re-run backfills nothing new', again.backfilled[0].summariesAdded, 0);
+  eq('re-run still verifies clean', again.ok, true);
+  eq('sheet unchanged by re-run', sheet.getDataRange().getValues().length, 5);
+
+  // A conflict must ABORT before backfilling — never build on unresolved data.
+  seedLive();
+  currentSS.getSheetByName('Summary')
+    .appendRow(['2026-06-15', '2026-06-21', 'Mayers', '', 999, 'T5']);
+  var conf = runSummaryRepair();
+  eq('conflict → ok is false', conf.ok, false);
+  eq('conflict → nothing backfilled', conf.backfilled.length, 0);
+  eq('conflict → verify skipped', conf.verify, null);
+})();
+
+/* ------------------------------------------------------------------ *
  * Step 7c — cleanupDuplicateSummaryRows (one-shot repair)
  * ------------------------------------------------------------------ */
 
