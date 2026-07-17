@@ -33,7 +33,12 @@
 - Connector + session + `docs/clickpath-ordermentum.md` exist (API-first).
 - [x] **Butterboy fixed (2026-06-18):** `tradingName` match + relabel. See clickpath "Supplier identity gotcha".
 - [x] **Live POST verified (2026-06-18):** run 1 → `rowsAdded:1, duplicatesSkipped:113`; run 2 → `rowsAdded:0, duplicatesSkipped:114` (dedup idempotent).
-- [ ] **(Jake)** Run `cleanupOrdermentumRows()` from the Apps Script editor — relabels "Wholesale Cookies PTY LTD" → "Butterboy", deletes out-of-filter suppliers (Sonoma, Brooklyn Boy, etc.). Then **delete the function** from Code.gs (one-shot).
+- [x] **`cleanupOrdermentumRows()` run 2026-07-17** — reported `renamed=0, deleted=0` (nothing left to fix in
+      `Suppliers`), and the function has been deleted from `Code.gs` as intended. Caveat: it only ever scanned
+      `Suppliers`, and an `archiveAndPurge_` ran earlier the same day (93 rows older than 2026-01-15 → `_archive`),
+      so any pre-2026 rows still labelled "Wholesale Cookies PTY LTD" are now frozen in `_archive` under the old
+      name. Cosmetic only — `_archive` is cold raw data, `doGet` serves `Summary`, and no pre-2026 week is
+      summarized. Worth a relabel pass only if `_archive` is ever used for historical analysis.
 - [x] Registered `scripts/run_ordermentum.cmd` as Win task "LEIBLE Expense - Ordermentum" — daily 03:20, LogonType=Interactive (runs while logged in). Session ~15-day JWT refresh; re-run `--attended` when it `blocks`.
 - [ ] **(decision deferred)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? Kept narrow for now.
 
@@ -55,7 +60,7 @@
 - [ ] **(Jake)** Attended login + click-path map → `docs/clickpath-kent_paper.md`
 - [ ] Fill selectors in `kent_paper.py`; test full flow
 
-### Phase 7 — Read API + Weekly Summary — ⚠️ DEPLOYED, TRIGGER STILL BLOCKED
+### Phase 7 — Read API + Weekly Summary — ✅ LIVE + REPAIRED (2026-07-17)
 - Token-gated `doGet` serves weekly summaries (supplier + location + total_spend) from `Summary` tab.
 - `weeklySummarize()` aggregates last Mon–Sun into `Summary`, archives raw rows > 6mo to `_archive`, purges originals.
 - Default (no params) = last completed week; override with `?from=...&to=...`.
@@ -69,17 +74,23 @@
       Root cause it survived 209 green tests: the Node mock stored appended dates as the strings they were
       written as, so `String(cell)` round-tripped cleanly in tests and only broke against a real Sheet. Mock now
       coerces bare `yyyy-MM-dd` on write, mirroring Sheets. See memory `sheet-date-coercion`.
-- [ ] **(Jake — editor)** Repair the live tab, IN THIS ORDER. `clasp run` is unavailable (script isn't an API
-      executable), so these must run from the Apps Script editor:
-    1. `cleanupDuplicateSummaryRows()` — dry run, deletes nothing. Read the Log: expect ~24 duplicates,
-       **0 conflicts**. If conflicts > 0, STOP and look — a same-key row with a different total is a real
-       data change, not a mechanical duplicate, and is deliberately left alone.
-    2. `cleanupDuplicateSummaryRows(false)` — apply. Idempotent; safe to re-run.
-    3. Backfill the 3 missed weeks (Summary is stale — newest `summarized_at` is 2026-06-25):
-       `weeklySummarize('2026-06-22')`, `weeklySummarize('2026-06-29')`, `weeklySummarize('2026-07-06')`.
-       Each should report `summariesAdded > 0` on the first call and `0` on a second (proves dedup works live).
-    4. `installWeeklySummarizeTrigger()` — **only after 1–3 are clean.** Installing it before the fix would have
-       automated a fresh duplicate set every Monday.
+- [x] **Live `Summary` repaired 2026-07-17** — one-shot `runSummaryRepair()` (since deleted): `deleted=24,
+      conflicts=0`; backfilled 2026-06-22 (`summariesAdded=6, labour=5`) and 2026-06-29 (`summariesAdded=6,
+      labour=5`). The 2026-07-06 week had already landed via a manual no-arg run.
+      **Verified live:** the follow-up dry run reported `0 duplicate(s), 0 conflict(s)` — a fresh read of the
+      real Sheet from inside GAS, which is the only trustworthy proof here. Drive's `contentSnippet` is a
+      cached index and still showed the deleted rows ~minutes later; **never verify a just-finished GAS run
+      with it.**
+- [x] Weekly `weeklySummarize` trigger installed 2026-07-17 (Monday 4am AEST). Safe now that the dedup is
+      fixed — it can no longer append a duplicate set each week.
+- [x] One-shots removed from `Code.gs` after running clean (2026-07-17): `runSummaryRepair` (hardcoded
+      June-2026 weeks — a footgun if re-run later) and `cleanupOrdermentumRows` (Phase 3; final run
+      `renamed=0, deleted=0`). `cleanupDuplicateSummaryRows` is **kept** — dry-run by default, and it's the
+      detector that proves the invariant if duplicates ever reappear.
+- **Editor gotcha that cost a round-trip:** the Run button passes **no arguments**, so
+  `cleanupDuplicateSummaryRows(false)` / `weeklySummarize('2026-06-22')` are not runnable from it — and forcing
+  it by editing the signature to `function f(false)` is a SyntaxError that blocks saving. Any hand-run function
+  taking arguments needs a zero-arg wrapper. See global memory `gas-runtime-limitation-global`.
 - [ ] **(Jake)** Confirm `API_READ_TOKEN` is set in Script Properties — a bare `/exec` returns `unauthorized`
       whether the property is set or missing, so this can't be verified from outside. Hit `/exec?token=...` to prove it.
 
