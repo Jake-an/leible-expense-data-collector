@@ -48,6 +48,23 @@
       name. Cosmetic only — `_archive` is cold raw data, `doGet` serves `Summary`, and no pre-2026 week is
       summarized. Worth a relabel pass only if `_archive` is ever used for historical analysis.
 - [x] Registered `scripts/run_ordermentum.cmd` as Win task "LEIBLE Expense - Ordermentum" — daily 03:20, LogonType=Interactive (runs while logged in). Session ~15-day JWT refresh; re-run `--attended` when it `blocks`.
+- [ ] 🔴 **(Jake) ORDERMENTUM IS DOWN — Tuga + Butterboy spend is missing.** Found 2026-07-17.
+      `sessions/ordermentum.json` is dated **18 Jun**; at a ~15-day JWT that expired **~3 Jul**. Every run since
+      logs `BLOCKED: not logged in and no valid session` and `exit=2` — the task fires nightly and ingests
+      nothing. Confirmed in the data: the 2026-07-06 Summary week has **no Tuga/Butterboy rows at all**, where
+      2026-06-15 has them. The read API is therefore **under**-reporting recent weeks.
+      **Fix:** `python connectors\playwright\ordermentum.py --attended` (Jake passes the login; never automated).
+      **Then re-summarize the affected weeks** — `weeklySummarize('2026-06-29')` and `('2026-07-06')` — via a
+      zero-arg wrapper (the Run button takes no args). Missing-supplier rows ARE recoverable: the dedup key is
+      `week_start||supplier||location`, so an absent supplier's row is a new key and will be added.
+      ⚠️ **But a supplier that was only PARTIALLY captured has its total frozen** — dedup can skip, never update.
+      If Ordermentum ingested some of a week's Tuga invoices before dying (likely for 06-29, which straddles the
+      ~3 Jul cutoff), that week's Tuga total is stuck at the partial figure and re-summarizing will NOT fix it.
+      Check 06-29's Tuga total against Ordermentum directly before trusting it; correcting it means deleting
+      that Summary row first.
+- **This is exactly what the watchdog is for** — it ran blocked for ~2 weeks and nothing said a word, which is
+  the same failure `staleness.gs` was written after. The 2026-07-18 11:00 alert on `ordermentum` is the
+  watchdog working correctly on its first day.
 - [ ] **(decision deferred)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? Kept narrow for now.
 
 ### Phase 4 — Food and Dairy Co — ✅ DONE (2026-06-18)
@@ -124,11 +141,11 @@
       a month" because nothing was watching).
 - Threshold is **96h** — deliberately silent through a normal Fri→Mon (80h), so a weekend never cries wolf.
 - Heartbeats are stamped by `doPost` (all Playwright sources), `mayers.gs`, and `square.gs`.
-- [ ] **(Jake)** First real run is 11:00 on 2026-07-18, by which time all 5 sources will have run. **Expect
-      silence.** Every source stamps a heartbeat on a healthy run, including quiet ones: `mayers` stamps even
-      with no invoice (a quiet day ≠ broken, and a broken Gmail scope throws rather than faking success), and
-      the Playwright three stamp via `doPost` regardless of dedup. **Any alert on 2026-07-18 is real** —
-      investigate, don't dismiss.
+- [ ] **(Jake)** First real run is 11:00 on 2026-07-18. **Expect exactly ONE alert: `ordermentum`** — and it is
+      **correct** (see Phase 3). The other four stamp heartbeats on any healthy run, including quiet ones
+      (`mayers` stamps even with no invoice — a quiet day ≠ broken, and a broken Gmail scope throws rather than
+      faking success; the Playwright sources stamp via `doPost` regardless of dedup). So: one expected alert,
+      and **any OTHER alert is real** — investigate, don't dismiss.
 - Deliberate asymmetry worth remembering: `square` stamps **only if at least one site had a token**. A revoked
   token makes every site `continue`, so an unconditional stamp there would mean "ran fine, wrote nothing,
   watchdog silent forever" — the month-of-silence failure in new clothes. No token → no heartbeat → alert fires.
