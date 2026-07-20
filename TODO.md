@@ -37,7 +37,7 @@
 - [ ] **(Jake)** After the FIRST auto-forwarded invoice lands, sanity-check it parsed (Outlook rule format may
       differ from the manually-forwarded one that was verified).
 
-### Phase 3 — Ordermentum (Tuga Pastry + Butterboy) — ✅ LIVE (2026-06-18)
+### Phase 3 — Ordermentum (Tuga Pastry + Butterboy + Fuel Bakery) — ✅ LIVE (2026-06-18; Fuel added 2026-07-20)
 - Connector + session + `docs/clickpath-ordermentum.md` exist (API-first).
 - [x] **Butterboy fixed (2026-06-18):** `tradingName` match + relabel. See clickpath "Supplier identity gotcha".
 - [x] **Live POST verified (2026-06-18):** run 1 → `rowsAdded:1, duplicatesSkipped:113`; run 2 → `rowsAdded:0, duplicatesSkipped:114` (dedup idempotent).
@@ -48,24 +48,33 @@
       name. Cosmetic only — `_archive` is cold raw data, `doGet` serves `Summary`, and no pre-2026 week is
       summarized. Worth a relabel pass only if `_archive` is ever used for historical analysis.
 - [x] Registered `scripts/run_ordermentum.cmd` as Win task "LEIBLE Expense - Ordermentum" — daily 03:20, LogonType=Interactive (runs while logged in). Session ~15-day JWT refresh; re-run `--attended` when it `blocks`.
-- [ ] 🔴 **(Jake) ORDERMENTUM IS DOWN — Tuga + Butterboy spend is missing.** Found 2026-07-17.
-      `sessions/ordermentum.json` is dated **18 Jun**; at a ~15-day JWT that expired **~3 Jul**. Every run since
-      logs `BLOCKED: not logged in and no valid session` and `exit=2` — the task fires nightly and ingests
-      nothing. Confirmed in the data: the 2026-07-06 Summary week has **no Tuga/Butterboy rows at all**, where
-      2026-06-15 has them. The read API is therefore **under**-reporting recent weeks.
-      **Fix:** `python connectors\playwright\ordermentum.py --attended` (Jake passes the login; never automated).
-      **Then re-summarize the affected weeks** — `weeklySummarize('2026-06-29')` and `('2026-07-06')` — via a
-      zero-arg wrapper (the Run button takes no args). Missing-supplier rows ARE recoverable: the dedup key is
-      `week_start||supplier||location`, so an absent supplier's row is a new key and will be added.
-      ⚠️ **But a supplier that was only PARTIALLY captured has its total frozen** — dedup can skip, never update.
-      If Ordermentum ingested some of a week's Tuga invoices before dying (likely for 06-29, which straddles the
-      ~3 Jul cutoff), that week's Tuga total is stuck at the partial figure and re-summarizing will NOT fix it.
-      Check 06-29's Tuga total against Ordermentum directly before trusting it; correcting it means deleting
-      that Summary row first.
+- [x] 🟢 **OUTAGE RESOLVED 2026-07-20** — Jake re-authed (`--attended`), backfill POSTed all 160 rows,
+      re-run proved dedup (`rowsAdded:0, duplicatesSkipped:160`). One-shot `runOrdermentumBackfillJul2026`
+      (since deleted, deploy v21) deleted the stale/frozen Ordermentum Summary rows for weeks 06-29 / 07-06 /
+      07-13 and rebuilt them via `weeklySummarize` — **all 14 rebuilt rows verified against per-invoice totals
+      computed directly from the Ordermentum API**. Labour + other suppliers untouched (kept 07-17 stamps).
+      Note: Tuga has **zero invoices after week 06-29** — Fuel Bakery replaced them, so missing Tuga rows in
+      later weeks is reality, not lost data.
+- [x] **Fuel Bakery added 2026-07-20** — new pastry supplier (replaces Tuga). `"fuel"` appended to
+      `SUPPLIER_FILTER`; verified via API probe: legal name = tradingName = "Fuel Bakery" (no Butterboy-style
+      mismatch), matches exactly one supplier, active at York/Pitt/Crowsnest (North has no filtered suppliers —
+      legitimate). History starts week 2026-06-29; all 3 completed weeks summarized (see above). No GAS changes
+      needed (per-row supplier name).
 - **This is exactly what the watchdog is for** — it ran blocked for ~2 weeks and nothing said a word, which is
   the same failure `staleness.gs` was written after. The 2026-07-18 11:00 alert on `ordermentum` is the
   watchdog working correctly on its first day.
-- [ ] **(decision deferred)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? Kept narrow for now.
+- [x] **(decision closed 2026-07-20)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? **No — keep the
+      narrow allowlist.** A new supplier is one keyword; the filter is what keeps one-off/test suppliers out
+      of the Sheet.
+- [ ] **Auto-login (next session)** — Jake confirmed Ordermentum login is plain email+password, **no MFA, no
+      CAPTCHA** → automating it breaks no rules. Plan: credentials in `.env` (gitignored), `ordermentum.py`
+      falls back to headless form-fill + session re-save when the JWT is dead. Kills the fortnightly
+      `--attended` ritual; watchdog stays as the backstop.
+- [ ] ⚠️ **`_archive` double-count risk found 2026-07-20:** the 07-20 backfill re-ingested 2025 Butterboy
+      invoices that `archiveAndPurge_` had already moved to `_archive` on 07-17 — dedup only reads `Suppliers`,
+      so purged rows aren't remembered. Those rows now exist in BOTH tabs, and the next Monday trigger will
+      re-archive them, creating true duplicates inside `_archive`. Cosmetic while `_archive` stays cold raw
+      data, but fix before ever analyzing `_archive` (options: dedup `_archive` on write, or a cleanup pass).
 
 ### Phase 4 — Food and Dairy Co — ✅ DONE (2026-06-18)
 - Route resolved: **not** on Ordermentum; FDCo app is white-labeled **Pepper** → web twin `fooddairyco.pepr.app` (Cognito auth, `api-aus.usepepper.com/v1/graphql`).

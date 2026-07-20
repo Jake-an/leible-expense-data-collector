@@ -35,6 +35,7 @@ SUPPLIER_FILTER = [
     "tuga",
     "allie",
     "butterboy",
+    "fuel",
 ]
 
 # Active venues Jake confirmed 2026-06-18.
