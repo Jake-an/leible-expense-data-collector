@@ -21,7 +21,7 @@ import json
 import re
 from playwright.sync_api import Page
 
-from base_connector import BaseConnector, cli_main
+from base_connector import BaseConnector, cli_main, _form_login, get_credential, TransientLoginError
 
 API_BASE = "https://app.ordermentum.com"
 
@@ -56,6 +56,52 @@ class OrdermentumConnector(BaseConnector):
     def is_logged_in(self, page: Page) -> bool:
         resp = page.request.get(f"{API_BASE}/v1/profiles/")
         return resp.status == 200
+
+    def auth_state(self, page: Page) -> str:
+        """'ok' (200) / 'dead' (401/403 — auth genuinely rejected) /
+        'transient' (any other status, or the probe request itself throwing
+        on a network failure — page.request.get raises rather than
+        returning a response object on e.g. DNS/connection errors)."""
+        try:
+            resp = page.request.get(f"{API_BASE}/v1/profiles/")
+        except Exception as err:
+            print(f"[{self.NAME}] auth probe network error (transient): {err}")
+            return "transient"
+        if resp.status == 200:
+            return "ok"
+        if resp.status in (401, 403):
+            return "dead"
+        return "transient"
+
+    # Ordermentum auth is an async SPA XHR: after submit the session cookie
+    # lands ~1s later, so is_logged_in() probed immediately reads 401 and a
+    # correct password looks "rejected" (proven live 2026-07-20: profiles=401 at
+    # t+0s → 200 at t+1s, url→/dashboard). Poll the success signal before
+    # concluding rejection.
+    LOGIN_SETTLE_TRIES = 15  # ~15s max (1s apart)
+
+    def credentials_login(self, page: Page) -> bool:
+        """Headless email/password login via the Phase-1 mapped selectors
+        (docs/clickpath-ordermentum.md). Raises TransientLoginError if the
+        form never loads; otherwise polls is_logged_in() for up to
+        LOGIN_SETTLE_TRIES seconds (SPA auth is async) and returns whether it
+        passes — a genuinely rejected password stays 401 for the whole window
+        and returns False (not an exception)."""
+        email = get_credential("ORDERMENTUM_EMAIL")
+        password = get_credential("ORDERMENTUM_PASSWORD")
+        if not email or not password:
+            raise TransientLoginError("ORDERMENTUM_EMAIL/ORDERMENTUM_PASSWORD missing at attempt time")
+        _form_login(
+            page, self.LOGIN_URL, email, password,
+            email_sel="input[name='email']",
+            password_sel="input[name='password']",
+            submit_sel="button[type='submit']",
+        )
+        for _ in range(self.LOGIN_SETTLE_TRIES):
+            if self.is_logged_in(page):
+                return True
+            page.wait_for_timeout(1000)
+        return False
 
     def read_invoices(self, page: Page) -> list[dict]:
         rows: list[dict] = []

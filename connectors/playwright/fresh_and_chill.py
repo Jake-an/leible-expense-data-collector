@@ -25,7 +25,11 @@ from datetime import datetime
 
 from playwright.sync_api import sync_playwright, Page, BrowserContext
 
-from base_connector import BaseConnector, BlockedError, SESSIONS_DIR, SYD_TZ
+from base_connector import (
+    BaseConnector, BlockedError, SESSIONS_DIR, SYD_TZ,
+    TransientLoginError, get_credential, _form_login,
+    _breaker_tripped, _trip_breaker, _clear_breaker, _clear_breaker_with_warning,
+)
 
 SHOPS = {
     "york": "Leible York",
@@ -46,8 +50,89 @@ class FreshAndChillConnector(BaseConnector):
     def _session_path(self, shop_key: str):
         return SESSIONS_DIR / f"fresh_and_chill_{shop_key}.json"
 
+    # Devise (server-rendered) redirects on submit, so a race is less likely
+    # than Ordermentum's async SPA XHR — but poll defensively/uniformly
+    # anyway rather than checking once, in case a shop's redirect or
+    # session-cookie write lags the initial page settle.
+    LOGIN_SETTLE_TRIES = 15  # ~15s max (1s apart), matches ordermentum.py
+
     def is_logged_in(self, page: Page) -> bool:
         return page.query_selector("a[href='/orders']") is not None
+
+    def _classify_shop_state(self, page: Page) -> str:
+        """'ok' | 'dead' | 'transient' for a shop's /orders load.
+
+        F&C has no status-code auth signal (is_logged_in is DOM-only) and
+        run_unattended never passes through base run()/auth_state(), so this
+        classifier lives here instead. 'dead' = redirected to
+        /users/sign_in OR the Devise sign-in form is present (genuine
+        auth-death — safe to auto-login). Anything else non-/orders
+        (500 / error / partial load) = 'transient' — do NOT attempt login,
+        keep the shop in blocked_shops, breaker untouched.
+        """
+        if self.is_logged_in(page):
+            return "ok"
+        if "/users/sign_in" in page.url:
+            return "dead"
+        if page.query_selector("input[type='email']") and page.query_selector("input[type='password']"):
+            return "dead"
+        return "transient"
+
+    def _auto_login_shop(self, page: Page, shop_key: str) -> bool:
+        """Headless auto-login for one shop — called only when
+        _classify_shop_state() returns 'dead'. Returns True on success
+        (session saved, breaker cleared); False on any non-success path
+        (breaker tripped / no creds / credentials rejected). Never raises
+        BlockedError itself — the per-shop loop in run_unattended must stay
+        partial-success-safe (one blocked shop doesn't kill the others).
+        TransientLoginError from _form_login is a second-line guard here,
+        not the primary transient/dead decision (that's _classify_shop_state).
+        """
+        location = SHOPS[shop_key]
+        key = f"fresh_and_chill_{shop_key}"
+        session_path = self._session_path(shop_key)
+
+        if _breaker_tripped(key):
+            print(f"[{self.NAME}] {location}: auto-login breaker tripped, skipping "
+                  f"(run --attended --shop {shop_key})")
+            return False
+
+        email = get_credential(f"FRESH_AND_CHILL_{shop_key.upper()}_EMAIL")
+        password = get_credential(f"FRESH_AND_CHILL_{shop_key.upper()}_PASSWORD")
+        if not email or not password:
+            print(f"[{self.NAME}] {location}: no credentials in .env, skipping auto-login")
+            return False
+
+        try:
+            # Zupply is Rails/Devise: the login field is a TEXT input named
+            # user[login] (id user_login) — not type=email — and the submit is
+            # an <input type=submit name=commit value="Log in">, not a <button>.
+            # Mapped live 2026-07-20 (docs/clickpath-fresh_and_chill.md).
+            _form_login(
+                page, self.LOGIN_URL, email, password,
+                email_sel="#user_login",
+                password_sel="#user_password",
+                submit_sel="input[name='commit']",
+            )
+        except TransientLoginError as err:
+            print(f"[{self.NAME}] {location}: auto-login could not be attempted (transient): {err}")
+            return False
+
+        # Poll rather than check once — same defensive pattern as
+        # ordermentum.py's SPA poll (docs/clickpath-ordermentum.md), applied
+        # here for uniformity even though Devise's server-rendered redirect
+        # is less race-prone than an async SPA XHR.
+        for _ in range(self.LOGIN_SETTLE_TRIES):
+            if self.is_logged_in(page):
+                page.context.storage_state(path=str(session_path))
+                _clear_breaker(key)
+                print(f"[{self.NAME}] {location}: auto-login succeeded, session saved")
+                return True
+            page.wait_for_timeout(1000)
+
+        _trip_breaker(key, "credentials rejected or login incomplete")
+        print(f"[{self.NAME}] {location}: auto-login failed — credentials rejected; breaker tripped")
+        return False
 
     def read_invoices(self, page: Page) -> list[dict]:
         raise NotImplementedError("Use read_shop_invoices with location param")
@@ -129,6 +214,11 @@ class FreshAndChillConnector(BaseConnector):
             while time.time() < deadline:
                 if self.is_logged_in(page):
                     context.storage_state(path=str(session_path))
+                    _clear_breaker_with_warning(
+                        self.NAME, f"fresh_and_chill_{shop_key}",
+                        f"FRESH_AND_CHILL_{shop_key.upper()}_EMAIL",
+                        f"FRESH_AND_CHILL_{shop_key.upper()}_PASSWORD",
+                    )
                     print(f"[{self.NAME}] Logged in — session saved: {session_path}")
                     context.close()
                     browser.close()
@@ -158,19 +248,37 @@ class FreshAndChillConnector(BaseConnector):
                 browser = pw.chromium.launch(headless=True)
                 context = browser.new_context(storage_state=str(session_path))
                 page = context.new_page()
-                page.goto("https://shop.zupply.com.au/orders", wait_until="domcontentloaded")
 
-                if not self.is_logged_in(page):
-                    print(f"[{self.NAME}] {location}: session expired, BLOCKED")
+                # Everything from here (including the post-auto-login reload
+                # and read_shop_invoices, which can raise — e.g. its own
+                # wait_for_selector("table") timeout) is wrapped so a single
+                # shop's failure can't abort the whole for-loop; other shops
+                # must still run and POST. context/browser always close via
+                # finally, on every path (success, blocked, or error).
+                try:
+                    page.goto("https://shop.zupply.com.au/orders", wait_until="domcontentloaded")
+
+                    if not self.is_logged_in(page):
+                        state = self._classify_shop_state(page)
+                        if state == "dead" and self._auto_login_shop(page, shop_key):
+                            # Auto-login succeeded — reload /orders with the fresh session.
+                            page.goto("https://shop.zupply.com.au/orders", wait_until="domcontentloaded")
+                        else:
+                            reason = "session expired, auto-login failed" if state == "dead" else f"session {state}"
+                            print(f"[{self.NAME}] {location}: {reason}, BLOCKED")
+                            blocked_shops.append(location)
+                            continue
+
+                    rows = self.read_shop_invoices(page, location)
+                    context.storage_state(path=str(session_path))
+                except Exception as err:
+                    print(f"[{self.NAME}] {location}: error reading orders, BLOCKED: {err}", file=sys.stderr)
                     blocked_shops.append(location)
+                    continue
+                finally:
                     context.close()
                     browser.close()
-                    continue
 
-                rows = self.read_shop_invoices(page, location)
-                context.storage_state(path=str(session_path))
-                context.close()
-                browser.close()
                 print(f"  [{self.NAME}] {location}: {len(rows)} orders")
                 all_rows.extend(rows)
 
@@ -189,8 +297,19 @@ def main():
     parser.add_argument("--attended", action="store_true",
                         help="Headed login for a single shop; saves session")
     parser.add_argument("--shop", choices=list(SHOPS.keys()),
-                        help="Shop to log into (required with --attended)")
+                        help="Shop to log into (required with --attended and --clear-breaker)")
+    parser.add_argument("--clear-breaker", action="store_true",
+                        help="clear one shop's auto-login circuit-breaker without a full attended "
+                             "login (requires --shop; use after fixing a .env typo)")
     args = parser.parse_args()
+
+    if args.clear_breaker:
+        if not args.shop:
+            print("ERROR: --clear-breaker requires --shop <york|north|crowsnest|pitt>", file=sys.stderr)
+            sys.exit(1)
+        _clear_breaker(f"fresh_and_chill_{args.shop}")
+        print(f"[fresh_and_chill] auto-login breaker cleared for {SHOPS[args.shop]}")
+        return
 
     connector = FreshAndChillConnector()
 

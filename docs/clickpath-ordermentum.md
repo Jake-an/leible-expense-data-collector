@@ -10,6 +10,33 @@ Discovered 2026-06-18 via attended login + chrome-devtools network capture.
 - `refresh_token` cookie also present — may extend session silently
 - Post-login landmark: `GET /v1/profiles/` returns 200 when session is valid
 
+## Login form (for headless auto-login)
+
+Mapped 2026-07-20 via headless Playwright inspection of `https://app.ordermentum.com`
+(no credentials entered — DOM inspection only). Plain email + password form, no
+SSO redirect, no magic link, no visible CAPTCHA — safe for a headless form-fill.
+
+| Field | Selector | Notes |
+|---|---|---|
+| Email | `input[name='email']` (also `#email`) | `type="text"` |
+| Password | `input[name='password']` (also `#password`) | `type="password"` |
+| Submit | `button[type='submit']` | text "Sign in"; a second unlabeled `<button type="button">` also exists on the page (not the submit — likely a show/hide-password toggle) — do not use it |
+
+Single `<form>` wraps both inputs, no `action`/`method` attribute (JS-handled submit).
+
+**Success signal:** after submit, `page.url` no longer contains the login form (SPA
+navigates away from `/`) and/or `GET /v1/profiles/` returns 200 — same landmark
+`is_logged_in()` already uses.
+
+**Async auth — must poll, not check once (proven live 2026-07-20).** The SPA's auth
+XHR sets the session cookie asynchronously, ~1s after submit: `/v1/profiles/` was
+observed `401` at t+0s → `200` at t+1s, with `page.url` flipping to `/dashboard` in
+the same window. A headless login that checks `is_logged_in()` exactly once
+immediately after submit reads the pre-cookie `401` and false-reports a **correct**
+password as rejected. `credentials_login()` therefore polls `is_logged_in()` up to
+`LOGIN_SETTLE_TRIES` (15) times, 1s apart, before concluding the credentials were
+actually rejected.
+
 ## API Endpoints (all Bearer JWT, same-origin)
 
 ### 1. List suppliers for a venue

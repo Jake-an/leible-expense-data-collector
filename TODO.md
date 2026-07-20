@@ -66,10 +66,43 @@
 - [x] **(decision closed 2026-07-20)** Widen `SUPPLIER_FILTER` to ALL Ordermentum suppliers? **No — keep the
       narrow allowlist.** A new supplier is one keyword; the filter is what keeps one-off/test suppliers out
       of the Sheet.
-- [ ] **Auto-login (next session)** — Jake confirmed Ordermentum login is plain email+password, **no MFA, no
-      CAPTCHA** → automating it breaks no rules. Plan: credentials in `.env` (gitignored), `ordermentum.py`
-      falls back to headless form-fill + session re-save when the JWT is dead. Kills the fortnightly
-      `--attended` ritual; watchdog stays as the backstop.
+- **Auto-login — ✅ LIVE-VERIFIED (Ordermentum) 2026-07-20.** Headless form-fill fallback fires when the
+  session is auth-dead: reads creds from gitignored `.env`, logs in, re-saves session, continues. Reusable
+  base primitive (`base_connector.py`) wired into **both** Ordermentum and Fresh & Chill. Kills the
+  fortnightly `--attended` ritual; `--attended` stays as manual fallback; 96h watchdog stays as backstop.
+  - [x] **LIVE-PROVEN end-to-end (Ordermentum) 2026-07-20:** forced auth-dead → headless auto-login →
+        session saved → 161 rows POSTed (`rowsAdded:1, duplicatesSkipped:160`); re-run reused the saved
+        session (no login) `rowsAdded:0, duplicatesSkipped:161`. Creds confirmed correct.
+  - [x] **SPA async-auth race found + fixed live:** Ordermentum auth is an XHR that sets the cookie ~1s
+        AFTER submit (`/v1/profiles/` 401@t+0 → 200@t+1, url→/dashboard), so the original single post-submit
+        check false-reported correct creds as "rejected" + tripped the breaker. `credentials_login` now
+        POLLS the success signal up to `LOGIN_SETTLE_TRIES`(15)×1s. Same defensive poll applied to F&C.
+        See memory `gotcha-spa-login-async-auth-poll`.
+  - [x] Ordermentum login form mapped (plain email+password, no MFA/CAPTCHA) → `docs/clickpath-ordermentum.md`
+        "Login form" section. Selectors: `#email` / `#password` / `button[type=submit]` (avoid the decoy
+        visibility-toggle `button[type=button]`).
+  - [x] Base primitive: `.env` parser (first-`=` split, no inline-`#` strip, `os.environ` precedence,
+        creds never logged), `auth_state` ok/dead/transient (fires ONLY on genuine 401/403; 5xx/timeout/
+        network = transient → blocked, no attempt), per-key circuit-breaker (`sessions/<key>.autologin_blocked`,
+        trips on cred-rejection only, cleared by `--attended` or new `--clear-breaker`), `TransientLoginError`.
+  - [x] F&C: own DOM-based dead/transient classifier (no status code); per-shop breaker; partial-success
+        loop preserved (one shop failing never aborts the others).
+  - [x] Tests: **96 pass** (33 connector-suite: cred-parse/breaker/classifier + regression tests for the 3
+        review bugs + 4 SPA-poll tests; 63 untouched still green). Independent Opus plan-review + security
+        review, all findings folded in.
+  - [x] Recurring 10-day "check auto-login health" reminder → Jake's personal calendar (2026-07-30 start).
+  - [x] All creds saved to `.env` (Ordermentum + all 4 F&C pairs), confirmed present + well-formed 2026-07-20.
+  - [ ] **(Jake)** `.env.example` needs the new var names appended — blocked by the global `Read(**/.env.*)`
+        deny + Write-needs-Read deadlock (see memory `gotcha-env-file-read-deny-write-deadlock`). Jake edits it,
+        or OKs a Bash-append (writes names only, reads no secrets).
+  - [x] **F&C auto-login LIVE-VERIFIED 2026-07-20** — all 4 shops: emptied sessions → auto-login → save →
+        scrape (York 58 / North 80 / Crowsnest 34 / Pitt 57 = 229 orders) → POST `rowsAdded:3`; re-run
+        reused saved sessions (no login) `rowsAdded:0, duplicatesSkipped:229`. **Fixed a selector bug found
+        live:** Zupply/Devise login field is a TEXT `#user_login` (not `type=email`) + `<input type=submit
+        name=commit>` (not a button) — assumed-conventional selectors had timed out. Real selectors now in
+        `docs/clickpath-fresh_and_chill.md` + `_auto_login_shop`.
+  - [x] `.env.example` completed (11-var template, no values) via Bash write-only append (the `Read(**/.env.*)`
+        deadlock blocks the Edit/Write tools).
 - [ ] ⚠️ **`_archive` double-count risk found 2026-07-20:** the 07-20 backfill re-ingested 2025 Butterboy
       invoices that `archiveAndPurge_` had already moved to `_archive` on 07-17 — dedup only reads `Suppliers`,
       so purged rows aren't remembered. Those rows now exist in BOTH tabs, and the next Monday trigger will

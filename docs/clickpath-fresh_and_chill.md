@@ -9,7 +9,12 @@ model of Ordermentum/FDCo. No JSON API — pure HTML table scrape.
 ## Auth (Devise, plain user+password)
 
 - Login URL: `https://shop.zupply.com.au/users/sign_in`
-- Fields: email (textbox) + password (textbox) → "Log in" button.
+- Fields (mapped live 2026-07-20 for headless auto-login): the identifier is a **text**
+  input `user[login]` — **NOT** `type=email` — and submit is an `<input type=submit>`, not a button:
+  - login: `#user_login` (`input[name='user[login]']`, `type=text`)
+  - password: `#user_password` (`input[name='user[password]']`)
+  - submit: `input[name='commit']` (`value="Log in"`)
+  - Auto-login verified end-to-end on all 4 shops 2026-07-20 (229 orders, dedup OK).
 - **No MFA, no CAPTCHA** — plain Devise. Sessions persist via Rails cookie.
 - Password reset at `/users/password/new` (not used by the connector).
 - After login, redirects to `/orders`.
