@@ -1,0 +1,11 @@
+{
+  "order_id": "SAMPLE-1001",
+  "currency": "AUD",
+  "items": [
+    { "sku": "WIDGET-A", "price": 1000, "qty": 2 },
+    { "sku": "WIDGET-B", "price": 500, "qty": 1 }
+  ],
+  "subtotal": 2500,
+  "tax_rate": 0.10,
+  "total": 2750
+}
