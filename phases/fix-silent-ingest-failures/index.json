@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "fix-silent-ingest-failures",
+  "review": { "base": "f90861e" },
+  "steps": [
+    { "step": 0, "name": "ingest-error-raise", "status": "pending", "tdd": true, "test_cmd": "python -m pytest connectors/playwright/test_base_connector.py -q", "docs": ["ARCHITECTURE.md", "schema.md"] },
+    { "step": 1, "name": "square-api-failure", "status": "pending", "tdd": true, "test_cmd": "node connectors/gas/test_code.js", "docs": ["schema.md"] },
+    { "step": 2, "name": "sales-dedup-coerce", "status": "pending", "tdd": true, "test_cmd": "node connectors/gas/test_code.js", "docs": ["schema.md"] }
+  ]
+}
