@@ -9,14 +9,15 @@
     {
       "step": 0,
       "name": "ingest-error-raise",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/playwright/test_base_connector.py -q",
       "docs": [
         "ARCHITECTURE.md",
         "schema.md"
       ],
-      "started_at": "2026-07-21T16:14:38+0900"
+      "started_at": "2026-07-21T16:14:38+0900",
+      "completed_at": "2026-07-21T16:30:00+0900"
     },
     {
       "step": 1,
