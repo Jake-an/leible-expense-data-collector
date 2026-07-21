@@ -58,6 +58,7 @@ function squareDailyPull(dateStr) {
   var rowsWritten = 0;
   var duplicatesSkipped = 0;
   var sitesWithToken = 0;
+  var sitesOk = 0;
 
   for (var i = 0; i < SQUARE_SITES.length; i++) {
     var site = SQUARE_SITES[i];
@@ -68,33 +69,46 @@ function squareDailyPull(dateStr) {
     }
     sitesWithToken++;
 
-    var orders = [];
     var locations = squareListLocations_(token);
+    if (locations === null) {
+      Logger.log('squareDailyPull: ' + site.name + ' — Square API FAILED (locations); not writing $0, not counting toward heartbeat');
+      continue;
+    }
+
+    var orders = [];
+    var apiFailed = false;
     for (var l = 0; l < locations.length; l++) {
-      orders = orders.concat(squareSearchOrders_(token, locations[l].id, startIso, endIso));
+      var got = squareSearchOrders_(token, locations[l].id, startIso, endIso);
+      if (got === null) { apiFailed = true; break; }
+      orders = orders.concat(got);
+    }
+    if (apiFailed) {
+      Logger.log('squareDailyPull: ' + site.name + ' — Square API FAILED (orders); not writing $0, not counting toward heartbeat');
+      continue;
     }
 
     var gross = squareSumOrderGross_(orders);
     var salesRow = [dateStr, site.name, gross, 'square', extractedAt];
     if (appendSalesRow_(sheet, salesRow)) rowsWritten++;
     else duplicatesSkipped++;
+    sitesOk++;
     Logger.log('squareDailyPull: ' + site.name + ' ' + dateStr + ' gross=$' + gross + ' from ' + orders.length + ' orders');
   }
 
-  // Heartbeat ONLY if at least one site actually had a token. A revoked token
-  // makes every site `continue`, so this function would otherwise return
-  // "successfully" having done nothing — and a heartbeat there would mean
-  // "ran fine, wrote nothing, watchdog silent forever": the month-of-silence
-  // failure in new clothes. No token → no heartbeat → the alert correctly fires.
-  if (sitesWithToken > 0) {
+  // Heartbeat ONLY if at least one site actually pulled successfully. A
+  // revoked token or an API outage must not stamp the heartbeat — a
+  // heartbeat there would mean "ran fine, wrote nothing trustworthy, watchdog
+  // silent forever": the month-of-silence failure in new clothes. No healthy
+  // site → no heartbeat → the alert correctly fires.
+  if (sitesOk > 0) {
     stalenessStampHeartbeat_('square');
   } else {
-    Logger.log('squareDailyPull: NO site had a token — not stamping the heartbeat, so staleness will alert');
+    Logger.log('squareDailyPull: NO site pulled successfully — not stamping the heartbeat, so staleness will alert');
   }
 
   return {
     date: dateStr, rowsWritten: rowsWritten, duplicatesSkipped: duplicatesSkipped,
-    sitesWithToken: sitesWithToken
+    sitesWithToken: sitesWithToken, sitesOk: sitesOk
   };
 }
 
@@ -183,7 +197,7 @@ function squareSearchOrders_(accessToken, locationId, startDate, endDate) {
     if (cursor) payload.cursor = cursor;
 
     var result = squareCallApi_('/orders/search', accessToken, 'POST', payload);
-    if (!result) break;
+    if (!result) return null;            // API FAILURE — do NOT trust partial pages
 
     allOrders = allOrders.concat(result.orders || []);
     cursor = result.cursor || null;
@@ -195,7 +209,8 @@ function squareSearchOrders_(accessToken, locationId, startDate, endDate) {
 
 function squareListLocations_(accessToken) {
   var result = squareCallApi_('/locations', accessToken, 'GET', null);
-  if (!result || !result.locations) return [];
+  if (!result) return null;              // API FAILURE (call returned null)
+  if (!result.locations) return [];      // genuine: no locations on the account
   return result.locations.map(function (loc) {
     return { id: loc.id, name: loc.name, status: loc.status };
   });

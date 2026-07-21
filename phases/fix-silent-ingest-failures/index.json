@@ -51,13 +51,15 @@
     {
       "step": 1,
       "name": "square-api-failure",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Square API failure now null-sentinel'd; no $0 row + no heartbeat on failure; real closed-day still records+heartbeats; 6 new tests green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "docs": [
         "schema.md"
       ],
       "started_at": "2026-07-21T16:23:24+0900",
+      "completed_at": "2026-07-21T17:40:00+0900",
       "tdd_evidence": {
         "red": {
           "command": "node connectors/gas/test_code.js",
@@ -68,9 +70,15 @@
             "reason": "6 failures are all assertion-level (wrong return values, wrong sheet mutations, wrong heartbeat stamps) caused by missing/incomplete implementation of the null-sentinel fix. Test code is correct and working properly. This is exactly right for RED phase — implementation hasn't been written yet."
           },
           "at": "2026-07-21T16:26:28+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "248 passed, 0 failed\n",
+          "at": "2026-07-21T17:40:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done"
     },
     {
       "step": 2,
