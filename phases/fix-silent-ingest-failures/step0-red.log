@@ -1,0 +1,50 @@
+..................FF.F................                                   [100%]
+================================== FAILURES ===================================
+________________ test_post_raises_ingest_error_on_result_error ________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002ABCE3D5790>
+
+    def test_post_raises_ingest_error_on_result_error(monkeypatch):
+        fake_resp = _FakePostResponse(
+            json_body={"result": "error", "message": "row 0 missing invoice_ref"}
+        )
+        monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+        conn = _AutoLoginConnector()
+    
+>       with pytest.raises(b.IngestError) as exc_info:
+                           ^^^^^^^^^^^^^
+E       AttributeError: module 'base_connector' has no attribute 'IngestError'
+
+connectors\playwright\test_base_connector.py:345: AttributeError
+_____________ test_post_raises_ingest_error_on_non_json_200_body ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002ABCE3AF8F0>
+
+    def test_post_raises_ingest_error_on_non_json_200_body(monkeypatch):
+        """A 200 with an unparseable body (e.g. an HTML error page from GAS) is
+        NOT confirmable success � must raise, not fall back to {"result":"ok"}
+        the way the old lenient `except ValueError` used to."""
+        fake_resp = _FakePostResponse(json_raises=True, text="<html>error</html>")
+        monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+        conn = _AutoLoginConnector()
+    
+>       with pytest.raises(b.IngestError):
+                           ^^^^^^^^^^^^^
+E       AttributeError: module 'base_connector' has no attribute 'IngestError'
+
+connectors\playwright\test_base_connector.py:359: AttributeError
+____ test_ingest_error_is_distinct_from_blocked_and_transient_login_error _____
+
+    def test_ingest_error_is_distinct_from_blocked_and_transient_login_error():
+        """Proves run()'s existing except clauses (BlockedError, TransientLoginError)
+        cannot accidentally swallow an ingest rejection."""
+>       assert issubclass(b.IngestError, Exception)
+                          ^^^^^^^^^^^^^
+E       AttributeError: module 'base_connector' has no attribute 'IngestError'
+
+connectors\playwright\test_base_connector.py:377: AttributeError
+=========================== short test summary info ===========================
+FAILED connectors/playwright/test_base_connector.py::test_post_raises_ingest_error_on_result_error
+FAILED connectors/playwright/test_base_connector.py::test_post_raises_ingest_error_on_non_json_200_body
+FAILED connectors/playwright/test_base_connector.py::test_ingest_error_is_distinct_from_blocked_and_transient_login_error
+3 failed, 35 passed in 1.70s
