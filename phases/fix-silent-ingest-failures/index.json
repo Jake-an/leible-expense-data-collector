@@ -37,7 +37,16 @@
           "at": "2026-07-21T16:21:01+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/fix-silent-ingest-failures/step0-review.json",
+        "checked_at": "2026-07-21T16:23:24+0900"
+      }
     },
     {
       "step": 1,
@@ -47,7 +56,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "docs": [
         "schema.md"
-      ]
+      ],
+      "started_at": "2026-07-21T16:23:24+0900"
     },
     {
       "step": 2,
