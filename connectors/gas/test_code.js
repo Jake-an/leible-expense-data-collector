@@ -625,6 +625,117 @@ freshSheets();
 })();
 
 /* ------------------------------------------------------------------ *
+ * fix-silent-ingest-failures step 1 — Square API failure null-sentinel
+ *
+ * squareCallApi_ already returns null on any non-2xx / exception. Before this
+ * fix, squareListLocations_ and squareSearchOrders_ collapsed that null into
+ * [] — indistinguishable from a genuine empty result — so an outage wrote a
+ * $0 Sales row AND stamped the freshness heartbeat, silencing the very
+ * watchdog built to catch this. null must now propagate so the caller can
+ * tell "API failed" apart from "really zero".
+ * ------------------------------------------------------------------ */
+
+(function testSquareApiFailureNullSentinel() {
+  console.log('\nsquare API failure — null sentinel (not [] / not silent $0):');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+
+  // --- squareListLocations_ ---
+  global.UrlFetchApp = {
+    fetch: () => ({ getResponseCode: () => 500, getContentText: () => 'server error' }),
+  };
+  eq('squareListLocations_: API failure (squareCallApi_ -> null) returns null, not []',
+    squareListLocations_('tok'), null);
+
+  global.UrlFetchApp = {
+    fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify({ locations: [] }) }),
+  };
+  eq('squareListLocations_: genuine empty {locations: []} still returns []',
+    squareListLocations_('tok'), []);
+
+  // --- squareSearchOrders_ ---
+  global.UrlFetchApp = {
+    fetch: () => ({ getResponseCode: () => 500, getContentText: () => 'server error' }),
+  };
+  eq('squareSearchOrders_: API failure (squareCallApi_ -> null) returns null, not []',
+    squareSearchOrders_('tok', 'L1', '2026-07-15T00:00:00+10:00', '2026-07-15T23:59:59+10:00'), null);
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+
+  const SITE0 = SQUARE_SITES[0];
+  const SITE1 = SQUARE_SITES[1];
+
+  // Single site, API fails (locations call 500s): NO Sales row, NO heartbeat.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    scriptProps[SITE0.prop] = 'tok-fail';
+    global.UrlFetchApp = {
+      fetch: () => ({ getResponseCode: () => 500, getContentText: () => 'boom' }),
+    };
+    squareDailyPull();
+    const rows = currentSS.getSheetByName('Sales').getDataRange().getValues();
+    eq('site API failure: no Sales row appended (header only)', rows.length, 1);
+    check('site API failure: heartbeat NOT stamped',
+      !('LAST_INGEST_square' in scriptProps));
+    global.UrlFetchApp = REAL_URL_FETCH;
+  });
+
+  // Single site, API OK but genuinely zero orders: a real closed day must
+  // still record its $0 row AND stamp the heartbeat — no over-correction.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    scriptProps[SITE0.prop] = 'tok-ok';
+    global.UrlFetchApp = {
+      fetch: (url) => ({
+        getResponseCode: () => 200,
+        getContentText: () => (String(url).indexOf('/locations') !== -1
+          ? JSON.stringify({ locations: [{ id: 'L1', name: 'Site' }] })
+          : JSON.stringify({ orders: [] })),
+      }),
+    };
+    squareDailyPull();
+    const rows = currentSS.getSheetByName('Sales').getDataRange().getValues();
+    eq('real closed day: a $0 Sales row IS written', rows.length, 2);
+    eq('real closed day: gross is genuinely 0', rows[1][2], 0);
+    check('real closed day: heartbeat IS stamped', 'LAST_INGEST_square' in scriptProps);
+    global.UrlFetchApp = REAL_URL_FETCH;
+  });
+
+  // Two sites, one fails (locations 500) + one succeeds: heartbeat IS
+  // stamped (>=1 healthy site), the failed site writes NO row, the healthy
+  // site writes its row.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    scriptProps[SITE0.prop] = 'tok-fail';
+    scriptProps[SITE1.prop] = 'tok-ok';
+    global.UrlFetchApp = {
+      fetch: (url, options) => {
+        const auth = options && options.headers && options.headers['Authorization'];
+        if (auth === 'Bearer tok-fail') {
+          return { getResponseCode: () => 500, getContentText: () => 'boom' };
+        }
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => (String(url).indexOf('/locations') !== -1
+            ? JSON.stringify({ locations: [{ id: 'L2', name: 'Site2' }] })
+            : JSON.stringify({ orders: [] })),
+        };
+      },
+    };
+    squareDailyPull();
+    const rows = currentSS.getSheetByName('Sales').getDataRange().getValues();
+    eq('mixed sites: exactly one row written (the healthy site only)', rows.length, 2);
+    eq('mixed sites: the written row belongs to the healthy site', rows[1][1], SITE1.name);
+    check('mixed sites: heartbeat IS stamped (>=1 site succeeded)',
+      'LAST_INGEST_square' in scriptProps);
+    global.UrlFetchApp = REAL_URL_FETCH;
+  });
+})();
+
+/* ------------------------------------------------------------------ *
  * Step 4 — salesRowIsCorrupt_ predicate (this one deletes real money data)
  * ------------------------------------------------------------------ */
 

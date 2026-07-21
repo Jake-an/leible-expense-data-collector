@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "6 failures are all assertion-level (wrong return values, wrong sheet mutations, wrong heartbeat stamps) caused by missing/incomplete implementation of the null-sentinel fix. Test code is correct and working properly. This is exactly right for RED phase — implementation hasn't been written yet."
+}
