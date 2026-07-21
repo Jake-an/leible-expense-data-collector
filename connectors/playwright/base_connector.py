@@ -357,7 +357,7 @@ class BaseConnector:
             body = resp.json()
         except ValueError as err:
             raise IngestError(f"GAS response not valid JSON: {resp.text[:200]}") from err
-        if body.get("result") == "error":
+        if body.get("result") != "ok":
             raise IngestError(body.get("message", "unknown ingest error"))
         return body
 
