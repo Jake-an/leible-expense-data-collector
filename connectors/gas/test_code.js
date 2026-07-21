@@ -1308,6 +1308,54 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
   check('falls back to the default calendar', res.eventsCreated > 0);
 })();
 
+/* ------------------------------------------------------------------ *
+ * fix-silent-ingest-failures step 2 — Sales dedup key coercion
+ *
+ * SALES_KEY_COLS keys on the date column, but rowKey_ stringified it with a
+ * bare String(rowArray[col]) — no coerceDateStr_. A Date-typed cell (what a
+ * real Sheet hands back on read) and its 'YYYY-MM-DD' string therefore
+ * produced DIFFERENT keys, so a re-run's dedup lookup missed the row it just
+ * wrote and appended a duplicate, double-counting Sales gross on every
+ * re-run / backfill / overlapping trigger.
+ * ------------------------------------------------------------------ */
+
+(function testSalesDedupKeyCoercion() {
+  console.log('\nsales dedup — rowKey_ coerces Date-typed key cols:');
+
+  // Key parity: a Date-typed date col and its YYYY-MM-DD string must yield
+  // the SAME key, or the dedup lookup silently misses on re-run.
+  eq('rowKey_: Date-typed date col matches its YYYY-MM-DD string',
+    rowKey_([new Date(2026, 6, 15), 'York'], SALES_KEY_COLS),
+    rowKey_(['2026-07-15', 'York'], SALES_KEY_COLS));
+
+  // Dedup on re-run — the real symptom. First write appends; the mock
+  // round-trips the stored date string to a Date (sheetCoerceOnWrite),
+  // exactly as a live Sheet does. A second write of the same logical row
+  // must be recognised as a duplicate and NOT appended.
+  freshSheets();
+  var salesSheet = currentSS.getSheetByName('Sales');
+  var row1 = ['2026-07-15', 'York', 100, 'square', '2026-07-15T23:59:00+10:00'];
+  var row2 = ['2026-07-15', 'York', 100, 'square', '2026-07-16T00:05:00+10:00'];
+
+  var firstAppended = appendSalesRow_(salesSheet, row1);
+  eq('first appendSalesRow_ call appends', firstAppended, true);
+  eq('sheet has header + 1 row after first append', salesSheet._rows.length, 2);
+
+  var secondAppended = appendSalesRow_(salesSheet, row2);
+  eq('re-run appendSalesRow_ call is recognised as a duplicate', secondAppended, false);
+  eq('sheet row count unchanged after duplicate re-run', salesSheet._rows.length, 2);
+
+  // Non-date passthrough: the location column's contribution to the key is
+  // unchanged by the fix — differing locations still produce different
+  // keys, and casing/whitespace on a non-date column still normalizes.
+  check('rowKey_: differing location produces a different key',
+    rowKey_(['2026-07-15', 'York'], SALES_KEY_COLS) !==
+    rowKey_(['2026-07-15', 'Melbourne'], SALES_KEY_COLS));
+  eq('rowKey_: location casing/whitespace still normalizes',
+    rowKey_(['2026-07-15', 'York'], SALES_KEY_COLS),
+    rowKey_(['2026-07-15', ' york '], SALES_KEY_COLS));
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
