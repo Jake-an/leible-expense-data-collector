@@ -92,13 +92,15 @@
     {
       "step": 2,
       "name": "sales-dedup-coerce",
-      "status": "pending",
+      "status": "completed",
+      "summary": "rowKey_ coerces Date-typed key cols via coerceDateStr_; Sales re-run no longer double-counts; new + existing tests green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "docs": [
         "schema.md"
       ],
       "started_at": "2026-07-21T16:30:08+0900",
+      "completed_at": "2026-07-21T17:45:00+0900",
       "tdd_evidence": {
         "red": {
           "command": "node connectors/gas/test_code.js",
@@ -109,9 +111,15 @@
             "reason": "All 3 failures are legitimate implementation gaps: rowKey_ does not coerce Date-typed columns to YYYY-MM-DD strings. Cascading failures in dedup logic confirm this is a single missing feature, not test harness issues. 252 passing tests show the test code itself is sound."
           },
           "at": "2026-07-21T16:31:50+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "sales dedup — rowKey_ coerces Date-typed key cols:\n  ok  - rowKey_: Date-typed date col matches its YYYY-MM-DD string  (got \"2026-07-15||york\")\n  ok  - first appendSalesRow_ call appends  (got true)\n  ok  - sheet has header + 1 row after first append  (got 2)\n  ok  - re-run appendSalesRow_ call is recognised as a duplicate  (got false)\n  ok  - sheet row count unchanged after duplicate re-run  (got 2)\n  ok  - rowKey_: differing location produces a different key\n  ok  - rowKey_: location casing/whitespace still normalizes  (got \"2026-07-15||york\")\n\n255 passed, 0 failed\n",
+          "at": "2026-07-21T17:45:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done"
     }
   ],
   "created_at": "2026-07-21T16:14:38+0900"
