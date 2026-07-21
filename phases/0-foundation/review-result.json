@@ -1,0 +1,121 @@
+{
+  "verdict": "revise",
+  "reviewed_diff": "main...HEAD (feat-0-foundation)",
+  "note": "Merge-base is the stale local 'main' (912992c), so this diff bundles ~5 weeks of history beyond phase 0 — reviewed as instructed. All CRITICAL/IMPORTANT findings below were verified against the actual code by the reviewer, not just relayed from sub-agents.",
+  "issues": [
+    {
+      "severity": "critical",
+      "file": "connectors/gas/square.gs",
+      "line": 77,
+      "summary": "Square API failure (expired token / 5xx / outage) is swallowed by squareCallApi_ returning null -> gross written as $0.00 for the site/day (indistinguishable from a genuinely closed day), AND the staleness heartbeat is stamped because sitesWithToken++ fires on token PRESENCE (line 69), not API success. The watchdog built specifically for silent-ingest-failure stays silent through exactly that failure."
+    },
+    {
+      "severity": "critical",
+      "file": "connectors/gas/Code.gs",
+      "line": 179,
+      "summary": "Sales-tab dedup is broken: SALES_KEY_COLS keys on the date column but rowKey_ does bare String(row[col]) with no coerceDateStr_, while every other date path in the file coerces. Sheets returns a written 'YYYY-MM-DD' as a Date object on read-back, so an existing Sales row's key ('Wed Jul 15 2026...||york') never matches the new row's key ('2026-07-15||york') -> any re-run/backfill/overlapping trigger silently appends a duplicate and double-counts gross sales, violating the date+location dedup contract in schema.md."
+    },
+    {
+      "severity": "critical",
+      "file": "connectors/playwright/base_connector.py",
+      "line": 350,
+      "summary": "GAS logical-error responses are treated as success. doPost returns HTTP 200 even when validateIngest_ rejects the whole batch ({\"result\":\"error\"}). post() only calls resp.raise_for_status() (transport-only) and returns the error dict; run() prints it and exits 0. One malformed row -> entire batch silently dropped with a clean exit — the exact silent-ingest failure class behind the 'Tuga/Butterboy spend missing ~2 weeks' incident in the git log. Also untested: post() has zero coverage in test_base_connector.py."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/gas/Code.gs",
+      "line": 53,
+      "summary": "doPost (the write/ingest endpoint) has zero authentication — no shared secret, header, or signature — while doGet is token-gated via checkReadToken_. appsscript.json deploys ANYONE_ANONYMOUS and the client sends no token, so anyone with the /exec URL (same URL published for the read side in api.md) can POST arbitrary rows straight into the Suppliers tab and corrupt every downstream Summary/report."
+    },
+    {
+      "severity": "important",
+      "file": "scripts/execute.py",
+      "line": 1274,
+      "summary": "_resolve_review_base only checks 'git rev-parse --verify' locally, so the review gate binds to the stale local 'main' (912992c, ~29 commits / 5 weeks behind the real trunk feat/two-tab-foundation; origin has no 'main'). Every phase review diffs ~5 weeks of unrelated history instead of the phase's changes, with no warning — defeating the gate. Masked in tests because TestReviewGate mocks rev-parse to always return 'main'."
+    },
+    {
+      "severity": "important",
+      "file": "scripts/execute.py",
+      "line": 400,
+      "summary": "_run_test_cmd runs step['test_cmd'] via subprocess.run(shell=True) with no validation, whereas the deploy path is gated through _validate_deploy_cmd(). test_cmd is read fresh from phases/<dir>/index.json — a file the dispatched --dangerously-skip-permissions session can edit — so a misdirected session could rewrite its own test_cmd to an arbitrary command the harness then runs unconditionally (block-dangerous.js can't catch it; it hooks the in-session Bash tool, not execute.py's subprocess)."
+    },
+    {
+      "severity": "important",
+      "file": "scripts/deploy.sh",
+      "line": 72,
+      "summary": "First-deploy detection trusts config/deployment.json alone. If deploymentId is ever blanked/lost, DID resolves empty and the script takes the 'clasp create-deployment' branch, silently minting a SECOND live /exec deployment — a direct violation of the 'ONE deployment id, never mint a new one' rule. No cross-check against clasp list-deployments guards it."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/playwright/ordermentum.py",
+      "line": 130,
+      "summary": "Non-200 API responses in ordermentum.py (and food_dairy_co.py:176) are swallowed as an empty result (return [] / {}) rather than a block/error. A 5xx for one supplier at one venue mid-run silently drops that supplier's invoices while others post normally; the run reports success with fewer rows than exist, and 'API failed' is indistinguishable from 'no invoices this period'."
+    },
+    {
+      "severity": "important",
+      "file": ".claude/hooks/block-dangerous.js",
+      "line": 38,
+      "summary": "Force-push guard regex requires the force flag immediately after 'push' (git push --force origin main). The natural forms 'git push origin main --force', 'git push origin --force main', and a bare 'git push -f' on a checked-out main all bypass it — exactly the teammate-overwrite incident class the hook exists to prevent."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/playwright/base_connector.py",
+      "line": 303,
+      "summary": "Default credentials_login() raises bare NotImplementedError, but _attempt_auto_login only catches TransientLoginError. For connectors that don't override it (FDCo uses Cognito tokens; Kent Paper is a skeleton), if creds are present in .env and the session goes dead the unattended run crashes with an uncaught traceback instead of the intended clean mark_blocked."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/mayers.gs",
+      "line": 173,
+      "summary": "Total-amount regex /(?:^|\\s)Total.../ takes the first match; a two-word 'Sub Total: $450.00' line above the real 'Total: $500.00' would match first (the space before 'Total' in 'Sub Total' satisfies \\s), silently ingesting the subtotal. Depends on Mayers' actual layout — flagged as a regex-construction risk, not confirmed against a live sample."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/Code.gs",
+      "line": 103,
+      "summary": "validateIngest_ doesn't require row.supplier when source==='ordermentum', but SUPPLIER_NAMES deliberately omits ordermentum. A row missing supplier falls through to the raw source string, silently merging Tuga Pastry and Butterboy spend under one bogus 'ordermentum' label."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/Code.gs",
+      "line": 333,
+      "summary": "ensureSheet never validates an existing tab's headers against SUPPLIERS_HEADERS/SALES_HEADERS. If a column is ever manually inserted/reordered in the live sheet, every subsequent appendRow writes into the wrong columns with no check."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/Code.gs",
+      "line": 262,
+      "summary": "labourWeeklyPull_ indexes col['week_start'] etc. with no existence check. A header rename/reorder in the source LABOUR_COST sheet makes col[name] undefined -> coerceDateStr_(undefined)='undefined' -> every row skipped -> returns zeros indistinguishable from 'no labour data yet', traced only by a Logger.log."
+    },
+    {
+      "severity": "minor",
+      "file": "scripts/pre_push_sync.py",
+      "line": 40,
+      "summary": "Any non-zero exit from 'git rev-list --count HEAD..origin/<branch>' (not just an unknown-revision first-push) is treated as 'first push, OK to proceed' -> exit 0, skipping the behind/rebase check. A detached HEAD, corrupted ref, or transient git error is waved through as safe."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/playwright/kent_paper.py",
+      "line": 22,
+      "summary": "Kent Paper skeleton has LOGIN_URL='' but run() unconditionally calls page.goto(LOGIN_URL) before any attended/unattended branching, so invoking it throws an uncaught Playwright invalid-URL error instead of the fail-safe 'not implemented' message its docstring promises."
+    },
+    {
+      "severity": "minor",
+      "file": ".claude/hooks/sync-from-remote.js",
+      "line": 14,
+      "summary": "Hook hardcodes 'git fetch origin main', but origin has no 'main' branch (default is feat/two-tab-foundation). The fetch fails every SessionStart, is swallowed by try/catch, and the hook has never performed its intended sync; it also never checks the checked-out branch before its ff-only pull."
+    },
+    {
+      "severity": "minor",
+      "file": "scripts/execute.py",
+      "line": 1437,
+      "summary": "Untested core decision logic: _eval_verdict (pass/fail/retry/escalate branching driving the live-verification gate) and _run_probe (anti-false-pass check) have no direct unit tests in test_execute.py — only end-to-end paths that stub _http_get_json before reaching them, so a branching regression would ship silently."
+    },
+    {
+      "severity": "minor",
+      "file": ".gitignore",
+      "line": 3,
+      "summary": "Project .gitignore un-ignores .claude/settings.json, .claude/hooks/, .claude/commands/ to share team config, contradicting the global rule that .gitignore must exclude .claude/. Justified in a comment, but means anything dropped into those subpaths is committed by default — worth Jake's explicit sign-off."
+    }
+  ]
+}
