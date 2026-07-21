@@ -7,7 +7,8 @@
     },
     {
       "dir": "fix-silent-ingest-failures",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-07-21T16:39:53+0900"
     }
   ]
 }
