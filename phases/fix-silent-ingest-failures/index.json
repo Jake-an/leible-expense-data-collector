@@ -9,7 +9,7 @@
     {
       "step": 0,
       "name": "ingest-error-raise",
-      "status": "completed",
+      "status": "pending",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/playwright/test_base_connector.py -q",
       "docs": [
@@ -17,7 +17,20 @@
         "schema.md"
       ],
       "started_at": "2026-07-21T16:14:38+0900",
-      "completed_at": "2026-07-21T16:30:00+0900"
+      "completed_at": "2026-07-21T16:30:00+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "python -m pytest connectors/playwright/test_base_connector.py -q",
+          "exit_code": 1,
+          "output_tail": "..................FF.F................                                   [100%]\n================================== FAILURES ===================================\n________________ test_post_raises_ingest_error_on_result_error ________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002ABCE3D5790>\n\n    def test_post_raises_ingest_error_on_result_error(monkeypatch):\n        fake_resp = _FakePostResponse(\n            json_body={\"result\": \"error\", \"message\": \"row 0 missing invoice_ref\"}\n        )\n        monkeypatch.setattr(b.requests, \"post\", lambda *a, **kw: fake_resp)\n        conn = _AutoLoginConnector()\n    \n>       with pytest.raises(b.IngestError) as exc_info:\n                           ^^^^^^^^^^^^^\nE       AttributeError: module 'base_connector' has no attribute 'IngestError'\n\nconnectors\\playwright\\test_base_connector.py:345: AttributeError\n_____________ test_post_raises_ingest_error_on_non_json_200_body ______________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002ABCE3AF8F0>\n\n    def test_post_raises_ingest_error_on_non_json_200_body(monkeypatch):\n        \"\"\"A 200 with an unparseable body (e.g. an HTML error page from GAS) is\n        NOT confirmable success � must raise, not fall back to {\"result\":\"ok\"}\n        the way the old lenient `except ValueError` used to.\"\"\"\n        fake_resp = _FakePostResponse(json_raises=True, text=\"<html>error</html>\")\n        monkeypatch.setattr(b.requests, \"post\", lambda *a, **kw: fake_resp)\n        conn = _AutoLoginConnector()\n    \n>       with pytest.raises(b.IngestError):\n                           ^^^^^^^^^^^^^\nE       AttributeError: module 'base_connector' has no attribute 'IngestError'\n\nconnectors\\playwright\\test_base_connector.py:359: AttributeError\n____ test_ingest_error_is_distinct_from_blocked_and_transient_login_error _____\n\n    def test_ingest_error_is_distinct_from_blocked_and_transient_login_error():\n        \"\"\"Proves run()'s existing except clauses (BlockedError, TransientLoginError)\n        cannot accidentally swallow an ingest rejection.\"\"\"\n>       assert issubclass(b.IngestError, Exception)\n                          ^^^^^^^^^^^^^\nE       AttributeError: module 'base_connector' has no attribute 'IngestError'\n\nconnectors\\playwright\\test_base_connector.py:377: AttributeError\n=========================== short test summary info ===========================\nFAILED connectors/playwright/test_base_connector.py::test_post_raises_ingest_error_on_result_error\nFAILED connectors/playwright/test_base_connector.py::test_post_raises_ingest_error_on_non_json_200_body\nFAILED connectors/playwright/test_base_connector.py::test_ingest_error_is_distinct_from_blocked_and_transient_login_error\n3 failed, 35 passed in 1.70s\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "All 3 failures are AttributeError: module 'base_connector' has no attribute 'IngestError'. The test code is correct and properly imports base_connector; the implementation is missing. Tests expect IngestError to exist as an exception class but it has not been defined yet—this is the correct RED state for TDD."
+          },
+          "at": "2026-07-21T16:19:02+0900"
+        }
+      },
+      "tdd_state": "red_done"
     },
     {
       "step": 1,
