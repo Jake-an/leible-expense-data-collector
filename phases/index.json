@@ -2,7 +2,8 @@
   "phases": [
     {
       "dir": "0-foundation",
-      "status": "pending"
+      "status": "error",
+      "failed_at": "2026-07-21T08:02:41+0900"
     }
   ]
 }

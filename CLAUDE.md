@@ -26,6 +26,11 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 - **Playwright** handles: portal logins with saved sessions → downloads raw data → POSTs to GAS endpoint
 - Full detail: `docs/ARCHITECTURE.md`
 
+## Architecture Rules
+- CRITICAL: **Two runtimes, one boundary.** GAS owns every Sheet write, Square API pull, Mayers PDF parse, and normalization. Playwright connectors ONLY log in, download raw data, and POST to the GAS `doPost` ingest endpoint — a connector never writes to the Sheet directly.
+- CRITICAL: **All ingest flows through `doPost` → `validateIngest_` → the two-tab contract** (`Suppliers` invoice-level + `Sales` Square daily). Never append to a tab outside that path. The dedup keys are the contract — `source`+`invoice_ref` for `Suppliers`, `date`+`location` for `Sales` — see `docs/schema.md`.
+- Connectors emit **raw** source rows; normalization is GAS's job (`normalizeSupplierRow`), not the connector's.
+
 ## Absolute Rules
 - **Never commit credentials, PII, or business data.** `.env`, `credentials/`, `downloads/`, `sessions/`, `*.csv|xlsx|pdf` are gitignored.
 - **Never bypass MFA or CAPTCHA** — Jake passes those manually.
@@ -40,6 +45,10 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 ## Git push vs Deploy (separate triggers)
 - "**lets stop here**" = **git push only** (`python scripts/pre_push_sync.py` → fetch → if behind, rebase --autostash → abort on conflict; never force-push). Nothing else.
 - **Deploy to GAS** happens **when GAS coding is finished** — its own step, not tied to the push phrase: `bash scripts/deploy.sh` (`clasp push` + redeploy the ONE deployment).
+
+## Development Process
+- CRITICAL: Steps marked `tdd: true` are test-first — follow the step file's "Test First" block exactly (red-green-refactor; the enumerated cases define "done"). The v2 harness enforces this mechanically: it confirms the test **fails** (RED) before implementation, requires it to **pass** (GREEN) after, and hard-errors a step where `tdd: true` has no `test_cmd`.
+- Commit messages follow conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
 
 ## Commands
 ```

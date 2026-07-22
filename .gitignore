@@ -24,6 +24,7 @@ sessions/
 
 # Harness phase execution outputs (contain stdout/stderr dumps)
 phases/**/step*-output.json
+phases/**/phase*-output.json
 
 # clasp config (transient, per-env)
 .clasp.json
@@ -32,4 +33,5 @@ phases/**/step*-output.json
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
 logs/

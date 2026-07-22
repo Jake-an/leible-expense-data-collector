@@ -35,8 +35,13 @@ const DANGEROUS = [
   { name: 'fork bomb',                  re: /:\s*\(\s*\)\s*\{/ },
   { name: 'eval of arbitrary input',    re: /\beval\s+(\$|`|"\$)/i },
   { name: 'base64 | sh obfuscation',    re: /\bbase64\s+-d\s*\|\s*(sh|bash|zsh)/i },
-  { name: 'git force push main/master', re: /git\s+push\s+(--force|-f)\s+(origin\s+)?(main|master)\b/i },
-  { name: 'git reset --hard HEAD~',     re: /git\s+reset\s+--hard\s+HEAD~/i },
+  // Force-push is banned outright in this repo (teammate safety). Match the flag
+  // ANYWHERE in the push command — flag-before-ref, flag-after-ref, and bare
+  // `git push -f` all count. This closes the position-dependent gap the phase-0
+  // review flagged (git push origin main --force / git push -f slipped past).
+  { name: 'git force-push (banned in this repo)', re: /git\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?=\s|$)/i },
+  { name: 'git reset --hard (discards work)',      re: /git\s+reset\s+--hard\b/i },
+  { name: 'SQL DROP TABLE/DATABASE',               re: /\bDROP\s+(TABLE|DATABASE)\b/i },
   { name: 'shutdown / halt / reboot',   re: /\b(shutdown|halt|reboot|poweroff)\b/i },
   { name: 'read .clasprc.json secrets', re: /\.clasprc\.json/i },
   { name: 'read .ssh private keys',     re: /\.ssh\/(id_rsa|id_ed25519|id_ecdsa)/i },
