@@ -192,6 +192,74 @@
   token makes every site `continue`, so an unconditional stamp there would mean "ran fine, wrote nothing,
   watchdog silent forever" — the month-of-silence failure in new clothes. No token → no heartbeat → alert fires.
 
+### Phase 0 review findings — backlog (triaged 2026-07-22)
+Source: `phases/0-foundation/review-result.json` (3 criticals already FIXED + shipped in the
+silent-ingest phase). The 15 below were **re-verified against branch HEAD** on 2026-07-22 — the review
+ran off a stale phase-0 merge-base, so status here is current, not as-written. **Base for all fixes:
+new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs land** (harness-v2 + the
+3 fixes). Many findings live in files already inside those PRs — do NOT expand the approved PRs.
+
+**P1 — prod-data / security risk**
+- [ ] **#1 (IMP) `doPost` has ZERO auth** — `connectors/gas/Code.gs`. Anyone with the `/exec` URL (same URL
+      published for the read side in `api.md`) can POST arbitrary rows into `Suppliers`/`Sales`. doGet is
+      token-gated via `checkReadToken_`; doPost is not. Fix = shared-secret header/param, mirror the read gate;
+      every connector must then send it → GAS redeploy. Effort: M.
+- [ ] **#5 (IMP) Connector non-200 swallowed as empty** — `connectors/playwright/ordermentum.py:~130` +
+      `food_dairy_co.py:~176`. PARTIAL: now *warns* but still `return []`/`{}`, so a 5xx for one supplier at one
+      venue silently drops its invoices while others post; run reports success. Same class as the connector-POST
+      bug just fixed — should raise/`mark_blocked`. Effort: S.
+- [ ] **#4 (IMP) `deploy.sh` can mint a 2nd deployment** — `scripts/deploy.sh:~72`. First-deploy detection trusts
+      `config/deployment.json` alone; if `deploymentId` is blanked, DID resolves empty → `clasp create-deployment`
+      branch → 2nd live `/exec`, violating the one-deployment rule. Add a `clasp list-deployments` cross-check
+      before minting. Effort: S.
+
+**P2 — data integrity, cheap**
+- [ ] **#7 (IMP) Bare `NotImplementedError` crashes unattended run** — `connectors/playwright/base_connector.py`.
+      Default `credentials_login()` raises `NotImplementedError` but `_attempt_auto_login` only catches
+      `TransientLoginError`; connectors that don't override (FDCo/Kent) crash instead of `mark_blocked`. Effort: S.
+- [ ] **#9 (MIN) Missing supplier merges Tuga + Butterboy** — `connectors/gas/Code.gs`. `validateIngest_` doesn't
+      require `row.supplier` when `source==='ordermentum'` (SUPPLIER_NAMES intentionally omits it); a missing
+      supplier falls through to the raw `'ordermentum'` label, merging both suppliers' spend. Effort: S.
+- [ ] **#11 (MIN) `labourWeeklyPull_` silent zeros on header drift** — `connectors/gas/Code.gs`. Indexes
+      `col['week_start']` with no existence check → `coerceDateStr_(undefined)` → every row skipped → returns
+      zeros indistinguishable from "no labour data yet", traced only by a `Logger.log`. Effort: S.
+
+**P3 — harness / gate safety (tooling, not prod data)**
+- [ ] **#2 (IMP) Review gate binds to stale local `main`** — `scripts/execute.py`. `_resolve_review_base` only does
+      local `git rev-parse --verify`; origin has no `main`, so every phase review diffs ~5 weeks of unrelated
+      history with no warning — defeating the gate. Effort: M.
+- [ ] **#3 (IMP) `test_cmd` runs `shell=True` unvalidated** — `scripts/execute.py:~400`. Unlike the deploy path
+      (`_validate_deploy_cmd`), `test_cmd` is read fresh from `index.json` (editable by a
+      `--dangerously-skip-permissions` session) and run unconditionally. Effort: S.
+- [ ] **#12 (MIN) `pre_push_sync` waves through any git error** — `scripts/pre_push_sync.py:~40`. Any non-zero exit
+      from `git rev-list --count HEAD..origin/<branch>` (not just true first-push) → exit 0, skipping the
+      behind/rebase check. Effort: S.
+- [ ] **#14 (MIN) `sync-from-remote.js` hook has never worked** — `.claude/hooks/sync-from-remote.js`. Hardcodes
+      `git fetch origin main` throughout; origin default is `feat/two-tab-foundation`, so every SessionStart fetch
+      fails and is swallowed. Effort: S.
+- [ ] **#15 (MIN) `_eval_verdict` / `_run_probe` untested** — `scripts/test_execute.py`. The pass/fail/retry/escalate
+      branching driving the live-verification gate has no direct unit tests (grep returns zero). Effort: M.
+
+**P4 — low impact / robustness**
+- [ ] **#8 (MIN) Mayers "Sub Total" may match before real "Total"** — `connectors/gas/mayers.gs:173`. First-match
+      regex `/(?:^|\s)Total.../` — the space in "Sub Total" satisfies `\s`. Unconfirmed against a live sample;
+      flagged as a regex-construction risk. Effort: S.
+- [ ] **#10 (MIN) `ensureSheet` never validates existing headers** — `connectors/gas/Code.gs`. No comparison vs
+      `SUPPLIERS_HEADERS`/`SALES_HEADERS` for pre-existing tabs; a manual column insert/reorder → every `appendRow`
+      writes into the wrong columns silently. Effort: M.
+- [ ] **#13 (MIN) Kent Paper skeleton crashes on `goto('')`** — `connectors/playwright/kent_paper.py:~22`.
+      `LOGIN_URL=''` but `run()` calls `page.goto(LOGIN_URL)` before branching → uncaught invalid-URL error instead
+      of the "not implemented" fail-safe. Not in use (Phase 6 deferred). Effort: S.
+
+**Decision (no code) — needs Jake's sign-off**
+- [ ] **#16 (MIN) `.gitignore` un-ignores `.claude/{settings.json,hooks/,commands/}`** to share team config,
+      contradicting the global "`.gitignore` must exclude `.claude/`" rule. Justified in a comment; means anything
+      dropped into those subpaths is committed by default. Confirm this is intended or tighten it.
+
+**Verified FIXED (no action)**
+- [x] **#6 (IMP) Force-push guard regex** — `.claude/hooks/block-dangerous.js`. Now catches flag-after-ref and bare
+      `-f` (`/git\s+push\b[^\n]*\s(?:--force(?:-with-lease)?|-f)(?=\s|$)/i`); tripped live on a test string.
+
 ## Future
 - Move Playwright runners to an always-on box
 - Telegram notifications when connectors go `blocked`
