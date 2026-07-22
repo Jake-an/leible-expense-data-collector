@@ -1,0 +1,303 @@
+normalizeSupplierRow
+  ok  - maps columns + resolves canonical supplier from source  (got ["2026-06-15","Food and Dairy Co",245.5,"INV-1","York St","food_dairy_co","TS"])
+  ok  - per-row supplier (Ordermentum) wins over the map  (got ["2026-06-15","Tuga Pastry",80,"O-9","","ordermentum","TS"])
+  ok  - unknown source falls back to the raw source name  (got "mystery")
+ingestSupplierRows dedup (source + invoice_ref)
+  ok  - batch of 3 with 1 dup → 2 added, 1 skipped  (got {"rowsAdded":2,"duplicatesSkipped":1})
+  ok  - re-ingest same batch → 0 added (all dup vs sheet)  (got {"rowsAdded":0,"duplicatesSkipped":3})
+doPost
+  ok  - happy path → ok, rowsAdded 2  (got {"result":"ok","rowsAdded":2,"duplicatesSkipped":0})
+  ok  - batch with duplicate invoice_ref → 1 added, 1 skipped  (got {"result":"ok","rowsAdded":1,"duplicatesSkipped":1})
+  ok  - missing total → result error
+  ok  - missing source → result error
+  ok  - unknown source still ingests (ok, 1 added)  (got {"result":"ok","rowsAdded":1,"duplicatesSkipped":0})
+  ok  - unknown-source supplier defaults to raw source  (got "mystery_co")
+squareSumOrderGross_
+  ok  - sums total_money.amount (cents) → dollars, ignores malformed  (got 13.5)
+  ok  - empty → 0  (got 0)
+parseMayersInvoice_
+  ok  - parses real Mayers invoice — ref, date, total, location  (got {"date":"2026-06-17","total":736.74,"invoice_ref":"3429816","location":"Leible York"})
+  ok  - does not grab Ex Tax or Line Total as the total  (got 736.74)
+  ok  - does not grab Pay Ref as the invoice ref  (got "3429816")
+  ok  - falls back to received date when no date in text
+  ok  - returns null when no total/ref found
+mayersShopFromText_
+  ok  - York St → Leible York  (got "Leible York")
+  ok  - Pitt St → Leible Pitt  (got "Leible Pitt")
+  ok  - Blue St → Leible North  (got "Leible North")
+  ok  - Burlington → Leible Crowsnest  (got "Leible Crowsnest")
+  ok  - Crows Nest keyword → Leible Crowsnest  (got "Leible Crowsnest")
+  ok  - unknown address → UNMAPPED prefix
+  ok  - no address at all → empty string  (got "")
+coerceDateStr_
+  ok  - string passes through  (got "2026-06-15")
+  ok  - Date object → local YYYY-MM-DD (no off-by-one)  (got "2026-06-15")
+aggregateSupplierRows_ with Date-object dates
+  ok  - Date-object rows aggregate into the week  (got 1)
+  ok  - Date-object rows summed  (got 300)
+weekStartForDate_
+  ok  - Monday returns itself  (got "2026-06-22")
+  ok  - Wednesday returns Monday  (got "2026-06-22")
+  ok  - Sunday returns previous Monday  (got "2026-06-22")
+  ok  - Saturday returns Monday  (got "2026-06-22")
+  ok  - Tuesday returns Monday  (got "2026-06-22")
+getLastCompletedWeek_
+  ok  - Monday: last week start  (got "2026-06-15")
+  ok  - Monday: last week end  (got "2026-06-21")
+  ok  - Wednesday: last week start  (got "2026-06-15")
+  ok  - Wednesday: last week end  (got "2026-06-21")
+  ok  - Sunday: last week start  (got "2026-06-15")
+  ok  - Sunday: last week end  (got "2026-06-21")
+aggregateSupplierRows_
+  ok  - groups into 3 buckets (FDC-York, FDC-North, Butterboy-York)  (got 3)
+  ok  - Butterboy York total  (got 80)
+  ok  - Butterboy York supplier  (got "Butterboy")
+  ok  - FDC North total  (got 50)
+  ok  - FDC York total (100+200)  (got 300)
+  ok  - empty rows → empty result  (got 0)
+checkReadToken_
+  ok  - no stored token → unauthorized
+  ok  - no caller token → unauthorized
+  ok  - empty caller token → unauthorized
+  ok  - wrong token → unauthorized
+  ok  - correct token → ok
+summaryDataToObjects_
+  ok  - returns 2 objects  (got 2)
+  ok  - first obj supplier  (got "Food and Dairy Co")
+  ok  - first obj total_spend  (got 300)
+  ok  - second obj week_start  (got "2026-06-15")
+filterSummaryByDateRange_
+  ok  - from filter  (got 2)
+  ok  - to filter  (got 2)
+  ok  - from+to filter  (got 1)
+  ok  - no filter  (got 3)
+archiveAndPurge_
+  ok  - archived 2 old rows  (got 2)
+  ok  - source has header + 1 recent row  (got 2)
+  ok  - source remaining row is recent  (got "2026-06-15")
+  ok  - archive has header + 2 archived rows  (got 3)
+  ok  - archive first row date (bottom-up order)  (got "2026-01-15")
+doGet (integration)
+  ok  - no stored token → error  (got "error")
+  ok  - wrong token → error  (got "error")
+  ok  - valid token + date range → ok  (got "ok")
+  ok  - returns 2 rows for week Jun 15  (got 2)
+  ok  - first row supplier  (got "Food and Dairy Co")
+  ok  - wider range → 3 rows  (got 3)
+
+resolveDateArg_:
+  ok  - valid date passes through  (got "2026-07-15")
+  ok  - surrounding whitespace trimmed  (got "2026-07-15")
+  ok  - undefined → fallback  (got "FB")
+  ok  - null → fallback  (got "FB")
+  ok  - empty string → fallback  (got "FB")
+  ok  - trigger EVENT OBJECT → fallback  (got "FB")
+  ok  - Date object → fallback  (got "FB")
+  ok  - number → fallback  (got "FB")
+  ok  - dd/mm/yyyy → fallback  (got "FB")
+  ok  - unpadded 2026-7-5 → fallback  (got "FB")
+  ok  - ISO datetime → fallback  (got "FB")
+  ok  - 'yesterday' → fallback  (got "FB")
+  ok  - 2026-02-31 → fallback  (got "FB")
+  ok  - 2026-13-01 → fallback  (got "FB")
+  ok  - non-leap 2026-02-29 → fallback  (got "FB")
+  ok  - leap 2028-02-29 is valid  (got "2028-02-29")
+
+addDaysStr_:
+  ok  - +6 days within month  (got "2026-06-21")
+  ok  - +0 days is identity  (got "2026-06-15")
+  ok  - month rollover  (got "2026-07-05")
+  ok  - year rollover  (got "2027-01-03")
+  ok  - leap-year February  (got "2028-03-03")
+  ok  - negative days  (got "2026-06-29")
+
+squareDailyPull (Fault 3 regression):
+  ok  - trigger event → yesterday, not the event object  (got "2026-07-15")
+  ok  - a Sales row WAS written (test is not vacuous)  (got 2)
+  ok  - written date cell is a real date  (got "2026-07-15")
+  ok  - date cell never carries the event object
+  ok  - date cell matches YYYY-MM-DD exactly
+  ok  - the written row is NOT flagged corrupt by the cleanup predicate
+  ok  - explicit date still honoured  (got "2026-07-01")
+  ok  - explicit date reaches the row  (got "2026-07-01")
+  ok  - no arg → yesterday  (got "2026-07-15")
+
+square API failure — null sentinel (not [] / not silent $0):
+  ok  - squareListLocations_: API failure (squareCallApi_ -> null) returns null, not []  (got null)
+  ok  - squareListLocations_: genuine empty {locations: []} still returns []  (got [])
+  ok  - squareSearchOrders_: API failure (squareCallApi_ -> null) returns null, not []  (got null)
+  ok  - site API failure: no Sales row appended (header only)  (got 1)
+  ok  - site API failure: heartbeat NOT stamped
+  ok  - real closed day: a $0 Sales row IS written  (got 2)
+  ok  - real closed day: gross is genuinely 0  (got 0)
+  ok  - real closed day: heartbeat IS stamped
+  ok  - mixed sites: exactly one row written (the healthy site only)  (got 2)
+  ok  - mixed sites: the written row belongs to the healthy site  (got "North Sydney")
+  ok  - mixed sites: heartbeat IS stamped (>=1 site succeeded)
+
+salesRowIsCorrupt_:
+  ok  - healthy row (date as string) → keep
+  ok  - healthy row (date as Date object) → keep
+  ok  - corrupt row (stringified event) → delete
+  ok  - zero gross on a valid date → keep (closed day)
+  ok  - blank date on a square row → delete
+  ok  - non-square source is never touched
+  ok  - fully blank row → keep (source is not square)
+  ok  - source matching is case/space tolerant
+
+cleanupCorruptSalesRows:
+  ok  - no-arg → dry run  (got "dryRun")
+  ok  - dry run finds all 8  (got 8)
+  ok  - dry run deletes nothing  (got 11)
+  ok  - trigger event arg → still dry run  (got "dryRun")
+  ok  - trigger event arg deletes nothing  (got 11)
+  ok  - true → still dry run (only false applies)  (got "dryRun")
+  ok  - truthy string "false" → still dry run  (got "dryRun")
+  ok  - null → still dry run  (got "dryRun")
+  ok  - 0 → still dry run  (got "dryRun")
+  ok  - after every non-false arg, nothing was deleted  (got 11)
+  ok  - apply deletes 8  (got 8)
+  ok  - 2 legitimate rows survive (+header)  (got 3)
+  ok  - healthy row survived  (got "2026-07-14")
+  ok  - closed-day $0 row survived  (got "2026-07-15")
+  ok  - no corrupt row survived
+  ok  - count mismatch → aborted  (got "aborted")
+  ok  - aborted run deleted nothing  (got 8)
+  ok  - retargeted guard → applies  (got 5)
+
+cleanupDuplicateSummaryRows:
+  ok  - seeded 7 data rows (+header)  (got 8)
+  ok  - dry run is the default (no arg)  (got "dryRun")
+  ok  - dry run finds 4 duplicates  (got 4)
+  ok  - dry run deletes nothing  (got 0)
+  ok  - dry run leaves the sheet intact  (got 8)
+  ok  - apply deletes 4  (got 4)
+  ok  - 3 unique rows survive (+header)  (got 4)
+  ok  - first FDCo row kept  (got "T1")
+  ok  - first F&C row kept  (got "T1")
+  ok  - Labour row survived  (got "Labour")
+  ok  - Labour total intact  (got 4830.14)
+  ok  - re-apply finds nothing  (got 0)
+  ok  - re-apply deletes nothing  (got 0)
+  ok  - sheet unchanged by re-apply  (got 4)
+  ok  - conflict is reported  (got 1)
+  ok  - conflict names the differing total  (got 999)
+  ok  - conflict row is NOT deleted  (got true)
+  ok  - clean duplicates still removed alongside the conflict  (got 4)
+
+labourWeeklyPull_ dedup:
+  ok  - labour rows written to Labour tab  (got 2)
+  ok  - labour rows written to Summary  (got 2)
+  ok  - Labour tab has header + 2 rows  (got 3)
+  ok  - Labour row carries the week Monday  (got "2026-06-15")
+  ok  - labour total survives the round-trip  (got 4830.14)
+  ok  - re-run adds no Labour tab rows  (got 0)
+  ok  - re-run adds no labour Summary rows  (got 0)
+  ok  - Labour tab still has header + 2 rows  (got 3)
+  ok  - no LABOUR_SHEET_ID → labour skipped  (got 0)
+  ok  - no LABOUR_SHEET_ID → supplier summary still lands  (got 1)
+
+weeklySummarize override:
+  ok  - Wednesday override snaps to Monday  (got "2026-06-15")
+  ok  - week end is the following Sunday  (got "2026-06-21")
+  ok  - backlog week actually summarized  (got 1)
+  ok  - Summary row carries the snapped Monday  (got "2026-06-15")
+  ok  - spend aggregated for the week  (got 150)
+  ok  - Monday override is unchanged  (got "2026-06-15")
+  ok  - Sunday override snaps back to its Monday  (got "2026-06-15")
+  ok  - trigger event → falls back to last completed week  (got "2026-07-13")
+  ok  - no arg → last completed week  (got "2026-07-13")
+  ok  - re-run adds nothing (dedup)  (got 0)
+  ok  - Summary still has exactly 1 data row  (got 2)
+  ok  - current week → refused  (got "incomplete-week")
+  ok  - refused run summarizes nothing  (got 0)
+  ok  - refused run wrote no Summary rows  (got 1)
+  ok  - this Monday (week still running) → refused  (got "incomplete-week")
+  ok  - a future week → refused  (got "incomplete-week")
+  ok  - the most recently COMPLETED week is allowed
+  ok  - completed week summarizes normally  (got "2026-07-13")
+  ok  - old backlog week still summarizes  (got 1)
+  ok  - override run purged nothing (source row intact)  (got 2)
+  ok  - override run archived nothing  (got 1)
+
+archiveAndPurge_ blank-row guard:
+  ok  - only the genuinely old row is archived  (got 1)
+  ok  - blank row survives the purge  (got 3)
+  ok  - archive contains just the old row  (got 2)
+  ok  - archived row is the old one  (got "Old Co")
+
+staleness pure helpers:
+  ok  - parses an ISO string with offset  (got 1784163600000)
+  ok  - parses a Date object  (got 1784163600000)
+  ok  - blank → null  (got null)
+  ok  - null → null  (got null)
+  ok  - undefined → null  (got null)
+  ok  - garbage → null  (got null)
+  ok  - Invalid Date object → null  (got null)
+  ok  - newest extracted_at per source wins  (got 1783962000000)
+  ok  - a Date-object timestamp is handled  (got 1783738800000)
+  ok  - blank source row ignored
+  ok  - row with unparseable ts contributes nothing
+  ok  - the Sales layout works too (different column indexes)  (got 1784134800000)
+  ok  - merge keeps the NEWER timestamp  (got 300)
+  ok  - merge keeps non-overlapping keys  (got 500)
+  ok  - merge adds new keys  (got 900)
+  ok  - merging nothing → empty  (got "{}")
+  ok  - exactly 96h is FRESH (strictly greater is stale)  (got false)
+  ok  - 97h is stale  (got true)
+  ok  - 1h is fresh  (got false)
+  ok  - never seen → stale  (got true)
+  ok  - never seen → ageHours null  (got null)
+  ok  - age is reported  (got 10)
+  ok  - Fri 03:00 → Mon 11:00 is 80h  (got 80)
+  ok  - a normal weekend gap does NOT alert  (got false)
+  ok  - Thu 03:00 → Mon 11:00 is 104h  (got 104)
+  ok  - a genuine ~4-day outage DOES alert  (got true)
+  ok  - title is stable  (got "LEIBLE expense stale: square")
+  ok  - title carries no age/number
+
+staleness heartbeat:
+  ok  - heartbeat writes a Script Property
+  ok  - heartbeat value is a parseable timestamp
+  ok  - a failing Properties store cannot throw out of the heartbeat
+  ok  - doPost ingested  (got 1)
+  ok  - doPost stamped the heartbeat
+  ok  - re-post is all duplicates  (got 0)
+  ok  - an all-duplicate run STILL advances the heartbeat (kills the false positive)
+  ok  - an invalid payload stamps nothing
+
+staleness square-token exception:
+  ok  - no token → no site processed  (got 0)
+  ok  - NO heartbeat when every Square site was skipped
+  ok  - one token → one site processed  (got 1)
+  ok  - heartbeat stamped when a site really ran
+
+staleness alerts:
+  ok  - every source is stale on a cold start  (got 5)
+  ok  - one event per stale source  (got 5)
+  ok  - events are ORANGE
+  ok  - events carry a description
+  ok  - titles have no varying number
+  ok  - re-run creates no duplicate events  (got 0)
+  ok  - event count unchanged  (got 5)
+  ok  - fresh heartbeats → nothing stale  (got 0)
+  ok  - fresh heartbeats → no calendar events  (got 0)
+  ok  - no events created at all  (got 0)
+  ok  - a recent sheet row alone marks that source fresh
+  ok  - other sources remain stale
+  ok  - a fresh heartbeat overrides an ancient sheet row
+  ok  - a broken calendar does not throw
+  ok  - a broken calendar creates no events  (got 0)
+  ok  - staleness is still reported when the calendar is down
+  ok  - falls back to the default calendar
+
+sales dedup — rowKey_ coerces Date-typed key cols:
+  FAIL- rowKey_: Date-typed date col matches its YYYY-MM-DD string  (got "wed jul 15 2026 00:00:00 gmt+1000 (australian eastern standard time)||york")
+  ok  - first appendSalesRow_ call appends  (got true)
+  ok  - sheet has header + 1 row after first append  (got 2)
+  FAIL- re-run appendSalesRow_ call is recognised as a duplicate  (got true)
+  FAIL- sheet row count unchanged after duplicate re-run  (got 3)
+  ok  - rowKey_: differing location produces a different key
+  ok  - rowKey_: location casing/whitespace still normalizes  (got "2026-07-15||york")
+
+252 passed, 3 failed

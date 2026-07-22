@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "All 3 failures are legitimate implementation gaps: rowKey_ does not coerce Date-typed columns to YYYY-MM-DD strings. Cascading failures in dedup logic confirm this is a single missing feature, not test harness issues. 252 passing tests show the test code itself is sound."}

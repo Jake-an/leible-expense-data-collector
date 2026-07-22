@@ -176,7 +176,9 @@ function buildKeySet_(sheet, keyCols) {
 function rowKey_(rowArray, keyCols) {
   var parts = [];
   for (var i = 0; i < keyCols.length; i++) {
-    parts.push(String(rowArray[keyCols[i]]).trim().toLowerCase());
+    var v = rowArray[keyCols[i]];
+    v = (v instanceof Date) ? coerceDateStr_(v) : v;
+    parts.push(String(v).trim().toLowerCase());
   }
   return parts.join('||');
 }

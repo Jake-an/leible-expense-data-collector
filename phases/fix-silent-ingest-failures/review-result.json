@@ -1,0 +1,19 @@
+{
+  "verdict": "approve",
+  "reviewer": "independent-code-review",
+  "phase": "fix-silent-ingest-failures",
+  "base": "f90861e",
+  "summary": "Three ingest silent-failure classes fixed and well-tested: (1) post() now raises IngestError on result!=ok or non-JSON 200 instead of the old lenient {result:ok} fallback; (2) Square API failure propagates a null sentinel so an outage no longer writes a $0 Sales row + stamps the heartbeat; (3) rowKey_ coerces Date-typed key columns so Sales dedup stops double-counting on re-run. Boundary check: post()->doPost response shapes agree ({result:'ok'|'error', message}); IngestError is raised OUTSIDE every per-shop try/except (base run() L281, fresh_and_chill run_unattended L288) and only BlockedError is caught in main/cli_main, so it correctly propagates to a non-zero exit (fail-loud). No tdd:false escape hatch used; all 3 steps carry red+green tdd_evidence. No critical or important issues found.",
+  "issues": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/square.gs",
+      "summary": "Single per-source 'square' heartbeat is stamped when sitesOk > 0, so a PARTIAL failure (e.g. one site's token revoked while the other sites succeed) still advances the watchdog heartbeat and stays silent — a healthy site masks a dead sibling. Pre-existing single-heartbeat-per-source limitation, not introduced by this diff, and the chosen sitesOk>0 rule is strictly better than the old sitesWithToken>0 (no more bogus $0 rows). Closing it would need per-site heartbeats or a stricter sitesOk===sitesWithToken gate (which trades silence for more alerting on a genuinely-revoked single token)."
+    },
+    {
+      "severity": "minor",
+      "file": "scripts/setup_always_on.ps1",
+      "summary": "434-line operational PowerShell script with no automated tests, and it entered the branch via a backup commit (7162431) rather than any of the 3 TDD phase steps. It handles a Windows account password — reviewed and found correct: Get-Credential (memory only), GetNetworkCredential().Password passed straight to Set-ScheduledTask and cleared in a finally, $cred nulled after, never logged or written to disk (Task Scheduler stores it DPAPI-encrypted), and logs/ is gitignored so the baseline dump isn't committed. Flagged as a coverage/scope observation, not a defect."
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 3 failures are AttributeError: module 'base_connector' has no attribute 'IngestError'. The test code is correct and properly imports base_connector; the implementation is missing. Tests expect IngestError to exist as an exception class but it has not been defined yet—this is the correct RED state for TDD."
+}

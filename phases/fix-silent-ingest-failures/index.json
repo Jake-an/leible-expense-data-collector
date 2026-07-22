@@ -1,0 +1,156 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "fix-silent-ingest-failures",
+  "review": {
+    "base": "f90861e"
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "ingest-error-raise",
+      "status": "completed",
+      "summary": "IngestError added; post() raises on result!=ok / non-JSON 200; 5 new post() tests green.",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/playwright/test_base_connector.py -q",
+      "docs": [
+        "ARCHITECTURE.md",
+        "schema.md"
+      ],
+      "started_at": "2026-07-21T16:14:38+0900",
+      "completed_at": "2026-07-21T16:21:00+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "python -m pytest connectors/playwright/test_base_connector.py -q",
+          "exit_code": 1,
+          "output_tail": "..................FF.F................                                   [100%]\n================================== FAILURES ===================================\n________________ test_post_raises_ingest_error_on_result_error ________________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002ABCE3D5790>\n\n    def test_post_raises_ingest_error_on_result_error(monkeypatch):\n        fake_resp = _FakePostResponse(\n            json_body={\"result\": \"error\", \"message\": \"row 0 missing invoice_ref\"}\n        )\n        monkeypatch.setattr(b.requests, \"post\", lambda *a, **kw: fake_resp)\n        conn = _AutoLoginConnector()\n    \n>       with pytest.raises(b.IngestError) as exc_info:\n                           ^^^^^^^^^^^^^\nE       AttributeError: module 'base_connector' has no attribute 'IngestError'\n\nconnectors\\playwright\\test_base_connector.py:345: AttributeError\n_____________ test_post_raises_ingest_error_on_non_json_200_body ______________\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002ABCE3AF8F0>\n\n    def test_post_raises_ingest_error_on_non_json_200_body(monkeypatch):\n        \"\"\"A 200 with an unparseable body (e.g. an HTML error page from GAS) is\n        NOT confirmable success � must raise, not fall back to {\"result\":\"ok\"}\n        the way the old lenient `except ValueError` used to.\"\"\"\n        fake_resp = _FakePostResponse(json_raises=True, text=\"<html>error</html>\")\n        monkeypatch.setattr(b.requests, \"post\", lambda *a, **kw: fake_resp)\n        conn = _AutoLoginConnector()\n    \n>       with pytest.raises(b.IngestError):\n                           ^^^^^^^^^^^^^\nE       AttributeError: module 'base_connector' has no attribute 'IngestError'\n\nconnectors\\playwright\\test_base_connector.py:359: AttributeError\n____ test_ingest_error_is_distinct_from_blocked_and_transient_login_error _____\n\n    def test_ingest_error_is_distinct_from_blocked_and_transient_login_error():\n        \"\"\"Proves run()'s existing except clauses (BlockedError, TransientLoginError)\n        cannot accidentally swallow an ingest rejection.\"\"\"\n>       assert issubclass(b.IngestError, Exception)\n                          ^^^^^^^^^^^^^\nE       AttributeError: module 'base_connector' has no attribute 'IngestError'\n\nconnectors\\playwright\\test_base_connector.py:377: AttributeError\n=========================== short test summary info ===========================\nFAILED connectors/playwright/test_base_connector.py::test_post_raises_ingest_error_on_result_error\nFAILED connectors/playwright/test_base_connector.py::test_post_raises_ingest_error_on_non_json_200_body\nFAILED connectors/playwright/test_base_connector.py::test_ingest_error_is_distinct_from_blocked_and_transient_login_error\n3 failed, 35 passed in 1.70s\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "All 3 failures are AttributeError: module 'base_connector' has no attribute 'IngestError'. The test code is correct and properly imports base_connector; the implementation is missing. Tests expect IngestError to exist as an exception class but it has not been defined yet—this is the correct RED state for TDD."
+          },
+          "at": "2026-07-21T16:19:02+0900"
+        },
+        "green": {
+          "command": "python -m pytest connectors/playwright/test_base_connector.py -q",
+          "exit_code": 0,
+          "output_tail": "......................................                                   [100%]\n38 passed in 0.56s\n",
+          "at": "2026-07-21T16:21:01+0900"
+        }
+      },
+      "tdd_state": "red_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/fix-silent-ingest-failures/step0-review.json",
+        "checked_at": "2026-07-21T16:23:24+0900"
+      }
+    },
+    {
+      "step": 1,
+      "name": "square-api-failure",
+      "status": "completed",
+      "summary": "Square API failure now null-sentinel'd; no $0 row + no heartbeat on failure; real closed-day still records+heartbeats; 6 new tests green.",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "docs": [
+        "schema.md"
+      ],
+      "started_at": "2026-07-21T16:23:24+0900",
+      "completed_at": "2026-07-21T16:28:25+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 1,
+          "output_tail": " override is unchanged  (got \"2026-06-15\")\n  ok  - Sunday override snaps back to its Monday  (got \"2026-06-15\")\n  ok  - trigger event → falls back to last completed week  (got \"2026-07-13\")\n  ok  - no arg → last completed week  (got \"2026-07-13\")\n  ok  - re-run adds nothing (dedup)  (got 0)\n  ok  - Summary still has exactly 1 data row  (got 2)\n  ok  - current week → refused  (got \"incomplete-week\")\n  ok  - refused run summarizes nothing  (got 0)\n  ok  - refused run wrote no Summary rows  (got 1)\n  ok  - this Monday (week still running) → refused  (got \"incomplete-week\")\n  ok  - a future week → refused  (got \"incomplete-week\")\n  ok  - the most recently COMPLETED week is allowed\n  ok  - completed week summarizes normally  (got \"2026-07-13\")\n  ok  - old backlog week still summarizes  (got 1)\n  ok  - override run purged nothing (source row intact)  (got 2)\n  ok  - override run archived nothing  (got 1)\n\narchiveAndPurge_ blank-row guard:\n  ok  - only the genuinely old row is archived  (got 1)\n  ok  - blank row survives the purge  (got 3)\n  ok  - archive contains just the old row  (got 2)\n  ok  - archived row is the old one  (got \"Old Co\")\n\nstaleness pure helpers:\n  ok  - parses an ISO string with offset  (got 1784163600000)\n  ok  - parses a Date object  (got 1784163600000)\n  ok  - blank → null  (got null)\n  ok  - null → null  (got null)\n  ok  - undefined → null  (got null)\n  ok  - garbage → null  (got null)\n  ok  - Invalid Date object → null  (got null)\n  ok  - newest extracted_at per source wins  (got 1783962000000)\n  ok  - a Date-object timestamp is handled  (got 1783738800000)\n  ok  - blank source row ignored\n  ok  - row with unparseable ts contributes nothing\n  ok  - the Sales layout works too (different column indexes)  (got 1784134800000)\n  ok  - merge keeps the NEWER timestamp  (got 300)\n  ok  - merge keeps non-overlapping keys  (got 500)\n  ok  - merge adds new keys  (got 900)\n  ok  - merging nothing → empty  (got \"{}\")\n  ok  - exactly 96h is FRESH (strictly greater is stale)  (got false)\n  ok  - 97h is stale  (got true)\n  ok  - 1h is fresh  (got false)\n  ok  - never seen → stale  (got true)\n  ok  - never seen → ageHours null  (got null)\n  ok  - age is reported  (got 10)\n  ok  - Fri 03:00 → Mon 11:00 is 80h  (got 80)\n  ok  - a normal weekend gap does NOT alert  (got false)\n  ok  - Thu 03:00 → Mon 11:00 is 104h  (got 104)\n  ok  - a genuine ~4-day outage DOES alert  (got true)\n  ok  - title is stable  (got \"LEIBLE expense stale: square\")\n  ok  - title carries no age/number\n\nstaleness heartbeat:\n  ok  - heartbeat writes a Script Property\n  ok  - heartbeat value is a parseable timestamp\n  ok  - a failing Properties store cannot throw out of the heartbeat\n  ok  - doPost ingested  (got 1)\n  ok  - doPost stamped the heartbeat\n  ok  - re-post is all duplicates  (got 0)\n  ok  - an all-duplicate run STILL advances the heartbeat (kills the false positive)\n  ok  - an invalid payload stamps nothing\n\nstaleness square-token exception:\n  ok  - no token → no site processed  (got 0)\n  ok  - NO heartbeat when every Square site was skipped\n  ok  - one token → one site processed  (got 1)\n  ok  - heartbeat stamped when a site really ran\n\nstaleness alerts:\n  ok  - every source is stale on a cold start  (got 5)\n  ok  - one event per stale source  (got 5)\n  ok  - events are ORANGE\n  ok  - events carry a description\n  ok  - titles have no varying number\n  ok  - re-run creates no duplicate events  (got 0)\n  ok  - event count unchanged  (got 5)\n  ok  - fresh heartbeats → nothing stale  (got 0)\n  ok  - fresh heartbeats → no calendar events  (got 0)\n  ok  - no events created at all  (got 0)\n  ok  - a recent sheet row alone marks that source fresh\n  ok  - other sources remain stale\n  ok  - a fresh heartbeat overrides an ancient sheet row\n  ok  - a broken calendar does not throw\n  ok  - a broken calendar creates no events  (got 0)\n  ok  - staleness is still reported when the calendar is down\n  ok  - falls back to the default calendar\n\n242 passed, 6 failed\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "6 failures are all assertion-level (wrong return values, wrong sheet mutations, wrong heartbeat stamps) caused by missing/incomplete implementation of the null-sentinel fix. Test code is correct and working properly. This is exactly right for RED phase — implementation hasn't been written yet."
+          },
+          "at": "2026-07-21T16:26:28+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": " override is unchanged  (got \"2026-06-15\")\n  ok  - Sunday override snaps back to its Monday  (got \"2026-06-15\")\n  ok  - trigger event → falls back to last completed week  (got \"2026-07-13\")\n  ok  - no arg → last completed week  (got \"2026-07-13\")\n  ok  - re-run adds nothing (dedup)  (got 0)\n  ok  - Summary still has exactly 1 data row  (got 2)\n  ok  - current week → refused  (got \"incomplete-week\")\n  ok  - refused run summarizes nothing  (got 0)\n  ok  - refused run wrote no Summary rows  (got 1)\n  ok  - this Monday (week still running) → refused  (got \"incomplete-week\")\n  ok  - a future week → refused  (got \"incomplete-week\")\n  ok  - the most recently COMPLETED week is allowed\n  ok  - completed week summarizes normally  (got \"2026-07-13\")\n  ok  - old backlog week still summarizes  (got 1)\n  ok  - override run purged nothing (source row intact)  (got 2)\n  ok  - override run archived nothing  (got 1)\n\narchiveAndPurge_ blank-row guard:\n  ok  - only the genuinely old row is archived  (got 1)\n  ok  - blank row survives the purge  (got 3)\n  ok  - archive contains just the old row  (got 2)\n  ok  - archived row is the old one  (got \"Old Co\")\n\nstaleness pure helpers:\n  ok  - parses an ISO string with offset  (got 1784163600000)\n  ok  - parses a Date object  (got 1784163600000)\n  ok  - blank → null  (got null)\n  ok  - null → null  (got null)\n  ok  - undefined → null  (got null)\n  ok  - garbage → null  (got null)\n  ok  - Invalid Date object → null  (got null)\n  ok  - newest extracted_at per source wins  (got 1783962000000)\n  ok  - a Date-object timestamp is handled  (got 1783738800000)\n  ok  - blank source row ignored\n  ok  - row with unparseable ts contributes nothing\n  ok  - the Sales layout works too (different column indexes)  (got 1784134800000)\n  ok  - merge keeps the NEWER timestamp  (got 300)\n  ok  - merge keeps non-overlapping keys  (got 500)\n  ok  - merge adds new keys  (got 900)\n  ok  - merging nothing → empty  (got \"{}\")\n  ok  - exactly 96h is FRESH (strictly greater is stale)  (got false)\n  ok  - 97h is stale  (got true)\n  ok  - 1h is fresh  (got false)\n  ok  - never seen → stale  (got true)\n  ok  - never seen → ageHours null  (got null)\n  ok  - age is reported  (got 10)\n  ok  - Fri 03:00 → Mon 11:00 is 80h  (got 80)\n  ok  - a normal weekend gap does NOT alert  (got false)\n  ok  - Thu 03:00 → Mon 11:00 is 104h  (got 104)\n  ok  - a genuine ~4-day outage DOES alert  (got true)\n  ok  - title is stable  (got \"LEIBLE expense stale: square\")\n  ok  - title carries no age/number\n\nstaleness heartbeat:\n  ok  - heartbeat writes a Script Property\n  ok  - heartbeat value is a parseable timestamp\n  ok  - a failing Properties store cannot throw out of the heartbeat\n  ok  - doPost ingested  (got 1)\n  ok  - doPost stamped the heartbeat\n  ok  - re-post is all duplicates  (got 0)\n  ok  - an all-duplicate run STILL advances the heartbeat (kills the false positive)\n  ok  - an invalid payload stamps nothing\n\nstaleness square-token exception:\n  ok  - no token → no site processed  (got 0)\n  ok  - NO heartbeat when every Square site was skipped\n  ok  - one token → one site processed  (got 1)\n  ok  - heartbeat stamped when a site really ran\n\nstaleness alerts:\n  ok  - every source is stale on a cold start  (got 5)\n  ok  - one event per stale source  (got 5)\n  ok  - events are ORANGE\n  ok  - events carry a description\n  ok  - titles have no varying number\n  ok  - re-run creates no duplicate events  (got 0)\n  ok  - event count unchanged  (got 5)\n  ok  - fresh heartbeats → nothing stale  (got 0)\n  ok  - fresh heartbeats → no calendar events  (got 0)\n  ok  - no events created at all  (got 0)\n  ok  - a recent sheet row alone marks that source fresh\n  ok  - other sources remain stale\n  ok  - a fresh heartbeat overrides an ancient sheet row\n  ok  - a broken calendar does not throw\n  ok  - a broken calendar creates no events  (got 0)\n  ok  - staleness is still reported when the calendar is down\n  ok  - falls back to the default calendar\n\n248 passed, 0 failed\n",
+          "at": "2026-07-21T16:28:25+0900"
+        }
+      },
+      "tdd_state": "green_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/fix-silent-ingest-failures/step1-review.json",
+        "checked_at": "2026-07-21T16:30:08+0900"
+      }
+    },
+    {
+      "step": 2,
+      "name": "sales-dedup-coerce",
+      "status": "completed",
+      "summary": "rowKey_ coerces Date-typed key cols via coerceDateStr_; Sales re-run no longer double-counts; new + existing tests green.",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "docs": [
+        "schema.md"
+      ],
+      "started_at": "2026-07-21T16:30:08+0900",
+      "completed_at": "2026-07-21T16:33:29+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 1,
+          "output_tail": "(got \"incomplete-week\")\n  ok  - the most recently COMPLETED week is allowed\n  ok  - completed week summarizes normally  (got \"2026-07-13\")\n  ok  - old backlog week still summarizes  (got 1)\n  ok  - override run purged nothing (source row intact)  (got 2)\n  ok  - override run archived nothing  (got 1)\n\narchiveAndPurge_ blank-row guard:\n  ok  - only the genuinely old row is archived  (got 1)\n  ok  - blank row survives the purge  (got 3)\n  ok  - archive contains just the old row  (got 2)\n  ok  - archived row is the old one  (got \"Old Co\")\n\nstaleness pure helpers:\n  ok  - parses an ISO string with offset  (got 1784163600000)\n  ok  - parses a Date object  (got 1784163600000)\n  ok  - blank → null  (got null)\n  ok  - null → null  (got null)\n  ok  - undefined → null  (got null)\n  ok  - garbage → null  (got null)\n  ok  - Invalid Date object → null  (got null)\n  ok  - newest extracted_at per source wins  (got 1783962000000)\n  ok  - a Date-object timestamp is handled  (got 1783738800000)\n  ok  - blank source row ignored\n  ok  - row with unparseable ts contributes nothing\n  ok  - the Sales layout works too (different column indexes)  (got 1784134800000)\n  ok  - merge keeps the NEWER timestamp  (got 300)\n  ok  - merge keeps non-overlapping keys  (got 500)\n  ok  - merge adds new keys  (got 900)\n  ok  - merging nothing → empty  (got \"{}\")\n  ok  - exactly 96h is FRESH (strictly greater is stale)  (got false)\n  ok  - 97h is stale  (got true)\n  ok  - 1h is fresh  (got false)\n  ok  - never seen → stale  (got true)\n  ok  - never seen → ageHours null  (got null)\n  ok  - age is reported  (got 10)\n  ok  - Fri 03:00 → Mon 11:00 is 80h  (got 80)\n  ok  - a normal weekend gap does NOT alert  (got false)\n  ok  - Thu 03:00 → Mon 11:00 is 104h  (got 104)\n  ok  - a genuine ~4-day outage DOES alert  (got true)\n  ok  - title is stable  (got \"LEIBLE expense stale: square\")\n  ok  - title carries no age/number\n\nstaleness heartbeat:\n  ok  - heartbeat writes a Script Property\n  ok  - heartbeat value is a parseable timestamp\n  ok  - a failing Properties store cannot throw out of the heartbeat\n  ok  - doPost ingested  (got 1)\n  ok  - doPost stamped the heartbeat\n  ok  - re-post is all duplicates  (got 0)\n  ok  - an all-duplicate run STILL advances the heartbeat (kills the false positive)\n  ok  - an invalid payload stamps nothing\n\nstaleness square-token exception:\n  ok  - no token → no site processed  (got 0)\n  ok  - NO heartbeat when every Square site was skipped\n  ok  - one token → one site processed  (got 1)\n  ok  - heartbeat stamped when a site really ran\n\nstaleness alerts:\n  ok  - every source is stale on a cold start  (got 5)\n  ok  - one event per stale source  (got 5)\n  ok  - events are ORANGE\n  ok  - events carry a description\n  ok  - titles have no varying number\n  ok  - re-run creates no duplicate events  (got 0)\n  ok  - event count unchanged  (got 5)\n  ok  - fresh heartbeats → nothing stale  (got 0)\n  ok  - fresh heartbeats → no calendar events  (got 0)\n  ok  - no events created at all  (got 0)\n  ok  - a recent sheet row alone marks that source fresh\n  ok  - other sources remain stale\n  ok  - a fresh heartbeat overrides an ancient sheet row\n  ok  - a broken calendar does not throw\n  ok  - a broken calendar creates no events  (got 0)\n  ok  - staleness is still reported when the calendar is down\n  ok  - falls back to the default calendar\n\nsales dedup — rowKey_ coerces Date-typed key cols:\n  FAIL- rowKey_: Date-typed date col matches its YYYY-MM-DD string  (got \"wed jul 15 2026 00:00:00 gmt+1000 (australian eastern standard time)||york\")\n  ok  - first appendSalesRow_ call appends  (got true)\n  ok  - sheet has header + 1 row after first append  (got 2)\n  FAIL- re-run appendSalesRow_ call is recognised as a duplicate  (got true)\n  FAIL- sheet row count unchanged after duplicate re-run  (got 3)\n  ok  - rowKey_: differing location produces a different key\n  ok  - rowKey_: location casing/whitespace still normalizes  (got \"2026-07-15||york\")\n\n252 passed, 3 failed\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "All 3 failures are legitimate implementation gaps: rowKey_ does not coerce Date-typed columns to YYYY-MM-DD strings. Cascading failures in dedup logic confirm this is a single missing feature, not test harness issues. 252 passing tests show the test code itself is sound."
+          },
+          "at": "2026-07-21T16:31:50+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "(got \"incomplete-week\")\n  ok  - a future week → refused  (got \"incomplete-week\")\n  ok  - the most recently COMPLETED week is allowed\n  ok  - completed week summarizes normally  (got \"2026-07-13\")\n  ok  - old backlog week still summarizes  (got 1)\n  ok  - override run purged nothing (source row intact)  (got 2)\n  ok  - override run archived nothing  (got 1)\n\narchiveAndPurge_ blank-row guard:\n  ok  - only the genuinely old row is archived  (got 1)\n  ok  - blank row survives the purge  (got 3)\n  ok  - archive contains just the old row  (got 2)\n  ok  - archived row is the old one  (got \"Old Co\")\n\nstaleness pure helpers:\n  ok  - parses an ISO string with offset  (got 1784163600000)\n  ok  - parses a Date object  (got 1784163600000)\n  ok  - blank → null  (got null)\n  ok  - null → null  (got null)\n  ok  - undefined → null  (got null)\n  ok  - garbage → null  (got null)\n  ok  - Invalid Date object → null  (got null)\n  ok  - newest extracted_at per source wins  (got 1783962000000)\n  ok  - a Date-object timestamp is handled  (got 1783738800000)\n  ok  - blank source row ignored\n  ok  - row with unparseable ts contributes nothing\n  ok  - the Sales layout works too (different column indexes)  (got 1784134800000)\n  ok  - merge keeps the NEWER timestamp  (got 300)\n  ok  - merge keeps non-overlapping keys  (got 500)\n  ok  - merge adds new keys  (got 900)\n  ok  - merging nothing → empty  (got \"{}\")\n  ok  - exactly 96h is FRESH (strictly greater is stale)  (got false)\n  ok  - 97h is stale  (got true)\n  ok  - 1h is fresh  (got false)\n  ok  - never seen → stale  (got true)\n  ok  - never seen → ageHours null  (got null)\n  ok  - age is reported  (got 10)\n  ok  - Fri 03:00 → Mon 11:00 is 80h  (got 80)\n  ok  - a normal weekend gap does NOT alert  (got false)\n  ok  - Thu 03:00 → Mon 11:00 is 104h  (got 104)\n  ok  - a genuine ~4-day outage DOES alert  (got true)\n  ok  - title is stable  (got \"LEIBLE expense stale: square\")\n  ok  - title carries no age/number\n\nstaleness heartbeat:\n  ok  - heartbeat writes a Script Property\n  ok  - heartbeat value is a parseable timestamp\n  ok  - a failing Properties store cannot throw out of the heartbeat\n  ok  - doPost ingested  (got 1)\n  ok  - doPost stamped the heartbeat\n  ok  - re-post is all duplicates  (got 0)\n  ok  - an all-duplicate run STILL advances the heartbeat (kills the false positive)\n  ok  - an invalid payload stamps nothing\n\nstaleness square-token exception:\n  ok  - no token → no site processed  (got 0)\n  ok  - NO heartbeat when every Square site was skipped\n  ok  - one token → one site processed  (got 1)\n  ok  - heartbeat stamped when a site really ran\n\nstaleness alerts:\n  ok  - every source is stale on a cold start  (got 5)\n  ok  - one event per stale source  (got 5)\n  ok  - events are ORANGE\n  ok  - events carry a description\n  ok  - titles have no varying number\n  ok  - re-run creates no duplicate events  (got 0)\n  ok  - event count unchanged  (got 5)\n  ok  - fresh heartbeats → nothing stale  (got 0)\n  ok  - fresh heartbeats → no calendar events  (got 0)\n  ok  - no events created at all  (got 0)\n  ok  - a recent sheet row alone marks that source fresh\n  ok  - other sources remain stale\n  ok  - a fresh heartbeat overrides an ancient sheet row\n  ok  - a broken calendar does not throw\n  ok  - a broken calendar creates no events  (got 0)\n  ok  - staleness is still reported when the calendar is down\n  ok  - falls back to the default calendar\n\nsales dedup — rowKey_ coerces Date-typed key cols:\n  ok  - rowKey_: Date-typed date col matches its YYYY-MM-DD string  (got \"2026-07-15||york\")\n  ok  - first appendSalesRow_ call appends  (got true)\n  ok  - sheet has header + 1 row after first append  (got 2)\n  ok  - re-run appendSalesRow_ call is recognised as a duplicate  (got false)\n  ok  - sheet row count unchanged after duplicate re-run  (got 2)\n  ok  - rowKey_: differing location produces a different key\n  ok  - rowKey_: location casing/whitespace still normalizes  (got \"2026-07-15||york\")\n\n255 passed, 0 failed\n",
+          "at": "2026-07-21T16:33:29+0900"
+        }
+      },
+      "tdd_state": "green_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/fix-silent-ingest-failures/step2-review.json",
+        "checked_at": "2026-07-21T16:35:39+0900"
+      }
+    }
+  ],
+  "created_at": "2026-07-21T16:14:38+0900",
+  "review_result": {
+    "verdict": "approve",
+    "reviewer": "independent-code-review",
+    "phase": "fix-silent-ingest-failures",
+    "base": "f90861e",
+    "summary": "Three ingest silent-failure classes fixed and well-tested: (1) post() now raises IngestError on result!=ok or non-JSON 200 instead of the old lenient {result:ok} fallback; (2) Square API failure propagates a null sentinel so an outage no longer writes a $0 Sales row + stamps the heartbeat; (3) rowKey_ coerces Date-typed key columns so Sales dedup stops double-counting on re-run. Boundary check: post()->doPost response shapes agree ({result:'ok'|'error', message}); IngestError is raised OUTSIDE every per-shop try/except (base run() L281, fresh_and_chill run_unattended L288) and only BlockedError is caught in main/cli_main, so it correctly propagates to a non-zero exit (fail-loud). No tdd:false escape hatch used; all 3 steps carry red+green tdd_evidence. No critical or important issues found.",
+    "issues": [
+      {
+        "severity": "minor",
+        "file": "connectors/gas/square.gs",
+        "summary": "Single per-source 'square' heartbeat is stamped when sitesOk > 0, so a PARTIAL failure (e.g. one site's token revoked while the other sites succeed) still advances the watchdog heartbeat and stays silent — a healthy site masks a dead sibling. Pre-existing single-heartbeat-per-source limitation, not introduced by this diff, and the chosen sitesOk>0 rule is strictly better than the old sitesWithToken>0 (no more bogus $0 rows). Closing it would need per-site heartbeats or a stricter sitesOk===sitesWithToken gate (which trades silence for more alerting on a genuinely-revoked single token)."
+      },
+      {
+        "severity": "minor",
+        "file": "scripts/setup_always_on.ps1",
+        "summary": "434-line operational PowerShell script with no automated tests, and it entered the branch via a backup commit (7162431) rather than any of the 3 TDD phase steps. It handles a Windows account password — reviewed and found correct: Get-Credential (memory only), GetNetworkCredential().Password passed straight to Set-ScheduledTask and cleared in a finally, $cred nulled after, never logged or written to disk (Task Scheduler stores it DPAPI-encrypted), and logs/ is gitignored so the baseline dump isn't committed. Flagged as a coverage/scope observation, not a defect."
+      }
+    ],
+    "checked_at": "2026-07-21T16:39:53+0900"
+  },
+  "completed_at": "2026-07-21T16:39:53+0900"
+}

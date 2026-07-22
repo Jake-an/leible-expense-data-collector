@@ -194,6 +194,10 @@ class TransientLoginError(Exception):
     actually tested."""
 
 
+class IngestError(Exception):
+    """Raised when the GAS ingest endpoint rejects rows or cannot parse the response."""
+
+
 class BaseConnector:
     # --- subclasses MUST override these ---
     NAME: str = "base"            # session filename + log label
@@ -350,9 +354,12 @@ class BaseConnector:
         resp = requests.post(self.exec_url, json=payload, timeout=300)
         resp.raise_for_status()
         try:
-            return resp.json()
-        except ValueError:
-            return {"result": "ok", "raw": resp.text[:200]}
+            body = resp.json()
+        except ValueError as err:
+            raise IngestError(f"GAS response not valid JSON: {resp.text[:200]}") from err
+        if body.get("result") != "ok":
+            raise IngestError(body.get("message", "unknown ingest error"))
+        return body
 
     def mark_blocked(self, reason: str) -> None:
         print(f"[{self.NAME}] BLOCKED: {reason}", file=sys.stderr)

@@ -295,6 +295,90 @@ def test_attempt_auto_login_transient_login_error_blocks_without_tripping(isolat
     assert not b._breaker_tripped(key)
 
 
+# ---- post() — GAS ingest bridge: fail loud on logical rejection ----------- #
+#
+# doPost returns HTTP 200 even on a logical rejection ({"result":"error",...})
+# or an uncaught server exception (see docs/schema.md, ARCHITECTURE.md POST
+# Bridge Contract). post() must not treat either as success — this is the
+# fix for the Tuga/Butterboy silent-drop incident.
+#
+# IngestError doesn't exist yet at RED time; reference it as `b.IngestError`
+# inside each test body (not a top-level import) so a missing symbol fails as
+# a clean assertion/AttributeError, not a whole-file collection ImportError.
+
+class _FakePostResponse:
+    """Stand-in for requests.Response: raise_for_status() is a no-op (real
+    transport-layer errors are a separate, already-covered path). json()
+    either returns the parsed body or raises ValueError like the real method
+    does on non-JSON content; .text mirrors the raw body."""
+    def __init__(self, *, json_body=None, json_raises=False, text=""):
+        self._json_body = json_body
+        self._json_raises = json_raises
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        if self._json_raises:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        return self._json_body
+
+
+def test_post_returns_body_on_result_ok(monkeypatch):
+    fake_resp = _FakePostResponse(json_body={"result": "ok", "rowsAdded": 3})
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+    conn = _AutoLoginConnector()
+
+    result = conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert result == {"result": "ok", "rowsAdded": 3}
+
+
+def test_post_raises_ingest_error_on_result_error(monkeypatch):
+    fake_resp = _FakePostResponse(
+        json_body={"result": "error", "message": "row 0 missing invoice_ref"}
+    )
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+    conn = _AutoLoginConnector()
+
+    with pytest.raises(b.IngestError) as exc_info:
+        conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": ""}])
+
+    assert "row 0 missing invoice_ref" in str(exc_info.value)
+
+
+def test_post_raises_ingest_error_on_non_json_200_body(monkeypatch):
+    """A 200 with an unparseable body (e.g. an HTML error page from GAS) is
+    NOT confirmable success — must raise, not fall back to {"result":"ok"}
+    the way the old lenient `except ValueError` used to."""
+    fake_resp = _FakePostResponse(json_raises=True, text="<html>error</html>")
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+    conn = _AutoLoginConnector()
+
+    with pytest.raises(b.IngestError):
+        conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+
+def test_post_empty_rows_returns_skipped_and_makes_no_http_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append((a, kw)))
+    conn = _AutoLoginConnector()
+
+    result = conn.post([])
+
+    assert result == {"result": "skipped", "reason": "no rows"}
+    assert calls == []
+
+
+def test_ingest_error_is_distinct_from_blocked_and_transient_login_error():
+    """Proves run()'s existing except clauses (BlockedError, TransientLoginError)
+    cannot accidentally swallow an ingest rejection."""
+    assert issubclass(b.IngestError, Exception)
+    assert not issubclass(b.IngestError, b.BlockedError)
+    assert not issubclass(b.IngestError, b.TransientLoginError)
+
+
 # ---- attended success clears the breaker (+ .env-typo warning) ------------ #
 
 def test_clear_breaker_with_warning_clears_and_warns_when_tripped_with_creds(
