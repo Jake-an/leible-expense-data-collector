@@ -26,6 +26,11 @@ sessions/
 phases/**/step*-output.json
 phases/**/phase*-output.json
 
+# Local operational bootstrap script — swept into a phase branch by the backup
+# daemon (handles a Windows account password via Get-Credential). Ignored so it
+# stops auto-committing; delete this line to track it deliberately on its own commit.
+scripts/setup_always_on.ps1
+
 # clasp config (transient, per-env)
 .clasp.json
 
