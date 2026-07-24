@@ -40,16 +40,16 @@ In `connectors/playwright/base_connector.py`:
        if not rows:
            return {"result": "skipped", "reason": "no rows"}
        self._require_exec_url()
-       payload = { ... }                      # unchanged
+       payload = {...}  # unchanged
        resp = requests.post(self.exec_url, json=payload, timeout=300)
-       resp.raise_for_status()                # transport errors only
+       resp.raise_for_status()  # transport errors only
        # NEW: confirm the GAS-level result before returning success.
        try:
            body = resp.json()
        except ValueError:
-           raise IngestError(...)             # non-JSON 200 (e.g. an HTML error page) is NOT confirmable success
+           raise IngestError(...)  # non-JSON 200 (e.g. an HTML error page) is NOT confirmable success
        if body.get("result") != "ok":
-           raise IngestError(...)             # logical rejection: include body.get("message")
+           raise IngestError(...)  # logical rejection: include body.get("message")
        return body
    ```
 

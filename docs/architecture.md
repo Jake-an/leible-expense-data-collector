@@ -1,3 +1,84 @@
+Generated: 2026-07-24 by /cartography
+
+# Architecture
+
+## Entry Points
+
+| Path | Type | Purpose |
+|---|---|---|
+| `connectors/gas/Code.gs` → `doPost(e)` | GAS web-app HTTP POST | The single ingest endpoint. Receives raw supplier rows from Playwright connectors, runs `validateIngest_` → `normalizeSupplierRow` → dedup → appends to the `Suppliers` tab. Every non-Square/Mayers write flows through here. |
+| `connectors/gas/Code.gs` → `doGet(e)` | GAS web-app HTTP GET | Read/summary endpoint for downstream consumers (see `docs/api.md`). |
+| `connectors/gas/square.gs` → `squareDailyPull(dateStr)` | GAS function (time-trigger / manual) | Pulls one day's gross sales per Square location → `Sales` tab. |
+| `connectors/gas/mayers.gs` | GAS function (Gmail-triggered) | Parses Mayers PDF-invoice email attachments via Drive OCR → `Suppliers` tab. |
+| `connectors/gas/staleness.gs` | GAS watchdog | Heartbeat + staleness alerting when a source stops reporting. |
+| `connectors/playwright/<name>.py` | Python CLI (`--attended` opt) | Per-portal login → download raw invoice rows → POST to `doPost`. One file per source (ordermentum, food_dairy_co, fresh_and_chill, kent_paper). |
+| `scripts/execute.py <phase-dir>` | Python CLI | Harness step executor; runs a phase's steps sequentially with TDD red→green enforcement. |
+| `scripts/pre_push_sync.py` | Python CLI | "lets stop here" teammate-safe gate: fetch + rebase-if-behind, then exits (does **not** push). |
+| `scripts/deploy.sh` | Bash | Deploy GAS after coding is done: `clasp push` + redeploy the one deployment id. |
+
+## Dependency Sketch
+
+```
+                          LOCAL MACHINE                         GOOGLE CLOUD
+   ┌───────────────────────────────────────────┐   ┌──────────────────────────────────┐
+   │  connectors/playwright/                    │   │  connectors/gas/                 │
+   │  ┌─────────────────────────────────────┐   │   │  ┌────────────────────────────┐  │
+   │  │ base_connector.py (session/login/   │   │   │  │ Code.gs                    │  │
+   │  │   read/POST bridge)                 │   │   │  │  doPost ─ validateIngest_ ─┼──┼─┐
+   │  │   ├── ordermentum.py (Tuga+Butterboy)│──┼───┼──┼─▶ normalizeSupplierRow ─    │  │ │
+   │  │   ├── food_dairy_co.py              │   │   │  │   dedup(source+invoice_ref)│  │ │
+   │  │   ├── fresh_and_chill.py            │   │   │  │  doGet  (read/summary API) │  │ │
+   │  │   └── kent_paper.py                 │   │   │  └────────────────────────────┘  │ │
+   │  └─────────────────────────────────────┘   │   │  ┌────────────┐ ┌─────────────┐  │ │
+   │  scripts/ (execute.py, pre_push_sync.py)   │   │  │ square.gs  │ │ mayers.gs   │  │ │
+   │  phases/  (index.json + stepN.md)          │   │  │ Square API │ │ Gmail+OCR   │  │ │
+   │  config/  (clasp.json, deployment.json)    │   │  └─────┬──────┘ └──────┬──────┘  │ │
+   │  sessions/ (saved browser auth, gitignored)│   │        │               │         │ │
+   └───────────────────────────────────────────┘   │        ▼               ▼         │ │
+                                                    │   ┌─────────────────────────┐   │ │
+   HTTP POST (raw invoice rows) ───────────────────────▶│  Google Sheet           │◀──┼─┘
+                                                    │   │  ├── Suppliers (invoice) │   │
+                                                    │   │  └── Sales (Square daily)│   │
+                                                    │   └─────────────────────────┘   │
+                                                    └──────────────────────────────────┘
+
+   Boundary rule: Playwright ONLY logs in + downloads + POSTs. GAS owns every Sheet
+   write, Square pull, Mayers parse, and all normalization. No connector writes the
+   Sheet directly; nothing appends outside doPost → validateIngest_.
+```
+
+## Domain Glossary
+
+| Term | Definition |
+|---|---|
+| **Two-tab schema** | The contract: `Suppliers` (invoice-level) + `Sales` (Square daily gross). All data lands in one of these two tabs. See `docs/schema.md`. |
+| **Suppliers tab** | Invoice-level rows; dedup key = `source` + `invoice_ref`. |
+| **Sales tab** | Square daily gross per location; dedup key = `date` + `location`. |
+| **doPost ingest** | The one GAS web-app endpoint (`/exec`) all connector data flows through. |
+| **validateIngest_** | GAS guard that validates a POST payload before normalization/write. |
+| **normalizeSupplierRow** | GAS function turning raw connector rows into the `Suppliers` schema and resolving the canonical supplier name. |
+| **Dedup keys** | Composite keys (per tab) that make re-ingest idempotent — duplicates are silently skipped. |
+| **Connector** | A GAS or Playwright module that pulls from one source; Playwright connectors must POST to `doPost` to get written. |
+| **POST bridge contract** | The JSON shape Playwright sends to `doPost`: `{source, rows:[{date,total,invoice_ref,location?}], extracted_at}`. |
+| **Normalization boundary** | Connectors emit **raw** rows; turning raw → schema is GAS's job, never the connector's. |
+| **Two runtimes, one boundary** | GAS (cloud, always-on) vs Playwright (local, portal logins) — the architectural split. |
+| **Harness phase/step** | Executable unit run by `scripts/execute.py`; a phase is a dir with `index.json` + `stepN.md`, run with TDD red→green. |
+| **Session persistence** | Playwright saves browser cookies/storage to `sessions/<connector>.json` after an attended login and reuses it unattended. |
+| **Ordermentum** | One login serving two supplier accounts (Tuga Pastry + Butterboy); the app differentiates by tradingName. |
+
+## Gotchas & Anti-patterns
+
+- **Two runtimes, one boundary (CRITICAL).** GAS owns all Sheet writes, Square pulls, Mayers PDF parses, and normalization. Playwright connectors **only** log in, download raw data, and POST. A connector that writes the Sheet or normalizes rows violates the contract.
+- **All ingest through `doPost` → `validateIngest_` (CRITICAL).** Never append to a tab outside that path; the dedup keys (`source+invoice_ref`, `date+location`) are the contract.
+- **Auto-login does NOT self-heal.** Ordermentum + Fresh & Chill reject stored `.env` creds on a dead session → breaker trips → BLOCKED. Unattended running relies on saved sessions staying alive; genuine expiry needs **attended** re-login. (Contradicts any "always-on" assumption.)
+- **Backup daemon races harness runs.** A concurrent auto-backup can commit AND push mid-run, interleaving `backup:` commits and sweeping untracked files. Trust TDD evidence + fresh test runs over git-log order.
+- **`pre_push_sync.py` only syncs — it does not push.** It fetches + rebases-if-behind then prints "Up to date" and exits. Run `git push` separately after; verify with `git rev-list --left-right --count`.
+- **Sheet date coercion.** Sheet date cells come back as `Date` objects; coerce with local components (not `toISOString`) before comparing/emitting, or you get silent no-match + AEST off-by-one.
+- **Git push ≠ deploy.** "lets stop here" = git push only. GAS deploy is a separate step (`bash scripts/deploy.sh`, the one deployment id) done when coding is finished — never `clasp create-script` again.
+- **Never commit credentials, PII, or business data.** `.env`, `credentials/`, `downloads/`, `sessions/`, `*.csv|xlsx|pdf` are gitignored. Never bypass MFA/CAPTCHA — Jake passes those manually.
+
+<!-- manual notes below -->
+
 # Architecture
 
 ## Overview
