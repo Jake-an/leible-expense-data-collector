@@ -1,0 +1,5 @@
+# Dev/tooling deps for the Python runtime (not needed to RUN connectors).
+# Install: python -m pip install -r requirements-dev.txt
+# Runtime deps are in connectors/playwright/requirements.txt.
+ruff>=0.16          # lint + format — config in pyproject.toml; gate via scripts/lint.sh
+pytest>=8           # harness + connector test suite (scripts/test_execute.py, etc.)

@@ -17,11 +17,8 @@ Usage:
 
 from __future__ import annotations
 
-import json
-import re
+from base_connector import BaseConnector, TransientLoginError, _form_login, cli_main, get_credential
 from playwright.sync_api import Page
-
-from base_connector import BaseConnector, cli_main, _form_login, get_credential, TransientLoginError
 
 API_BASE = "https://app.ordermentum.com"
 
@@ -90,9 +87,14 @@ class OrdermentumConnector(BaseConnector):
         email = get_credential("ORDERMENTUM_EMAIL")
         password = get_credential("ORDERMENTUM_PASSWORD")
         if not email or not password:
-            raise TransientLoginError("ORDERMENTUM_EMAIL/ORDERMENTUM_PASSWORD missing at attempt time")
+            raise TransientLoginError(
+                "ORDERMENTUM_EMAIL/ORDERMENTUM_PASSWORD missing at attempt time"
+            )
         _form_login(
-            page, self.LOGIN_URL, email, password,
+            page,
+            self.LOGIN_URL,
+            email,
+            password,
             email_sel="input[name='email']",
             password_sel="input[name='password']",
             submit_sel="button[type='submit']",
@@ -112,13 +114,15 @@ class OrdermentumConnector(BaseConnector):
                 for inv in invoices:
                     if inv.get("cancelled"):
                         continue
-                    rows.append({
-                        "date": inv["date"][:10],
-                        "total": inv["total"],
-                        "invoice_ref": inv["number"],
-                        "supplier": sname,
-                        "location": shop,
-                    })
+                    rows.append(
+                        {
+                            "date": inv["date"][:10],
+                            "total": inv["total"],
+                            "invoice_ref": inv["number"],
+                            "supplier": sname,
+                            "location": shop,
+                        }
+                    )
             print(f"  [{self.NAME}] {shop}: {len(suppliers)} suppliers")
         return rows
 
@@ -128,7 +132,9 @@ class OrdermentumConnector(BaseConnector):
             params={"retailerId": venue_id, "disabled": "false"},
         )
         if resp.status != 200:
-            print(f"  [{self.NAME}] WARNING: marketplaces returned {resp.status} for venue {venue_id}")
+            print(
+                f"  [{self.NAME}] WARNING: marketplaces returned {resp.status} for venue {venue_id}"
+            )
             return []
         data = resp.json().get("data", [])
         out: list[tuple[str, str]] = []

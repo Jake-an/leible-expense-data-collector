@@ -23,13 +23,19 @@ import sys
 import time
 from datetime import datetime
 
-from playwright.sync_api import sync_playwright, Page, BrowserContext
-
 from base_connector import (
-    BaseConnector, BlockedError, SESSIONS_DIR, SYD_TZ,
-    TransientLoginError, get_credential, _form_login,
-    _breaker_tripped, _trip_breaker, _clear_breaker, _clear_breaker_with_warning,
+    SESSIONS_DIR,
+    BaseConnector,
+    BlockedError,
+    TransientLoginError,
+    _breaker_tripped,
+    _clear_breaker,
+    _clear_breaker_with_warning,
+    _form_login,
+    _trip_breaker,
+    get_credential,
 )
+from playwright.sync_api import Page, sync_playwright
 
 SHOPS = {
     "york": "Leible York",
@@ -74,7 +80,9 @@ class FreshAndChillConnector(BaseConnector):
             return "ok"
         if "/users/sign_in" in page.url:
             return "dead"
-        if page.query_selector("input[type='email']") and page.query_selector("input[type='password']"):
+        if page.query_selector("input[type='email']") and page.query_selector(
+            "input[type='password']"
+        ):
             return "dead"
         return "transient"
 
@@ -93,8 +101,10 @@ class FreshAndChillConnector(BaseConnector):
         session_path = self._session_path(shop_key)
 
         if _breaker_tripped(key):
-            print(f"[{self.NAME}] {location}: auto-login breaker tripped, skipping "
-                  f"(run --attended --shop {shop_key})")
+            print(
+                f"[{self.NAME}] {location}: auto-login breaker tripped, skipping "
+                f"(run --attended --shop {shop_key})"
+            )
             return False
 
         email = get_credential(f"FRESH_AND_CHILL_{shop_key.upper()}_EMAIL")
@@ -109,7 +119,10 @@ class FreshAndChillConnector(BaseConnector):
             # an <input type=submit name=commit value="Log in">, not a <button>.
             # Mapped live 2026-07-20 (docs/clickpath-fresh_and_chill.md).
             _form_login(
-                page, self.LOGIN_URL, email, password,
+                page,
+                self.LOGIN_URL,
+                email,
+                password,
                 email_sel="#user_login",
                 password_sel="#user_password",
                 submit_sel="input[name='commit']",
@@ -131,7 +144,9 @@ class FreshAndChillConnector(BaseConnector):
             page.wait_for_timeout(1000)
 
         _trip_breaker(key, "credentials rejected or login incomplete")
-        print(f"[{self.NAME}] {location}: auto-login failed — credentials rejected; breaker tripped")
+        print(
+            f"[{self.NAME}] {location}: auto-login failed — credentials rejected; breaker tripped"
+        )
         return False
 
     def read_invoices(self, page: Page) -> list[dict]:
@@ -176,12 +191,14 @@ class FreshAndChillConnector(BaseConnector):
                     continue
                 total = float(total_match.group(1).replace(",", ""))
 
-                rows.append({
-                    "date": date_str,
-                    "total": total,
-                    "invoice_ref": invoice_ref,
-                    "location": location,
-                })
+                rows.append(
+                    {
+                        "date": date_str,
+                        "total": total,
+                        "invoice_ref": invoice_ref,
+                        "location": location,
+                    }
+                )
 
             has_next = page.query_selector(f"a[href*='page={page_num + 1}']")
             if not has_next:
@@ -215,7 +232,8 @@ class FreshAndChillConnector(BaseConnector):
                 if self.is_logged_in(page):
                     context.storage_state(path=str(session_path))
                     _clear_breaker_with_warning(
-                        self.NAME, f"fresh_and_chill_{shop_key}",
+                        self.NAME,
+                        f"fresh_and_chill_{shop_key}",
                         f"FRESH_AND_CHILL_{shop_key.upper()}_EMAIL",
                         f"FRESH_AND_CHILL_{shop_key.upper()}_PASSWORD",
                     )
@@ -241,7 +259,9 @@ class FreshAndChillConnector(BaseConnector):
             for shop_key, location in SHOPS.items():
                 session_path = self._session_path(shop_key)
                 if not session_path.exists():
-                    print(f"[{self.NAME}] {location}: no session file, skipping (run --attended --shop {shop_key})")
+                    print(
+                        f"[{self.NAME}] {location}: no session file, skipping (run --attended --shop {shop_key})"
+                    )
                     blocked_shops.append(location)
                     continue
 
@@ -262,9 +282,15 @@ class FreshAndChillConnector(BaseConnector):
                         state = self._classify_shop_state(page)
                         if state == "dead" and self._auto_login_shop(page, shop_key):
                             # Auto-login succeeded — reload /orders with the fresh session.
-                            page.goto("https://shop.zupply.com.au/orders", wait_until="domcontentloaded")
+                            page.goto(
+                                "https://shop.zupply.com.au/orders", wait_until="domcontentloaded"
+                            )
                         else:
-                            reason = "session expired, auto-login failed" if state == "dead" else f"session {state}"
+                            reason = (
+                                "session expired, auto-login failed"
+                                if state == "dead"
+                                else f"session {state}"
+                            )
                             print(f"[{self.NAME}] {location}: {reason}, BLOCKED")
                             blocked_shops.append(location)
                             continue
@@ -272,7 +298,10 @@ class FreshAndChillConnector(BaseConnector):
                     rows = self.read_shop_invoices(page, location)
                     context.storage_state(path=str(session_path))
                 except Exception as err:
-                    print(f"[{self.NAME}] {location}: error reading orders, BLOCKED: {err}", file=sys.stderr)
+                    print(
+                        f"[{self.NAME}] {location}: error reading orders, BLOCKED: {err}",
+                        file=sys.stderr,
+                    )
                     blocked_shops.append(location)
                     continue
                 finally:
@@ -294,18 +323,28 @@ class FreshAndChillConnector(BaseConnector):
 
 def main():
     parser = argparse.ArgumentParser(description="Fresh and Chill (Zupply) connector")
-    parser.add_argument("--attended", action="store_true",
-                        help="Headed login for a single shop; saves session")
-    parser.add_argument("--shop", choices=list(SHOPS.keys()),
-                        help="Shop to log into (required with --attended and --clear-breaker)")
-    parser.add_argument("--clear-breaker", action="store_true",
-                        help="clear one shop's auto-login circuit-breaker without a full attended "
-                             "login (requires --shop; use after fixing a .env typo)")
+    parser.add_argument(
+        "--attended", action="store_true", help="Headed login for a single shop; saves session"
+    )
+    parser.add_argument(
+        "--shop",
+        choices=list(SHOPS.keys()),
+        help="Shop to log into (required with --attended and --clear-breaker)",
+    )
+    parser.add_argument(
+        "--clear-breaker",
+        action="store_true",
+        help="clear one shop's auto-login circuit-breaker without a full attended "
+        "login (requires --shop; use after fixing a .env typo)",
+    )
     args = parser.parse_args()
 
     if args.clear_breaker:
         if not args.shop:
-            print("ERROR: --clear-breaker requires --shop <york|north|crowsnest|pitt>", file=sys.stderr)
+            print(
+                "ERROR: --clear-breaker requires --shop <york|north|crowsnest|pitt>",
+                file=sys.stderr,
+            )
             sys.exit(1)
         _clear_breaker(f"fresh_and_chill_{args.shop}")
         print(f"[fresh_and_chill] auto-login breaker cleared for {SHOPS[args.shop]}")

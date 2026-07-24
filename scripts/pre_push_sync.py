@@ -39,7 +39,9 @@ def main():
 
     rc, count_str, _ = run(["git", "rev-list", "--count", f"HEAD..origin/{branch}"])
     if rc != 0:
-        print(f"{bold('[sync]')} No remote tracking for origin/{branch} yet — first push, OK to proceed.")
+        print(
+            f"{bold('[sync]')} No remote tracking for origin/{branch} yet — first push, OK to proceed."
+        )
         sys.exit(0)
 
     behind = int(count_str)

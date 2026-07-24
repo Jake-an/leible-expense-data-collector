@@ -1,0 +1,35 @@
+# Tooling config for the Python (Playwright) runtime of the LEIBLE Expense Data Collector.
+# GAS code lives under connectors/gas/ and is linted/tested separately (node).
+#
+# Lint + format:  bash scripts/lint.sh        (check-only, used by the git pre-commit hook)
+#                 python -m ruff check --fix . && python -m ruff format .   (autofix locally)
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Only the Python runtime + harness scripts. Everything else is generated, vendored, or secret-bearing.
+extend-exclude = [
+    "sessions",
+    "downloads",
+    "credentials",
+    "connectors/gas",
+    ".venv",
+    "venv",
+]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import-sort, UP pyupgrade, B bugbear, SIM flake8-simplify, C4 comprehensions.
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4"]
+ignore = [
+    "E501",  # line length handled by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files: nested `with` is idiomatic for stacked mock.patch contexts (SIM117),
+# scaffold vars are sometimes bound for readability (F841), and zip() strictness
+# (B905) matters less in fixed-length test data. Keep these strict in production code.
+"**/test_*.py" = ["SIM117", "F841", "B905"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

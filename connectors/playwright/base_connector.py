@@ -28,11 +28,11 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
-from playwright.sync_api import sync_playwright, Page, BrowserContext
+from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 # Repo root = two levels up from this file (connectors/playwright/).
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -136,8 +136,15 @@ def _clear_breaker_with_warning(label: str, key: str, email_var: str, password_v
     _clear_breaker(key)
 
 
-def _form_login(page: Page, login_url: str, email: str, password: str,
-                 email_sel: str, password_sel: str, submit_sel: str) -> None:
+def _form_login(
+    page: Page,
+    login_url: str,
+    email: str,
+    password: str,
+    email_sel: str,
+    password_sel: str,
+    submit_sel: str,
+) -> None:
     """Generic fill+submit helper for a plain email/password login form.
     Does NOT verify success — the caller checks is_logged_in()/auth_state()
     afterward. Never logs credential values.
@@ -200,9 +207,9 @@ class IngestError(Exception):
 
 class BaseConnector:
     # --- subclasses MUST override these ---
-    NAME: str = "base"            # session filename + log label
-    SOURCE: str = "base"          # POST `source` field (and Suppliers dedup namespace)
-    LOGIN_URL: str = ""           # portal login / landing URL
+    NAME: str = "base"  # session filename + log label
+    SOURCE: str = "base"  # POST `source` field (and Suppliers dedup namespace)
+    LOGIN_URL: str = ""  # portal login / landing URL
 
     def __init__(self, exec_url: str | None = None):
         self.exec_url = exec_url or resolve_exec_url()
@@ -256,8 +263,10 @@ class BaseConnector:
                 if not self.is_logged_in(page):
                     self._attended_login(page)
                 _clear_breaker_with_warning(
-                    self.NAME, self.NAME,
-                    f"{self.NAME.upper()}_EMAIL", f"{self.NAME.upper()}_PASSWORD",
+                    self.NAME,
+                    self.NAME,
+                    f"{self.NAME.upper()}_EMAIL",
+                    f"{self.NAME.upper()}_PASSWORD",
                 )
                 context.storage_state(path=str(self.session_path))
             else:
@@ -369,7 +378,9 @@ class BaseConnector:
     # Small DOM helper shared by skeletons
     # ------------------------------------------------------------------ #
     @staticmethod
-    def read_table_rows(page: Page, row_selector: str, cell_selectors: dict[str, str]) -> list[dict]:
+    def read_table_rows(
+        page: Page, row_selector: str, cell_selectors: dict[str, str]
+    ) -> list[dict]:
         """Generic: for each element matching row_selector, pull one field per
         cell_selectors entry (field name → CSS/text selector relative to the row).
         Subclasses still map raw cells → the {date,total,invoice_ref} contract.
@@ -379,7 +390,7 @@ class BaseConnector:
             record: dict[str, str] = {}
             for field, sel in cell_selectors.items():
                 el = row.query_selector(sel)
-                record[field] = (el.inner_text().strip() if el else "")
+                record[field] = el.inner_text().strip() if el else ""
             out.append(record)
         return out
 
@@ -387,11 +398,17 @@ class BaseConnector:
 def cli_main(connector_cls) -> None:
     """Standard CLI entry shared by every connector module."""
     parser = argparse.ArgumentParser(description=f"{connector_cls.NAME} portal connector")
-    parser.add_argument("--attended", action="store_true",
-                        help="headed first login; save session for later unattended runs")
-    parser.add_argument("--clear-breaker", action="store_true",
-                        help="clear the auto-login circuit-breaker without a full attended login "
-                             "(use after fixing a .env typo)")
+    parser.add_argument(
+        "--attended",
+        action="store_true",
+        help="headed first login; save session for later unattended runs",
+    )
+    parser.add_argument(
+        "--clear-breaker",
+        action="store_true",
+        help="clear the auto-login circuit-breaker without a full attended login "
+        "(use after fixing a .env typo)",
+    )
     args = parser.parse_args()
     if args.clear_breaker:
         _clear_breaker(connector_cls.NAME)

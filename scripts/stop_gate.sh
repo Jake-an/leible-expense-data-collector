@@ -5,10 +5,11 @@
 # Exit codes: 0 = pass/skip; 2 = checks failed (blocks stop, feeds output back to Claude).
 # Bypass: export SKIP_STOP_GATE=1 (docs-only sessions, emergencies).
 #
-# CHECKS is stack-specific. This is a Python (harness) + GAS project with no npm
-# build/lint locally, so the pre-stop gate is the pytest suite (harness self-tests
-# in scripts/test_execute.py + connector tests). Extend if a GAS/JS test runner is added.
-CHECKS=("python -m pytest -q")
+# CHECKS is stack-specific. This is a Python (harness) + GAS project. The pre-stop
+# gate is ruff lint/format (scripts/lint.sh — config in pyproject.toml) followed by
+# the pytest suite (harness self-tests in scripts/test_execute.py + connector tests).
+# Lint runs first (cheap, fails fast). Extend if a GAS/JS test runner is added.
+CHECKS=("bash scripts/lint.sh" "python -m pytest -q")
 
 [ -n "$SKIP_STOP_GATE" ] && exit 0
 

@@ -12,14 +12,16 @@ Unattended re-runs (with saved session):
     python connectors/playwright/kent_paper.py
 """
 
-from playwright.sync_api import Page
 from base_connector import BaseConnector, cli_main
+from playwright.sync_api import Page
 
 
 class KentPaperConnector(BaseConnector):
     NAME = "kent_paper"
     SOURCE = "kent_paper"
-    LOGIN_URL = ""  # TODO(attended-mapping): fill in Kent Paper portal login URL after attended session
+    LOGIN_URL = (
+        ""  # TODO(attended-mapping): fill in Kent Paper portal login URL after attended session
+    )
 
     def is_logged_in(self, page: Page) -> bool:
         """Check if the saved session is still authenticated.

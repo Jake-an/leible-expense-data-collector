@@ -14,11 +14,10 @@ import itertools
 import json
 import time
 
-import pytest
-
 import base_connector as b
-import ordermentum
 import fresh_and_chill
+import ordermentum
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -80,14 +79,11 @@ def test_repo_root_deployment_json_exists():
 
 # ---- .env parser (load_env_file / get_credential) ------------------------- #
 
+
 def test_load_env_file_parses_comments_blank_lines_and_quotes(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "# a full-line comment\n"
-        "\n"
-        "FOO=bar\n"
-        "QUOTED=\"hello world\"\n"
-        "SINGLE_QUOTED='single value'\n"
+        "# a full-line comment\n\nFOO=bar\nQUOTED=\"hello world\"\nSINGLE_QUOTED='single value'\n"
     )
     monkeypatch.setattr(b, "ENV_FILE", env_path)
     monkeypatch.setattr(b, "_env_cache", None)
@@ -153,8 +149,10 @@ def test_get_credential_os_environ_only_no_file_entry(monkeypatch, tmp_path):
 
 # ---- _attempt_auto_login orchestrator (mocked Page/context) --------------- #
 
+
 class _FakeStorageState:
     """Records storage_state(path=...) calls instead of writing real files."""
+
     def __init__(self):
         self.calls: list[str] = []
 
@@ -175,12 +173,14 @@ class _FakePage:
 class _AutoLoginConnector(b.BaseConnector):
     """Minimal BaseConnector subclass for exercising _attempt_auto_login
     without a real browser."""
+
     NAME = "autologintest"
     SOURCE = "autologintest"
     LOGIN_URL = "https://example.invalid/login"
 
-    def __init__(self, *, logged_in_result=True, credentials_login_result=True,
-                 credentials_login_raises=None):
+    def __init__(
+        self, *, logged_in_result=True, credentials_login_result=True, credentials_login_raises=None
+    ):
         super().__init__(exec_url="https://example.invalid/exec")
         self._logged_in_result = logged_in_result
         self._credentials_login_result = credentials_login_result
@@ -306,11 +306,13 @@ def test_attempt_auto_login_transient_login_error_blocks_without_tripping(isolat
 # inside each test body (not a top-level import) so a missing symbol fails as
 # a clean assertion/AttributeError, not a whole-file collection ImportError.
 
+
 class _FakePostResponse:
     """Stand-in for requests.Response: raise_for_status() is a no-op (real
     transport-layer errors are a separate, already-covered path). json()
     either returns the parsed body or raises ValueError like the real method
     does on non-JSON content; .text mirrors the raw body."""
+
     def __init__(self, *, json_body=None, json_raises=False, text=""):
         self._json_body = json_body
         self._json_raises = json_raises
@@ -381,6 +383,7 @@ def test_ingest_error_is_distinct_from_blocked_and_transient_login_error():
 
 # ---- attended success clears the breaker (+ .env-typo warning) ------------ #
 
+
 def test_clear_breaker_with_warning_clears_and_warns_when_tripped_with_creds(
     isolated_sessions, monkeypatch, capsys
 ):
@@ -415,6 +418,7 @@ def test_clear_breaker_with_warning_no_warning_when_not_previously_tripped(
 
 
 # ---- Ordermentum auth_state (transient must cover 5xx AND network-throw) -- #
+
 
 class _FakeOMResponse:
     def __init__(self, status):
@@ -478,6 +482,7 @@ def test_ordermentum_auth_state_transient_on_network_error():
 # LOGIN_SETTLE_TRIES plus a counting no-op wait_for_timeout so they run in
 # well under a second — never a real multi-second sleep.
 
+
 class _FakePollResponse:
     def __init__(self, status):
         self.status = status
@@ -486,6 +491,7 @@ class _FakePollResponse:
 class _FakePollRequest:
     """Returns each status in `status_sequence` in order, then repeats the
     final value forever (models the XHR settling and staying settled)."""
+
     def __init__(self, status_sequence):
         self._iter = itertools.chain(status_sequence, itertools.repeat(status_sequence[-1]))
 
@@ -512,7 +518,9 @@ def test_ordermentum_credentials_login_polls_past_initial_401(monkeypatch):
     monkeypatch.setattr(ordermentum, "_form_login", lambda *a, **kw: None)
 
     conn = ordermentum.OrdermentumConnector(exec_url="https://example.invalid/exec")
-    conn.LOGIN_SETTLE_TRIES = 5  # small, so a bug that didn't mock wait_for_timeout would be obvious
+    conn.LOGIN_SETTLE_TRIES = (
+        5  # small, so a bug that didn't mock wait_for_timeout would be obvious
+    )
     page = _FakePollPage(status_sequence=[401, 401, 200])
 
     start = time.monotonic()
@@ -546,6 +554,7 @@ def test_ordermentum_credentials_login_returns_false_when_never_settles(monkeypa
 
 
 # ---- Fresh & Chill dead/transient classifier ------------------------------ #
+
 
 class _FakeElement:
     pass
@@ -582,7 +591,9 @@ def test_fc_classify_dead_on_sign_in_redirect():
 
 def test_fc_classify_dead_on_devise_form_present_without_redirect():
     conn = fresh_and_chill.FreshAndChillConnector(exec_url="https://example.invalid/exec")
-    page = _FakeFCPage(url="https://shop.zupply.com.au/orders", email_input=True, password_input=True)
+    page = _FakeFCPage(
+        url="https://shop.zupply.com.au/orders", email_input=True, password_input=True
+    )
     assert conn._classify_shop_state(page) == "dead"
 
 
@@ -597,11 +608,13 @@ def test_fc_classify_transient_on_other_non_orders_state():
 
 # ---- F&C run_unattended per-shop loop isolation (Bug 3 regression) -------- #
 
+
 class _FakeFCPageStub:
     """Bare-minimum Playwright Page stand-in for run_unattended's own
     page.goto() calls. The connector's DOM-reading methods (is_logged_in,
     read_shop_invoices) are overridden per-test below so they never touch
     this object's internals."""
+
     def goto(self, url, wait_until=None):
         pass
 
@@ -720,9 +733,11 @@ def test_fc_run_unattended_isolates_one_shops_read_failure_from_others(monkeypat
 # is_logged_in via a status-sequence fake page, with a counting no-op
 # wait_for_timeout so they run in well under a second.
 
+
 class _FakeFCPollPage:
     """Yields each entry of `logged_in_sequence` (one per is_logged_in()
     call) via query_selector, then repeats the final value forever."""
+
     def __init__(self, logged_in_sequence):
         self._iter = itertools.chain(logged_in_sequence, itertools.repeat(logged_in_sequence[-1]))
         self.wait_for_timeout_calls = 0

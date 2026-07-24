@@ -33,9 +33,8 @@ import json
 import time
 from datetime import datetime
 
+from base_connector import SYD_TZ, BaseConnector, cli_main
 from playwright.sync_api import Page
-
-from base_connector import BaseConnector, cli_main, SYD_TZ
 
 GRAPHQL_URL = "https://api-aus.usepepper.com/v1/graphql"
 COGNITO_URL = "https://cognito-idp.ap-southeast-2.amazonaws.com/"
@@ -50,10 +49,22 @@ ORG_ID = "860d911c-98d0-47be-8b2f-efc694a551e2"
 # hardcoded here for stability, mirroring the Ordermentum connector. The chat_uuid
 # is required for the "Other"/ingested-invoice query.
 VENUES = {
-    "18f98318-033e-46eb-bdbe-bb8496c7ca48": {"shop": "Leible North", "chat": "44433267-e298-4790-a3e5-f8ffd617987e"},
-    "9e2232d5-c159-46b3-8ad0-759b7c00cea8": {"shop": "Leible Pitt", "chat": "5034df16-32c3-4349-8e9b-ff78228b91e0"},
-    "f6181415-b32a-473e-a968-8a75e09f96d0": {"shop": "Leible Crowsnest", "chat": "6410be40-68e0-48e2-aeca-3a0e1c65cc9b"},
-    "c0bca7d8-fe22-496d-8de0-eb685433beb3": {"shop": "Leible York", "chat": "54e6f884-740f-4e68-963d-3d32b8513360"},
+    "18f98318-033e-46eb-bdbe-bb8496c7ca48": {
+        "shop": "Leible North",
+        "chat": "44433267-e298-4790-a3e5-f8ffd617987e",
+    },
+    "9e2232d5-c159-46b3-8ad0-759b7c00cea8": {
+        "shop": "Leible Pitt",
+        "chat": "5034df16-32c3-4349-8e9b-ff78228b91e0",
+    },
+    "f6181415-b32a-473e-a968-8a75e09f96d0": {
+        "shop": "Leible Crowsnest",
+        "chat": "6410be40-68e0-48e2-aeca-3a0e1c65cc9b",
+    },
+    "c0bca7d8-fe22-496d-8de0-eb685433beb3": {
+        "shop": "Leible York",
+        "chat": "54e6f884-740f-4e68-963d-3d32b8513360",
+    },
 }
 
 # Single-page pulls; large enough to capture full current history on first run.
@@ -71,7 +82,7 @@ _ORDERS_QUERY = (
 _INGESTED_QUERY = (
     "query OI($chatUUID:uuid!,$limit:Int,$supplierUUID:uuid!)"
     "{order_invoices(limit:$limit,order_by:[{invoice_date:desc}],"
-    "where:{invoice_source:{_eq:\"INGESTION\"},chat_uuid:{_eq:$chatUUID},supplier_uuid:{_eq:$supplierUUID},"
+    'where:{invoice_source:{_eq:"INGESTION"},chat_uuid:{_eq:$chatUUID},supplier_uuid:{_eq:$supplierUUID},'
     "order_uuid:{_eq:null},_not:{order_invoices_orders:{}}})"
     "{invoice_date invoice_number order_invoice_line_items{ship_quantity unit_price_in_micros}}}"
 )
@@ -133,11 +144,13 @@ class FoodDairyCoConnector(BaseConnector):
                     "content-type": "application/x-amz-json-1.1",
                     "x-amz-target": "AWSCognitoIdentityProviderService.InitiateAuth",
                 },
-                data=json.dumps({
-                    "AuthFlow": "REFRESH_TOKEN_AUTH",
-                    "ClientId": COGNITO_CLIENT_ID,
-                    "AuthParameters": {"REFRESH_TOKEN": rt},
-                }),
+                data=json.dumps(
+                    {
+                        "AuthFlow": "REFRESH_TOKEN_AUTH",
+                        "ClientId": COGNITO_CLIENT_ID,
+                        "AuthParameters": {"REFRESH_TOKEN": rt},
+                    }
+                ),
             )
             if resp.status == 200:
                 tok = (resp.json().get("AuthenticationResult") or {}).get("IdToken")
@@ -183,8 +196,14 @@ class FoodDairyCoConnector(BaseConnector):
 
     @staticmethod
     def _total(line_items: list[dict]) -> float:
-        return round(sum((i.get("ship_quantity") or 0) * (i.get("unit_price_in_micros") or 0)
-                         for i in line_items) / 1e6, 2)
+        return round(
+            sum(
+                (i.get("ship_quantity") or 0) * (i.get("unit_price_in_micros") or 0)
+                for i in line_items
+            )
+            / 1e6,
+            2,
+        )
 
     @staticmethod
     def _syd_date(iso: str) -> str:
@@ -199,41 +218,55 @@ class FoodDairyCoConnector(BaseConnector):
             before = len(rows)
 
             # App/Web orders (only those already invoiced).
-            data = self._gql(page, token, _ORDERS_QUERY, {
-                "filters": [{"operation": "EQUALS", "type": "SCOPE", "value": "PAST"}],
-                "pageSize": PAGE_SIZE,
-                "restaurantUUID": venue_id,
-                "supplierUUID": SUPPLIER_ID,
-            })
+            data = self._gql(
+                page,
+                token,
+                _ORDERS_QUERY,
+                {
+                    "filters": [{"operation": "EQUALS", "type": "SCOPE", "value": "PAST"}],
+                    "pageSize": PAGE_SIZE,
+                    "restaurantUUID": venue_id,
+                    "supplierUUID": SUPPLIER_ID,
+                },
+            )
             for entry in (data.get("searchOrderHistory") or {}).get("orders") or []:
                 order = entry.get("order") or {}
                 inv = (order.get("order_invoices") or [None])[0]
                 if not inv or not inv.get("invoice_number"):
                     continue
-                rows.append({
-                    "date": self._syd_date(order["restaurant_desired_delivery_time"]),
-                    "total": self._total(inv.get("order_invoice_line_items") or []),
-                    "invoice_ref": inv["invoice_number"],
-                    "supplier": "Food and Dairy Co",
-                    "location": shop,
-                })
+                rows.append(
+                    {
+                        "date": self._syd_date(order["restaurant_desired_delivery_time"]),
+                        "total": self._total(inv.get("order_invoice_line_items") or []),
+                        "invoice_ref": inv["invoice_number"],
+                        "supplier": "Food and Dairy Co",
+                        "location": shop,
+                    }
+                )
 
             # "Other" ingested invoices (phone/manual, not tied to an app order).
-            data = self._gql(page, token, _INGESTED_QUERY, {
-                "chatUUID": meta["chat"],
-                "limit": PAGE_SIZE,
-                "supplierUUID": SUPPLIER_ID,
-            })
+            data = self._gql(
+                page,
+                token,
+                _INGESTED_QUERY,
+                {
+                    "chatUUID": meta["chat"],
+                    "limit": PAGE_SIZE,
+                    "supplierUUID": SUPPLIER_ID,
+                },
+            )
             for inv in data.get("order_invoices") or []:
                 if not inv.get("invoice_number") or not inv.get("invoice_date"):
                     continue
-                rows.append({
-                    "date": self._syd_date(inv["invoice_date"]),
-                    "total": self._total(inv.get("order_invoice_line_items") or []),
-                    "invoice_ref": inv["invoice_number"],
-                    "supplier": "Food and Dairy Co",
-                    "location": shop,
-                })
+                rows.append(
+                    {
+                        "date": self._syd_date(inv["invoice_date"]),
+                        "total": self._total(inv.get("order_invoice_line_items") or []),
+                        "invoice_ref": inv["invoice_number"],
+                        "supplier": "Food and Dairy Co",
+                        "location": shop,
+                    }
+                )
 
             print(f"  [{self.NAME}] {shop}: {len(rows) - before} invoices")
         return rows
