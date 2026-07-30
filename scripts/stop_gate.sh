@@ -7,9 +7,10 @@
 #
 # CHECKS is stack-specific. This is a Python (harness) + GAS project. The pre-stop
 # gate is ruff lint/format (scripts/lint.sh — config in pyproject.toml) followed by
-# the pytest suite (harness self-tests in scripts/test_execute.py + connector tests).
-# Lint runs first (cheap, fails fast). Extend if a GAS/JS test runner is added.
-CHECKS=("bash scripts/lint.sh" "python -m pytest -q")
+# the pytest suite (harness self-tests in scripts/test_execute.py + connector tests),
+# then the GAS Node-mock suite (connectors/gas/test_code.js).
+# Lint runs first (cheap, fails fast).
+CHECKS=("bash scripts/lint.sh" "python -m pytest -q" "node connectors/gas/test_code.js")
 
 [ -n "$SKIP_STOP_GATE" ] && exit 0
 

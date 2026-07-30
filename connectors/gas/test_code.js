@@ -19,8 +19,11 @@ const path = require('path');
  * Apps Script global mocks
  * ------------------------------------------------------------------ */
 
-const SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location', 'source', 'extracted_at'];
-const SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'];
+// SUPPLIERS_HEADERS / SALES_HEADERS are NOT declared here. Declaring local
+// copies would shadow the globals load('Code.gs') sets below, and the two
+// would silently diverge the moment a header changes in one but not the
+// other. They are read off globalThis after load('Code.gs') instead, so the
+// tests always exercise the actual production header arrays.
 
 // A real Sheet parses a bare 'yyyy-MM-dd' string on write and hands it back as a
 // Date. It does NOT parse an ISO datetime carrying a timezone offset
@@ -56,18 +59,42 @@ function makeSheet(headers) {
   // header row. Seeding [[]] here gave every inserted tab a phantom blank row 1,
   // shifting headers to row 2 and all data down one.
   const rows = (headers && headers.length) ? [headers.slice()] : [];
-  const chain = {
-    setBackground() { return chain; },
-    setFontColor() { return chain; },
-    setFontWeight() { return chain; },
-    setValue() { return chain; },
-  };
+  // Real Sheet 1-indexed row/col growth: writing past the current bounds
+  // extends the sheet rather than throwing.
+  function ensureRow(rowIdx) {
+    while (rows.length <= rowIdx) rows.push([]);
+    return rows[rowIdx];
+  }
+  function setCell(rowIdx, colIdx, v) {
+    const r = ensureRow(rowIdx);
+    while (r.length <= colIdx) r.push(undefined);
+    r[colIdx] = sheetCoerceOnWrite(v);
+  }
+  // getRange(row, col, numRows?, numCols?) — 1-indexed, as GAS. setValue/
+  // setValues actually write into `rows` (upsertRows_'s entire mechanism is
+  // getRange(row, col).setValue(v)); an unimplemented upsert and a correct
+  // one must NOT produce identical sheet state.
+  function makeRangeChain(row, col) {
+    const chain = {
+      setBackground() { return chain; },
+      setFontColor() { return chain; },
+      setFontWeight() { return chain; },
+      setValue(v) { setCell(row - 1, col - 1, v); return chain; },
+      setValues(vals) {
+        vals.forEach((rowVals, ri) => {
+          rowVals.forEach((v, ci) => setCell(row - 1 + ri, col - 1 + ci, v));
+        });
+        return chain;
+      },
+    };
+    return chain;
+  }
   return {
     _rows: rows,
     appendRow: (a) => rows.push(a.map(sheetCoerceOnWrite)),
     deleteRow: (rowNum) => rows.splice(rowNum - 1, 1),
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
-    getRange: () => chain,
+    getRange: (row, col) => makeRangeChain(row, col),
     setFrozenRows() {},
   };
 }
@@ -84,7 +111,9 @@ function makeSpreadsheet() {
   };
 }
 
-let currentSS = makeSpreadsheet();
+// currentSS is created after load('Code.gs') below, once SUPPLIERS_HEADERS /
+// SALES_HEADERS have been read off globalThis (makeSpreadsheet() needs them).
+let currentSS;
 let scriptProps = {};
 
 global.SpreadsheetApp = {
@@ -204,6 +233,17 @@ function load(file) {
   (0, eval)(fs.readFileSync(path.join(GAS_DIR, file), 'utf8'));
 }
 load('Code.gs');
+
+// Read the real header arrays off the global scope Code.gs just populated
+// (indirect eval makes its top-level `var` declarations global properties).
+// Do NOT declare local copies — that shadowing is exactly the bug this
+// re-derivation exists to prevent (see comment near the top of this file).
+const SUPPLIERS_HEADERS = globalThis.SUPPLIERS_HEADERS;
+const SALES_HEADERS = globalThis.SALES_HEADERS;
+
+// Now that the header arrays exist, build the mock spreadsheet.
+currentSS = makeSpreadsheet();
+
 load('square.gs');
 load('mayers.gs');
 load('staleness.gs');
@@ -232,6 +272,49 @@ function doPostJson(body) {
 /* ------------------------------------------------------------------ *
  * Tests
  * ------------------------------------------------------------------ */
+
+console.log('mock harness: getRange/setValue can actually fail');
+(function () {
+  // Meta-assertion: this is the test that proves the mock can fail. Before
+  // this phase, setValue() was a no-op — an unimplemented upsertRows_ and a
+  // correct one produced identical sheet state under this suite.
+  freshSheets();
+  var sheet = currentSS.getSheetByName('Suppliers');
+  sheet.getRange(2, 1).setValue('x');
+  eq('getRange(2,1).setValue writes into the sheet, read back at row 2 col 1',
+    sheet._rows[1][0], 'x');
+
+  // Bare 'yyyy-MM-dd' coerces to a Date on write via getRange, same as
+  // appendRow — production writes dates through both paths.
+  freshSheets();
+  var sheet2 = currentSS.getSheetByName('Suppliers');
+  sheet2.getRange(2, 1).setValue('2026-08-03');
+  check('getRange().setValue coerces a bare date string to a Date',
+    sheet2._rows[1][0] instanceof Date);
+  eq('...and it round-trips to the same yyyy-MM-dd',
+    cellDate(sheet2._rows[1][0]), '2026-08-03');
+
+  // Writing past the current row length extends the row rather than
+  // throwing — matches a real Sheet's getRange(row, col) semantics.
+  freshSheets();
+  var sheet3 = currentSS.getSheetByName('Suppliers');
+  var threw = false;
+  try {
+    sheet3.getRange(2, 5).setValue('z');
+  } catch (err) {
+    threw = true;
+  }
+  check('writing beyond current row length extends the row, does not throw', !threw);
+  eq('extended row has the value at the target column',
+    sheet3._rows[1][4], 'z');
+
+  // Header parity: no local shadow of SUPPLIERS_HEADERS/SALES_HEADERS —
+  // the tests use exactly the globals Code.gs declared.
+  check('SUPPLIERS_HEADERS used by tests is globalThis.SUPPLIERS_HEADERS (no shadow)',
+    SUPPLIERS_HEADERS === globalThis.SUPPLIERS_HEADERS);
+  check('SALES_HEADERS used by tests is globalThis.SALES_HEADERS (no shadow)',
+    SALES_HEADERS === globalThis.SALES_HEADERS);
+})();
 
 console.log('normalizeSupplierRow');
 eq('maps columns + resolves canonical supplier from source',
