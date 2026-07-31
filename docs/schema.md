@@ -52,7 +52,7 @@ Sydney day never overwrites itself mid-day — see `appendSalesRow_`.
 |---|---|---|---|
 | `date` | date (YYYY-MM-DD) | yes | Order date |
 | `department` | string | yes | `Cafe` or `Roastery`; defaults to `Cafe` if omitted |
-| `channel` | string | yes | e.g. `wholesale`, `shopify` |
+| `channel` | string | yes | e.g. `wholesale`, `online` (Shopify) |
 | `customer` | string | yes | Customer / order name |
 | `amount` | number | yes | Gross order total in AUD (incl. shipping + GST) |
 | `order_ref` | string | yes | Order or upload id (also the dedup key) |
@@ -61,6 +61,15 @@ Sydney day never overwrites itself mid-day — see `appendSalesRow_`.
 
 **Dedup key:** `source + order_ref`, same upsert semantics as `Suppliers`. An
 amended wholesale order (same key, changed amount) updates in place.
+
+**`shopify` source** (`connectors/gas/shopify.gs`, `shopifyDailyPull`): pulls
+Shopify Admin API orders (`current_total_price`, not `total_price`, so a later
+refund upserts a lower amount) for `channel='online'`, always
+`department='Roastery'`. `customer` is the order's customer name, or
+`#<order_number>` for a guest checkout. `order_ref` is the Shopify order id.
+Requires Script Properties `SHOPIFY_SHOP_DOMAIN` and `SHOPIFY_ACCESS_TOKEN`
+(scope `read_orders`) — never in the repo, never in chat. The daily trigger
+re-pulls the last 2 days so a late refund still lands.
 
 ## Tab `Summary` (weekly rollup, spend AND revenue)
 
