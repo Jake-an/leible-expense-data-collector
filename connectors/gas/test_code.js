@@ -2083,6 +2083,75 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   })());
 })();
 
+/* ------------------------------------------------------------------ *
+ * Phase 4 — coffee order app contract (docs/ingest-contract.md)
+ * ------------------------------------------------------------------ */
+
+(function testCoffeeOrderAppContract() {
+  console.log('\ncoffee order app — ingest contract:');
+
+  check('coffee_order_app is a staleness watchdog source',
+    STALENESS_SOURCES.indexOf('coffee_order_app') !== -1);
+
+  // Wholesale revenue payload, verbatim shape from docs/ingest-contract.md /
+  // the plan's Phase 4 example.
+  freshSheets();
+  var revRes = doPostJson({
+    kind: 'revenue', source: 'coffee_order_app', extracted_at: '2026-08-03T09:00:00+10:00',
+    rows: [
+      { date: '2026-08-03', department: 'Roastery', channel: 'wholesale',
+        customer: 'Cafe X', amount: 340.00, order_ref: 'ORD-1182' }
+    ]
+  });
+  eq('wholesale revenue payload → ok', revRes.result, 'ok');
+  eq('wholesale revenue payload → rowsAdded 1', revRes.rowsAdded, 1);
+  var revRow = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
+  eq('revenue row lands in REVENUE_HEADERS order',
+    [cellDate(revRow[0])].concat(revRow.slice(1)),
+    ['2026-08-03', 'Roastery', 'wholesale', 'Cafe X', 340, 'ORD-1182', 'coffee_order_app', '2026-08-03T09:00:00+10:00']);
+
+  // Uploaded bean/packaging invoice payload — invoice_ref is the app's upload
+  // ID (never an OCR'd invoice number), and per-row `supplier` wins via
+  // canonicalSupplier_ with NO SUPPLIER_NAMES entry for coffee_order_app,
+  // exactly like Ordermentum.
+  freshSheets();
+  var suppRes = doPostJson({
+    kind: 'suppliers', source: 'coffee_order_app', extracted_at: '2026-08-03T09:00:00+10:00',
+    rows: [
+      { date: '2026-08-01', department: 'Roastery', supplier: 'Green Bean Co',
+        total: 1840.00, invoice_ref: 'coa-8823' }
+    ]
+  });
+  eq('uploaded invoice payload → ok', suppRes.result, 'ok');
+  eq('uploaded invoice payload → rowsAdded 1', suppRes.rowsAdded, 1);
+  var suppRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
+  eq('supplier row lands in SUPPLIERS_HEADERS order, supplier taken from the row not SUPPLIER_NAMES',
+    [cellDate(suppRow[0])].concat(suppRow.slice(1)),
+    ['2026-08-01', 'Green Bean Co', 1840, 'coa-8823', '', 'coffee_order_app', '2026-08-03T09:00:00+10:00', 'Roastery']);
+  check('coffee_order_app has no SUPPLIER_NAMES entry (per-row supplier is required)',
+    !('coffee_order_app' in SUPPLIER_NAMES));
+
+  // The three rejection cases the plan names.
+  (function () {
+    var revBase = { kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS' };
+
+    check('missing order_ref → rejected',
+      !validateIngest_(Object.assign({}, revBase, { rows: [
+        { date: '2026-08-03', department: 'Roastery', channel: 'wholesale', customer: 'Cafe X', amount: 340 }
+      ] })).ok);
+
+    check("bad department ('Kitchen') → rejected",
+      !validateIngest_(Object.assign({}, revBase, { rows: [
+        { date: '2026-08-03', department: 'Kitchen', channel: 'wholesale', customer: 'Cafe X', amount: 340, order_ref: 'ORD-1' }
+      ] })).ok);
+
+    check('amount as a (non-numeric) string → rejected',
+      !validateIngest_(Object.assign({}, revBase, { rows: [
+        { date: '2026-08-03', department: 'Roastery', channel: 'wholesale', customer: 'Cafe X', amount: '340.00abc', order_ref: 'ORD-1' }
+      ] })).ok);
+  })();
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

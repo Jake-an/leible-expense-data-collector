@@ -22,7 +22,7 @@
 
 var STALENESS_THRESHOLD_HOURS = 96;              // silent through a normal Fri→Mon (80h)
 var STALENESS_CALENDAR_ID = 'mio.jake@gmail.com';
-var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers'];
+var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'coffee_order_app'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *
