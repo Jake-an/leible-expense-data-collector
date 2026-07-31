@@ -22,7 +22,12 @@
 
 var STALENESS_THRESHOLD_HOURS = 96;              // silent through a normal Fri→Mon (80h)
 var STALENESS_CALENDAR_ID = 'mio.jake@gmail.com';
-var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'coffee_order_app'];
+// Every source that stamps a heartbeat should be watched, EXCEPT where its run
+// cadence is longer than STALENESS_THRESHOLD_HOURS. Deliberately excluded:
+//   'recurring' — runs MONTHLY (recurring.gs). At a 96h threshold it would sit
+//   stale ~26 days of every month and cry wolf continuously. Watching it needs
+//   per-source thresholds, which this file does not have. See TODO.md.
+var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'coffee_order_app', 'shopify', 'roastery'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *

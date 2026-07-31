@@ -2117,6 +2117,33 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
  * Phase 4 — coffee order app contract (docs/ingest-contract.md)
  * ------------------------------------------------------------------ */
 
+/*
+ * Integration guard. Phases 2/3/5 each added a connector that stamps a
+ * heartbeat, but staleness.gs sat outside their declared file lanes, so every
+ * one of them shipped unwatched — a connector could die silently and nothing
+ * would alert. This asserts the wiring so the gap cannot reopen quietly.
+ *
+ * 'recurring' is the deliberate exemption: it runs MONTHLY, and at a 96h
+ * threshold watching it would cry wolf ~26 days a month. Fixing that properly
+ * needs per-source thresholds (TODO.md).
+ */
+(function testEveryHeartbeatSourceIsWatched() {
+  console.log('\nstaleness — every heartbeat source is watched:');
+
+  var STAMPS_HEARTBEAT = ['square', 'mayers', 'shopify', 'roastery', 'recurring'];
+  var EXEMPT = { recurring: 'monthly cadence exceeds STALENESS_THRESHOLD_HOURS' };
+
+  for (var i = 0; i < STAMPS_HEARTBEAT.length; i++) {
+    var src = STAMPS_HEARTBEAT[i];
+    var watched = STALENESS_SOURCES.indexOf(src) !== -1;
+    if (EXEMPT[src]) {
+      check(src + ' is deliberately NOT watched (' + EXEMPT[src] + ')', !watched);
+    } else {
+      check(src + ' stamps a heartbeat and is watched', watched);
+    }
+  }
+})();
+
 (function testCoffeeOrderAppContract() {
   console.log('\ncoffee order app — ingest contract:');
 

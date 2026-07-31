@@ -104,13 +104,13 @@ function roasteryDailyPull_impl_() {
   // nothing is a normal quiet day for one high-volume vendor. Here, threads
   // can be non-empty while EVERY attachment fails to parse — that is a real
   // failure, not a quiet day, so it must not look healthy to the staleness
-  // watchdog. (Note: 'roastery' still needs adding to STALENESS_SOURCES in
-  // staleness.gs — out of this phase's file scope; see the execution report.)
+  // watchdog. ('roastery' is in STALENESS_SOURCES, so a withheld heartbeat
+  // raises a real Calendar alert after STALENESS_THRESHOLD_HOURS.)
   if (threads.length === 0 || res.rowsAdded > 0 || res.duplicatesSkipped > 0) {
     stalenessStampHeartbeat_('roastery');
   } else {
     Logger.log('roasteryDailyPull: threads present but nothing ingested (' + unparsed +
-      ' unparsed) — NOT stamping heartbeat, so staleness can alert once wired in');
+      ' unparsed) — NOT stamping heartbeat, so staleness will alert');
   }
 
   return {
