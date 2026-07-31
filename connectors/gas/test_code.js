@@ -260,6 +260,7 @@ load('shopify.gs');
 load('mayers.gs');
 load('staleness.gs');
 load('recurring.gs');
+load('roastery_email.gs');
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -450,6 +451,35 @@ eq('Crows Nest keyword → Leible Crowsnest', mayersShopFromText_('CROWS NEST NS
 check('unknown address → UNMAPPED prefix',
   mayersShopFromText_('Deliver To:\n99 GEORGE ST\nSYDNEY').indexOf('UNMAPPED:') === 0);
 eq('no address at all → empty string', mayersShopFromText_('just some random text'), '');
+
+console.log('parseRoasteryInvoice_ (Sample Bean Co — synthetic fixture, no PII, no real amounts)');
+var roasteryFixture = [
+  'Sample Bean Co ROASTERY TAX INVOICE',
+  'Invoice Number: RST-24401',
+  'Invoice Date: 2026-07-05',
+  'Bill To: Test Cafe Pty Ltd',
+  'Green beans - Ethiopia Yirgacheffe 3 x 25kg',
+  'Total Due: $612.50'
+].join('\n');
+eq('parses a well-formed Sample Bean Co invoice — ref, date, total, department',
+  parseRoasteryInvoice_(roasteryFixture, '2026-07-06'),
+  { date: '2026-07-05', total: 612.50, invoice_ref: 'RST-24401', department: 'Roastery' });
+check('falls back to received date when no date in text',
+  parseRoasteryInvoice_('Invoice Number: RST-1\nTotal Due: $10.00', '2026-07-06').date === '2026-07-06');
+eq('missing invoice number → invoice_ref null (caller falls back to the Gmail message id, not the parser)',
+  parseRoasteryInvoice_('Total Due: $10.00', '2026-07-06').invoice_ref, null);
+(function () {
+  var threw = false;
+  var message = '';
+  try {
+    parseRoasteryInvoice_('Hello, just a friendly note with no invoice data', '2026-07-06');
+  } catch (e) {
+    threw = true;
+    message = e.message;
+  }
+  check('unparseable input RAISES rather than returning empty/null', threw);
+  check('raised error message is actionable (mentions total)', message.indexOf('total') !== -1);
+})();
 
 /* ------------------------------------------------------------------ *
  * Summary API tests
