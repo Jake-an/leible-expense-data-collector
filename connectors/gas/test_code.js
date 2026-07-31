@@ -193,6 +193,7 @@ function mockFormatDate(d, tz, pattern) {
   const ymd = s.getUTCFullYear() + '-' + pad2(s.getUTCMonth() + 1) + '-' + pad2(s.getUTCDate());
   const hms = pad2(s.getUTCHours()) + ':' + pad2(s.getUTCMinutes()) + ':' + pad2(s.getUTCSeconds());
   if (pattern === 'yyyy-MM-dd') return ymd;
+  if (pattern === 'yyyy-MM') return ymd.slice(0, 7);
   if (pattern === 'XXX') return TZ_OFFSET_STR;
   if (pattern === "yyyy-MM-dd'T'HH:mm:ssXXX") return ymd + 'T' + hms + TZ_OFFSET_STR;
   throw new Error('mock formatDate: unsupported pattern ' + pattern);
@@ -214,7 +215,7 @@ function withMockNow(isoInstant, fn) {
 global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp not mocked'); } };
 global.ScriptApp = {
   getProjectTriggers: () => [],
-  newTrigger: () => ({ timeBased: () => ({ onWeekDay: () => ({ atHour: () => ({ inTimezone: () => ({ create: () => {} }) }) }), everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }), atHour: () => ({ everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }) }) }) }),
+  newTrigger: () => ({ timeBased: () => ({ onWeekDay: () => ({ atHour: () => ({ inTimezone: () => ({ create: () => {} }) }) }), everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }), atHour: () => ({ everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }) }), onMonthDay: () => ({ atHour: () => ({ inTimezone: () => ({ create: () => {} }) }) }) }) }),
   deleteTrigger: () => {},
   WeekDay: { MONDAY: 2 }
 };
@@ -258,6 +259,7 @@ load('square.gs');
 load('shopify.gs');
 load('mayers.gs');
 load('staleness.gs');
+load('recurring.gs');
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -1967,6 +1969,118 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   } finally {
     global.UrlFetchApp.fetch = realFetch2;
   }
+})();
+
+/* ------------------------------------------------------------------
+ * Phase 3 — recurring: deterministic slug/invoice_ref, idempotent re-runs,
+ * amount-change upsert, a simulated year of monthly runs, missing-property
+ * skip, lock-timeout, trigger install.
+ * ------------------------------------------------------------------ */
+
+(function testRecurringSlug() {
+  console.log('\nrecurring — recurringSlug_ (pure, deterministic + stable):');
+  eq('em-dash + spaces collapse to single hyphens', recurringSlug_('Rent — Roastery'), 'rent-roastery');
+  eq('plain word lowercases', recurringSlug_('Shopify'), 'shopify');
+  eq('same input always yields the same output', recurringSlug_('Rent — Roastery'), recurringSlug_('Rent — Roastery'));
+  eq('leading/trailing junk trimmed', recurringSlug_('  Rent!!  '), 'rent');
+})();
+
+(function testRecurringInvoiceRefDeterministic() {
+  console.log('\nrecurring — invoice_ref generation deterministic and slug-stable:');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500', RECUR_SHOPIFY: '79' };
+  var res = recurringMonthlyRun_('2026-08');
+  eq('two configured entries -> 2 rows added', res.rowsAdded, 2);
+  var rows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  var refs = rows.slice(1).map(function (r) { return r[3]; }).sort();
+  eq('deterministic refs match vendor slug + period, matching the plan example',
+    refs, ['rent-roastery-2026-08', 'shopify-2026-08']);
+})();
+
+(function testRecurringMissingPropertySkippedNotZero() {
+  console.log('\nrecurring — missing script property -> skipped, never written as 0:');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500' }; // RECUR_SHOPIFY absent
+  var res = recurringMonthlyRun_('2026-08');
+  eq('only the configured entry is written', res.rowsAdded, 1);
+  eq('the missing entry is reported skipped, not silently zeroed', res.skipped, ['Shopify']);
+  var rows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  eq('no zero-amount row was written for Shopify (header + 1 data row only)', rows.length, 2);
+})();
+
+(function testRecurringDoubleRunIdempotent() {
+  console.log('\nrecurring — running the generator twice in the same month: no duplicate rows, no doubled total (the crux of this phase):');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500', RECUR_SHOPIFY: '79' };
+
+  var first = recurringMonthlyRun_('2026-08');
+  eq('first run: 2 rows added', first.rowsAdded, 2);
+
+  var second = recurringMonthlyRun_('2026-08');
+  eq('second run same period: 0 rows added', second.rowsAdded, 0);
+  eq('second run same period: unchanged amount -> 0 updated (upsertRows_ no-op, not a duplicate write)', second.rowsUpdated, 0);
+  eq('second run same period: 2 rows recognised as duplicates, not appended', second.duplicatesSkipped, 2);
+
+  var rows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  eq('still exactly 2 data rows after two runs — NOT 4', rows.length, 3);
+  var total = rows.slice(1).reduce(function (sum, r) { return sum + Number(r[2]); }, 0);
+  eq('total is NOT doubled (2500 + 79, once)', total, 2579);
+})();
+
+(function testRecurringAmountChangeUpdatesInPlace() {
+  console.log('\nrecurring — an amount change upserts the existing row instead of adding a new one:');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500', RECUR_SHOPIFY: '79' };
+  recurringMonthlyRun_('2026-08');
+
+  scriptProps = { RECUR_RENT_ROASTERY: '2600', RECUR_SHOPIFY: '79' }; // rent goes up
+  var res = recurringMonthlyRun_('2026-08');
+  eq('changed amount: 0 added, 1 updated', res.rowsAdded + '|' + res.rowsUpdated, '0|1');
+
+  var rows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  var rentRow = rows.slice(1).filter(function (r) { return r[3] === 'rent-roastery-2026-08'; })[0];
+  eq('rent row now reflects the new amount', rentRow[2], 2600);
+  eq('still only one rent row (upsert, not append)', rows.length, 3);
+})();
+
+(function testRecurringYearOfMonthlyRunsYields12Rows() {
+  console.log('\nrecurring — a monthly entry yields exactly 12 rows across a simulated year:');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500' }; // Shopify omitted to isolate rent's 12 rows
+  for (var m = 1; m <= 12; m++) {
+    var period = '2026-' + (m < 10 ? '0' + m : m);
+    recurringMonthlyRun_(period);
+  }
+  var rows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  eq('12 distinct monthly periods -> 12 data rows (header + 12)', rows.length, 13);
+})();
+
+(function testRecurringDefaultsToCurrentMonth() {
+  console.log('\nrecurring — no periodStr arg defaults to the current month (Australia/Sydney):');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500' };
+  var res = withMockNow('2026-08-15T00:00:00Z', function () { return recurringMonthlyRun_(); });
+  eq('defaults to 2026-08', res.period, '2026-08');
+})();
+
+(function testRecurringLockTimeout() {
+  console.log('\nrecurring — a held script lock is reported, not silently swallowed:');
+  freshSheets();
+  scriptProps = { RECUR_RENT_ROASTERY: '2500' };
+  global.__forceLockTimeout = true;
+  try {
+    var res = recurringMonthlyRun_('2026-08');
+    eq('locked run reports locked:true and writes nothing', res.locked + '|' + res.rowsAdded, 'true|0');
+  } finally {
+    global.__forceLockTimeout = false;
+  }
+})();
+
+(function testInstallRecurringTrigger() {
+  console.log('\nrecurring — installRecurringTrigger runs without throwing (monthly ClockTriggerBuilder chain):');
+  check('installRecurringTrigger does not throw', (function () {
+    try { installRecurringTrigger(); return true; } catch (e) { return false; }
+  })());
 })();
 
 /* ------------------------------------------------------------------ */
