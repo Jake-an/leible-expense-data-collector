@@ -18,6 +18,32 @@
 
 ## Active
 
+### Roastery department — code landed 2026-07-31, NOT YET DEPLOYED
+Branch `feat-roastery-department` (base `32a3101`). All 6 plan phases committed, 405 GAS
+tests green. Nothing has touched the live Sheet yet.
+
+- [ ] **(Jake) Run the Phase 1 migration Runbook** — order matters, plan lines 487-513:
+      Drive-copy the hub Sheet → record the copy id → list + disable triggers →
+      `bash scripts/deploy.sh --push-only` → `migrateAddDepartment_()` dry run → read report →
+      `migrateAddDepartment_(false)` → `bash scripts/deploy.sh` → `sweepBlankDepartments_(false)`
+      (NOT `migrateAddDepartment_`, which short-circuits on the header guard) → re-enable triggers.
+      **The migration is not reversible without hand-deleting columns.**
+- [ ] **(Jake) Step 4.0 — inspect the coffee order app.** Blocks the rest of Phase 4. Checklist
+      is in `docs/ingest-contract.md`: where order data lives, stable order ids?, do uploaded
+      invoices carry structured date/vendor/amount or are they file-only, can the app POST out.
+- [ ] **(Jake) Script Properties before the new connectors run:** `SHOPIFY_SHOP_DOMAIN`,
+      `SHOPIFY_ACCESS_TOKEN`, `RECUR_RENT_ROASTERY`, `RECUR_SHOPIFY`.
+- [ ] **(Jake) Gmail label `roastery/invoices`** + filter, then install the roastery trigger.
+- [ ] `recurring` is unwatched by the staleness watchdog — monthly cadence vs the 96h threshold
+      would cry wolf ~26 days a month. Needs per-source thresholds in `staleness.gs`.
+- [ ] `mayers.gs` entry point (`mayersPull`) was never wrapped in `withScriptLock_` — it fell
+      outside every phase's declared `Files:` list. Every other entry point is wrapped.
+- [ ] Decide: `validateIngest_` accepts a numeric-string `amount` (`"340.00"`) via
+      `isNaN(Number(...))`. The plan listed "amount as a string" as a rejection case. Tightening
+      it would reject a plausible coffee-order-app payload.
+- [ ] `roastery_email.gs` ships ONE vendor parser ("Sample Bean Co", synthetic). Real vendor
+      layouts need their own parsers — deliberately no generic fallback.
+
 ### Phase 0 — Foundation — ✅ DONE
 - [x] Sheet "LEIBLE Expense Hub" created with `Suppliers` / `Sales` / `_staging` tabs + headers
 - [x] Bound GAS project created; scriptId + deploymentId in `config/`
