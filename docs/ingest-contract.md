@@ -35,6 +35,19 @@ a numeric string), `order_ref`. `department` is optional — omitted defaults
 to `DEFAULT_DEPARTMENT` (`Cafe`); if present it must be exactly `Cafe` or
 `Roastery`.
 
+**`channel` is an open enum, and the weekly rollup treats one value specially.**
+`validateIngest_` only requires `channel` to be non-empty. In the weekly
+`Summary`, `channel: "online"` is collapsed to one row per source (guest
+checkouts carry synthetic per-order customer names); every other channel is
+grouped per customer. Two consequences for a new connector:
+
+- Use a **consistent casing** per channel. `Summary` dedup lowercases the
+  channel, so mixing `"Online"` and `"online"` in one week silently drops one
+  group's revenue from that week's figure.
+- If you introduce a channel whose `customer` values are synthetic or unique
+  per order, add it to the collapse rule in `aggregateSupplierRows_`
+  (`connectors/gas/Code.gs`) — otherwise it writes one `Summary` row per order.
+
 ### 2. Uploaded bean / packaging invoice
 
 ```jsonc

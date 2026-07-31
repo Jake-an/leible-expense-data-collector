@@ -44,6 +44,39 @@ tests green. Nothing has touched the live Sheet yet.
 - [ ] `roastery_email.gs` ships ONE vendor parser ("Sample Bean Co", synthetic). Real vendor
       layouts need their own parsers — deliberately no generic fallback.
 
+### Shopify weekly Roastery figure — code landed 2026-07-31, NOT YET DEPLOYED
+`aggregateSupplierRows_` now groups `kind='revenue'` rows by **source** when `channel='online'`
+(one weekly row per source) and keeps per-customer grain on every other channel. 444 GAS tests
+green. No Shopify connector change; no new tab.
+
+- [ ] **(Jake) BLOCKING pre-deploy cleanup — before the first post-deploy `weeklySummarize`.**
+      The dedup key includes `supplier`, so any pre-existing customer-keyed `kind='revenue'`
+      **online** Summary row is orphaned rather than updated → `doGet` double-counts that week.
+      1. Filter live `Summary` for `kind='revenue'` AND `location` = `online` (case-insensitive).
+         **Only those.** Wholesale revenue rows keep their key and must not be touched.
+      2. Export the matching rows to a separate sheet/CSV first. Record the row count and the
+         distinct `week_start` values here.
+      3. Delete only those rows.
+      4. Run `weeklySummarize('<Monday>')` **once per affected week** — it writes one week per run
+         and refuses an incomplete week, so a single run would leave older weeks permanently
+         missing and `doGet` would under-report history.
+      5. Spot-check `doGet?from=&to=` returns one online revenue row per source with the right total.
+      6. If a week's `Revenue` rows were already archived/purged, restore that week's figure from
+         the step-2 export instead of re-summarizing.
+      Expected to be a no-op (nothing deployed yet), but the repo cannot verify live state —
+      `Code.gs:614` and `1202` both `ensureSheet(REVENUE_TAB)`, so a prior run may have created it.
+- [ ] **Square daily sales never reach the weekly report.** `Sales` is written by `squareDailyPull`
+      and read only by `cleanupCorruptSalesRows` (`Code.gs:823`) and the staleness watchdog
+      (`staleness.gs:113`). `weeklySummarize` aggregates `Suppliers` + `Revenue` only
+      (`Code.gs:1239-1243`) and `doGet` serves `Summary` only (`Code.gs:955`) — so no Square figure
+      is reachable via the API at all. Decide whether that's intended.
+- [ ] **Mixed channel casing silently loses revenue (pre-existing).** The aggregator groups on the
+      raw `location` string but Summary dedup lowercases it (`rowKey_`, `Code.gs:421`), so `"Online"`
+      and `"online"` in one week collapse to one Summary row and the later group is dropped as an
+      in-batch duplicate — 100 + 25 reports as **25**. Pinned by a test; documented in
+      `docs/api.md` and `docs/ingest-contract.md`. A real fix would normalize channel casing on
+      write, which changes wholesale dedup keys — deliberately not done here.
+
 ### Phase 0 — Foundation — ✅ DONE
 - [x] Sheet "LEIBLE Expense Hub" created with `Suppliers` / `Sales` / `_staging` tabs + headers
 - [x] Bound GAS project created; scriptId + deploymentId in `config/`

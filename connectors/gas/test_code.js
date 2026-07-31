@@ -552,6 +552,99 @@ console.log('aggregateSupplierRows_');
   eq('empty rows → empty result', empty.length, 0);
 })();
 
+console.log('aggregateSupplierRows_ revenue grain — online collapses to source');
+(function () {
+  // Revenue row order: [date, department, channel, customer, amount, order_ref, source, extracted_at]
+
+  // 1 + 2 + 8: online customers (incl. guest '#nnnn' names) collapse to one
+  // group keyed by source. This is the whole point of the change — grouping by
+  // customer wrote one Summary row per guest order.
+  var online = [
+    ['2026-06-16', 'Roastery', 'online', '#1041', 62, 'O-1', 'shopify', 'TS'],
+    ['2026-06-17', 'Roastery', 'online', '#1042', 48.5, 'O-2', 'shopify', 'TS'],
+    ['2026-06-18', 'Roastery', 'online', 'Sarah Chen', 120, 'O-3', 'shopify', 'TS'],
+  ];
+  var r1 = aggregateSupplierRows_(online, '2026-06-15', '2026-06-21', 'revenue');
+  eq('online: three customers collapse into one group', r1.length, 1);
+  eq('online: total is the sum', r1[0].total, 230.5);
+  eq('online: supplier is the source, not the customer', r1[0].supplier, 'shopify');
+  eq('online: location is the channel', r1[0].location, 'online');
+  eq('online: department preserved', r1[0].department, 'Roastery');
+
+  // 3 + 8: wholesale keeps per-customer grain — these are real named accounts
+  // (docs/ingest-contract.md), and doGet serves Summary only, so collapsing
+  // them would delete per-customer weekly revenue from the API.
+  var wholesale = [
+    ['2026-06-16', 'Roastery', 'wholesale', 'Cafe X', 340, 'W-1', 'coffee_order_app', 'TS'],
+    ['2026-06-17', 'Roastery', 'wholesale', 'Bar Mero', 912, 'W-2', 'coffee_order_app', 'TS'],
+  ];
+  var r2 = aggregateSupplierRows_(wholesale, '2026-06-15', '2026-06-21', 'revenue');
+  eq('wholesale: two customers stay two groups', r2.length, 2);
+  eq('wholesale: supplier is still the customer name', r2[0].supplier, 'Bar Mero');
+  eq('wholesale: second customer intact', r2[1].supplier, 'Cafe X');
+  eq('wholesale: totals not merged', r2[0].total + '|' + r2[1].total, '912|340');
+
+  // 4: both channels in one call — online collapsed, wholesale preserved.
+  var mixed = online.concat(wholesale);
+  var r3 = aggregateSupplierRows_(mixed, '2026-06-15', '2026-06-21', 'revenue');
+  eq('mixed: 3 groups (1 online + 2 wholesale)', r3.length, 3);
+  eq('mixed: sorted keys → Bar Mero, Cafe X, shopify',
+    r3.map(function (g) { return g.supplier; }).join(','), 'Bar Mero,Cafe X,shopify');
+
+  // 5: channel compare is case-insensitive, but location stores the raw string.
+  var capitalised = [
+    ['2026-06-16', 'Roastery', 'Online', '#2001', 10, 'C-1', 'shopify', 'TS'],
+    ['2026-06-17', 'Roastery', 'Online', '#2002', 20, 'C-2', 'shopify', 'TS'],
+  ];
+  var r4 = aggregateSupplierRows_(capitalised, '2026-06-15', '2026-06-21', 'revenue');
+  eq('"Online" collapses too', r4.length, 1);
+  eq('"Online" groups by source', r4[0].supplier, 'shopify');
+  eq('location keeps the raw channel casing', r4[0].location, 'Online');
+
+  // 6: two sources on the same channel stay distinct.
+  var twoSources = [
+    ['2026-06-16', 'Roastery', 'online', '#3001', 50, 'S-1', 'shopify', 'TS'],
+    ['2026-06-17', 'Roastery', 'online', 'Cafe Y', 70, 'S-2', 'coffee_order_app', 'TS'],
+  ];
+  var r5 = aggregateSupplierRows_(twoSources, '2026-06-15', '2026-06-21', 'revenue');
+  eq('two online sources → two groups', r5.length, 2);
+  eq('...keyed by source', r5[0].supplier + ',' + r5[1].supplier, 'coffee_order_app,shopify');
+
+  // 7: department still splits.
+  var twoDepts = [
+    ['2026-06-16', 'Roastery', 'online', '#4001', 50, 'D-1', 'shopify', 'TS'],
+    ['2026-06-17', 'Cafe', 'online', '#4002', 70, 'D-2', 'shopify', 'TS'],
+  ];
+  var r6 = aggregateSupplierRows_(twoDepts, '2026-06-15', '2026-06-21', 'revenue');
+  eq('two departments → two groups', r6.length, 2);
+  eq('...Cafe sorts first', r6[0].department + '|' + r6[0].total, 'Cafe|70');
+  eq('...Roastery second', r6[1].department + '|' + r6[1].total, 'Roastery|50');
+
+  // 9: a blank/absent source must not silently become '' or 'undefined' as a
+  // doGet supplier value. normalizeRevenueRow writes source through verbatim
+  // and weeklySummarize reads the raw tab, so unvalidated rows do reach here.
+  var blankSource = [
+    ['2026-06-16', 'Roastery', 'online', '#5001', 11, 'B-1', '', 'TS'],
+    ['2026-06-17', 'Roastery', 'online', '#5002', 22, 'B-2', undefined, 'TS'],
+    ['2026-06-18', 'Roastery', 'online', '#5003', 33, 'B-3', 'shopify', 'TS'],
+  ];
+  var r7 = aggregateSupplierRows_(blankSource, '2026-06-15', '2026-06-21', 'revenue');
+  eq('blank + absent source group together as "unknown"', r7.length, 2);
+  eq('...unknown bucket totals 11+22', r7[1].supplier + '|' + r7[1].total, 'unknown|33');
+  eq('...and does NOT merge with the real source', r7[0].supplier + '|' + r7[0].total, 'shopify|33');
+
+  // 10: Date-object date cells (the project's most-repeated trap) still filter
+  // correctly — coerceDateStr_ is untouched, this guards against regressing it.
+  var dateCells = [
+    [new Date(2026, 5, 16), 'Roastery', 'online', '#6001', 100, 'DT-1', 'shopify', 'TS'],
+    [new Date(2026, 5, 10), 'Roastery', 'online', '#6002', 999, 'DT-2', 'shopify', 'TS'], // before week
+    [new Date(2026, 5, 25), 'Roastery', 'online', '#6003', 888, 'DT-3', 'shopify', 'TS'], // after week
+  ];
+  var r8 = aggregateSupplierRows_(dateCells, '2026-06-15', '2026-06-21', 'revenue');
+  eq('Date-object revenue rows: only the in-week row counts', r8.length, 1);
+  eq('Date-object revenue rows: out-of-week excluded', r8[0].total, 100);
+})();
+
 console.log('checkReadToken_');
 (function () {
   // No token in Script Properties → deny
@@ -1835,6 +1928,102 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     eq('spend row: department Cafe, total 100', spendRow[6] + '|' + spendRow[4], 'Cafe|100');
     eq('revenue row: department Roastery, total 500', revenueRow[6] + '|' + revenueRow[4], 'Roastery|500');
     check('revenue never netted against spend (two distinct rows, not one combined)', rows.length === 2);
+  })();
+
+  // 14: end-to-end — a week of online Revenue rows yields exactly ONE
+  // kind='revenue' Summary row, and doGet?department=Roastery serves it.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = { API_READ_TOKEN: 'tok' };
+    var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
+    rev.appendRow(['2026-06-16', 'Roastery', 'online', '#1041', 62, 'E-1', 'shopify', 'x']);
+    rev.appendRow(['2026-06-17', 'Roastery', 'online', '#1042', 48.5, 'E-2', 'shopify', 'x']);
+    rev.appendRow(['2026-06-18', 'Roastery', 'online', 'Sarah Chen', 120, 'E-3', 'shopify', 'x']);
+
+    var res = weeklySummarize('2026-06-15');
+    eq('a week of online orders → 1 Summary row, not 1 per order', res.summariesAdded, 1);
+
+    var served = JSON.parse(doGet({ parameter: {
+      token: 'tok', from: '2026-06-15', to: '2026-06-21', department: 'Roastery'
+    } }).getContent());
+    eq('doGet returns the single weekly Roastery figure', served.count, 1);
+    eq('...supplier is the source', served.rows[0].supplier, 'shopify');
+    eq('...total is the week sum', served.rows[0].total, 230.5);
+  })();
+
+  // 12: idempotency — the new grouping key must be stable across runs, or a
+  // re-summarize would append a second row instead of upserting.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
+    rev.appendRow(['2026-06-16', 'Roastery', 'online', '#7001', 62, 'I-1', 'shopify', 'x']);
+
+    var first = weeklySummarize('2026-06-15');
+    eq('first summarize adds the online revenue row', first.summariesAdded, 1);
+    var before = currentSS.getSheetByName('Summary').getDataRange().getValues();
+
+    // Identical re-run: an unchanged amount is a duplicate-skip, not an update
+    // (Code.gs:402) — what matters is that the key matched, so nothing appends.
+    var second = weeklySummarize('2026-06-15');
+    eq('re-summarize appends nothing (key is stable)', second.summariesAdded, 0);
+    var after = currentSS.getSheetByName('Summary').getDataRange().getValues();
+    eq('Summary row count unchanged across runs', after.length, before.length);
+
+    // Amended amount proves the key genuinely matched rather than the row being
+    // skipped for some unrelated reason: it must update IN PLACE, not append.
+    rev.getRange(2, 5).setValue(99);
+    var third = weeklySummarize('2026-06-15');
+    eq('amended online revenue updates in place', third.summariesUpdated, 1);
+    eq('...and still appends nothing', third.summariesAdded, 0);
+    var amended = currentSS.getSheetByName('Summary').getDataRange().getValues();
+    eq('Summary row count still unchanged', amended.length, before.length);
+    eq('Summary total reflects the amendment', amended[1][4], 99);
+  })();
+
+  // 13: stale-key double-count — documents WHY the pre-deploy checklist exists.
+  // A Summary row written under the OLD customer-keyed scheme is not updated by
+  // the new source-keyed run; it is orphaned alongside it and doGet counts both.
+  // The expected value is pinned at 2 so a wrong result stays distinguishable
+  // from this intended (bad) behaviour.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    var summ = ensureSheet(currentSS, 'Summary', SUMMARY_HEADERS);
+    // Legacy row: supplier = customer name, as the old grouping produced.
+    summ.appendRow(['2026-06-15', '2026-06-21', '#8001', 'online', 62, 'old', 'Roastery', 'revenue']);
+    var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
+    rev.appendRow(['2026-06-16', 'Roastery', 'online', '#8001', 62, 'L-1', 'shopify', 'x']);
+
+    weeklySummarize('2026-06-15');
+    var rows = currentSS.getSheetByName('Summary').getDataRange().getValues().slice(1);
+    var revenueRows = rows.filter(function (r) { return r[7] === 'revenue'; });
+    eq('legacy customer-keyed row is NOT updated — it is orphaned (2 rows)', revenueRows.length, 2);
+    check('the same 62.00 is now counted twice — hence the pre-deploy cleanup',
+      revenueRows[0][4] + revenueRows[1][4] === 124);
+  })();
+
+  // Case-variant channels in ONE week SILENTLY LOSE REVENUE. The aggregator
+  // groups on the raw location string, so 'Online' and 'online' are two groups;
+  // but Summary dedup lowercases (rowKey_, Code.gs:421), so both produce the
+  // same Summary key and the later one is dropped as an in-batch duplicate
+  // (Code.gs:389). Whichever casing sorts first in the aggregator's key sort
+  // wins — 'Online' (O=79) before 'online' (o=111) — so here 100 + 25 reports
+  // as 25, not 125. PRE-EXISTING, not introduced by the source-grouping change;
+  // pinned here so the loss is visible if any connector emits mixed casing.
+  // Recorded in TODO.md.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
+    rev.appendRow(['2026-06-16', 'Roastery', 'online', '#9001', 100, 'V-1', 'shopify', 'x']);
+    rev.appendRow(['2026-06-17', 'Roastery', 'Online', '#9002', 25, 'V-2', 'shopify', 'x']);
+
+    weeklySummarize('2026-06-15');
+    var revRows = currentSS.getSheetByName('Summary').getDataRange().getValues()
+      .slice(1).filter(function (r) { return r[7] === 'revenue'; });
+    eq('mixed channel casing collapses to ONE Summary row', revRows.length, 1);
+    eq('...and 100 is silently lost: reports 25, not the 125 sum', revRows[0][4], 25);
   })();
 
   // doGet &department=Roastery → only Roastery rows; absent → all rows.

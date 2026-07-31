@@ -973,9 +973,11 @@ function doGet(e) {
     }
 
     // department/kind are already emitted by summaryDataToObjects_ (it maps
-    // every header generically). Keep the JSON field name 'supplier' — it
-    // holds the customer name on kind='revenue' rows — and keep 'total_spend'
-    // as a one-release alias for 'total' so existing consumers don't break.
+    // every header generically). Keep the JSON field name 'supplier' — on
+    // kind='revenue' rows it holds the SOURCE when location is 'online' and the
+    // customer name on every other channel (see aggregateSupplierRows_) — and
+    // keep 'total_spend' as a one-release alias for 'total' so existing
+    // consumers don't break.
     if (params.department) {
       rows = rows.filter(function (r) { return String(r.department) === String(params.department); });
     }
@@ -1097,9 +1099,13 @@ function getLastCompletedWeek_(todayStr) {
  * @param {string} [kind]    'spend' (default) | 'revenue'
  * @returns {Array<{supplier, location, department, kind, total}>}
  *   Spend: supplier=supplier name, location=location, department=row[7].
- *   Revenue: supplier=customer (JSON field name kept for doGet compat),
- *     location=channel, department=row[1]. Revenue is never netted against
- *     spend — each kind aggregates into its own groups.
+ *   Revenue: location=channel, department=row[1], and supplier (JSON field name
+ *     kept for doGet compat) depends on the channel — the SOURCE when channel
+ *     is 'online' (case-insensitive), the customer name otherwise. Online guest
+ *     checkouts are named '#<order_number>', unique per order, so grouping them
+ *     by customer wrote one Summary row per order; wholesale customers are real
+ *     named accounts and keep their own weekly line. Revenue is never netted
+ *     against spend — each kind aggregates into its own groups.
  */
 function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {
   kind = kind || 'spend';
@@ -1111,8 +1117,24 @@ function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {
     var name, location, total, department;
     if (kind === 'revenue') {
       department = rows[i][1] ? String(rows[i][1]) : DEFAULT_DEPARTMENT;
-      location = String(rows[i][2]);   // channel
-      name = String(rows[i][3]);       // customer
+      var channel = String(rows[i][2]);
+      location = channel;
+      // Online retail: the customer is noise — Shopify names guest checkouts
+      // '#<order_number>', unique per order, so grouping by customer wrote one
+      // Summary row PER ORDER into the tab that is meant to be the summary.
+      // Group by source instead. Every other channel (wholesale especially)
+      // keeps per-customer grain: those are real named accounts, and doGet
+      // serves Summary only — collapsing them would delete per-customer weekly
+      // revenue from the API with no replacement.
+      //
+      // The 'unknown' fallback is load-bearing, not padding: normalizeRevenueRow
+      // writes `source` through verbatim, the non-empty guarantee lives in
+      // validateIngest_ (doPost path ONLY), and weeklySummarize_impl_ feeds this
+      // raw getDataRange().getValues() — hand-typed and backfilled rows reach
+      // here unvalidated, where '' / undefined would be served as a supplier.
+      name = channel.toLowerCase() === 'online'
+        ? (rows[i][6] ? String(rows[i][6]) : 'unknown')   // source
+        : String(rows[i][3]);                             // customer
       total = Number(rows[i][4]);      // amount
     } else {
       name = String(rows[i][1]);       // supplier
