@@ -1,10 +1,19 @@
 # Sheet Schema
 
-Two tabs, one Sheet. All sources normalize to one of these before writing. Invoice-level for suppliers (no line items, no GST, no categories), daily-gross for sales.
+Suppliers, Sales, Labour, Revenue and Summary, one Sheet. All sources normalize to
+one of these before writing. Invoice-level for suppliers, daily-gross for Square
+sales, order-level for Revenue.
 
-A third tab `_staging` is a scratch area to test ingestion before trusting a connector — same columns as `Suppliers`.
+Every pre-existing tab carries a `department` column, appended **last** so
+index-based dedup keys stay valid (see `docs/ADR.md` for why). Existing rows
+backfill to `Cafe`; the only other value today is `Roastery`. `DEPARTMENTS` in
+`connectors/gas/Code.gs` is the source of truth — an ingest row with any other
+value is rejected by `validateIngest_`.
 
-## Tab `Suppliers` (invoice-level, all supplier sources)
+A tab `_staging` is a scratch area to test ingestion before trusting a connector —
+same columns as `Suppliers`.
+
+## Tab `Suppliers` (invoice-level, all supplier sources — Cafe expenses + Roastery COGS)
 
 | Column | Type | Required | Description |
 |---|---|---|---|
@@ -15,10 +24,14 @@ A third tab `_staging` is a scratch area to test ingestion before trusting a con
 | `location` | string | no | Delivery site, where the source exposes it |
 | `source` | string | yes | Connector identifier (`food_dairy_co`, `mayers`, …) |
 | `extracted_at` | datetime (ISO 8601) | yes | When the connector pulled this row |
+| `department` | string | yes | `Cafe` or `Roastery`; defaults to `Cafe` if omitted |
 
-**Dedup key:** `source + invoice_ref`. Invoice-level granularity makes this a clean natural key. Duplicates are silently skipped on insert (not an error).
+**Dedup key:** `source + invoice_ref`. Invoice-level granularity makes this a clean
+natural key. A re-ingest of the same key **upserts**: unchanged amount is skipped,
+a changed amount updates the row in place (`total` + `extracted_at`) rather than
+appending a duplicate — see `ingestSupplierRows`/`upsertRows_` in `Code.gs`.
 
-## Tab `Sales` (Square, daily gross per location)
+## Tab `Sales` (Square, daily gross per location — always Cafe)
 
 | Column | Type | Required | Description |
 |---|---|---|---|
@@ -27,8 +40,36 @@ A third tab `_staging` is a scratch area to test ingestion before trusting a con
 | `gross_sales` | number | yes | Gross sales total in AUD for that location that day |
 | `source` | string | yes | Always `square` |
 | `extracted_at` | datetime (ISO 8601) | yes | When the pull ran |
+| `department` | string | yes | Always `Cafe` (Square only serves the cafes) |
 
 **Dedup key:** `date + location`. Gross only, no backfill — starts from go-live.
+A **prior** day's row may be corrected in place (narrow upsert); the current
+Sydney day never overwrites itself mid-day — see `appendSalesRow_`.
+
+## Tab `Revenue` (order-level, non-Square revenue — currently Roastery only)
+
+| Column | Type | Required | Description |
+|---|---|---|---|
+| `date` | date (YYYY-MM-DD) | yes | Order date |
+| `department` | string | yes | `Cafe` or `Roastery`; defaults to `Cafe` if omitted |
+| `channel` | string | yes | e.g. `wholesale`, `shopify` |
+| `customer` | string | yes | Customer / order name |
+| `amount` | number | yes | Gross order total in AUD (incl. shipping + GST) |
+| `order_ref` | string | yes | Order or upload id (also the dedup key) |
+| `source` | string | yes | Connector identifier |
+| `extracted_at` | datetime (ISO 8601) | yes | When the row was ingested |
+
+**Dedup key:** `source + order_ref`, same upsert semantics as `Suppliers`. An
+amended wholesale order (same key, changed amount) updates in place.
+
+## Tab `Summary` (weekly rollup, spend AND revenue)
+
+`week_start | week_end | supplier | location | total | summarized_at | department | kind`.
+`kind` is `spend` (from `Suppliers`) or `revenue` (from `Revenue`) — the two are
+**never netted against each other**. The `supplier` JSON field holds the customer
+name on `kind:'revenue'` rows (dual meaning, documented in `docs/api.md`).
+`weeklySummarize()` **upserts** (see `docs/api.md`), keyed on
+`week_start||department||kind||supplier||location`.
 
 ## Canonical Supplier Names
 

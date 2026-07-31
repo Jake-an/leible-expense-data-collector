@@ -218,6 +218,16 @@ global.ScriptApp = {
   deleteTrigger: () => {},
   WeekDay: { MONDAY: 2 }
 };
+// LockService mock. __forceLockTimeout lets a test simulate a busy lock
+// (tryLock returns false) without any real timing — withScriptLock_ must
+// treat that as LOCK_TIMEOUT_, not throw.
+global.__forceLockTimeout = false;
+global.LockService = {
+  getScriptLock: () => ({
+    tryLock: () => !global.__forceLockTimeout,
+    releaseLock: () => {},
+  }),
+};
 global.GmailApp = {};
 global.Drive = { Files: { insert: function () { throw new Error('Drive not mocked'); } } };
 global.DocumentApp = { openById: function () { throw new Error('DocumentApp not mocked'); } };
@@ -317,15 +327,18 @@ console.log('mock harness: getRange/setValue can actually fail');
 })();
 
 console.log('normalizeSupplierRow');
-eq('maps columns + resolves canonical supplier from source',
+eq('maps columns + resolves canonical supplier from source, department defaults to Cafe',
   normalizeSupplierRow({ date: '2026-06-15', total: '245.50', invoice_ref: 'INV-1', location: 'York St' }, 'food_dairy_co', 'TS'),
-  ['2026-06-15', 'Food and Dairy Co', 245.5, 'INV-1', 'York St', 'food_dairy_co', 'TS']);
+  ['2026-06-15', 'Food and Dairy Co', 245.5, 'INV-1', 'York St', 'food_dairy_co', 'TS', 'Cafe']);
 eq('per-row supplier (Ordermentum) wins over the map',
   normalizeSupplierRow({ date: '2026-06-15', total: 80, invoice_ref: 'O-9', supplier: 'Tuga Pastry' }, 'ordermentum', 'TS'),
-  ['2026-06-15', 'Tuga Pastry', 80, 'O-9', '', 'ordermentum', 'TS']);
+  ['2026-06-15', 'Tuga Pastry', 80, 'O-9', '', 'ordermentum', 'TS', 'Cafe']);
 eq('unknown source falls back to the raw source name',
   normalizeSupplierRow({ date: '2026-06-15', total: 10, invoice_ref: 'X' }, 'mystery', 'TS')[1],
   'mystery');
+eq('explicit row.department wins over the default',
+  normalizeSupplierRow({ date: '2026-06-15', total: 10, invoice_ref: 'X', department: 'Roastery' }, 'mystery', 'TS')[7],
+  'Roastery');
 
 console.log('ingestSupplierRows dedup (source + invoice_ref)');
 freshSheets();
@@ -337,9 +350,9 @@ freshSheets();
     { date: '2026-06-16', total: 999, invoice_ref: 'A1' }, // dup key A1 within batch
   ];
   const r1 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
-  eq('batch of 3 with 1 dup → 2 added, 1 skipped', r1, { rowsAdded: 2, duplicatesSkipped: 1 });
+  eq('batch of 3 with 1 dup → 2 added, 1 skipped', r1, { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1 });
   const r2 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
-  eq('re-ingest same batch → 0 added (all dup vs sheet)', r2, { rowsAdded: 0, duplicatesSkipped: 3 });
+  eq('re-ingest same batch → 0 added (all dup vs sheet)', r2, { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3 });
 })();
 
 console.log('doPost');
@@ -349,7 +362,7 @@ eq('happy path → ok, rowsAdded 2',
     { date: '2026-06-15', total: 50, invoice_ref: 'B1' },
     { date: '2026-06-15', total: 60, invoice_ref: 'B2' },
   ] }),
-  { result: 'ok', rowsAdded: 2, duplicatesSkipped: 0 });
+  { result: 'ok', rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 0 });
 
 freshSheets();
 eq('batch with duplicate invoice_ref → 1 added, 1 skipped',
@@ -357,7 +370,7 @@ eq('batch with duplicate invoice_ref → 1 added, 1 skipped',
     { date: '2026-06-15', total: 50, invoice_ref: 'C1' },
     { date: '2026-06-99', total: 77, invoice_ref: 'C1' },
   ] }),
-  { result: 'ok', rowsAdded: 1, duplicatesSkipped: 1 });
+  { result: 'ok', rowsAdded: 1, rowsUpdated: 0, duplicatesSkipped: 1 });
 
 freshSheets();
 check('missing total → result error',
@@ -370,7 +383,7 @@ check('missing source → result error',
 freshSheets();
 (function () {
   const res = doPostJson({ source: 'mystery_co', extracted_at: 'TS', rows: [{ date: '2026-06-15', total: 5, invoice_ref: 'E1' }] });
-  eq('unknown source still ingests (ok, 1 added)', res, { result: 'ok', rowsAdded: 1, duplicatesSkipped: 0 });
+  eq('unknown source still ingests (ok, 1 added)', res, { result: 'ok', rowsAdded: 1, rowsUpdated: 0, duplicatesSkipped: 0 });
   const data = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
   eq('unknown-source supplier defaults to raw source', data[1][1], 'mystery_co');
 })();
@@ -455,7 +468,8 @@ console.log('aggregateSupplierRows_ with Date-object dates');
   ];
   var result = aggregateSupplierRows_(rows, '2026-06-15', '2026-06-21');
   eq('Date-object rows aggregate into the week', result.length, 1);
-  eq('Date-object rows summed', result[0].total_spend, 300);
+  eq('Date-object rows summed', result[0].total, 300);
+  eq('Date-object rows default to Cafe/spend', result[0].department + '|' + result[0].kind, 'Cafe|spend');
 })();
 
 console.log('weekStartForDate_');
@@ -496,10 +510,10 @@ console.log('aggregateSupplierRows_');
   eq('groups into 3 buckets (FDC-York, FDC-North, Butterboy-York)', result.length, 3);
 
   // Sorted by key: Butterboy||York St, Food and Dairy Co||North, Food and Dairy Co||York St
-  eq('Butterboy York total', result[0].total_spend, 80);
+  eq('Butterboy York total', result[0].total, 80);
   eq('Butterboy York supplier', result[0].supplier, 'Butterboy');
-  eq('FDC North total', result[1].total_spend, 50);
-  eq('FDC York total (100+200)', result[2].total_spend, 300);
+  eq('FDC North total', result[1].total, 50);
+  eq('FDC York total (100+200)', result[2].total, 300);
 
   var empty = aggregateSupplierRows_([], '2026-06-15', '2026-06-21');
   eq('empty rows → empty result', empty.length, 0);
@@ -1414,19 +1428,24 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
   // Dedup on re-run — the real symptom. First write appends; the mock
   // round-trips the stored date string to a Date (sheetCoerceOnWrite),
   // exactly as a live Sheet does. A second write of the same logical row
-  // must be recognised as a duplicate and NOT appended.
-  freshSheets();
-  var salesSheet = currentSS.getSheetByName('Sales');
-  var row1 = ['2026-07-15', 'York', 100, 'square', '2026-07-15T23:59:00+10:00'];
-  var row2 = ['2026-07-15', 'York', 100, 'square', '2026-07-16T00:05:00+10:00'];
+  // (a PRIOR day, so it's eligible for correction — §1f) must be
+  // recognised as the same key and update in place, not append a duplicate.
+  // Pin 'today' so the row's date ('2026-07-15') is unambiguously a prior day.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    freshSheets();
+    var salesSheet = currentSS.getSheetByName('Sales');
+    var row1 = ['2026-07-15', 'York', 100, 'square', '2026-07-15T23:59:00+10:00'];
+    var row2 = ['2026-07-15', 'York', 100, 'square', '2026-07-16T00:05:00+10:00'];
 
-  var firstAppended = appendSalesRow_(salesSheet, row1);
-  eq('first appendSalesRow_ call appends', firstAppended, true);
-  eq('sheet has header + 1 row after first append', salesSheet._rows.length, 2);
+    var firstRes = appendSalesRow_(salesSheet, row1);
+    eq('first appendSalesRow_ call appends', firstRes, { appended: true, updated: false });
+    eq('sheet has header + 1 row after first append', salesSheet._rows.length, 2);
 
-  var secondAppended = appendSalesRow_(salesSheet, row2);
-  eq('re-run appendSalesRow_ call is recognised as a duplicate', secondAppended, false);
-  eq('sheet row count unchanged after duplicate re-run', salesSheet._rows.length, 2);
+    var secondRes = appendSalesRow_(salesSheet, row2);
+    eq('re-run on a PRIOR day is recognised as the same key and updated in place',
+      secondRes, { appended: false, updated: true });
+    eq('sheet row count unchanged (updated in place, not appended)', salesSheet._rows.length, 2);
+  });
 
   // Non-date passthrough: the location column's contribution to the key is
   // unchanged by the fix — differing locations still produce different
@@ -1437,6 +1456,370 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
   eq('rowKey_: location casing/whitespace still normalizes',
     rowKey_(['2026-07-15', 'York'], SALES_KEY_COLS),
     rowKey_(['2026-07-15', ' york '], SALES_KEY_COLS));
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 1 — department migration (idempotent, dry-run-by-default)
+ * ------------------------------------------------------------------ */
+
+// Legacy (pre-migration) header shapes — literal, deliberately NOT read off
+// globalThis, so a migration test always exercises a genuinely old-shaped
+// fixture even after Code.gs's own headers gain `department`.
+const OLD_SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location', 'source', 'extracted_at'];
+const OLD_SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'];
+const OLD_LABOUR_HEADERS = ['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at'];
+const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at'];
+
+(function testMigrateAddDepartment() {
+  console.log('\nmigrateAddDepartment_ / sweepBlankDepartments_:');
+
+  function seedLegacyHub() {
+    currentSS = makeSpreadsheet();
+    currentSS._sheets['Suppliers'] = makeSheet(OLD_SUPPLIERS_HEADERS);
+    currentSS._sheets['Sales'] = makeSheet(OLD_SALES_HEADERS);
+    currentSS._sheets['_staging'] = makeSheet(OLD_SUPPLIERS_HEADERS);
+    currentSS._sheets['_archive'] = makeSheet(OLD_SUPPLIERS_HEADERS);
+    currentSS._sheets['Labour'] = makeSheet(OLD_LABOUR_HEADERS);
+
+    currentSS.getSheetByName('Suppliers').appendRow(['2026-06-15', 'Food and Dairy Co', 100, 'A1', 'York St', 'food_dairy_co', 'x']);
+    currentSS.getSheetByName('Suppliers').appendRow(['2026-06-16', 'Butterboy', 80, 'B1', 'York St', 'ordermentum', 'x']);
+    currentSS.getSheetByName('_staging').appendRow(['2026-06-15', 'Test Co', 10, 'T1', '', 'test', 'x']);
+    currentSS.getSheetByName('_archive').appendRow(['2025-01-01', 'Old Co', 50, 'OLD-1', '', 'test', 'x']);
+    currentSS.getSheetByName('Sales').appendRow(['2026-06-15', 'York', 500, 'square', 'x']);
+    currentSS.getSheetByName('Labour').appendRow(['2026-06-15', '2026-06-21', 'york', 4830.14, '2026-W25', 'x']);
+  }
+
+  // dryRun default → returns a report and writes NOTHING.
+  seedLegacyHub();
+  var beforeBytes = JSON.stringify(currentSS.getSheetByName('Suppliers')._rows);
+  var dry = migrateAddDepartment_();
+  eq('dry run: Suppliers headerAction=add (would add)', dry.Suppliers.headerAction, 'add');
+  eq('dry run: Suppliers blanksFilled=2 (both rows would be filled)', dry.Suppliers.blanksFilled, 2);
+  eq('dry run writes NOTHING (sheet bytes unchanged)',
+    JSON.stringify(currentSS.getSheetByName('Suppliers')._rows), beforeBytes);
+  check('dry run creates no Revenue tab', !currentSS.getSheetByName('Revenue'));
+
+  // Apply: header gains department, every data row 'Cafe', row count unchanged.
+  seedLegacyHub();
+  var beforeRowCount = currentSS.getSheetByName('Suppliers')._rows.length;
+  var applied = migrateAddDepartment_(false);
+  eq('apply: Suppliers headerAction=add', applied.Suppliers.headerAction, 'add');
+  var suppRows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  eq('apply: header gains department', suppRows[0][7], 'department');
+  eq('apply: row count unchanged', suppRows.length, beforeRowCount);
+  eq('apply: data row 1 backfilled to Cafe', suppRows[1][7], 'Cafe');
+  eq('apply: data row 2 backfilled to Cafe', suppRows[2][7], 'Cafe');
+
+  // _staging and _archive are migrated too.
+  var stagingRows = currentSS.getSheetByName('_staging').getDataRange().getValues();
+  eq('_staging header gains department', stagingRows[0][7], 'department');
+  eq('_staging data backfilled to Cafe', stagingRows[1][7], 'Cafe');
+  var archiveRows = currentSS.getSheetByName('_archive').getDataRange().getValues();
+  eq('_archive header gains department', archiveRows[0][7], 'department');
+  eq('_archive data backfilled to Cafe', archiveRows[1][7], 'Cafe');
+
+  // Sales and Labour too.
+  var salesRows = currentSS.getSheetByName('Sales').getDataRange().getValues();
+  eq('Sales header gains department', salesRows[0][5], 'department');
+  eq('Sales data backfilled to Cafe', salesRows[1][5], 'Cafe');
+  var labourRows = currentSS.getSheetByName('Labour').getDataRange().getValues();
+  eq('Labour header gains department', labourRows[0][6], 'department');
+  eq('Labour data backfilled to Cafe', labourRows[1][6], 'Cafe');
+
+  // Revenue tab created with exactly REVENUE_HEADERS.
+  var revSheet = currentSS.getSheetByName('Revenue');
+  check('apply creates the Revenue tab', !!revSheet);
+  eq('Revenue tab has exactly REVENUE_HEADERS', revSheet.getDataRange().getValues()[0], REVENUE_HEADERS);
+
+  // Run twice → second reports skipped, no duplicate column, no data change.
+  var afterFirstApply = JSON.stringify(currentSS.getSheetByName('Suppliers')._rows);
+  var second = migrateAddDepartment_(false);
+  eq('second run: Suppliers headerAction=present (skipped)', second.Suppliers.headerAction, 'present');
+  eq('second run: no data change',
+    JSON.stringify(currentSS.getSheetByName('Suppliers')._rows), afterFirstApply);
+  eq('second run: exactly one department column in the header',
+    currentSS.getSheetByName('Suppliers').getDataRange().getValues()[0]
+      .filter((h) => h === 'department').length, 1);
+
+  // Row already carrying a real department value → migration leaves it alone
+  // (blank-only fill).
+  seedLegacyHub();
+  var suppWithDept = currentSS.getSheetByName('Suppliers');
+  suppWithDept.appendRow(['2026-06-17', 'Kent Paper', 30, 'K1', '', 'kent_paper', 'x', 'Roastery']);
+  migrateAddDepartment_(false);
+  var rowsAfter = suppWithDept.getDataRange().getValues();
+  eq('blank-only fill: pre-set Roastery value untouched', rowsAfter[3][7], 'Roastery');
+  eq('blank-only fill: blank rows still backfilled to Cafe', rowsAfter[1][7], 'Cafe');
+
+  // Sweep works after migration: append a 7-element row directly (simulating
+  // the old deployed code mid-window), run sweepBlankDepartments_(false) →
+  // that row reads Cafe, every other row unchanged, row count unchanged.
+  // Guards against the sweep being a silent no-op.
+  seedLegacyHub();
+  migrateAddDepartment_(false);
+  var suppMidWindow = currentSS.getSheetByName('Suppliers');
+  suppMidWindow.appendRow(['2026-06-18', 'Mayers', 200, 'M1', '', 'mayers', 'x']); // 7 elements, no department
+  var beforeSweepCount = suppMidWindow._rows.length;
+  var noopMigrate = migrateAddDepartment_(false);
+  eq('migrateAddDepartment_ re-run short-circuits on the header guard (sweeps nothing)',
+    noopMigrate.Suppliers.blanksFilled, 0);
+  eq('...so the mid-window row is still blank',
+    suppMidWindow.getDataRange().getValues()[3][7], undefined);
+  var sweep = sweepBlankDepartments_(false);
+  eq('sweep fills exactly the one blank row', sweep.Suppliers.blanksFilled, 1);
+  var afterSweep = suppMidWindow.getDataRange().getValues();
+  eq('mid-window row now reads Cafe', afterSweep[3][7], 'Cafe');
+  eq('every other row unchanged', afterSweep[1][7], 'Cafe');
+  eq('row count unchanged by the sweep', suppMidWindow._rows.length, beforeSweepCount);
+
+  // Dry-run and apply reports share a shape.
+  seedLegacyHub();
+  var dryReport = migrateAddDepartment_();
+  var applyReport = migrateAddDepartment_(false);
+  eq('dry-run report has {tab, headerAction, blanksFilled} shape',
+    Object.keys(dryReport.Suppliers).sort(), ['blanksFilled', 'headerAction', 'tab']);
+  eq('apply report has the SAME shape',
+    Object.keys(applyReport.Suppliers).sort(), ['blanksFilled', 'headerAction', 'tab']);
+
+  // Summary tab built with the OLD 6 headers → after migration, doGet returns
+  // department, kind and total. Regression guard for the summaryDataToObjects_ trap.
+  currentSS = makeSpreadsheet();
+  var summ = makeSheet(OLD_SUMMARY_HEADERS);
+  summ.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'York St', 300, 'TS']);
+  currentSS._sheets['Summary'] = summ;
+  migrateAddDepartment_(false);
+  scriptProps = { API_READ_TOKEN: 'tok' };
+  var got = JSON.parse(doGet({ parameter: { token: 'tok', from: '2026-06-15', to: '2026-06-21' } }).getContent());
+  eq('post-migration doGet returns department', got.rows[0].department, 'Cafe');
+  eq('post-migration doGet returns kind', got.rows[0].kind, 'spend');
+  eq('post-migration doGet returns total', got.rows[0].total, 300);
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 1 — ingest: legacy back-compat, revenue kind, upsert
+ * ------------------------------------------------------------------ */
+
+(function testIngestUpsertAndRevenue() {
+  console.log('\ningest — legacy back-compat, revenue kind, upsert:');
+
+  // Legacy payload (no kind, no department) → lands in Suppliers,
+  // department='Cafe', columns 0-6 byte-identical to pre-change behaviour.
+  freshSheets();
+  var legacyRes = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
+    { date: '2026-07-01', total: 45, invoice_ref: 'LEG-1', location: 'York St' }
+  ] });
+  eq('legacy payload → ok', legacyRes.result, 'ok');
+  var legacyRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
+  eq('legacy payload: columns 0-6 byte-identical to pre-change shape',
+    [cellDate(legacyRow[0])].concat(legacyRow.slice(1, 7)),
+    ['2026-07-01', 'Food and Dairy Co', 45, 'LEG-1', 'York St', 'food_dairy_co', 'TS']);
+  eq('legacy payload: department defaults to Cafe', legacyRow[7], 'Cafe');
+
+  // kind:'revenue' → lands in Revenue; Suppliers row count unchanged.
+  freshSheets();
+  var suppBefore = currentSS.getSheetByName('Suppliers').getDataRange().getValues().length;
+  var revRes = doPostJson({
+    kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS', rows: [
+      { date: '2026-07-01', channel: 'wholesale', customer: 'Acme Cafe', amount: 500, order_ref: 'ORD-1', department: 'Roastery' }
+    ]
+  });
+  eq('revenue payload → ok', revRes.result, 'ok');
+  eq('revenue payload → rowsAdded 1', revRes.rowsAdded, 1);
+  var revRow = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
+  eq('revenue row lands in Revenue, in REVENUE_HEADERS order',
+    [cellDate(revRow[0])].concat(revRow.slice(1)),
+    ['2026-07-01', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'ORD-1', 'wholesale_app', 'TS']);
+  eq('Suppliers row count unchanged by a revenue POST',
+    currentSS.getSheetByName('Suppliers').getDataRange().getValues().length, suppBefore);
+
+  // Re-POST identical supplier rows → rowsAdded:0, duplicatesSkipped:n.
+  freshSheets();
+  var payload = { source: 'food_dairy_co', extracted_at: 'TS', rows: [
+    { date: '2026-07-01', total: 45, invoice_ref: 'DUP-1', location: 'York St' }
+  ] };
+  doPostJson(payload);
+  var repost = doPostJson(payload);
+  eq('re-POST identical rows → rowsAdded 0', repost.rowsAdded, 0);
+  eq('re-POST identical rows → duplicatesSkipped 1', repost.duplicatesSkipped, 1);
+
+  // Upsert: ORD-1182 at 340.00 then 300.00 → row count unchanged, amount
+  // 300.00, extracted_at updated, rowsUpdated:1.
+  freshSheets();
+  doPostJson({ source: 'wholesale_app', extracted_at: 'T1', rows: [
+    { date: '2026-07-01', total: 340.00, invoice_ref: 'ORD-1182' }
+  ] });
+  var upsertRes = doPostJson({ source: 'wholesale_app', extracted_at: 'T2', rows: [
+    { date: '2026-07-01', total: 300.00, invoice_ref: 'ORD-1182' }
+  ] });
+  eq('upsert changed amount → rowsUpdated 1', upsertRes.rowsUpdated, 1);
+  eq('upsert changed amount → rowsAdded 0', upsertRes.rowsAdded, 0);
+  var suppData = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  eq('upsert: row count unchanged (header + 1)', suppData.length, 2);
+  eq('upsert: amount updated to 300', suppData[1][2], 300);
+  eq('upsert: extracted_at updated', suppData[1][6], 'T2');
+
+  // Upsert with unchanged amount → duplicatesSkipped:1, rowsUpdated:0, no write.
+  var noopRes = doPostJson({ source: 'wholesale_app', extracted_at: 'T3', rows: [
+    { date: '2026-07-01', total: 300.00, invoice_ref: 'ORD-1182' }
+  ] });
+  eq('unchanged-amount re-post → duplicatesSkipped 1', noopRes.duplicatesSkipped, 1);
+  eq('unchanged-amount re-post → rowsUpdated 0', noopRes.rowsUpdated, 0);
+  eq('unchanged-amount re-post: extracted_at NOT overwritten',
+    currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1][6], 'T2');
+
+  // Upsert across a Date-valued key column → still matches (coerceDateStr_
+  // guard reused verbatim by rowKey_ on the new upsertRows_ path).
+  freshSheets();
+  (function () {
+    var sheet = currentSS.getSheetByName('Sales');
+    var first = normalizeSalesRow_('2026-07-01', 'York', 100, 'square', 'T1', 'Cafe');
+    upsertRows_(sheet, [first], SALES_KEY_COLS, 2, 4);
+    // The sheet round-trips the date string to a Date object on write
+    // (sheetCoerceOnWrite); the re-post below sends the SAME date as a plain
+    // string and the key must still match against that Date cell.
+    var second = normalizeSalesRow_('2026-07-01', 'York', 150, 'square', 'T2', 'Cafe');
+    var res = upsertRows_(sheet, [second], SALES_KEY_COLS, 2, 4);
+    eq('upsert across a Date-valued key column still matches (updates, not appends)',
+      res, { rowsAdded: 0, rowsUpdated: 1, duplicatesSkipped: 0 });
+    eq('sheet row count unchanged', sheet._rows.length, 2);
+    eq('amount updated via the Date-keyed match', sheet.getDataRange().getValues()[1][2], 150);
+  })();
+
+  // validateIngest_: revenue row validation + department guard.
+  (function () {
+    var base = { kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS' };
+    check('revenue row missing order_ref → rejected',
+      !validateIngest_(Object.assign({}, base, { rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 10 }] })).ok);
+    check('revenue row non-numeric amount → rejected',
+      !validateIngest_(Object.assign({}, base, { rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 'abc', order_ref: 'O1' }] })).ok);
+    check('revenue row missing customer → rejected',
+      !validateIngest_(Object.assign({}, base, { rows: [{ date: '2026-07-01', channel: 'wholesale', amount: 10, order_ref: 'O1' }] })).ok);
+    var refMsg = validateIngest_(Object.assign({}, base, { rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', order_ref: 'O1' }] }));
+    check('rejection message names the row index', refMsg.message.indexOf('row 0') !== -1);
+    check("department:'Roastry' (typo) → rejected",
+      !validateIngest_({ source: 'x', extracted_at: 'TS', rows: [{ date: '2026-07-01', total: 5, invoice_ref: 'X1', department: 'Roastry' }] }).ok);
+  })();
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 1 — Sales/Labour/Summary: department + upsert reach
+ * ------------------------------------------------------------------ */
+
+(function testSalesLabourSummaryDepartment() {
+  console.log('\nSales/Labour/Summary — department + upsert reach:');
+
+  // squareDailyPull row lands with department='Cafe' — the square.gs:91
+  // bare-literal guard.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    scriptProps[SQUARE_SITES[0].prop] = 'tok';
+    global.UrlFetchApp = {
+      fetch: (url) => ({
+        getResponseCode: () => 200,
+        getContentText: () => (String(url).indexOf('/locations') !== -1
+          ? JSON.stringify({ locations: [{ id: 'L1', name: 'S' }] })
+          : JSON.stringify({ orders: [] })),
+      }),
+    };
+    squareDailyPull();
+    var rows = currentSS.getSheetByName('Sales').getDataRange().getValues();
+    eq('squareDailyPull row department = Cafe', rows[1][5], 'Cafe');
+  });
+
+  // Post-migration labourWeeklyPull_: department='Cafe' on the Labour tab AND
+  // on its Summary row (kind='spend'), and it survives &department=Cafe.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = { LABOUR_SHEET_ID: 'labour-sheet-id', API_READ_TOKEN: 'tok' };
+    var src = currentSS.insertSheet('LABOUR_COST');
+    src.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
+    src.appendRow(['2026-06-15', '2026-06-21', 'york', 4830.14, '2026-W25', 'x']);
+
+    weeklySummarize('2026-06-15');
+    eq('labour tab row lands with department Cafe',
+      currentSS.getSheetByName('Labour').getDataRange().getValues()[1][6], 'Cafe');
+
+    var summRows = currentSS.getSheetByName('Summary').getDataRange().getValues();
+    var labourSummRow = summRows.filter((r) => r[2] === 'Labour')[0];
+    eq('labour Summary row: department Cafe', labourSummRow[6], 'Cafe');
+    eq('labour Summary row: kind spend', labourSummRow[7], 'spend');
+
+    var got = JSON.parse(doGet({ parameter: { token: 'tok', from: '2026-06-15', to: '2026-06-21', department: 'Cafe' } }).getContent());
+    check('labour survives &department=Cafe filter', got.rows.some((r) => r.supplier === 'Labour'));
+  })();
+
+  // appendSalesRow_ same-day re-run with a different gross → skipped, not overwritten.
+  withMockNow('2026-07-16T05:00:00Z', function () {
+    freshSheets();
+    var sheet = currentSS.getSheetByName('Sales');
+    var todayRow1 = normalizeSalesRow_(todayStr_(), 'York', 100, 'square', 'T1', 'Cafe');
+    appendSalesRow_(sheet, todayRow1);
+    var todayRow2 = normalizeSalesRow_(todayStr_(), 'York', 999, 'square', 'T2', 'Cafe');
+    var res = appendSalesRow_(sheet, todayRow2);
+    eq('same-day re-run with a different gross is skipped', res, { appended: false, updated: false });
+    eq('same-day row NOT overwritten', sheet.getDataRange().getValues()[1][2], 100);
+  });
+
+  // End-to-end upsert reach: summarize a week, upsert a changed amount into
+  // Suppliers, re-summarize → Summary reflects the new total, row count unchanged.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    var supp = currentSS.getSheetByName('Suppliers');
+    supp.appendRow(['2026-06-17', 'Food and Dairy Co', 100, 'E2E-1', 'York St', 'food_dairy_co', 'x', 'Cafe']);
+
+    var first = weeklySummarize('2026-06-15');
+    eq('first summarize adds 1 Summary row', first.summariesAdded, 1);
+    var summBefore = currentSS.getSheetByName('Summary').getDataRange().getValues();
+    eq('Summary total before amendment', summBefore[1][4], 100);
+
+    ingestSupplierRows('food_dairy_co',
+      [{ date: '2026-06-17', total: 175, invoice_ref: 'E2E-1', location: 'York St' }], 'x2', supp);
+
+    var second = weeklySummarize('2026-06-15');
+    eq('re-summarize reaches the amended amount (summariesUpdated=1)', second.summariesUpdated, 1);
+    var summAfter = currentSS.getSheetByName('Summary').getDataRange().getValues();
+    eq('Summary row count unchanged', summAfter.length, summBefore.length);
+    eq('Summary total reflects the amended amount', summAfter[1][4], 175);
+  })();
+
+  // Mixed Cafe spend + Roastery revenue → distinct Summary rows, correct
+  // kind, revenue never subtracted from spend.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    var supp = currentSS.getSheetByName('Suppliers');
+    supp.appendRow(['2026-06-17', 'Food and Dairy Co', 100, 'MX-1', 'York St', 'food_dairy_co', 'x', 'Cafe']);
+    var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
+    rev.appendRow(['2026-06-18', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'MX-ORD-1', 'wholesale_app', 'x']);
+
+    var res = weeklySummarize('2026-06-15');
+    eq('both a spend row and a revenue row are summarized', res.summariesAdded, 2);
+    var rows = currentSS.getSheetByName('Summary').getDataRange().getValues().slice(1);
+    var spendRow = rows.filter((r) => r[7] === 'spend')[0];
+    var revenueRow = rows.filter((r) => r[7] === 'revenue')[0];
+    eq('spend row: department Cafe, total 100', spendRow[6] + '|' + spendRow[4], 'Cafe|100');
+    eq('revenue row: department Roastery, total 500', revenueRow[6] + '|' + revenueRow[4], 'Roastery|500');
+    check('revenue never netted against spend (two distinct rows, not one combined)', rows.length === 2);
+  })();
+
+  // doGet &department=Roastery → only Roastery rows; absent → all rows.
+  (function () {
+    currentSS = makeSpreadsheet();
+    scriptProps = { API_READ_TOKEN: 'tok' };
+    var s = currentSS.insertSheet('Summary');
+    s.appendRow(SUMMARY_HEADERS);
+    s.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'York St', 100, 'TS', 'Cafe', 'spend']);
+    s.appendRow(['2026-06-15', '2026-06-21', 'Acme Cafe', 'wholesale', 500, 'TS', 'Roastery', 'revenue']);
+
+    var filtered = JSON.parse(doGet({ parameter: { token: 'tok', from: '2026-06-15', to: '2026-06-21', department: 'Roastery' } }).getContent());
+    eq('&department=Roastery returns only Roastery rows', filtered.count, 1);
+    eq('...and it is the Roastery row', filtered.rows[0].department, 'Roastery');
+
+    var unfiltered = JSON.parse(doGet({ parameter: { token: 'tok', from: '2026-06-15', to: '2026-06-21' } }).getContent());
+    eq('no department filter → all rows', unfiltered.count, 2);
+  })();
 })();
 
 /* ------------------------------------------------------------------ */

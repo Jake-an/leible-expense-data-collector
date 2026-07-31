@@ -33,9 +33,21 @@ var SQUARE_TZ = 'Australia/Sydney';
 /**
  * Pull one day's gross sales per site into the Sales tab.
  * @param {string} [dateStr] — 'YYYY-MM-DD'; defaults to yesterday (Australia/Sydney).
- * @returns {{date:string, rowsWritten:number, duplicatesSkipped:number}}
+ * @returns {{date:string, rowsWritten:number, rowsUpdated:number, duplicatesSkipped:number}}
  */
 function squareDailyPull(dateStr) {
+  // Entry-point lock (§1c): squareDailyPull is a scan-then-write against
+  // Sales, same as doPost/weeklySummarize — wrap the whole entry, not
+  // appendSalesRow_ itself.
+  var res = withScriptLock_(function () { return squareDailyPull_impl_(dateStr); });
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('squareDailyPull: could not acquire script lock — skipped this run');
+    return { date: null, rowsWritten: 0, rowsUpdated: 0, duplicatesSkipped: 0, sitesWithToken: 0, sitesOk: 0, locked: true };
+  }
+  return res;
+}
+
+function squareDailyPull_impl_(dateStr) {
   // A time-based trigger passes its EVENT OBJECT here — truthy, so a bare
   // `if (!dateStr)` let it through and the stringified object was written into
   // the date column with gross_sales=0. Accept only a real date; else yesterday.
@@ -56,6 +68,7 @@ function squareDailyPull(dateStr) {
   var sheet = ensureSheet(ss, SALES_TAB, SALES_HEADERS);
 
   var rowsWritten = 0;
+  var rowsUpdated = 0;
   var duplicatesSkipped = 0;
   var sitesWithToken = 0;
   var sitesOk = 0;
@@ -88,8 +101,10 @@ function squareDailyPull(dateStr) {
     }
 
     var gross = squareSumOrderGross_(orders);
-    var salesRow = [dateStr, site.name, gross, 'square', extractedAt];
-    if (appendSalesRow_(sheet, salesRow)) rowsWritten++;
+    var salesRow = normalizeSalesRow_(dateStr, site.name, gross, 'square', extractedAt, DEFAULT_DEPARTMENT);
+    var writeRes = appendSalesRow_(sheet, salesRow);
+    if (writeRes.appended) rowsWritten++;
+    else if (writeRes.updated) rowsUpdated++;
     else duplicatesSkipped++;
     sitesOk++;
     Logger.log('squareDailyPull: ' + site.name + ' ' + dateStr + ' gross=$' + gross + ' from ' + orders.length + ' orders');
@@ -107,7 +122,7 @@ function squareDailyPull(dateStr) {
   }
 
   return {
-    date: dateStr, rowsWritten: rowsWritten, duplicatesSkipped: duplicatesSkipped,
+    date: dateStr, rowsWritten: rowsWritten, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped,
     sitesWithToken: sitesWithToken, sitesOk: sitesOk
   };
 }

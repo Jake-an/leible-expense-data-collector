@@ -79,6 +79,19 @@ Generated: 2026-07-24 by /cartography
 
 <!-- manual notes below -->
 
+## Roastery department expansion (Phase 1, 2026-07-31)
+
+Every tab (`Suppliers`, `Sales`, `Labour`, `_staging`, `_archive`, `Summary`) now
+carries a `department` (`Cafe` | `Roastery`) column, appended last to keep
+index-based dedup keys stable. A new `Revenue` tab (order-level, dedup
+`source+order_ref`) holds non-Square revenue (wholesale orders, Shopify — later
+phases). `doPost` routes on an explicit `kind` (`suppliers` default | `revenue`).
+Ingest and `weeklySummarize` are now **upsert**, not append-with-skip — a changed
+amount updates the existing row. `LockService` wraps every entry point
+(`doPost`, `weeklySummarize`, `squareDailyPull`, `migrateAddDepartment_`) via a
+single `withScriptLock_` helper. See `docs/schema.md`, `docs/api.md`, and
+`docs/ADR.md` ADR-009 for full detail.
+
 # Architecture
 
 ## Overview

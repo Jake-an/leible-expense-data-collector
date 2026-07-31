@@ -1,6 +1,6 @@
 # LEIBLE Expense Data Collector
 
-Central hub that pulls expense + sales data from multiple suppliers into one Google Sheet, normalized to a two-tab schema (`Suppliers` invoice-level + `Sales` Square daily). Built on the Harness Framework (phase/step runner).
+Central hub that pulls expense + sales data from multiple suppliers into one Google Sheet, normalized to a department-tagged schema (`Suppliers` invoice-level + `Sales` Square daily + `Revenue` order-level, all tagged `Cafe`/`Roastery`). Built on the Harness Framework (phase/step runner). See `docs/schema.md`.
 
 ## Tech Stack
 - **Google Apps Script (GAS)** + clasp — Sheet writes, normalization, Square API, email parsing

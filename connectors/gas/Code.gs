@@ -2,10 +2,16 @@
  * Code.gs — LEIBLE Expense Hub core.
  *
  * doPost ingest endpoint + normalization + dedup + Sheet helpers, shared by
- * every connector. Three tabs (see docs/schema.md):
- *   Suppliers : date | supplier | total | invoice_ref | location | source | extracted_at
- *   Sales     : date | location | gross_sales | source | extracted_at
- *   Labour    : week_start | week_end | location | total | iso_week | pulled_at
+ * every connector. Tabs (see docs/schema.md):
+ *   Suppliers : date | supplier | total | invoice_ref | location | source | extracted_at | department
+ *   Sales     : date | location | gross_sales | source | extracted_at | department
+ *   Labour    : week_start | week_end | location | total | iso_week | pulled_at | department
+ *   Revenue   : date | department | channel | customer | amount | order_ref | source | extracted_at
+ *   Summary   : week_start | week_end | supplier | location | total | summarized_at | department | kind
+ *
+ * `department` was appended LAST on every pre-existing tab so index-based
+ * dedup keys (SUPPLIERS_KEY_COLS etc.) stay valid — see the plan's "why
+ * department goes last" note. Existing rows backfill to DEFAULT_DEPARTMENT.
  *
  * Pure logic (normalizeSupplierRow / ingestSupplierRows / validateIngest_ /
  * appendNewRows_) is exercised by connectors/gas/test_code.js under a Node mock
@@ -18,18 +24,29 @@ var STAGING_TAB = '_staging';
 var SUMMARY_TAB = 'Summary';
 var ARCHIVE_TAB = '_archive';
 var LABOUR_TAB = 'Labour';
+var REVENUE_TAB = 'Revenue';
 
-var SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at'];
-var LABOUR_HEADERS = ['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at'];
+var SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', 'total', 'summarized_at', 'department', 'kind'];
+var LABOUR_HEADERS = ['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at', 'department'];
+var REVENUE_HEADERS = ['date', 'department', 'channel', 'customer', 'amount', 'order_ref', 'source', 'extracted_at'];
 
 var ARCHIVE_RETENTION_DAYS = 183;
 
-var SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location', 'source', 'extracted_at'];
-var SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'];
+var SUPPLIERS_HEADERS = ['date', 'supplier', 'total', 'invoice_ref', 'location', 'source', 'extracted_at', 'department'];
+var SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at', 'department'];
+
+var DEFAULT_DEPARTMENT = 'Cafe';
+var DEPARTMENTS = ['Cafe', 'Roastery'];
 
 // Dedup column indexes into a normalized row array.
 var SUPPLIERS_KEY_COLS = [5, 3]; // source + invoice_ref
 var SALES_KEY_COLS = [0, 1];     // date + location
+var REVENUE_KEY_COLS = [6, 5];   // source + order_ref
+
+// Summary row shape: [week_start, week_end, supplier, location, total, summarized_at, department, kind]
+var SUMMARY_KEY_COLS = [0, 6, 7, 2, 3]; // week_start||department||kind||supplier||location
+var SUMMARY_TOTAL_COL = 4;
+var SUMMARY_STAMP_COL = 5;
 
 // source → canonical supplier name. Ordermentum carries its name per-account in
 // the row payload (row.supplier), so it is intentionally absent here.
@@ -41,14 +58,66 @@ var SUPPLIER_NAMES = {
 };
 
 /* ------------------------------------------------------------------ *
+ * Concurrency — one lock mechanism, wrapped at entry points only
+ *
+ * LockService did not exist anywhere in this repo before this phase
+ * (staleness.gs:73-79 documents a deliberate earlier decision to skip it —
+ * that reasoning does not extend to a read-modify-write column rewrite, so
+ * this is a considered departure, see docs/ADR.md).
+ *
+ * Every ingest path is scan-then-write (buildKeyIndex_/buildKeySet_ scan,
+ * then append/update). Locking only the write half would let two concurrent
+ * doPost executions each finish their scan before either writes, then both
+ * append the same row — the code would look protected and not be. So the
+ * lock wraps whole ENTRY POINTS (doPost, weeklySummarize,
+ * migrateAddDepartment_, squareDailyPull), never the inner write helpers.
+ *
+ * A module-level depth counter makes accidental nesting harmless: Apps
+ * Script's script lock is held per EXECUTION, so a nested tryLock would
+ * succeed silently and an inner releaseLock() would drop the outer scope's
+ * lock mid-batch with nothing to catch it. Depth>0 means "already held by
+ * this execution" — just run the callback, no raw acquire/release.
+ * ------------------------------------------------------------------ */
+
+var SCRIPT_LOCK_DEPTH_ = 0;
+var SCRIPT_LOCK_TIMEOUT_MS_ = 30000;
+var LOCK_TIMEOUT_ = { lockTimeout: true }; // sentinel: withScriptLock_ could not acquire
+
+function withScriptLock_(fn) {
+  if (SCRIPT_LOCK_DEPTH_ > 0) {
+    SCRIPT_LOCK_DEPTH_++;
+    try { return fn(); }
+    finally { SCRIPT_LOCK_DEPTH_--; }
+  }
+
+  var lock = LockService.getScriptLock();
+  var acquired = lock.tryLock(SCRIPT_LOCK_TIMEOUT_MS_);
+  if (!acquired) {
+    Logger.log('withScriptLock_: could not acquire script lock within ' + SCRIPT_LOCK_TIMEOUT_MS_ + 'ms');
+    return LOCK_TIMEOUT_;
+  }
+
+  SCRIPT_LOCK_DEPTH_ = 1;
+  try {
+    return fn();
+  } finally {
+    SCRIPT_LOCK_DEPTH_ = 0;
+    lock.releaseLock();
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Web-app entry point
  * ------------------------------------------------------------------ */
 
 /**
- * doPost — receives a supplier ingest payload from a Playwright connector.
- * Body: { source, rows:[{date, total, invoice_ref, location?, supplier?}], extracted_at }
- * Writes new rows to the Suppliers tab (dedup on source+invoice_ref).
- * @returns {ContentService.TextOutput} JSON { result, rowsAdded, duplicatesSkipped }
+ * doPost — receives an ingest payload from a Playwright connector or the
+ * wholesale/Shopify sources (P2+).
+ * Body: { kind?, source, rows:[...], extracted_at }
+ * `kind` defaults to 'suppliers' (back-compat: existing connectors omit it).
+ *   'suppliers' rows → Suppliers tab (dedup+upsert on source+invoice_ref)
+ *   'revenue'   rows → Revenue tab   (dedup+upsert on source+order_ref)
+ * @returns {ContentService.TextOutput} JSON { result, rowsAdded, rowsUpdated, duplicatesSkipped }
  */
 function doPost(e) {
   try {
@@ -56,16 +125,36 @@ function doPost(e) {
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });
 
-    var ss = getHubSpreadsheet_();
-    var sheet = ensureSheet(ss, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
-    var res = ingestSupplierRows(body.source, body.rows, body.extracted_at, sheet);
+    var kind = body.kind || 'suppliers';
+
+    var res = withScriptLock_(function () {
+      var ss = getHubSpreadsheet_();
+      if (kind === 'revenue') {
+        var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+        return ingestRevenueRows(body.source, body.rows, body.extracted_at, revSheet);
+      }
+      var suppSheet = ensureSheet(ss, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+      return ingestSupplierRows(body.source, body.rows, body.extracted_at, suppSheet);
+    });
+
+    // Lock-timeout must be explicit, not silent — a connector POST arriving
+    // while weeklySummarize holds the lock past its own timeout must not
+    // vanish. The Playwright BaseConnector.post retries once after 60s.
+    if (res === LOCK_TIMEOUT_) {
+      return jsonOut_({ result: 'error', code: 'LOCKED', retryable: true });
+    }
 
     // Watchdog heartbeat: a run that reached here SUCCEEDED, even if dedup meant
     // it wrote nothing. Stamping regardless of rowsAdded is what stops the
     // staleness alert crying wolf on a quiet weekend. Never throws.
     stalenessStampHeartbeat_(body.source);
 
-    return jsonOut_({ result: 'ok', rowsAdded: res.rowsAdded, duplicatesSkipped: res.duplicatesSkipped });
+    return jsonOut_({
+      result: 'ok',
+      rowsAdded: res.rowsAdded,
+      rowsUpdated: res.rowsUpdated,
+      duplicatesSkipped: res.duplicatesSkipped
+    });
   } catch (err) {
     return jsonOut_({ result: 'error', message: String((err && err.message) || err) });
   }
@@ -77,6 +166,10 @@ function doPost(e) {
 
 /**
  * Validate an ingest payload. Returns { ok:boolean, message?:string }.
+ * `kind` (default 'suppliers') selects which per-row shape is enforced.
+ * A `department` present on any row must be one of DEPARTMENTS — a typo'd
+ * department would otherwise create a phantom third department no report
+ * ever shows.
  */
 function validateIngest_(body) {
   if (!body || typeof body !== 'object') return { ok: false, message: 'body is not an object' };
@@ -84,14 +177,34 @@ function validateIngest_(body) {
   if (!Array.isArray(body.rows)) return { ok: false, message: 'missing rows array' };
   if (!body.extracted_at) return { ok: false, message: 'missing extracted_at' };
 
+  var kind = body.kind || 'suppliers';
+  if (kind !== 'suppliers' && kind !== 'revenue') {
+    return { ok: false, message: 'unknown kind: ' + kind };
+  }
+
   for (var i = 0; i < body.rows.length; i++) {
     var r = body.rows[i];
     if (!r || typeof r !== 'object') return { ok: false, message: 'row ' + i + ' is not an object' };
     if (!r.date) return { ok: false, message: 'row ' + i + ' missing date' };
-    if (r.total === undefined || r.total === null || isNaN(Number(r.total))) {
-      return { ok: false, message: 'row ' + i + ' missing/invalid total' };
+
+    if (r.department !== undefined && r.department !== null && r.department !== '' &&
+        DEPARTMENTS.indexOf(String(r.department)) === -1) {
+      return { ok: false, message: 'row ' + i + ' invalid department: ' + r.department };
     }
-    if (!r.invoice_ref) return { ok: false, message: 'row ' + i + ' missing invoice_ref' };
+
+    if (kind === 'revenue') {
+      if (r.amount === undefined || r.amount === null || isNaN(Number(r.amount))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid amount' };
+      }
+      if (!r.order_ref) return { ok: false, message: 'row ' + i + ' missing order_ref' };
+      if (!r.channel) return { ok: false, message: 'row ' + i + ' missing channel' };
+      if (!r.customer) return { ok: false, message: 'row ' + i + ' missing customer' };
+    } else {
+      if (r.total === undefined || r.total === null || isNaN(Number(r.total))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid total' };
+      }
+      if (!r.invoice_ref) return { ok: false, message: 'row ' + i + ' missing invoice_ref' };
+    }
   }
   return { ok: true };
 }
@@ -107,7 +220,7 @@ function canonicalSupplier_(source, row) {
 
 /**
  * Map a raw supplier row to the Suppliers column order.
- * @returns {Array} [date, supplier, total, invoice_ref, location, source, extracted_at]
+ * @returns {Array} [date, supplier, total, invoice_ref, location, source, extracted_at, department]
  */
 function normalizeSupplierRow(row, source, extractedAt) {
   return [
@@ -117,7 +230,44 @@ function normalizeSupplierRow(row, source, extractedAt) {
     String(row.invoice_ref),
     row.location ? String(row.location) : '',
     source,
+    extractedAt,
+    row.department ? String(row.department) : DEFAULT_DEPARTMENT
+  ];
+}
+
+/**
+ * Map a raw revenue row to the Revenue column order.
+ * @returns {Array} [date, department, channel, customer, amount, order_ref, source, extracted_at]
+ */
+function normalizeRevenueRow(row, source, extractedAt) {
+  return [
+    String(row.date),
+    row.department ? String(row.department) : DEFAULT_DEPARTMENT,
+    String(row.channel),
+    String(row.customer),
+    Number(row.amount),
+    String(row.order_ref),
+    source,
     extractedAt
+  ];
+}
+
+/**
+ * Map [dateStr, location, gross, source, extractedAt] → the Sales column
+ * order INCLUDING department. square.gs used to build this as a bare
+ * literal, which meant every post-migration row landed with a blank
+ * department while backfilled history read 'Cafe' — permanently splitting
+ * the Sales tab. Route every writer through this normalizer instead.
+ * @returns {Array} [date, location, gross_sales, source, extracted_at, department]
+ */
+function normalizeSalesRow_(dateStr, location, gross, source, extractedAt, department) {
+  return [
+    String(dateStr),
+    String(location),
+    Number(gross),
+    source,
+    extractedAt,
+    department ? String(department) : DEFAULT_DEPARTMENT
   ];
 }
 
@@ -126,51 +276,141 @@ function normalizeSupplierRow(row, source, extractedAt) {
  * ------------------------------------------------------------------ */
 
 /**
- * Normalize + dedup + append a batch of supplier rows to a sheet.
- * Dedup is against existing sheet rows AND earlier rows in the same batch.
- * @returns {{rowsAdded:number, duplicatesSkipped:number}}
+ * Normalize + upsert a batch of supplier rows into a sheet.
+ * Dedup/upsert is against existing sheet rows AND earlier rows in the same
+ * batch — see upsertRows_.
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
  */
 function ingestSupplierRows(source, rows, extractedAt, sheet) {
-  var seen = buildKeySet_(sheet, SUPPLIERS_KEY_COLS);
-  var toAppend = [];
-  var duplicates = 0;
-
+  var normalizedRows = [];
   for (var i = 0; i < rows.length; i++) {
-    var normalized = normalizeSupplierRow(rows[i], source, extractedAt);
-    var key = rowKey_(normalized, SUPPLIERS_KEY_COLS);
-    if (seen[key]) { duplicates++; continue; }
-    seen[key] = true;
-    toAppend.push(normalized);
+    normalizedRows.push(normalizeSupplierRow(rows[i], source, extractedAt));
   }
-
-  appendNewRows_(sheet, toAppend);
-  return { rowsAdded: toAppend.length, duplicatesSkipped: duplicates };
+  // amountCol=2 (total), stampCol=6 (extracted_at) — department (col 7) is
+  // never touched by an upsert; only the invoice's own amount/date can change.
+  return upsertRows_(sheet, normalizedRows, SUPPLIERS_KEY_COLS, 2, 6);
 }
 
 /**
- * Append a single normalized row to a sheet if its dedup key is new.
- * Used by the Square connector (one row per location/day).
- * @returns {boolean} true if appended, false if duplicate
+ * Normalize + upsert a batch of revenue rows into the Revenue tab.
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
+ */
+function ingestRevenueRows(source, rows, extractedAt, sheet) {
+  var normalizedRows = [];
+  for (var i = 0; i < rows.length; i++) {
+    normalizedRows.push(normalizeRevenueRow(rows[i], source, extractedAt));
+  }
+  // amountCol=4 (amount), stampCol=7 (extracted_at)
+  return upsertRows_(sheet, normalizedRows, REVENUE_KEY_COLS, 4, 7);
+}
+
+/**
+ * Append/update a single normalized Sales row.
+ * Blanket upsert on Sales is unsafe: SALES_KEY_COLS is date+location, so a
+ * mid-day squareDailyPull re-run must never overwrite a completed day's
+ * gross with a partial figure. Only a PRIOR day (not today, Sydney time) may
+ * be corrected in place; same-day re-runs always skip, matching the old
+ * dedup-only behaviour.
+ * @returns {{appended:boolean, updated:boolean}}
  */
 function appendSalesRow_(sheet, normalizedRow) {
-  var seen = buildKeySet_(sheet, SALES_KEY_COLS);
+  var idx = buildKeyIndex_(sheet, SALES_KEY_COLS);
   var key = rowKey_(normalizedRow, SALES_KEY_COLS);
-  if (seen[key]) return false;
-  appendNewRows_(sheet, [normalizedRow]);
-  return true;
+  var existingRowNum = idx[key];
+
+  if (existingRowNum === undefined) {
+    appendNewRows_(sheet, [normalizedRow]);
+    return { appended: true, updated: false };
+  }
+
+  var rowDate = coerceDateStr_(normalizedRow[0]);
+  if (rowDate === todayStr_()) {
+    // Today's partial figure must never overwrite today's row.
+    return { appended: false, updated: false };
+  }
+
+  sheet.getRange(existingRowNum, 3).setValue(normalizedRow[2]); // gross_sales (col C)
+  sheet.getRange(existingRowNum, 5).setValue(normalizedRow[4]); // extracted_at (col E)
+  return { appended: false, updated: true };
 }
 
 /**
- * Build a lookup of existing dedup keys from a sheet (skips the header row).
+ * Build a lookup of existing dedup keys → 1-based sheet row number
+ * (skips the header row = row 1).
+ * @returns {Object} { key: sheetRowNumber }
+ */
+function buildKeyIndex_(sheet, keyCols) {
+  var idx = {};
+  var values = sheet.getDataRange().getValues();
+  for (var r = 1; r < values.length; r++) { // row 0 = header
+    idx[rowKey_(values[r], keyCols)] = r + 1;
+  }
+  return idx;
+}
+
+/**
+ * Thin wrapper over buildKeyIndex_ for callers that only need membership.
  * @returns {Object} { key: true }
  */
 function buildKeySet_(sheet, keyCols) {
+  var idx = buildKeyIndex_(sheet, keyCols);
   var set = {};
-  var values = sheet.getDataRange().getValues();
-  for (var r = 1; r < values.length; r++) { // row 0 = header
-    set[rowKey_(values[r], keyCols)] = true;
+  for (var k in idx) {
+    if (Object.prototype.hasOwnProperty.call(idx, k)) set[k] = true;
   }
   return set;
+}
+
+/**
+ * Upsert a batch of already-normalized rows into a sheet.
+ * - New key (not on the sheet, not yet seen in this batch) → append.
+ * - Existing sheet key, amount unchanged → duplicatesSkipped++, no write.
+ * - Existing sheet key, amount changed → update amountCol + stampCol in
+ *   place (getRange().setValue()), rowsUpdated++.
+ * - A key repeated within the same batch (after being resolved once) →
+ *   duplicatesSkipped++, matching the old within-batch dedup behaviour.
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
+ */
+function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
+  var values = sheet.getDataRange().getValues();
+  var idx = {}; // key -> 1-based sheet row number, existing rows only
+  for (var r = 1; r < values.length; r++) {
+    idx[rowKey_(values[r], keyCols)] = r + 1;
+  }
+
+  var seenInBatch = {};
+  var toAppend = [];
+  var rowsUpdated = 0, duplicatesSkipped = 0;
+
+  for (var i = 0; i < normalizedRows.length; i++) {
+    var row = normalizedRows[i];
+    var key = rowKey_(row, keyCols);
+
+    if (seenInBatch[key]) { duplicatesSkipped++; continue; }
+
+    var existingRowNum = idx[key];
+    if (existingRowNum === undefined) {
+      seenInBatch[key] = true;
+      toAppend.push(row);
+      continue;
+    }
+
+    seenInBatch[key] = true;
+    var existingAmount = Number(values[existingRowNum - 1][amountCol]);
+    var newAmount = Number(row[amountCol]);
+
+    if (existingAmount === newAmount) { duplicatesSkipped++; continue; }
+
+    sheet.getRange(existingRowNum, amountCol + 1).setValue(newAmount);
+    if (stampCol !== undefined && stampCol !== null) {
+      sheet.getRange(existingRowNum, stampCol + 1).setValue(row[stampCol]);
+    }
+    rowsUpdated++;
+  }
+
+  if (toAppend.length) appendNewRows_(sheet, toAppend);
+
+  return { rowsAdded: toAppend.length, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped };
 }
 
 function rowKey_(rowArray, keyCols) {
@@ -263,8 +503,7 @@ function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
   var col = {};
   for (var h = 0; h < hdr.length; h++) col[String(hdr[h])] = h;
 
-  // Build dedup sets for Labour tab and Summary tab
-  // Both key sets read week_start back from a Sheet, which returns it as a Date —
+  // Labour tab dedup set. week_start reads back from a Sheet as a Date —
   // coerceDateStr_ before comparing or the key never matches its 'yyyy-MM-dd'
   // counterpart and the dedup silently passes everything through.
   var labourKeys = {};
@@ -273,13 +512,8 @@ function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
     labourKeys[coerceDateStr_(labourData[r][0]) + '||' + String(labourData[r][2])] = true;
   }
 
-  var summData = summSheet.getDataRange().getValues();
-  var summKeys = {};
-  for (var r = 1; r < summData.length; r++) {
-    summKeys[coerceDateStr_(summData[r][0]) + '||' + String(summData[r][2]) + '||' + String(summData[r][3])] = true;
-  }
-
-  var labourAdded = 0, summaryAdded = 0;
+  var labourAdded = 0;
+  var summaryNormalizedRows = [];
 
   for (var i = 1; i < srcData.length; i++) {
     var row = srcData[i];
@@ -291,25 +525,28 @@ function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
     var isoWeek  = String(row[col['iso_week']] || '');
     var we       = coerceDateStr_(row[col['week_end']]);
 
-    // Write to Labour tab
+    // Write to Labour tab. Labour is parked (no behaviour change), but it
+    // still gets DEFAULT_DEPARTMENT so it isn't silently dropped by a
+    // department-filtered read.
     var lKey = ws + '||' + location;
     if (!labourKeys[lKey]) {
-      labourSheet.appendRow([ws, we, location, total, isoWeek, pulledAt]);
+      labourSheet.appendRow([ws, we, location, total, isoWeek, pulledAt, DEFAULT_DEPARTMENT]);
       labourKeys[lKey] = true;
       labourAdded++;
     }
 
-    // Write to Summary as supplier='Labour'
-    var sKey = ws + '||Labour||' + location;
-    if (!summKeys[sKey]) {
-      summSheet.appendRow([ws, we, 'Labour', location, total, pulledAt]);
-      summKeys[sKey] = true;
-      summaryAdded++;
-    }
+    // Queue the Summary row, routed through the SAME upsertRows_ key
+    // weeklySummarize uses (week_start||department||kind||supplier||location)
+    // — two different dedup schemes writing the same tab is exactly the bug
+    // §1e exists to prevent.
+    summaryNormalizedRows.push([ws, we, 'Labour', location, total, pulledAt, DEFAULT_DEPARTMENT, 'spend']);
   }
 
-  Logger.log('labourWeeklyPull_: week=' + week.start + ' labourAdded=' + labourAdded + ' summaryAdded=' + summaryAdded);
-  return { labourAdded: labourAdded, summaryAdded: summaryAdded };
+  var summaryResult = upsertRows_(summSheet, summaryNormalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
+
+  Logger.log('labourWeeklyPull_: week=' + week.start + ' labourAdded=' + labourAdded +
+    ' summaryAdded=' + summaryResult.rowsAdded + ' summaryUpdated=' + summaryResult.rowsUpdated);
+  return { labourAdded: labourAdded, summaryAdded: summaryResult.rowsAdded };
 }
 
 /* ------------------------------------------------------------------ *
@@ -342,6 +579,169 @@ function ensureSheet(ss, sheetName, headers) {
     sheet.setFrozenRows(1);
   }
   return sheet;
+}
+
+/* ------------------------------------------------------------------ *
+ * Migration — add the `department` column (idempotent, dry-run by default)
+ * ------------------------------------------------------------------ */
+
+// SUPPLIERS_HEADERS-shaped tabs, incl. _staging and _archive.
+var DEPARTMENT_TABS = [
+  [SUPPLIERS_TAB, SUPPLIERS_HEADERS], [STAGING_TAB, SUPPLIERS_HEADERS],
+  [ARCHIVE_TAB, SUPPLIERS_HEADERS], [SALES_TAB, SALES_HEADERS],
+  [LABOUR_TAB, LABOUR_HEADERS]
+];
+
+/**
+ * Add the `department` header + backfill blank data cells to every tab in
+ * DEPARTMENT_TABS, plus rewrite the Summary header row and create Revenue.
+ * DRY RUN BY DEFAULT — matches this repo's convention for destructive Sheet
+ * work (cleanupCorruptSalesRows, cleanupDuplicateSummaryRows).
+ *   migrateAddDepartment_()       → dry run, reports only
+ *   migrateAddDepartment_(false)  → writes
+ * Idempotency is checked PER TAB, so a run that dies halfway resumes cleanly.
+ * @returns {Object} { <tabName>: {tab, headerAction, blanksFilled}, ... }
+ */
+function migrateAddDepartment_(dryRun) {
+  dryRun = (dryRun !== false);
+  return withScriptLock_(function () {
+    var ss = getHubSpreadsheet_(), report = {};
+    DEPARTMENT_TABS.forEach(function (p) {
+      report[p[0]] = addDepartmentColumn_(ss.getSheetByName(p[0]), p[1], dryRun, p[0]);
+    });
+    report[SUMMARY_TAB] = migrateSummaryHeaders_(ss.getSheetByName(SUMMARY_TAB), dryRun, SUMMARY_TAB);
+    if (!dryRun) ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+    return report;
+  });
+}
+
+/**
+ * Sweep pass, separate from the header migration on purpose:
+ * addDepartmentColumn_ short-circuits the moment the header exists, so
+ * calling it a second time can never fill anything — it would report
+ * 'skipped', look successful, and leave blank-department rows written during
+ * the runbook's deploy window (step 3-6) there permanently and invisibly.
+ * fillBlankDepartments_ has NO header guard, so it always sweeps.
+ *   sweepBlankDepartments_()       → dry run, reports only
+ *   sweepBlankDepartments_(false)  → writes
+ */
+function sweepBlankDepartments_(dryRun) {
+  dryRun = (dryRun !== false);
+  return withScriptLock_(function () {
+    var ss = getHubSpreadsheet_(), report = {};
+    DEPARTMENT_TABS.forEach(function (p) {
+      report[p[0]] = fillBlankDepartments_(ss.getSheetByName(p[0]), p[1], dryRun, p[0]);
+    });
+    return report;
+  });
+}
+
+/**
+ * Owns the HEADER only. Guarded on header presence — a second call is a
+ * safe no-op that reports 'already migrated'. Delegates the data fill to
+ * fillBlankDepartments_.
+ * @returns {{tab:string, headerAction:('add'|'present'|'absent'), blanksFilled:number}}
+ */
+function addDepartmentColumn_(sheet, headers, dryRun, tabName) {
+  if (!sheet) return { tab: tabName || null, headerAction: 'absent', blanksFilled: 0 };
+
+  var headerRow = sheet.getDataRange().getValues()[0] || [];
+  var deptCol = headers.indexOf('department') + 1; // 1-based
+
+  if (headerRow.indexOf('department') !== -1) {
+    return { tab: tabName, headerAction: 'present', blanksFilled: 0 };
+  }
+
+  if (!dryRun) sheet.getRange(1, deptCol).setValue('department');
+
+  var fill = fillBlankDepartments_(sheet, headers, dryRun, tabName);
+  return { tab: tabName, headerAction: 'add', blanksFilled: fill.blanksFilled };
+}
+
+/**
+ * Owns the DATA. Always scans, always blank-only-fills — never clobbers an
+ * existing value — regardless of header state. Idempotent by construction (a
+ * filled cell is not blank).
+ *
+ * Single setValues block write, not a per-row setValue loop — _archive holds
+ * up to ARCHIVE_RETENTION_DAYS of rows and a per-row loop risks the 6-minute
+ * GAS execution limit, dying mid-tab.
+ * @returns {{tab:string, headerAction:('present'|'absent'), blanksFilled:number}}
+ */
+function fillBlankDepartments_(sheet, headers, dryRun, tabName) {
+  if (!sheet) return { tab: tabName || null, headerAction: 'absent', blanksFilled: 0 };
+
+  var deptCol = headers.indexOf('department'); // 0-based
+  var values = sheet.getDataRange().getValues();
+
+  var blanksFilled = 0;
+  var writes = []; // { row: 1-based sheet row, value }
+  for (var r = 1; r < values.length; r++) {
+    var cur = values[r][deptCol];
+    if (cur === undefined || cur === null || String(cur) === '') {
+      writes.push(r + 1);
+      blanksFilled++;
+    }
+  }
+
+  if (!dryRun && writes.length) {
+    var block = writes.map(function () { return [DEFAULT_DEPARTMENT]; });
+    // Contiguous ranges write in one call; non-contiguous rows still need one
+    // setValues() per contiguous run to stay a "single block write" per run
+    // rather than a per-row loop. Rows are 1-based and ascending here.
+    var start = 0;
+    for (var i = 1; i <= writes.length; i++) {
+      var breakHere = (i === writes.length) || (writes[i] !== writes[i - 1] + 1);
+      if (breakHere) {
+        var runRows = writes.slice(start, i);
+        sheet.getRange(runRows[0], deptCol + 1, runRows.length, 1)
+          .setValues(block.slice(start, i));
+        start = i;
+      }
+    }
+  }
+
+  return { tab: tabName, headerAction: 'present', blanksFilled: blanksFilled };
+}
+
+/**
+ * The Summary tab is NOT rebuilt by weeklySummarize (append-with-upsert,
+ * never a header rewrite), so its header row must be rewritten in place:
+ * rename E1 'total_spend' -> 'total', write G1 'department' / H1 'kind', and
+ * backfill existing data rows 'Cafe' / 'spend'. Idempotent on the presence
+ * of 'kind' in the header row.
+ * @returns {{tab:string, headerAction:('add'|'present'|'absent'), blanksFilled:number}}
+ */
+function migrateSummaryHeaders_(sheet, dryRun, tabName) {
+  if (!sheet) return { tab: tabName || null, headerAction: 'absent', blanksFilled: 0 };
+
+  var values = sheet.getDataRange().getValues();
+  var headerRow = values[0] || [];
+
+  if (headerRow.indexOf('kind') !== -1) {
+    return { tab: tabName, headerAction: 'present', blanksFilled: 0 };
+  }
+
+  if (!dryRun) {
+    sheet.getRange(1, 1, 1, SUMMARY_HEADERS.length).setValues([SUMMARY_HEADERS]);
+  }
+
+  // Backfill data rows: department (col 7) / kind (col 8) blank-only.
+  var blanksFilled = 0;
+  var deptWrites = [], kindWrites = [];
+  for (var r = 1; r < values.length; r++) {
+    var dept = values[r][6];
+    var kind = values[r][7];
+    if (dept === undefined || dept === null || String(dept) === '') { deptWrites.push(r + 1); blanksFilled++; }
+    if (kind === undefined || kind === null || String(kind) === '') { kindWrites.push(r + 1); }
+  }
+
+  if (!dryRun) {
+    deptWrites.forEach(function (rowNum) { sheet.getRange(rowNum, 7).setValue(DEFAULT_DEPARTMENT); });
+    kindWrites.forEach(function (rowNum) { sheet.getRange(rowNum, 8).setValue('spend'); });
+  }
+
+  return { tab: tabName, headerAction: 'add', blanksFilled: blanksFilled };
 }
 
 
@@ -464,9 +864,12 @@ function cleanupCorruptSalesRows(dryRun) {
  * the broken week_start dedup (it keyed on String(Date), which never matched the
  * 'yyyy-MM-dd' key, so every weeklySummarize run re-appended the whole week).
  *
- * Keeps the FIRST row for each week_start||supplier||location and removes the
- * later copies. doGet sums Summary, so leaving them in over-reports spend by a
- * factor of however many times the week was summarized.
+ * Keeps the FIRST row for each week_start||department||kind||supplier||location
+ * and removes the later copies (the same key upsertRows_ uses for Summary —
+ * once Summary carries department+kind, a Cafe-spend row and a
+ * Roastery-revenue row sharing week_start+supplier+location must NOT be
+ * treated as the same conflict). doGet sums Summary, so leaving duplicates in
+ * over-reports by however many times the week was summarized.
  *
  * A later row is only ever deleted when its total MATCHES the row it duplicates.
  * A same-key row with a different total is not a mechanical duplicate — it means
@@ -493,7 +896,7 @@ function cleanupDuplicateSummaryRows(dryRun) {
   var conflicts = [];
 
   for (var r = 1; r < data.length; r++) {
-    var key = coerceDateStr_(data[r][0]) + '||' + String(data[r][2]) + '||' + String(data[r][3]);
+    var key = rowKey_(data[r], SUMMARY_KEY_COLS);
     var total = Number(data[r][4]);
 
     if (!firstSeen[key]) {
@@ -567,6 +970,22 @@ function doGet(e) {
     if (from || to) {
       rows = filterSummaryByDateRange_(rows, from, to);
     }
+
+    // department/kind are already emitted by summaryDataToObjects_ (it maps
+    // every header generically). Keep the JSON field name 'supplier' — it
+    // holds the customer name on kind='revenue' rows — and keep 'total_spend'
+    // as a one-release alias for 'total' so existing consumers don't break.
+    if (params.department) {
+      rows = rows.filter(function (r) { return String(r.department) === String(params.department); });
+    }
+    rows = rows.map(function (r) {
+      // Only alias on a migrated (new-header) sheet — an unmigrated sheet's
+      // header is still literally 'total_spend' and already carries it via
+      // the generic header mapping above; overwriting it with undefined
+      // would be a regression, not backward compatibility.
+      if (r.total !== undefined) r.total_spend = r.total;
+      return r;
+    });
 
     return jsonOut_({
       result: 'ok',
@@ -668,16 +1087,41 @@ function getLastCompletedWeek_(todayStr) {
  * Summary aggregation (pure, unit-tested)
  * ------------------------------------------------------------------ */
 
-function aggregateSupplierRows_(rows, weekStart, weekEnd) {
+/**
+ * Aggregate one week's raw rows into Summary groups.
+ * @param {Array}  rows      Suppliers-shaped rows (kind='spend', default) or
+ *                            Revenue-shaped rows (kind='revenue').
+ * @param {string} weekStart 'YYYY-MM-DD'
+ * @param {string} weekEnd   'YYYY-MM-DD'
+ * @param {string} [kind]    'spend' (default) | 'revenue'
+ * @returns {Array<{supplier, location, department, kind, total}>}
+ *   Spend: supplier=supplier name, location=location, department=row[7].
+ *   Revenue: supplier=customer (JSON field name kept for doGet compat),
+ *     location=channel, department=row[1]. Revenue is never netted against
+ *     spend — each kind aggregates into its own groups.
+ */
+function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {
+  kind = kind || 'spend';
   var groups = {};
   for (var i = 0; i < rows.length; i++) {
     var date = coerceDateStr_(rows[i][0]);
     if (date < weekStart || date > weekEnd) continue;
-    var supplier = String(rows[i][1]);
-    var total = Number(rows[i][2]);
-    var location = String(rows[i][4]);
-    var key = supplier + '||' + location;
-    if (!groups[key]) groups[key] = { supplier: supplier, location: location, total: 0 };
+
+    var name, location, total, department;
+    if (kind === 'revenue') {
+      department = rows[i][1] ? String(rows[i][1]) : DEFAULT_DEPARTMENT;
+      location = String(rows[i][2]);   // channel
+      name = String(rows[i][3]);       // customer
+      total = Number(rows[i][4]);      // amount
+    } else {
+      name = String(rows[i][1]);       // supplier
+      total = Number(rows[i][2]);
+      location = String(rows[i][4]);
+      department = rows[i][7] ? String(rows[i][7]) : DEFAULT_DEPARTMENT;
+    }
+
+    var key = department + '||' + kind + '||' + name + '||' + location;
+    if (!groups[key]) groups[key] = { supplier: name, location: location, department: department, kind: kind, total: 0 };
     groups[key].total += total;
   }
 
@@ -688,7 +1132,9 @@ function aggregateSupplierRows_(rows, weekStart, weekEnd) {
     result.push({
       supplier: g.supplier,
       location: g.location,
-      total_spend: Math.round(g.total * 100) / 100
+      department: g.department,
+      kind: g.kind,
+      total: Math.round(g.total * 100) / 100
     });
   }
   return result;
@@ -733,12 +1179,26 @@ function filterSummaryByDateRange_(rows, from, to) {
  *   event object) falls back to the last completed week.
  */
 function weeklySummarize(weekStartOverride) {
+  // Entry-point lock (§1c): weeklySummarize is a read-modify-write across
+  // Suppliers/Revenue/Summary/_archive. Locking only the inner writes would
+  // let a concurrent doPost finish its scan before this holds the lock and
+  // still race it — so the whole entry point is wrapped, not the helpers.
+  var res = withScriptLock_(function () { return weeklySummarize_impl_(weekStartOverride); });
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('weeklySummarize: could not acquire script lock — skipped this run');
+    return { refused: 'locked' };
+  }
+  return res;
+}
+
+function weeklySummarize_impl_(weekStartOverride) {
   var ss = getHubSpreadsheet_();
   var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
   if (!suppSheet) { Logger.log('weeklySummarize: no Suppliers tab'); return; }
 
   var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
   var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
 
   var today = todayStr_();                              // KEEP: still used for cutoffDate below
   var ovr = resolveDateArg_(weekStartOverride, null);   // trigger-event safe
@@ -750,11 +1210,12 @@ function weeklySummarize(weekStartOverride) {
     var start = weekStartForDate_(ovr);
     week = { start: start, end: addDaysStr_(start, 6) };
 
-    // Refuse a week that hasn't finished yet. Summary is append-only and dedup
-    // can only SKIP, never UPDATE: summarizing a partial week freezes the partial
-    // total under key week_start||supplier||location, and the Monday trigger then
-    // skips it as "already done". The rest of that week's spend is lost silently
-    // and permanently. Only a completed week may be summarized.
+    // Refuse a week that hasn't finished yet. Summary now upserts (§1h), so a
+    // re-summarize CAN correct a frozen partial total in principle — but a
+    // partial week written to Summary is indistinguishable from a final one to
+    // any consumer of doGet in the meantime, and nothing guarantees a
+    // re-summarize ever happens before that partial figure is read/reported
+    // on. Only a completed week may be summarized.
     if (week.end >= today) {
       Logger.log('weeklySummarize: REFUSED incomplete week ' + week.start + ' … ' + week.end +
         ' (today=' + today + ') — a partial total would be frozen by dedup. ' +
@@ -774,29 +1235,27 @@ function weeklySummarize(weekStartOverride) {
 
   var allData = suppSheet.getDataRange().getValues();
   var dataRows = allData.slice(1);
+  var spendSummaries = aggregateSupplierRows_(dataRows, week.start, week.end, 'spend');
 
-  var summaries = aggregateSupplierRows_(dataRows, week.start, week.end);
+  var revData = revSheet.getDataRange().getValues();
+  var revRows = revData.slice(1);
+  var revenueSummaries = aggregateSupplierRows_(revRows, week.start, week.end, 'revenue');
 
-  var existingSummary = summSheet.getDataRange().getValues();
-  var existingKeys = {};
-  for (var i = 1; i < existingSummary.length; i++) {
-    // coerceDateStr_ is mandatory: week_start comes back from the Sheet as a Date,
-    // so String() yields 'Mon Jun 15 2026 00:00:00 GMT+1000...' which can never
-    // equal the 'yyyy-MM-dd' key built below. Without it the key never matches,
-    // nothing is ever deduped, and every run re-appends the whole week.
-    existingKeys[coerceDateStr_(existingSummary[i][0]) + '||' + String(existingSummary[i][2]) + '||' + String(existingSummary[i][3])] = true;
-  }
+  var allSummaries = spendSummaries.concat(revenueSummaries);
 
-  var added = 0;
-  for (var s = 0; s < summaries.length; s++) {
-    var key = week.start + '||' + summaries[s].supplier + '||' + summaries[s].location;
-    if (existingKeys[key]) continue;
-    summSheet.appendRow([
-      week.start, week.end, summaries[s].supplier, summaries[s].location,
-      summaries[s].total_spend, extractedAt
-    ]);
-    added++;
-  }
+  // Build normalized Summary rows in SUMMARY_HEADERS order and route through
+  // upsertRows_, keyed on week_start||department||kind||supplier||location.
+  // This is what makes the locked upsert decision reach Summary: an amended
+  // order corrected in Suppliers/Revenue AFTER that week was summarized must
+  // still be able to update the weekly figure on re-summarize, not just be
+  // skipped as "already done" (the old append-with-skip behaviour).
+  var normalizedSummaryRows = allSummaries.map(function (s) {
+    return [week.start, week.end, s.supplier, s.location, s.total, extractedAt, s.department, s.kind];
+  });
+
+  var summaryResult = upsertRows_(summSheet, normalizedSummaryRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
+  var added = summaryResult.rowsAdded;
+  var updated = summaryResult.rowsUpdated;
 
   var labourResult = labourWeeklyPull_(week, ss, summSheet, extractedAt);
 
@@ -818,12 +1277,14 @@ function weeklySummarize(weekStartOverride) {
 
   Logger.log('weeklySummarize: week ' + week.start + ' → ' + week.end +
     ', supplierSummariesAdded=' + added +
+    ', supplierSummariesUpdated=' + updated +
     ', labourTabAdded=' + labourResult.labourAdded +
     ', labourSummaryAdded=' + labourResult.summaryAdded +
     ', cutoff=' + cutoffStr);
   return {
     weekStart: week.start, weekEnd: week.end,
     summariesAdded: added,
+    summariesUpdated: updated,
     labourTabAdded: labourResult.labourAdded,
     labourSummaryAdded: labourResult.summaryAdded
   };
