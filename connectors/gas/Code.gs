@@ -437,8 +437,9 @@ function appendNewRows_(sheet, rows) {
  * running this repeatedly is safe and never touches existing data.
  * Run once from the Apps Script editor (or `clasp run setupSheets`) to seed
  * headers; doPost/connectors also call ensureSheet lazily on first write.
- *   Suppliers : date | supplier | total | invoice_ref | location | source | extracted_at
- *   Sales     : date | location | gross_sales | source | extracted_at
+ *   Suppliers : date | supplier | total | invoice_ref | location | source | extracted_at | department
+ *   Sales     : date | location | gross_sales | source | extracted_at | department
+ *   Revenue   : date | department | channel | customer | amount | order_ref | source | extracted_at
  *   _staging  : same columns as Suppliers (scratch area, see docs/schema.md)
  * @returns {string} human-readable summary of which tabs exist
  */
