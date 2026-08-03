@@ -1722,6 +1722,70 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 })();
 
 /* ------------------------------------------------------------------ *
+ * Editor wrappers — the Run button passes no arguments, so an Apply
+ * wrapper that forgets `false` silently dry-runs and reports success.
+ * These assert the WRITE actually reaches the sheet.
+ * ------------------------------------------------------------------ */
+
+(function testMigrationEditorWrappers() {
+  console.log('\nmigration editor wrappers:');
+
+  function seedLegacyHub() {
+    currentSS = makeSpreadsheet();
+    currentSS._sheets['Suppliers'] = makeSheet(OLD_SUPPLIERS_HEADERS);
+    currentSS._sheets['Sales'] = makeSheet(OLD_SALES_HEADERS);
+    currentSS._sheets['_staging'] = makeSheet(OLD_SUPPLIERS_HEADERS);
+    currentSS._sheets['_archive'] = makeSheet(OLD_SUPPLIERS_HEADERS);
+    currentSS._sheets['Labour'] = makeSheet(OLD_LABOUR_HEADERS);
+    currentSS.getSheetByName('Suppliers').appendRow(['2026-06-15', 'Food and Dairy Co', 100, 'A1', 'York St', 'food_dairy_co', 'x']);
+  }
+
+  // Every wrapper must be callable with NO arguments — that is the only way
+  // the editor can invoke it.
+  eq('all four wrappers take zero declared args', [
+    runDepartmentMigrationDryRun.length,
+    runDepartmentMigrationApply.length,
+    runBlankDepartmentSweepDryRun.length,
+    runBlankDepartmentSweepApply.length
+  ], [0, 0, 0, 0]);
+
+  // DryRun wrapper: reports, writes nothing.
+  seedLegacyHub();
+  var beforeBytes = JSON.stringify(currentSS.getSheetByName('Suppliers')._rows);
+  var dry = runDepartmentMigrationDryRun();
+  eq('DryRun wrapper returns the report', dry.Suppliers.headerAction, 'add');
+  eq('DryRun wrapper writes NOTHING',
+    JSON.stringify(currentSS.getSheetByName('Suppliers')._rows), beforeBytes);
+  check('DryRun wrapper creates no Revenue tab', !currentSS.getSheetByName('Revenue'));
+
+  // Apply wrapper: actually writes. This is the regression guard — if the
+  // wrapper drops `false`, header/backfill stay absent and this goes red.
+  seedLegacyHub();
+  var applied = runDepartmentMigrationApply();
+  var rows = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  eq('Apply wrapper returns the report', applied.Suppliers.headerAction, 'add');
+  eq('Apply wrapper WRITES the header', rows[0][7], 'department');
+  eq('Apply wrapper WRITES the backfill', rows[1][7], 'Cafe');
+  check('Apply wrapper creates the Revenue tab', !!currentSS.getSheetByName('Revenue'));
+
+  // Sweep wrappers, over a hub already carrying the department header with a
+  // blank cell — the step 3-6 window case.
+  seedLegacyHub();
+  migrateAddDepartment_(false);
+  var supp = currentSS.getSheetByName('Suppliers');
+  supp.appendRow(['2026-06-20', 'Window Co', 42, 'W1', 'York St', 'test', 'x', '']);
+
+  var sweepDry = runBlankDepartmentSweepDryRun();
+  eq('Sweep DryRun reports the blank row', sweepDry.Suppliers.blanksFilled, 1);
+  eq('Sweep DryRun writes NOTHING',
+    supp.getDataRange().getValues()[2][7], '');
+
+  var sweepApplied = runBlankDepartmentSweepApply();
+  eq('Sweep Apply reports the blank row', sweepApplied.Suppliers.blanksFilled, 1);
+  eq('Sweep Apply WRITES the fill', supp.getDataRange().getValues()[2][7], 'Cafe');
+})();
+
+/* ------------------------------------------------------------------ *
  * Phase 1 — ingest: legacy back-compat, revenue kind, upsert
  * ------------------------------------------------------------------ */
 

@@ -637,6 +637,44 @@ function sweepBlankDepartments_(dryRun) {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * Editor entry points for the migration runbook.
+ *
+ * migrateAddDepartment_ / sweepBlankDepartments_ are private (trailing _),
+ * so they never appear in the Apps Script Run dropdown — and the Run button
+ * passes NO arguments, so even a public version could only ever be invoked
+ * as dryRun===undefined, which the `dryRun !== false` default turns into a
+ * dry run. The write path is unreachable from the editor without a no-arg
+ * wrapper: it would report success and change nothing.
+ *
+ * These also Logger.log the report, because the editor displays log output
+ * but NOT return values — the report is a return value.
+ * ------------------------------------------------------------------ */
+
+function runDepartmentMigrationDryRun() {
+  var report = migrateAddDepartment_();
+  Logger.log('DRY RUN (nothing written): ' + JSON.stringify(report, null, 2));
+  return report;
+}
+
+function runDepartmentMigrationApply() {
+  var report = migrateAddDepartment_(false);
+  Logger.log('APPLIED (written): ' + JSON.stringify(report, null, 2));
+  return report;
+}
+
+function runBlankDepartmentSweepDryRun() {
+  var report = sweepBlankDepartments_();
+  Logger.log('SWEEP DRY RUN (nothing written): ' + JSON.stringify(report, null, 2));
+  return report;
+}
+
+function runBlankDepartmentSweepApply() {
+  var report = sweepBlankDepartments_(false);
+  Logger.log('SWEEP APPLIED (written): ' + JSON.stringify(report, null, 2));
+  return report;
+}
+
 /**
  * Owns the HEADER only. Guarded on header presence — a second call is a
  * safe no-op that reports 'already migrated'. Delegates the data fill to
