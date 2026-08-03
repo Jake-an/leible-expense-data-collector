@@ -12,7 +12,9 @@
       "docs": [
         "schema.md"
       ],
-      "blocked_reason": "Jake must create the Google Sheet (Suppliers/Sales/_staging tabs) + GAS project, add the 4 Square tokens to Script Properties, and provide the scriptId for config/clasp.json."
+      "blocked_reason": "Jake must create the Google Sheet (Suppliers/Sales/_staging tabs) + GAS project, add the 4 Square tokens to Script Properties, and provide the scriptId for config/clasp.json.",
+      "covers": [],
+      "covers_reason": "External manual account/credential/tooling setup only (Sheet, GAS project, Square tokens, clasp config); no feature code implemented — enables PRD-1/PRD-3/PRD-4/PRD-5 but doesn't build them."
     },
     {
       "step": 1,

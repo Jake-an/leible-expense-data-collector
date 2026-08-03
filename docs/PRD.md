@@ -7,12 +7,21 @@ Centralize expense and sales data from all LEIBLE suppliers + POS into one Googl
 Jake (LEIBLE owner/operator) and any colleague with Sheet access.
 
 ## Core Features
-1. **Square sales pull** — daily sales data via API into the Sheet
-2. **Supplier portal connectors** — automated login + data extraction from Food & Dairy Co, Fresh & Chill, Kent Paper, Ordermentum (Tuga Pastry + Butterboy)
-3. **Email invoice parsing** — Myers chocolate invoices parsed from Gmail
-4. **Normalization** — supplier sources → `Suppliers` (invoice-level: date, supplier, total, invoice_ref, location); Square → `Sales` (daily gross per location)
-5. **doPost ingest endpoint** — GAS web-app that receives invoice rows from local connectors and writes to the Sheet
-6. **Labour link** — reference `LEIBLE_Payroll`'s labour-cost output (owned there, not recomputed here — see ADR-007)
+
+Every feature carries a stable `PRD-N` ID. **IDs are permanent — never renumber, never reuse.**
+Harness steps declare which IDs they implement via `steps[].covers` in
+`phases/{task-name}/index.json`.
+
+| ID | Feature | Status |
+|----|---------|--------|
+| PRD-1 | Square sales pull — daily sales data via API into the Sheet | built |
+| PRD-2 | Supplier portal connectors — automated login + data extraction from Food & Dairy Co, Fresh & Chill, Kent Paper, Ordermentum (Tuga Pastry + Butterboy) | planned |
+| PRD-3 | Email invoice parsing — Myers chocolate invoices parsed from Gmail | built |
+| PRD-4 | Normalization — supplier sources → `Suppliers` (invoice-level: date, supplier, total, invoice_ref, location); Square → `Sales` (daily gross per location) | built |
+| PRD-5 | doPost ingest endpoint — GAS web-app that receives invoice rows from local connectors and writes to the Sheet | built |
+| PRD-6 | Labour link — reference `LEIBLE_Payroll`'s labour-cost output (owned there, not recomputed here — see ADR-007) | planned |
+
+`Status`: `planned` → `built` (flip it when the covering phase completes) → or `dropped`.
 
 ## Out of MVP Scope
 - Dashboard / reporting UI (the Sheet itself is the view for now)
