@@ -82,22 +82,29 @@ Australia/Sydney), so:
 > If the cleanup can't happen in time, delete the `weeklySummarize` trigger to buy a week
 > (`installWeeklySummarizeTrigger` in `Code.gs` restores it).
 
-- [ ] **(Jake) BLOCKING cleanup — see deadline above.**
+- [ ] **(Jake) BLOCKING cleanup — see deadline above. Now scripted (v24).**
       The dedup key includes `supplier`, so any pre-existing customer-keyed `kind='revenue'`
       **online** Summary row is orphaned rather than updated → `doGet` double-counts that week.
-      1. Filter live `Summary` for `kind='revenue'` AND `location` = `online` (case-insensitive).
-         **Only those.** Wholesale revenue rows keep their key and must not be touched.
-      2. Export the matching rows to a separate sheet/CSV first. Record the row count and the
-         distinct `week_start` values here.
-      3. Delete only those rows.
-      4. Run `weeklySummarize('<Monday>')` **once per affected week** — it writes one week per run
-         and refuses an incomplete week, so a single run would leave older weeks permanently
-         missing and `doGet` would under-report history.
-      5. Spot-check `doGet?from=&to=` returns one online revenue row per source with the right total.
-      6. If a week's `Revenue` rows were already archived/purged, restore that week's figure from
-         the step-2 export instead of re-summarizing.
-      Expected to be a no-op (nothing deployed yet), but the repo cannot verify live state —
-      `Code.gs:614` and `1202` both `ensureSheet(REVENUE_TAB)`, so a prior run may have created it.
+      Run these three from the Apps Script editor **in order** (the Run dropdown keeps its last
+      selection and re-runs it — check the log's leading text to know what actually ran):
+      1. `runOnlineRevenueCleanupDryRun` — writes nothing. Reports `found`, the affected weeks,
+         each week's total, and two warnings that must be cleared BEFORE applying:
+         `resummarizable:false` (that week's `Revenue` rows are gone — re-summarizing regenerates
+         nothing, restore from the backup tab by hand) and `channelCasings` with more than one
+         entry (mixed `Online`/`online` collapses on rebuild — fix the casing in `Revenue` first).
+         Record the row count and the distinct `week_start` values here.
+      2. `runOnlineRevenueCleanupApply` — copies every matched row to
+         `Summary_online_revenue_backup` before a single delete fires, then deletes. Scope is
+         `kind='revenue'` AND `location='online'`, case-insensitive, and nothing else; wholesale
+         revenue keeps its per-customer key and is not touched. Idempotent.
+      3. `runOnlineRevenueResummarize` — reads its week list back from the backup tab and loops
+         `weeklySummarize` once per week, oldest first. One call writes ONE week, so a single
+         manual run would leave older weeks permanently missing and `doGet` would under-report.
+      4. Spot-check `doGet?from=&to=` returns one online revenue row per source with the right
+         total. Then drop the `Summary_online_revenue_backup` tab once the figures look right.
+      Rollback: `clasp redeploy AKfycby...wnfM -V 23` for the code; the backup tab for the rows.
+      Implementation `Code.gs:981`; tests `test_code.js` (`v23 grain cleanup` + `round trip`),
+      mutation-checked both ways.
 - [ ] **Square daily sales never reach the weekly report.** `Sales` is written by `squareDailyPull`
       and read only by `cleanupCorruptSalesRows` (`Code.gs:823`) and the staleness watchdog
       (`staleness.gs:113`). `weeklySummarize` aggregates `Suppliers` + `Revenue` only
