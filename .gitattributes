@@ -1,0 +1,2 @@
+# Normalize Python source line endings to LF across platforms (harness runner scripts).
+*.py text eol=lf
