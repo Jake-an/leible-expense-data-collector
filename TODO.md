@@ -18,21 +18,44 @@
 
 ## Active
 
-### Roastery department — code landed 2026-07-31, NOT YET DEPLOYED
-Branch `feat-roastery-department` (base `32a3101`). All 6 plan phases committed, 405 GAS
-tests green. Nothing has touched the live Sheet yet.
+### Roastery department — ✅ MIGRATED + DEPLOYED 2026-08-03 (version 23)
+Branch `feat-roastery-department`. Phase 1 migration runbook executed end-to-end against the
+live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unchanged).
+456 GAS tests green.
 
-- [ ] **(Jake) Run the Phase 1 migration Runbook** — order matters, plan lines 487-513:
-      Drive-copy the hub Sheet → record the copy id → list + disable triggers →
-      `bash scripts/deploy.sh --push-only` → `migrateAddDepartment_()` dry run → read report →
-      `migrateAddDepartment_(false)` → `bash scripts/deploy.sh` → `sweepBlankDepartments_(false)`
-      (NOT `migrateAddDepartment_`, which short-circuits on the header guard) → re-enable triggers.
-      **The migration is not reversible without hand-deleting columns.**
+- [x] **Phase 1 migration Runbook — DONE 2026-08-03.** Backfill: `Suppliers` 715, `_staging` 0,
+      `_archive` 319, `Sales` 24, `Labour` 30, `Summary` 96 — apply matched dry run exactly.
+      Sweep after deploy: `blanksFilled: 0` on all 5 tabs (nothing wrote during the window).
+      **Index-shift canary PASSED** — re-POST of an existing `mayers`/`3429816` row returned
+      `rowsAdded:0, duplicatesSkipped:1`, so dedup survived the column add. Revenue upsert
+      round-trip verified (`rowsAdded:1` then `rowsUpdated:1`).
+      Deviations from the plan, all deliberate:
+      - Restore point is a **named Google Sheets version** (`pre-department-migration`), NOT a
+        Drive copy — Jake's call. Restore is therefore whole-spreadsheet, not the plan's
+        per-tab *Copy to* recipe at lines 507-511.
+      - Rollback anchor (code): `clasp redeploy <deploymentId> -V 22 -d 'rollback to 22'`.
+      - The plan's canary connector `kent_paper.py` is **dead** — `LOGIN_URL` is still an
+        unfilled TODO (`kent_paper.py:23`). Substituted the curl re-POST above, which tests the
+        same dedup path against real data and writes nothing when it passes.
+      - Required new code: `migrateAddDepartment_`/`sweepBlankDepartments_` are unreachable from
+        the Apps Script editor (trailing `_` hides them from the Run dropdown; the Run button
+        passes no args, so `dryRun !== false` always resolved to a dry run — the write path would
+        have reported success and changed nothing). Added four public zero-arg wrappers
+        (`runDepartmentMigration{DryRun,Apply}`, `runBlankDepartmentSweep{DryRun,Apply}`) in
+        `Code.gs`, commit `b9d3dc6`.
+- [ ] **(Jake) Test C — `doGet` department filter.** Not yet run; needs `API_READ_TOKEN`.
+      `<exec>?token=…&from=2026-06-15&to=2026-06-21&department=Roastery` → expect zero rows
+      (nothing Roastery has landed). Same URL without `&department=` → Cafe rows carrying
+      `department` + `kind`, and `total` (not `total_spend`).
+- [ ] **`weeklySummarize` round-trip verification** (plan line 697) — deliberately deferred: it
+      writes to `Summary`, which is exactly what the blocking cleanup below rebuilds. Run it as
+      step 0 of that cleanup, not standalone.
 - [ ] **(Jake) Step 4.0 — inspect the coffee order app.** Blocks the rest of Phase 4. Checklist
       is in `docs/ingest-contract.md`: where order data lives, stable order ids?, do uploaded
       invoices carry structured date/vendor/amount or are they file-only, can the app POST out.
-- [ ] **(Jake) Script Properties before the new connectors run:** `SHOPIFY_SHOP_DOMAIN`,
-      `SHOPIFY_ACCESS_TOKEN`, `RECUR_RENT_ROASTERY`, `RECUR_SHOPIFY`.
+      **Waiting on the coffee-order-app API key (Jake, 2026-08-03) — parked until that arrives.**
+- [ ] **(Jake) Script Properties** — see the "Shopify bring-up" section below for the Shopify
+      pair and their ordering; `RECUR_RENT_ROASTERY` / `RECUR_SHOPIFY` are listed there too.
 - [ ] **(Jake) Gmail label `roastery/invoices`** + filter, then install the roastery trigger.
 - [ ] `recurring` is unwatched by the staleness watchdog — monthly cadence vs the 96h threshold
       would cry wolf ~26 days a month. Needs per-source thresholds in `staleness.gs`.
@@ -44,12 +67,22 @@ tests green. Nothing has touched the live Sheet yet.
 - [ ] `roastery_email.gs` ships ONE vendor parser ("Sample Bean Co", synthetic). Real vendor
       layouts need their own parsers — deliberately no generic fallback.
 
-### Shopify weekly Roastery figure — code landed 2026-07-31, NOT YET DEPLOYED
-`aggregateSupplierRows_` now groups `kind='revenue'` rows by **source** when `channel='online'`
-(one weekly row per source) and keeps per-customer grain on every other channel. 444 GAS tests
-green. No Shopify connector change; no new tab.
+### Shopify weekly Roastery figure — ⚠️ NOW LIVE (v23, 2026-08-03) — CLEANUP HAS A DEADLINE
+`aggregateSupplierRows_` groups `kind='revenue'` rows by **source** when `channel='online'`
+(one weekly row per source) and keeps per-customer grain on every other channel. No Shopify
+connector change; no new tab.
 
-- [ ] **(Jake) BLOCKING pre-deploy cleanup — before the first post-deploy `weeklySummarize`.**
+**This shipped in version 23 on 2026-08-03 as part of the department deploy — it is no longer
+"pre-deploy".** The `weeklySummarize` trigger was reinstalled the same day (Monday 04:00
+Australia/Sydney), so:
+
+> **Hard deadline: the cleanup below must be done before Monday 2026-08-10 04:00 AEST.**
+> That is the next scheduled `weeklySummarize`. If it fires first, the new source-keyed rows
+> land alongside the old customer-keyed ones and `doGet` double-counts those weeks.
+> If the cleanup can't happen in time, delete the `weeklySummarize` trigger to buy a week
+> (`installWeeklySummarizeTrigger` in `Code.gs` restores it).
+
+- [ ] **(Jake) BLOCKING cleanup — see deadline above.**
       The dedup key includes `supplier`, so any pre-existing customer-keyed `kind='revenue'`
       **online** Summary row is orphaned rather than updated → `doGet` double-counts that week.
       1. Filter live `Summary` for `kind='revenue'` AND `location` = `online` (case-insensitive).
@@ -76,6 +109,34 @@ green. No Shopify connector change; no new tab.
       in-batch duplicate — 100 + 25 reports as **25**. Pinned by a test; documented in
       `docs/api.md` and `docs/ingest-contract.md`. A real fix would normalize channel casing on
       write, which changes wholesale dedup keys — deliberately not done here.
+
+### Shopify bring-up — teed up for next session
+Code is deployed (v23) but **inert**: `shopifyDailyPull` reads its Script Properties, finds them
+unset, logs `missing SHOPIFY_SHOP_DOMAIN/SHOPIFY_ACCESS_TOKEN — skipping` and returns without
+stamping a heartbeat (`shopify.gs:61-64`). Nothing is written and the staleness watchdog will
+not cry wolf. No trigger exists for it yet.
+
+Order for next session:
+
+- [ ] **⚠️ FIRST — check `SHOPIFY_API_VERSION`.** `shopify.gs:24` pins **`'2024-10'`**, which is
+      almost certainly out of support as of 2026-08. Shopify retires versions after ~12 months.
+      The plan (line 529) explicitly said to confirm the current stable version against Shopify's
+      docs at build time. **Verify against the live docs before pulling anything** — a retired
+      version fails or silently changes shape. Do not bump it from memory.
+- [ ] **(Jake) Create the custom app + token.** Shopify admin → Apps → develop apps → custom app.
+      Minimum scope **`read_orders`**. (`read_all_orders` is only needed for orders >60 days old
+      and requires Shopify approval — irrelevant with no historical backfill.)
+- [ ] **(Jake) Set Script Properties:** `SHOPIFY_SHOP_DOMAIN`, `SHOPIFY_ACCESS_TOKEN`.
+      Never in the repo, never in chat.
+- [ ] **Smoke test before arming the trigger:** from the editor run `shopifyDailyPull` with no
+      argument — it defaults to yesterday (`shopify.gs:53`), so it is safe to Run directly and
+      needs no wrapper. Confirm rows land in `Revenue` with `department='Roastery'`,
+      `channel='online'`.
+- [ ] **Reconcile** that day's `Revenue` total against Shopify's admin sales report (plan line 702).
+- [ ] **Only then** run `installShopifyTrigger()` (`shopify.gs:114`) — daily 03:00 Sydney,
+      re-pulls the last 2 days.
+- [ ] Remaining Script Properties for the recurring-costs phase: `RECUR_RENT_ROASTERY`,
+      `RECUR_SHOPIFY`.
 
 ### Phase 0 — Foundation — ✅ DONE
 - [x] Sheet "LEIBLE Expense Hub" created with `Suppliers` / `Sales` / `_staging` tabs + headers
