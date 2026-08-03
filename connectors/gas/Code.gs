@@ -978,6 +978,257 @@ function cleanupDuplicateSummaryRows(dryRun) {
   return { mode: 'apply', found: matches.length, deleted: deleted, conflicts: conflicts };
 }
 
+/* ------------------------------------------------------------------ *
+ * v23 online-revenue grain cleanup (one-shot, dry-run by default)
+ * ------------------------------------------------------------------ */
+
+var ONLINE_REVENUE_BACKUP_TAB = 'Summary_online_revenue_backup';
+
+/**
+ * Index the LIVE Revenue tab's online rows by ISO week.
+ *
+ * Two questions the cleanup cannot answer from Summary alone:
+ *   1. Can week W actually be rebuilt? weeklySummarize re-derives Summary from
+ *      Revenue, so a week whose Revenue rows are gone comes back as nothing —
+ *      deleting its Summary row would destroy the figure with no source to
+ *      regenerate it from. `rows` answers that.
+ *   2. Is the week safe to rebuild? aggregateSupplierRows_ groups on the RAW
+ *      channel string while rowKey_ lowercases (Code.gs:421), so 'Online' and
+ *      'online' in one week produce two groups that collapse to one Summary
+ *      row — the later one dropped as an in-batch duplicate. `casings` surfaces
+ *      that before it silently eats revenue on the re-summarize.
+ *
+ * @returns {Object} weekStart -> { rows, casings:[] }
+ */
+function onlineRevenueWeeks_(ss) {
+  var out = {};
+  var revSheet = ss.getSheetByName(REVENUE_TAB);
+  if (!revSheet) return out;
+
+  var rows = revSheet.getDataRange().getValues();
+  for (var r = 1; r < rows.length; r++) {
+    var channel = String(rows[r][2]).trim();
+    if (channel.toLowerCase() !== 'online') continue;
+
+    var date = coerceDateStr_(rows[r][0]);
+    if (!DATE_ARG_RE.test(date)) continue;
+
+    var wk = weekStartForDate_(date);
+    if (!out[wk]) out[wk] = { rows: 0, casings: [] };
+    out[wk].rows++;
+    if (out[wk].casings.indexOf(channel) === -1) out[wk].casings.push(channel);
+  }
+  return out;
+}
+
+/**
+ * cleanupOnlineRevenueSummaryRows — one-shot repair for the online-revenue
+ * grain change that shipped in version 23 (aggregateSupplierRows_, 2026-08-03):
+ * online revenue is now grouped by SOURCE, where it used to be grouped by
+ * CUSTOMER.
+ *
+ * SUMMARY_KEY_COLS includes `supplier`, so the new source-keyed rows do not
+ * update the old customer-keyed ones — upsertRows_ sees a new key and APPENDS
+ * alongside them. doGet sums Summary, so every affected week is then counted
+ * twice. The stale rows have to be deleted and those weeks re-summarized.
+ *
+ * SCOPE — matches kind='revenue' AND location='online', both case-insensitive,
+ * and nothing else. Wholesale revenue deliberately keeps per-customer grain, so
+ * its key is unchanged and its rows are already correct; spend and labour rows
+ * are never touched.
+ *
+ * The apply pass COPIES every matched row to ONLINE_REVENUE_BACKUP_TAB before
+ * deleting it. That backup is the whole safety net for a week flagged
+ * `resummarizable:false` — re-summarizing such a week regenerates nothing, so
+ * the backup row is the only remaining record of the figure.
+ *
+ * Dry run by default, matching cleanupCorruptSalesRows /
+ * cleanupDuplicateSummaryRows: pass false to apply. Idempotent — a second apply
+ * finds nothing.
+ *
+ * @param {boolean} dryRun  false to actually delete; anything else = dry run
+ * @returns {Object} { mode, found, deleted, weeks:[{week_start, rows, total, resummarizable, ...}] }
+ */
+function cleanupOnlineRevenueSummaryRows(dryRun) {
+  var isDryRun = (dryRun !== false);
+  return withScriptLock_(function () {
+    var ss = getHubSpreadsheet_();
+    var sheet = ss.getSheetByName(SUMMARY_TAB);
+    if (!sheet) { Logger.log('cleanupOnlineRevenueSummaryRows: no Summary tab'); return 'no-sheet'; }
+
+    var data = sheet.getDataRange().getValues();
+    var revWeeks = onlineRevenueWeeks_(ss);
+    var today = todayStr_();
+
+    // Pass 1: identify + log every match in BOTH modes, so an apply leaves the
+    // same audit trail as the dry run that authorized it.
+    var matches = [];
+    var weeks = {};
+
+    for (var r = 1; r < data.length; r++) {
+      var kind = String(data[r][7]).trim().toLowerCase();
+      var location = String(data[r][3]).trim().toLowerCase();
+      if (kind !== 'revenue' || location !== 'online') continue;
+
+      var weekStart = coerceDateStr_(data[r][0]);
+      matches.push(r);
+
+      if (!weeks[weekStart]) {
+        var weekEnd = addDaysStr_(weekStart, 6);
+        weeks[weekStart] = {
+          week_start: weekStart,
+          week_end: weekEnd,
+          rows: 0,
+          total: 0,
+          // weeklySummarize REFUSES a week that has not finished, so deleting
+          // an in-flight week's rows would be unrecoverable except by hand from
+          // the backup tab.
+          complete: weekEnd < today,
+          revenueRowsPresent: revWeeks[weekStart] ? revWeeks[weekStart].rows : 0,
+          channelCasings: revWeeks[weekStart] ? revWeeks[weekStart].casings : []
+        };
+      }
+      weeks[weekStart].rows++;
+      weeks[weekStart].total += Number(data[r][4]) || 0;
+
+      Logger.log('cleanupOnlineRevenueSummaryRows: match row ' + (r + 1) +
+        ' | week=' + weekStart +
+        ' | supplier=' + String(data[r][2]) +
+        ' | department=' + String(data[r][6]) +
+        ' | total=' + String(data[r][4]));
+    }
+
+    var weekList = Object.keys(weeks).sort().map(function (w) {
+      var wk = weeks[w];
+      wk.total = Math.round(wk.total * 100) / 100;
+      wk.resummarizable = wk.complete && wk.revenueRowsPresent > 0;
+
+      if (!wk.resummarizable) {
+        Logger.log('cleanupOnlineRevenueSummaryRows: WARNING week ' + w +
+          ' is NOT re-summarizable (' +
+          (wk.complete ? 'no online rows left in ' + REVENUE_TAB : 'week has not finished yet') +
+          ') — restore its figure from ' + ONLINE_REVENUE_BACKUP_TAB + ' by hand.');
+      }
+      if (wk.channelCasings.length > 1) {
+        Logger.log('cleanupOnlineRevenueSummaryRows: WARNING week ' + w +
+          ' has mixed channel casing ' + JSON.stringify(wk.channelCasings) +
+          ' — rowKey_ lowercases, so one group collapses into the other and the week' +
+          ' under-reports. Normalize the casing in ' + REVENUE_TAB + ' BEFORE re-summarizing.');
+      }
+      return wk;
+    });
+
+    Logger.log('cleanupOnlineRevenueSummaryRows: ' + (isDryRun ? 'DRY RUN' : 'APPLY') +
+      ' — ' + matches.length + ' online revenue row(s) across ' + weekList.length + ' week(s): ' +
+      weekList.map(function (w) { return w.week_start; }).join(', '));
+
+    if (isDryRun) {
+      return {
+        mode: 'dryRun', found: matches.length, deleted: 0, weeks: weekList,
+        rows: matches.map(function (r) { return r + 1; })
+      };
+    }
+
+    // Pass 2: back up EVERY matched row before a single deleteRow fires. A
+    // half-backed-up delete is worse than no cleanup at all.
+    var backup = ensureSheet(ss, ONLINE_REVENUE_BACKUP_TAB, SUMMARY_HEADERS);
+    for (var b = 0; b < matches.length; b++) backup.appendRow(data[matches[b]]);
+    Logger.log('cleanupOnlineRevenueSummaryRows: backed up ' + matches.length +
+      ' row(s) to ' + ONLINE_REVENUE_BACKUP_TAB);
+
+    // Pass 3: delete bottom-up so pass-1 row numbers stay valid as rows shift.
+    var deleted = 0;
+    for (var m = matches.length - 1; m >= 0; m--) {
+      sheet.deleteRow(matches[m] + 1);
+      deleted++;
+    }
+
+    Logger.log('cleanupOnlineRevenueSummaryRows: deleted=' + deleted +
+      ' — now run runOnlineRevenueResummarize() to rebuild ' + weekList.length + ' week(s).');
+    return { mode: 'apply', found: matches.length, deleted: deleted, weeks: weekList };
+  });
+}
+
+/**
+ * resummarizeWeeks_ — step 4 of the cleanup runbook.
+ *
+ * weeklySummarize writes ONE week per call, so a single run after the purge
+ * would rebuild only the most recent week and leave every older one
+ * permanently missing from Summary — doGet would then under-report history
+ * instead of double-counting it. This loops it, oldest week first.
+ *
+ * @param {string[]} weekStarts  'yyyy-MM-dd' Mondays
+ * @returns {Object[]} one weeklySummarize result per week, in order
+ */
+function resummarizeWeeks_(weekStarts) {
+  var results = [];
+  for (var i = 0; i < weekStarts.length; i++) {
+    var res = weeklySummarize(weekStarts[i]);
+    results.push({ week: weekStarts[i], result: res });
+    Logger.log('resummarizeWeeks_: ' + weekStarts[i] + ' → ' + JSON.stringify(res));
+  }
+  return results;
+}
+
+/**
+ * Distinct week_start values sitting in the backup tab, oldest first — the
+ * exact set of weeks the apply pass removed, read back rather than re-typed.
+ */
+function backedUpOnlineRevenueWeeks_(ss) {
+  var sheet = ss.getSheetByName(ONLINE_REVENUE_BACKUP_TAB);
+  if (!sheet) return [];
+  var data = sheet.getDataRange().getValues();
+  var seen = {};
+  for (var r = 1; r < data.length; r++) {
+    var wk = coerceDateStr_(data[r][0]);
+    if (DATE_ARG_RE.test(wk)) seen[wk] = true;
+  }
+  return Object.keys(seen).sort();
+}
+
+/* ------------------------------------------------------------------ *
+ * Editor entry points for the v23 online-revenue cleanup runbook.
+ *
+ * The Apps Script Run button passes NO arguments, so
+ * cleanupOnlineRevenueSummaryRows(false) and weeklySummarize('2026-07-27') are
+ * both unreachable from the editor without a no-arg wrapper — the first would
+ * silently dry-run, the second would summarize last week instead of the week
+ * asked for. These also Logger.log their reports, because the editor shows log
+ * output but NOT return values.
+ *
+ * Run order: DryRun → Apply → Resummarize.
+ * ------------------------------------------------------------------ */
+
+function runOnlineRevenueCleanupDryRun() {
+  var report = cleanupOnlineRevenueSummaryRows();
+  Logger.log('DRY RUN (nothing written): ' + JSON.stringify(report, null, 2));
+  return report;
+}
+
+function runOnlineRevenueCleanupApply() {
+  var report = cleanupOnlineRevenueSummaryRows(false);
+  Logger.log('APPLIED (written): ' + JSON.stringify(report, null, 2));
+  return report;
+}
+
+/**
+ * Rebuild every week the apply pass removed. Reads its week list from the
+ * backup tab, so it is only ever meaningful AFTER runOnlineRevenueCleanupApply.
+ */
+function runOnlineRevenueResummarize() {
+  var ss = getHubSpreadsheet_();
+  var weeks = backedUpOnlineRevenueWeeks_(ss);
+  if (!weeks.length) {
+    Logger.log('runOnlineRevenueResummarize: no weeks in ' + ONLINE_REVENUE_BACKUP_TAB +
+      ' — run runOnlineRevenueCleanupApply() first.');
+    return { weeks: 0, results: [] };
+  }
+  Logger.log('runOnlineRevenueResummarize: rebuilding ' + weeks.length +
+    ' week(s): ' + weeks.join(', '));
+  var results = resummarizeWeeks_(weeks);
+  Logger.log('RESUMMARIZED: ' + JSON.stringify(results, null, 2));
+  return { weeks: weeks.length, results: results };
+}
 
 /* ------------------------------------------------------------------ *
  * Read API (doGet) — token-gated, serves weekly summaries

@@ -1120,6 +1120,182 @@ freshSheets();
 })();
 
 /* ------------------------------------------------------------------ *
+ * cleanupOnlineRevenueSummaryRows — v23 online-revenue grain cleanup
+ *
+ * v23 changed online revenue from customer-keyed to source-keyed groups.
+ * `supplier` is in SUMMARY_KEY_COLS, so the new rows do not update the old
+ * ones — they land beside them and doGet double-counts the week. These tests
+ * pin the two things that make the repair safe to run against the live hub:
+ * the blast radius (online revenue ONLY) and the round trip (purge, then
+ * re-summarize, yields exactly one correct row).
+ * ------------------------------------------------------------------ */
+
+(function testCleanupOnlineRevenueSummaryRows() {
+  console.log('\ncleanupOnlineRevenueSummaryRows (v23 grain cleanup):');
+
+  // Mirrors the live tab shape: three customer-keyed online rows (the stale
+  // grain, one per Shopify guest checkout), plus rows that must NOT be touched
+  // — wholesale revenue keeps per-customer grain deliberately, and spend and
+  // labour are a different `kind` entirely.
+  function seed() {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};                     // no LABOUR_SHEET_ID → labour pull skips
+
+    const rev = currentSS.insertSheet('Revenue');
+    rev.appendRow(REVENUE_HEADERS);
+    rev.appendRow(['2026-06-17', 'Roastery', 'online', '#1001', 100, 'ORD-1', 'shopify', 'TS']);
+    rev.appendRow(['2026-06-18', 'Roastery', 'online', '#1002', 50, 'ORD-2', 'shopify', 'TS']);
+    rev.appendRow(['2026-06-19', 'Roastery', 'online', '#1003', 25, 'ORD-3', 'shopify', 'TS']);
+    rev.appendRow(['2026-06-18', 'Roastery', 'wholesale', 'Cafe X', 340, 'ORD-4', 'coffee_order_app', 'TS']);
+
+    const s = currentSS.insertSheet('Summary');
+    s.appendRow(SUMMARY_HEADERS);
+    s.appendRow(['2026-06-15', '2026-06-21', '#1001', 'online', 100, 'T1', 'Roastery', 'revenue']);
+    s.appendRow(['2026-06-15', '2026-06-21', '#1002', 'online', 50, 'T1', 'Roastery', 'revenue']);
+    s.appendRow(['2026-06-15', '2026-06-21', '#1003', 'online', 25, 'T1', 'Roastery', 'revenue']);
+    s.appendRow(['2026-06-15', '2026-06-21', 'Cafe X', 'wholesale', 340, 'T1', 'Roastery', 'revenue']);
+    s.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'Leible York', 263, 'T1', 'Cafe', 'spend']);
+    s.appendRow(['2026-06-15', '2026-06-21', 'Labour', 'york', 4830.14, 'T1', 'Cafe', 'labour']);
+    return s;
+  }
+
+  var sheet = seed();
+  eq('seeded 6 data rows (+header)', sheet._rows.length, 7);
+
+  // --- Dry run: reports, writes nothing. ---
+  var dry = cleanupOnlineRevenueSummaryRows();
+  eq('dry run is the default (no arg)', dry.mode, 'dryRun');
+  eq('dry run finds the 3 online revenue rows', dry.found, 3);
+  eq('dry run deletes nothing', dry.deleted, 0);
+  eq('dry run leaves the sheet intact', sheet._rows.length, 7);
+  eq('dry run reports 1 affected week', dry.weeks.length, 1);
+  eq('week is the Monday', dry.weeks[0].week_start, '2026-06-15');
+  eq('week total is the sum of the stale rows', dry.weeks[0].total, 175);
+  eq('week is re-summarizable (Revenue rows still present)', dry.weeks[0].resummarizable, true);
+  eq('counts the online Revenue rows backing the week', dry.weeks[0].revenueRowsPresent, 3);
+
+  // --- Apply: blast radius is online revenue and nothing else. ---
+  var applied = cleanupOnlineRevenueSummaryRows(false);
+  eq('apply deletes 3', applied.deleted, 3);
+  var rows = sheet.getDataRange().getValues();
+  eq('3 rows survive (+header)', rows.length, 4);
+  eq('wholesale revenue survived', rows[1][2], 'Cafe X');
+  eq('wholesale total intact', rows[1][4], 340);
+  eq('spend row survived', rows[2][2], 'Food and Dairy Co');
+  eq('labour row survived', rows[3][2], 'Labour');
+  eq('no online revenue row remains',
+    rows.slice(1).some((r) => String(r[3]).toLowerCase() === 'online'), false);
+
+  // The backup is the only record of a week that cannot be rebuilt, so it must
+  // exist BEFORE any delete and carry every removed row verbatim.
+  var backup = currentSS.getSheetByName(ONLINE_REVENUE_BACKUP_TAB);
+  check('backup tab was created', !!backup);
+  var backupRows = backup.getDataRange().getValues();
+  eq('backup holds all 3 removed rows (+header)', backupRows.length, 4);
+  eq('backup preserves the Summary header shape', backupRows[0][7], 'kind');
+  eq('backup keeps the customer-keyed supplier', backupRows[1][2], '#1001');
+  eq('backup keeps the total', backupRows[3][4], 25);
+
+  // --- Idempotent: a repair that may be re-run must find nothing twice. ---
+  var again = cleanupOnlineRevenueSummaryRows(false);
+  eq('re-apply finds nothing', again.found, 0);
+  eq('re-apply deletes nothing', again.deleted, 0);
+  eq('sheet unchanged by re-apply', sheet.getDataRange().getValues().length, 4);
+
+  // --- Case-insensitive matching. Live rows are not guaranteed lowercase, and
+  // a case-sensitive match would leave stale rows behind that still double-count.
+  seed();
+  var mixed = currentSS.getSheetByName('Summary');
+  mixed.appendRow(['2026-06-15', '2026-06-21', '#1004', 'Online', 10, 'T1', 'Roastery', 'Revenue']);
+  eq('matches Online/Revenue regardless of case',
+    cleanupOnlineRevenueSummaryRows().found, 4);
+
+  // --- A week whose Revenue rows are gone cannot be rebuilt by re-summarizing.
+  // Deleting it blind would destroy the figure, so the report must say so.
+  seed();
+  currentSS.getSheetByName('Summary')
+    .appendRow(['2026-05-04', '2026-05-10', '#0900', 'online', 77, 'T0', 'Roastery', 'revenue']);
+  var orphan = cleanupOnlineRevenueSummaryRows();
+  var orphanWeek = orphan.weeks.filter((w) => w.week_start === '2026-05-04')[0];
+  eq('purged-Revenue week is flagged NOT re-summarizable', orphanWeek.resummarizable, false);
+  eq('purged-Revenue week has no backing rows', orphanWeek.revenueRowsPresent, 0);
+
+  // --- Mixed channel casing in Revenue silently collapses on re-summarize
+  // (rowKey_ lowercases). The report has to surface it before the rebuild.
+  seed();
+  currentSS.getSheetByName('Revenue')
+    .appendRow(['2026-06-20', 'Roastery', 'Online', '#1005', 15, 'ORD-5', 'shopify', 'TS']);
+  var casing = cleanupOnlineRevenueSummaryRows();
+  eq('mixed channel casing is detected', casing.weeks[0].channelCasings.length, 2);
+})();
+
+/* ------------------------------------------------------------------ *
+ * The cleanup round trip: purge → re-summarize. This is the assertion the
+ * live runbook rests on — that what the purge removes actually comes back,
+ * at the new grain, with the same money in it.
+ * ------------------------------------------------------------------ */
+
+(function testOnlineRevenueCleanupRoundTrip() {
+  console.log('\nonline-revenue cleanup round trip (purge → resummarize):');
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+
+  const rev = currentSS.insertSheet('Revenue');
+  rev.appendRow(REVENUE_HEADERS);
+  rev.appendRow(['2026-06-17', 'Roastery', 'online', '#1001', 100, 'ORD-1', 'shopify', 'TS']);
+  rev.appendRow(['2026-06-18', 'Roastery', 'online', '#1002', 50, 'ORD-2', 'shopify', 'TS']);
+  // A second, older week — one weeklySummarize call writes ONE week, so a
+  // single run after the purge would leave this one permanently missing.
+  rev.appendRow(['2026-06-09', 'Roastery', 'online', '#0999', 30, 'ORD-0', 'shopify', 'TS']);
+
+  const s = currentSS.insertSheet('Summary');
+  s.appendRow(SUMMARY_HEADERS);
+  s.appendRow(['2026-06-15', '2026-06-21', '#1001', 'online', 100, 'T1', 'Roastery', 'revenue']);
+  s.appendRow(['2026-06-15', '2026-06-21', '#1002', 'online', 50, 'T1', 'Roastery', 'revenue']);
+  s.appendRow(['2026-06-08', '2026-06-14', '#0999', 'online', 30, 'T1', 'Roastery', 'revenue']);
+
+  var applied = cleanupOnlineRevenueSummaryRows(false);
+  eq('purge removed all 3 stale rows', applied.deleted, 3);
+  eq('purge spans 2 weeks', applied.weeks.length, 2);
+  eq('Summary is empty after the purge', s.getDataRange().getValues().length, 1);
+
+  // The week list is read back from the backup, not re-typed — the editor Run
+  // button cannot pass weeklySummarize a week argument at all.
+  var weeks = backedUpOnlineRevenueWeeks_(currentSS);
+  eq('both weeks recovered from the backup tab', weeks.length, 2);
+  eq('oldest week first', weeks[0], '2026-06-08');
+
+  var res = runOnlineRevenueResummarize();
+  eq('re-summarized both weeks', res.weeks, 2);
+
+  var out = s.getDataRange().getValues();
+  eq('one source-keyed row per week (+header)', out.length, 3);
+  var byWeek = {};
+  out.slice(1).forEach((r) => { byWeek[cellDate(r[0])] = r; });
+
+  eq('recent week collapsed to the source', byWeek['2026-06-15'][2], 'shopify');
+  eq('recent week keeps every dollar (100+50)', byWeek['2026-06-15'][4], 150);
+  eq('recent week stays online', byWeek['2026-06-15'][3], 'online');
+  eq('recent week keeps its department', byWeek['2026-06-15'][6], 'Roastery');
+  eq('recent week is still revenue', byWeek['2026-06-15'][7], 'revenue');
+  eq('older week rebuilt too — not left behind', byWeek['2026-06-08'][4], 30);
+
+  // Post-cleanup, the trigger's Monday run must be a no-op on these weeks
+  // rather than appending a second copy: same key, same total.
+  var rerun = weeklySummarize('2026-06-15');
+  eq('re-running the week adds nothing', rerun.summariesAdded, 0);
+  eq('re-running the week updates nothing', rerun.summariesUpdated, 0);
+  eq('Summary row count unchanged by the re-run', s.getDataRange().getValues().length, 3);
+
+  // Guard: resummarize before an apply has nothing to go on and must say so
+  // rather than silently summarizing "last week" instead.
+  currentSS = makeSpreadsheet();
+  var noBackup = runOnlineRevenueResummarize();
+  eq('no backup tab → refuses, summarizes nothing', noBackup.weeks, 0);
+})();
+
+/* ------------------------------------------------------------------ *
  * Step 7b — labourWeeklyPull_ dedup
  *
  * The labour path is live in production (LABOUR_SHEET_ID is set, Labour rows
