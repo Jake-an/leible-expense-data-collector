@@ -49,9 +49,12 @@ def phase_dir(tmp_project):
         "project": "TestProject",
         "phase": "mvp",
         "steps": [
-            {"step": 0, "name": "setup", "status": "completed", "summary": "Project initialization complete"},
-            {"step": 1, "name": "core", "status": "completed", "summary": "Core logic implemented"},
-            {"step": 2, "name": "ui", "status": "pending"},
+            {"step": 0, "name": "setup", "status": "completed", "summary": "Project initialization complete",
+             "covers_exempt": True},
+            {"step": 1, "name": "core", "status": "completed", "summary": "Core logic implemented",
+             "covers_exempt": True},
+            {"step": 2, "name": "ui", "status": "pending",
+             "covers": [], "covers_reason": "fixture step - no user-facing requirement"},
         ],
     }
     (d / "index.json").write_text(json.dumps(index, indent=2, ensure_ascii=False))
@@ -275,6 +278,7 @@ class TestGuardrailsPerStep:
         executor._execute_all_steps = MagicMock()
         executor._review_gate = MagicMock()
         executor._live_verification_gate = MagicMock()
+        executor._coverage_report = MagicMock()
         executor._finalize = MagicMock()
         executor._print_header = MagicMock()
         executor._rerun = False
@@ -1004,7 +1008,7 @@ class TestSchemaPreflight:
         index = {
             "project": "T", "phase": "t3", "schema_version": 2,
             "steps": [{"step": 0, "name": "core", "status": "pending", "tdd": True,
-                       "test_cmd": "pytest tests/test_core.py"}],
+                       "test_cmd": "pytest tests/test_core.py", "covers_exempt": True}],
         }
         inst = self._make_executor(tmp_project, "tdd-valid", index)
         inst._validate_schema()  # should not raise
@@ -1022,16 +1026,286 @@ class TestSchemaPreflight:
         assert "WARN" in capsys.readouterr().out
 
     def test_legacy_fixture_passes_preflight(self, executor):
-        """Regression: legacy fixture indexes (no schema_version/tdd/test_cmd) must not hard-error."""
+        """Regression: legacy fixture indexes (no schema_version/tdd/test_cmd) must not
+        hard-error. The fixture's steps are covers-exempt/covers:[] (see phase_dir), so this
+        no longer says legacy indexes need no `covers` at all — it confirms the exempt/empty
+        paths keep a legacy-shaped index green."""
         executor._validate_schema()  # should not raise
 
     def test_non_tdd_step_missing_test_cmd_is_fine(self, tmp_project):
         index = {
             "project": "T", "phase": "t5", "schema_version": 2,
-            "steps": [{"step": 0, "name": "core", "status": "pending"}],
+            "steps": [{"step": 0, "name": "core", "status": "pending", "covers_exempt": True}],
         }
         inst = self._make_executor(tmp_project, "non-tdd", index)
         inst._validate_schema()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# covers/PRD traceability (Track B enforcement)
+# ---------------------------------------------------------------------------
+
+class TestCoversValidation:
+    def _make_executor(self, tmp_project, dir_name, index):
+        d = tmp_project / "phases" / dir_name
+        d.mkdir(exist_ok=True)
+        (d / "index.json").write_text(json.dumps(index, indent=2, ensure_ascii=True), encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            return ex.StepExecutor(dir_name)
+
+    def _write_prd(self, tmp_project, *ids):
+        docs = tmp_project / "docs"
+        docs.mkdir(exist_ok=True)
+        body = "\n".join(f"- {i}: some feature" for i in ids)
+        (docs / "PRD.md").write_text(body, encoding="utf-8")
+
+    def test_missing_covers_exits_1_naming_step(self, tmp_project, capsys):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 4, "name": "widget", "status": "pending"}]}
+        inst = self._make_executor(tmp_project, "no-covers", index)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as exc_info:
+            inst._validate_schema()
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "4" in out and "widget" in out
+
+    def test_covers_not_a_list_exits_1(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": "PRD-1"}]}
+        inst = self._make_executor(tmp_project, "covers-not-list", index)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as exc_info:
+            inst._validate_schema()
+        assert exc_info.value.code == 1
+
+    def test_empty_covers_without_reason_exits_1(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": []}]}
+        inst = self._make_executor(tmp_project, "empty-covers-no-reason", index)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as exc_info:
+            inst._validate_schema()
+        assert exc_info.value.code == 1
+
+    def test_empty_covers_with_reason_passes(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": [],
+                             "covers_reason": "no user-facing requirement"}]}
+        inst = self._make_executor(tmp_project, "empty-covers-with-reason", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()  # should not raise
+
+    def test_covers_exempt_true_skips_gate(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers_exempt": True}]}
+        inst = self._make_executor(tmp_project, "exempt-skips", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()  # should not raise
+
+    def test_malformed_id_exits_1(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": ["PRD-abc"]}]}
+        inst = self._make_executor(tmp_project, "bad-id", index)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as exc_info:
+            inst._validate_schema()
+        assert exc_info.value.code == 1
+
+    def test_id_absent_from_prd_exits_1(self, tmp_project):
+        self._write_prd(tmp_project, "PRD-1")
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": ["PRD-2"]}]}
+        inst = self._make_executor(tmp_project, "id-absent", index)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as exc_info:
+            inst._validate_schema()
+        assert exc_info.value.code == 1
+
+    def test_id_present_in_prd_passes(self, tmp_project):
+        self._write_prd(tmp_project, "PRD-1")
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": ["PRD-1"]}]}
+        inst = self._make_executor(tmp_project, "id-present", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()  # should not raise
+
+    def test_id_canonicalized_padded_zeros_matches(self, tmp_project):
+        self._write_prd(tmp_project, "PRD-7")
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": ["PRD-007"]}]}
+        inst = self._make_executor(tmp_project, "id-padded", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()  # should not raise
+
+    def test_missing_prd_file_exits_1_only_when_id_declared(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": ["PRD-1"]}]}
+        inst = self._make_executor(tmp_project, "no-prd-file", index)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as exc_info:
+            inst._validate_schema()
+        assert exc_info.value.code == 1
+
+    def test_no_prd_file_but_no_ids_declared_does_not_error(self, tmp_project):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": [],
+                             "covers_reason": "nothing to cover"}]}
+        inst = self._make_executor(tmp_project, "no-prd-file-no-ids", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()  # should not raise (docs/PRD.md never consulted)
+
+    def test_sticky_exemption_warns_when_not_finished(self, tmp_project, capsys):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 9, "name": "s", "status": "pending", "covers_exempt": True}]}
+        inst = self._make_executor(tmp_project, "sticky-warn", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()  # WARN, not an error
+        out = capsys.readouterr().out
+        assert "WARN" in out and "9" in out
+
+    def test_sticky_exemption_no_warn_when_completed(self, tmp_project, capsys):
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 9, "name": "s", "status": "completed", "covers_exempt": True}]}
+        inst = self._make_executor(tmp_project, "sticky-no-warn", index)
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()
+        out = capsys.readouterr().out
+        assert "exempt but not finished" not in out
+
+    def test_validate_covers_is_read_only(self, tmp_project):
+        """--preflight relies on this: _validate_covers must never write index.json."""
+        self._write_prd(tmp_project, "PRD-1")
+        index = {"project": "T", "phase": "p", "schema_version": 2,
+                  "steps": [{"step": 0, "name": "s", "status": "pending", "covers": ["PRD-1"]}]}
+        inst = self._make_executor(tmp_project, "read-only", index)
+        before = (tmp_project / "phases" / "read-only" / "index.json").stat().st_mtime_ns
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._validate_schema()
+        after = (tmp_project / "phases" / "read-only" / "index.json").stat().st_mtime_ns
+        assert before == after
+
+
+class TestPrdParsing:
+    def test_harvest_ids_from_bullet_list(self, tmp_project):
+        (tmp_project / "docs" / "PRD.md").write_text(
+            "# PRD\n- PRD-1: login\n- PRD-2: logout\n", encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor.__new__(ex.StepExecutor)
+            assert inst._harvest_prd_ids() == {1, 2}
+
+    def test_harvest_ignores_non_matching_text(self, tmp_project):
+        (tmp_project / "docs" / "PRD.md").write_text(
+            "# PRD\nSome prose mentioning PRD-N as a literal placeholder.\n- PRD-3: real one\n",
+            encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor.__new__(ex.StepExecutor)
+            assert inst._harvest_prd_ids() == {3}
+
+    def test_harvest_returns_empty_set_when_file_absent(self, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor.__new__(ex.StepExecutor)
+            assert inst._harvest_prd_ids() == set()
+
+    def test_prd_file_resolves_under_root(self, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor.__new__(ex.StepExecutor)
+            assert inst._prd_file() == tmp_project / "docs" / "PRD.md"
+
+
+class TestCoverageReport:
+    def test_writes_uncovered_prd_ids_empty_when_fully_covered(self, tmp_project, phase_dir):
+        (tmp_project / "docs" / "PRD.md").write_text("- PRD-1: x\n", encoding="utf-8")
+        index = json.loads((phase_dir / "index.json").read_text())
+        index["steps"][0]["covers"] = ["PRD-1"]
+        (phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp")
+        inst._index_file = phase_dir / "index.json"
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._coverage_report()
+
+        result = json.loads((phase_dir / "index.json").read_text())
+        assert result["uncovered_prd_ids"] == []
+
+    def test_writes_uncovered_prd_ids_when_gap_exists(self, tmp_project, phase_dir):
+        (tmp_project / "docs" / "PRD.md").write_text("- PRD-1: x\n- PRD-2: y\n", encoding="utf-8")
+        index = json.loads((phase_dir / "index.json").read_text())
+        index["steps"][0]["covers"] = ["PRD-1"]
+        (phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp")
+        inst._index_file = phase_dir / "index.json"
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._coverage_report()
+
+        result = json.loads((phase_dir / "index.json").read_text())
+        assert result["uncovered_prd_ids"] == ["PRD-2"]
+
+    def test_counts_covers_from_exempt_steps_too(self, tmp_project, phase_dir):
+        (tmp_project / "docs" / "PRD.md").write_text("- PRD-1: x\n", encoding="utf-8")
+        index = json.loads((phase_dir / "index.json").read_text())
+        index["steps"][0]["covers_exempt"] = True
+        index["steps"][0]["covers"] = ["PRD-1"]
+        (phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp")
+        inst._index_file = phase_dir / "index.json"
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._coverage_report()
+
+        result = json.loads((phase_dir / "index.json").read_text())
+        assert result["uncovered_prd_ids"] == []
+
+    def test_writes_sticky_exemptions_step_numbers(self, tmp_project, phase_dir):
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp")
+        inst._index_file = phase_dir / "index.json"
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._coverage_report()
+
+        result = json.loads((phase_dir / "index.json").read_text())
+        # phase_dir fixture: steps 0 and 1 carry covers_exempt: True
+        assert result["sticky_exemptions"] == [0, 1]
+
+    def test_rereads_index_from_disk_before_writing(self, tmp_project, phase_dir):
+        """_live_verification_gate may have written verify_result after _validate_covers ran;
+        _coverage_report must not clobber it by working off a stale in-memory copy."""
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp")
+        inst._index_file = phase_dir / "index.json"
+
+        index = json.loads((phase_dir / "index.json").read_text())
+        index["verify_result"] = {"pass": True}
+        (phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        with patch.object(ex, "ROOT", tmp_project):
+            inst._coverage_report()
+
+        result = json.loads((phase_dir / "index.json").read_text())
+        assert result["verify_result"] == {"pass": True}
+
+
+class TestReadJsonEncoding:
+    def test_reads_utf8_sig_bom(self, tmp_path):
+        p = tmp_path / "index.json"
+        p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"a": 1}).encode("utf-8"))
+        assert ex.StepExecutor._read_json(p) == {"a": 1}
+
+    def test_reads_plain_utf8(self, tmp_path):
+        p = tmp_path / "index.json"
+        p.write_text(json.dumps({"a": 1}), encoding="utf-8")
+        assert ex.StepExecutor._read_json(p) == {"a": 1}
+
+    def test_invalid_utf8_exits_1_named_error(self, tmp_path, capsys):
+        p = tmp_path / "index.json"
+        p.write_bytes(b"\xff\xfe\x00\x01bad-bytes")
+        with pytest.raises(SystemExit) as exc_info:
+            ex.StepExecutor._read_json(p)
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "not valid UTF-8" in out
 
 
 # ---------------------------------------------------------------------------
@@ -1112,6 +1386,7 @@ class TestRunOrdering:
         executor._execute_all_steps = track("execute_all_steps")
         executor._review_gate = track("review_gate")
         executor._live_verification_gate = track("live_verification_gate")
+        executor._coverage_report = track("coverage_report")
         executor._finalize = track("finalize")
         executor._print_header = MagicMock()
 
@@ -2612,6 +2887,7 @@ class TestRerunOrdering:
         executor._execute_all_steps = MagicMock()
         executor._review_gate = MagicMock()
         executor._live_verification_gate = MagicMock()
+        executor._coverage_report = MagicMock()
         executor._finalize = MagicMock()
         executor._print_header = MagicMock()
 

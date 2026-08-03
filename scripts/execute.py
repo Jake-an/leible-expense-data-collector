@@ -86,11 +86,14 @@ class StepExecutor:
     # below rather than substring matching (see _secret_surface).
     SECRET_SURFACE_SUBSTRING_TOKENS = ("credential", "secret", ".pem", "id_rsa", "id_ed25519",
                                         "apikey", "api_key")
+    # --- covers/PRD traceability (Track B) ---
+    COVERS_ID_RE = re.compile(r"^PRD-\d+$")
+    PRD_DOC_ID_RE = re.compile(r"\bPRD-(\d+)\b")
 
     def __init__(self, phase_dir_name: str, *, auto_push: bool = False,
                  model: Optional[str] = None, skip_review: bool = False,
                  force_retry: bool = False, skip_step_review: bool = False,
-                 rerun: bool = False):
+                 rerun: bool = False, preflight: bool = False):
         self._root = str(ROOT)
         self._phases_dir = ROOT / "phases"
         self._phase_dir = self._phases_dir / phase_dir_name
@@ -121,10 +124,13 @@ class StepExecutor:
         self._total = len(idx["steps"])
         self._concerns = []  # accumulator for done_with_concerns steps' "concerns" lists
         self._rerun = rerun
+        self._preflight = preflight
 
     def run(self):
         self._print_header()
         self._validate_schema()
+        if self._preflight:
+            return
         if self._rerun:
             self._perform_rerun()
         self._check_blockers()
@@ -133,6 +139,7 @@ class StepExecutor:
         self._execute_all_steps()
         self._review_gate()
         self._live_verification_gate()
+        self._coverage_report()
         self._finalize()
 
     # --- timestamps ---
@@ -143,8 +150,16 @@ class StepExecutor:
     # --- JSON I/O ---
 
     @staticmethod
-    def _read_json(p: Path) -> dict:
-        return json.loads(p.read_text(encoding="utf-8"))
+    def _read_text(p: Path) -> str:
+        try:
+            return p.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as e:
+            print(f"  ERROR: {p} is not valid UTF-8 ({e}). Re-encode it to UTF-8 and retry.")
+            sys.exit(1)
+
+    @classmethod
+    def _read_json(cls, p: Path) -> dict:
+        return json.loads(cls._read_text(p))
 
     @staticmethod
     def _write_json(p: Path, data: dict):
@@ -732,6 +747,80 @@ class StepExecutor:
                 print(f"  ERROR: step {s.get('step')} ({s.get('name', '?')}) has tdd: true "
                       f"but no test_cmd — required to mechanically confirm RED/GREEN.")
                 sys.exit(1)
+
+        self._validate_covers(index)
+
+    # --- covers/PRD traceability helpers ---
+
+    @staticmethod
+    def _needs_covers(step: dict) -> bool:
+        return not step.get("covers_exempt", False)
+
+    def _prd_file(self) -> Path:
+        return ROOT / "docs" / "PRD.md"
+
+    def _harvest_prd_ids(self) -> set:
+        """Return the set of PRD-N ids (as ints) declared in docs/PRD.md, or empty if absent."""
+        prd_file = self._prd_file()
+        if not prd_file.exists():
+            return set()
+        text = self._read_text(prd_file)
+        return {int(n) for n in self.PRD_DOC_ID_RE.findall(text)}
+
+    def _validate_covers(self, index: dict):
+        """Traceability preflight: every non-exempt step must declare valid `covers`.
+        Strictly READ-ONLY — --preflight relies on _validate_schema (and therefore this
+        method) performing no writes. Errors + sys.exit(1); the sticky-exemption check
+        below is a WARN only, never a hard error (see plan rationale at execute.py call site).
+        """
+        prd_ids = None  # lazily harvested only once a step actually declares an id
+
+        for s in index.get("steps", []):
+            step_num = s.get("step")
+            step_name = s.get("name", "?")
+
+            if s.get("covers_exempt") is True and s.get("status") not in ("completed", "done_with_concerns"):
+                print(f"  WARN: step {step_num} ({step_name}) is exempt but not finished; "
+                      f"if it was re-scoped, delete covers_exempt so it re-enters the gate.")
+
+            if not self._needs_covers(s):
+                continue
+
+            covers = s.get("covers")
+            if covers is None:
+                print(f"  ERROR: step {step_num} ({step_name}) is missing `covers` "
+                      f"(list of PRD-N ids it implements, or `covers: []` with a `covers_reason`).")
+                sys.exit(1)
+            if not isinstance(covers, list):
+                print(f"  ERROR: step {step_num} ({step_name}) has `covers` that is not a list.")
+                sys.exit(1)
+            if not covers:
+                if not s.get("covers_reason"):
+                    print(f"  ERROR: step {step_num} ({step_name}) has `covers: []` but no "
+                          f"non-empty `covers_reason` explaining why nothing applies.")
+                    sys.exit(1)
+                continue
+
+            for cid in covers:
+                if not isinstance(cid, str) or not self.COVERS_ID_RE.match(cid):
+                    print(f"  ERROR: step {step_num} ({step_name}) has an invalid covers id "
+                          f"{cid!r} (expected form PRD-N).")
+                    sys.exit(1)
+
+                if prd_ids is None:
+                    prd_file = self._prd_file()
+                    if not prd_file.exists():
+                        print(f"  ERROR: step {step_num} ({step_name}) declares {cid} but "
+                              f"{prd_file} does not exist. Create docs/PRD.md with permanent "
+                              f"PRD-N ids before declaring covers.")
+                        sys.exit(1)
+                    prd_ids = self._harvest_prd_ids()
+
+                num = int(self.COVERS_ID_RE.match(cid).group(0).split("-")[1])
+                if num not in prd_ids:
+                    print(f"  ERROR: step {step_num} ({step_name}) declares {cid}, which is "
+                          f"not present in {self._prd_file()}.")
+                    sys.exit(1)
 
     def _check_blockers(self):
         index = self._read_json(self._index_file)
@@ -1675,6 +1764,34 @@ class StepExecutor:
         self._update_top_index("error")
         sys.exit(1)
 
+    def _coverage_report(self):
+        """Report loudly, never block. Persists uncovered_prd_ids + sticky_exemptions to
+        index.json. Re-reads from disk first since _live_verification_gate may have
+        written to it after _validate_covers ran."""
+        index = self._read_json(self._index_file)
+        steps = index.get("steps", [])
+
+        covered_ids = set()
+        for s in steps:
+            for cid in (s.get("covers") or []):
+                if isinstance(cid, str) and self.COVERS_ID_RE.match(cid):
+                    covered_ids.add(int(cid.split("-")[1]))
+
+        all_prd_ids = self._harvest_prd_ids()
+        uncovered = sorted(all_prd_ids - covered_ids)
+        index["uncovered_prd_ids"] = [f"PRD-{n}" for n in uncovered]
+
+        sticky = sorted(s["step"] for s in steps if s.get("covers_exempt") is True)
+        index["sticky_exemptions"] = sticky
+
+        self._write_json(self._index_file, index)
+
+        if uncovered:
+            print(f"\n  · Coverage report: {len(uncovered)} PRD id(s) not covered by this phase: "
+                  f"{', '.join('PRD-' + str(n) for n in uncovered)}")
+        else:
+            print("\n  · Coverage report: all declared PRD ids covered.")
+
     def _finalize(self):
         index = self._read_json(self._index_file)
         index["completed_at"] = self._stamp()
@@ -1713,11 +1830,19 @@ def main():
     parser.add_argument("--rerun", action="store_true",
                          help="Archive prior run artifacts into phases/<dir>/_prev-<timestamp>/ "
                               "and reset all step statuses to pending (full re-run)")
+    parser.add_argument("--preflight", action="store_true",
+                         help="Validate schema + covers traceability only, then exit (no writes)")
     args = parser.parse_args()
+
+    if args.preflight and args.rerun:
+        print("ERROR: --preflight and --rerun are mutually exclusive "
+              "(--rerun would silently no-op under --preflight)")
+        sys.exit(1)
 
     StepExecutor(args.phase_dir, auto_push=args.push, model=args.model,
                  skip_review=args.no_review, force_retry=args.force_retry,
-                 skip_step_review=args.no_step_review, rerun=args.rerun).run()
+                 skip_step_review=args.no_step_review, rerun=args.rerun,
+                 preflight=args.preflight).run()
 
 
 if __name__ == "__main__":
