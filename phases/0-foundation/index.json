@@ -3,9 +3,40 @@
   "project": "leible-expense-data-collector",
   "phase": "0-foundation",
   "steps": [
-    { "step": 0, "name": "sheet-and-gas-setup", "status": "blocked", "tdd": false, "tdd_reason": "external manual setup only (Jake creates Sheet/tabs, GAS project, Square tokens, clasp config) — no code logic to test", "docs": ["schema.md"], "blocked_reason": "Jake must create the Google Sheet (Suppliers/Sales/_staging tabs) + GAS project, add the 4 Square tokens to Script Properties, and provide the scriptId for config/clasp.json." },
-    { "step": 1, "name": "dopost-endpoint", "status": "completed", "summary": "doPost + validateIngest_ + ensureSheet + appsscript.json built (two-tab contract)." },
-    { "step": 2, "name": "normalize-and-dedup", "status": "completed", "summary": "normalizeSupplierRow + ingestSupplierRows + source+invoice_ref dedup; appendSalesRow_ for Sales." },
-    { "step": 3, "name": "integration-test", "status": "completed", "summary": "test_code.js: 18 Node-mock tests passing (normalize/dedup/doPost/square gross/mayers PDF-invoice parse)." }
+    {
+      "step": 0,
+      "name": "sheet-and-gas-setup",
+      "status": "blocked",
+      "tdd": false,
+      "tdd_reason": "external manual setup only (Jake creates Sheet/tabs, GAS project, Square tokens, clasp config) — no code logic to test",
+      "docs": [
+        "schema.md"
+      ],
+      "blocked_reason": "Jake must create the Google Sheet (Suppliers/Sales/_staging tabs) + GAS project, add the 4 Square tokens to Script Properties, and provide the scriptId for config/clasp.json."
+    },
+    {
+      "step": 1,
+      "name": "dopost-endpoint",
+      "status": "completed",
+      "summary": "doPost + validateIngest_ + ensureSheet + appsscript.json built (two-tab contract).",
+      "covers_exempt": true,
+      "covers_exempt_at": "2026-08-03T12:50:00+10:00"
+    },
+    {
+      "step": 2,
+      "name": "normalize-and-dedup",
+      "status": "completed",
+      "summary": "normalizeSupplierRow + ingestSupplierRows + source+invoice_ref dedup; appendSalesRow_ for Sales.",
+      "covers_exempt": true,
+      "covers_exempt_at": "2026-08-03T12:50:00+10:00"
+    },
+    {
+      "step": 3,
+      "name": "integration-test",
+      "status": "completed",
+      "summary": "test_code.js: 18 Node-mock tests passing (normalize/dedup/doPost/square gross/mayers PDF-invoice parse).",
+      "covers_exempt": true,
+      "covers_exempt_at": "2026-08-03T12:50:00+10:00"
+    }
   ]
 }

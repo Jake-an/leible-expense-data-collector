@@ -46,7 +46,9 @@
         "fix_rounds": 0,
         "result_file": "phases/fix-silent-ingest-failures/step0-review.json",
         "checked_at": "2026-07-21T16:23:24+0900"
-      }
+      },
+      "covers_exempt": true,
+      "covers_exempt_at": "2026-08-03T12:50:00+10:00"
     },
     {
       "step": 1,
@@ -87,7 +89,9 @@
         "fix_rounds": 0,
         "result_file": "phases/fix-silent-ingest-failures/step1-review.json",
         "checked_at": "2026-07-21T16:30:08+0900"
-      }
+      },
+      "covers_exempt": true,
+      "covers_exempt_at": "2026-08-03T12:50:00+10:00"
     },
     {
       "step": 2,
@@ -128,7 +132,9 @@
         "fix_rounds": 0,
         "result_file": "phases/fix-silent-ingest-failures/step2-review.json",
         "checked_at": "2026-07-21T16:35:39+0900"
-      }
+      },
+      "covers_exempt": true,
+      "covers_exempt_at": "2026-08-03T12:50:00+10:00"
     }
   ],
   "created_at": "2026-07-21T16:14:38+0900",
