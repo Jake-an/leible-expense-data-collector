@@ -9,7 +9,8 @@
     {
       "step": 0,
       "name": "ensure-sheet-empty-headers",
-      "status": "pending",
+      "status": "completed",
+      "summary": "GREEN already satisfied by RED commit 5a1b9c4 (mock geometry guard + ensureSheet headers-guard both present); 736/0 passing, all 6 spec cases verified.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
