@@ -184,14 +184,14 @@
         "ARCHITECTURE.md"
       ],
       "started_at": "2026-08-04T12:37:37+0900",
-      "completed_at": "2026-08-04T15:40:00+0900",
-      "summary": "Implemented ShopSpendClient (client.py) + tolerant dataclasses (models.py): zero-retry fatal codes (UNAUTHORIZED/BAD_REQUEST/SCHEMA), 6-attempt backoff ladder for INTERNAL/non-JSON/transport errors, offset-paging, parse_week_label numeric sort, resolve_config env resolution, and token redaction on every error path; all 27 tests + ruff pass.",
+      "completed_at": "2026-08-04T14:28:56+0900",
+      "summary": "Implemented ShopSpendClient (client.py) + tolerant dataclasses (models.py): zero-retry fatal codes (UNAUTHORIZED/BAD_REQUEST/SCHEMA), 6-attempt backoff ladder for INTERNAL/non-JSON/transport errors, offset-paging, parse_week_label numeric sort, resolve_config env resolution, a…",
       "tdd_evidence": {
         "green": {
           "command": "python -m pytest connectors/shopspend -q",
           "exit_code": 0,
-          "output_tail": "27 passed in 0.88s",
-          "at": "2026-08-04T15:40:00+0900"
+          "output_tail": "...........................                                              [100%]\n27 passed in 0.40s\n",
+          "at": "2026-08-04T14:28:57+0900"
         },
         "red": {
           "command": "python -m pytest connectors/shopspend -q",
