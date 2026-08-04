@@ -20,9 +20,8 @@ import time
 import types
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -76,24 +75,39 @@ class StepExecutor:
         "be penalized for an honest blocker; you will be re-dispatched with better context."
     )
     TZ = timezone(timedelta(hours=9))
-    DEFAULT_MODEL = "sonnet"        # execution steps: plan is locked, favor speed
-    REVIEW_MODEL = "opus"           # review gate: judgment-heavy, favor quality
+    DEFAULT_MODEL = "sonnet"  # execution steps: plan is locked, favor speed
+    REVIEW_MODEL = "opus"  # review gate: judgment-heavy, favor quality
     REVIEW_RESULT_FILE = "review-result.json"
-    STEP_REVIEW_MODEL = "haiku"     # per-step review gate: cheap, runs after every step
+    STEP_REVIEW_MODEL = "haiku"  # per-step review gate: cheap, runs after every step
     DEFAULT_MAX_FIX_ROUNDS = 2
     # Conservative secret-surface tokens: matched as a substring within any single path
     # segment (case-insensitive). `.env`/`.env.*` and `auth` get precise basename handling
     # below rather than substring matching (see _secret_surface).
-    SECRET_SURFACE_SUBSTRING_TOKENS = ("credential", "secret", ".pem", "id_rsa", "id_ed25519",
-                                        "apikey", "api_key")
+    SECRET_SURFACE_SUBSTRING_TOKENS = (
+        "credential",
+        "secret",
+        ".pem",
+        "id_rsa",
+        "id_ed25519",
+        "apikey",
+        "api_key",
+    )
     # --- covers/PRD traceability (Track B) ---
     COVERS_ID_RE = re.compile(r"^PRD-\d+$")
     PRD_DOC_ID_RE = re.compile(r"\bPRD-(\d+)\b")
 
-    def __init__(self, phase_dir_name: str, *, auto_push: bool = False,
-                 model: Optional[str] = None, skip_review: bool = False,
-                 force_retry: bool = False, skip_step_review: bool = False,
-                 rerun: bool = False, preflight: bool = False):
+    def __init__(
+        self,
+        phase_dir_name: str,
+        *,
+        auto_push: bool = False,
+        model: str | None = None,
+        skip_review: bool = False,
+        force_retry: bool = False,
+        skip_step_review: bool = False,
+        rerun: bool = False,
+        preflight: bool = False,
+    ):
         self._root = str(ROOT)
         self._phases_dir = ROOT / "phases"
         self._phase_dir = self._phases_dir / phase_dir_name
@@ -169,15 +183,16 @@ class StepExecutor:
 
     def _run_git(self, *args) -> subprocess.CompletedProcess:
         cmd = ["git"] + list(args)
-        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace")
+        return subprocess.run(
+            cmd, cwd=self._root, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
 
     def _checkout_branch(self):
         branch = f"feat-{self._phase_name}"
 
         r = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
         if r.returncode != 0:
-            print(f"  ERROR: git is unavailable or this is not a git repository.")
+            print("  ERROR: git is unavailable or this is not a git repository.")
             print(f"  {r.stderr.strip()}")
             sys.exit(1)
 
@@ -185,12 +200,16 @@ class StepExecutor:
             return
 
         r = self._run_git("rev-parse", "--verify", branch)
-        r = self._run_git("checkout", branch) if r.returncode == 0 else self._run_git("checkout", "-b", branch)
+        r = (
+            self._run_git("checkout", branch)
+            if r.returncode == 0
+            else self._run_git("checkout", "-b", branch)
+        )
 
         if r.returncode != 0:
             print(f"  ERROR: Failed to checkout branch '{branch}'.")
             print(f"  {r.stderr.strip()}")
-            print(f"  Hint: Stash or commit your changes and try again.")
+            print("  Hint: Stash or commit your changes and try again.")
             sys.exit(1)
 
         print(f"  Branch: {branch}")
@@ -247,8 +266,12 @@ class StepExecutor:
         for phase in top.get("phases", []):
             if phase.get("dir") == self._phase_dir_name:
                 phase["status"] = status
-                ts_key = {"completed": "completed_at", "error": "failed_at", "blocked": "blocked_at",
-                          "needs_context": "needs_context_at"}.get(status)
+                ts_key = {
+                    "completed": "completed_at",
+                    "error": "failed_at",
+                    "blocked": "blocked_at",
+                    "needs_context": "needs_context_at",
+                }.get(status)
                 if ts_key:
                     phase[ts_key] = ts
                 break
@@ -256,9 +279,9 @@ class StepExecutor:
 
     # --- guardrails & context ---
 
-    MAX_DOC_BYTES = 1_000_000   # skip oversized guardrail docs (memory/token safety)
-    MAX_STEP_BYTES = 100_000    # refuse oversized step files
-    MAX_SUMMARY_CHARS = 280     # summary stays ONE line; detail goes to step{N}-report.md
+    MAX_DOC_BYTES = 1_000_000  # skip oversized guardrail docs (memory/token safety)
+    MAX_STEP_BYTES = 100_000  # refuse oversized step files
+    MAX_SUMMARY_CHARS = 280  # summary stays ONE line; detail goes to step{N}-report.md
 
     @classmethod
     def _truncate_summary_if_needed(cls, index: dict, step_num: int):
@@ -270,9 +293,11 @@ class StepExecutor:
                 continue
             summary = s.get("summary")
             if isinstance(summary, str) and len(summary) > cls.MAX_SUMMARY_CHARS:
-                print(f"  WARN: step {step_num} summary exceeds {cls.MAX_SUMMARY_CHARS} chars "
-                      f"— truncating (detail belongs in step{step_num}-report.md)")
-                s["summary"] = summary[:cls.MAX_SUMMARY_CHARS - 3] + "…"
+                print(
+                    f"  WARN: step {step_num} summary exceeds {cls.MAX_SUMMARY_CHARS} chars "
+                    f"— truncating (detail belongs in step{step_num}-report.md)"
+                )
+                s["summary"] = summary[: cls.MAX_SUMMARY_CHARS - 3] + "…"
 
     def _load_guardrails(self, step: dict) -> str:
         """Progressive-disclosure guardrails, computed per step (not once per run):
@@ -284,12 +309,16 @@ class StepExecutor:
         sections = []
         claude_md = ROOT / "CLAUDE.md"
         if claude_md.exists() and claude_md.stat().st_size <= self.MAX_DOC_BYTES:
-            sections.append(f"## Project Rules (CLAUDE.md)\n\n{claude_md.read_text(encoding='utf-8')}")
+            sections.append(
+                f"## Project Rules (CLAUDE.md)\n\n{claude_md.read_text(encoding='utf-8')}"
+            )
 
         docs_dir = ROOT / "docs"
         all_docs = sorted(docs_dir.glob("*.md")) if docs_dir.is_dir() else []
         guardrails_all = getattr(self, "_task_guardrails", None) == "all"
-        declared = {d.name for d in all_docs} if guardrails_all else set((step or {}).get("docs") or [])
+        declared = (
+            {d.name for d in all_docs} if guardrails_all else set((step or {}).get("docs") or [])
+        )
 
         if not guardrails_all:
             existing_names = {d.name for d in all_docs}
@@ -329,11 +358,10 @@ class StepExecutor:
             return ""
         return "## Previous Step Outputs\n\n" + "\n".join(lines) + "\n\n"
 
-    def _build_preamble(self, guardrails: str, step_context: str,
-                        prev_error: Optional[str] = None) -> str:
-        commit_example = self.FEAT_MSG.format(
-            phase=self._phase_name, num="N", name="<step-name>"
-        )
+    def _build_preamble(
+        self, guardrails: str, step_context: str, prev_error: str | None = None
+    ) -> str:
+        commit_example = self.FEAT_MSG.format(phase=self._phase_name, num="N", name="<step-name>")
         retry_section = ""
         if prev_error:
             retry_section = (
@@ -351,21 +379,21 @@ class StepExecutor:
             f"4. Run the AC (Acceptance Criteria) verification yourself.\n"
             f"5. Status vocabulary — six states: pending, completed, done_with_concerns, error, blocked, "
             f"needs_context. Update the step status in /phases/{self._phase_dir_name}/index.json:\n"
-            f"   - AC passes → \"completed\" + summarize this step's output in the \"summary\" field\n"
-            f"   - AC passes but leaves a concern the next steps/review must see → \"done_with_concerns\" + "
-            f"summarize in \"summary\" AND list the issue(s) in a \"concerns\" array\n"
+            f'   - AC passes → "completed" + summarize this step\'s output in the "summary" field\n'
+            f'   - AC passes but leaves a concern the next steps/review must see → "done_with_concerns" + '
+            f'summarize in "summary" AND list the issue(s) in a "concerns" array\n'
             f"   - The step or plan itself is deficient — ambiguous, contradictory, or references missing "
-            f"artifacts → \"needs_context\" + record in \"needs_context_detail\", then stop immediately\n"
-            f"   - Still failing after {self.MAX_RETRIES} fix attempts → \"error\" + record in \"error_message\"\n"
-            f"   - User intervention required (API keys, auth, manual setup, etc.) → \"blocked\" + record in \"blocked_reason\" then stop immediately\n"
+            f'artifacts → "needs_context" + record in "needs_context_detail", then stop immediately\n'
+            f'   - Still failing after {self.MAX_RETRIES} fix attempts → "error" + record in "error_message"\n'
+            f'   - User intervention required (API keys, auth, manual setup, etc.) → "blocked" + record in "blocked_reason" then stop immediately\n'
             f"6. Commit all changes:\n"
             f"   {commit_example}\n"
             f"7. If output artifacts from a prior attempt of this step exist, read them first; prefer "
             f"completing over recreating.\n"
             f"8. Trust phases/{self._phase_dir_name}/index.json and git log over recollection.\n"
-            f"9. Keep \"summary\" to ONE line. If more detail is needed, write it to "
+            f'9. Keep "summary" to ONE line. If more detail is needed, write it to '
             f"phases/{self._phase_dir_name}/step{{N}}-report.md (where N is this step's number) and "
-            f"reference that file from \"summary\" instead of pasting detail inline.\n\n"
+            f'reference that file from "summary" instead of pasting detail inline.\n\n'
             f"{self.ESCALATION_PARAGRAPH}\n\n---\n\n"
         )
 
@@ -392,8 +420,9 @@ class StepExecutor:
         last = step.get("last_failure")
         if not last:
             return False
-        return (self._step_fingerprint(step) == last.get("step_file_sha256")
-                and self._resolve_model(step) == last.get("model"))
+        return self._step_fingerprint(step) == last.get("step_file_sha256") and self._resolve_model(
+            step
+        ) == last.get("model")
 
     def _get_step(self, step_num: int) -> dict:
         index = self._read_json(self._index_file)
@@ -417,9 +446,16 @@ class StepExecutor:
 
     def _run_test_cmd(self, test_cmd: str) -> subprocess.CompletedProcess:
         """Run a step's test_cmd (shell, cwd=ROOT) to mechanically confirm RED/GREEN."""
-        return subprocess.run(test_cmd, shell=True, cwd=self._root,
-                               capture_output=True, text=True, timeout=600,
-                               encoding="utf-8", errors="replace")
+        return subprocess.run(
+            test_cmd,
+            shell=True,
+            cwd=self._root,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            encoding="utf-8",
+            errors="replace",
+        )
 
     NO_TESTS_PATTERNS = (
         r"no tests ran",
@@ -443,7 +479,7 @@ class StepExecutor:
 
     RED_CLASSIFIER_MODEL = "haiku"
 
-    def _classify_red(self, step_num: int, output_tail: str) -> Optional[dict]:
+    def _classify_red(self, step_num: int, output_tail: str) -> dict | None:
         """Haiku one-shot: is this RED failing for the RIGHT reason (missing/incomplete
         implementation) or the WRONG reason (broken test code/misconfig)? Returns None
         (unconfirmed) if no readable verdict after 2 attempts — never silently pass."""
@@ -471,8 +507,9 @@ class StepExecutor:
                     return data
         return None
 
-    def _build_red_preamble(self, guardrails: str, step_context: str, test_cmd: str,
-                             prev_reason: Optional[str] = None) -> str:
+    def _build_red_preamble(
+        self, guardrails: str, step_context: str, test_cmd: str, prev_reason: str | None = None
+    ) -> str:
         retry_section = ""
         if prev_reason:
             retry_section = (
@@ -492,21 +529,22 @@ class StepExecutor:
             f"3. The test(s) must fail for the RIGHT reason (missing/incomplete implementation — "
             f"assertions, NotImplementedError, a missing symbol) — not because the test file itself is "
             f"broken or misconfigured.\n"
-            f"4. Do NOT set the step status to \"completed\" in this sub-phase — the runner owns status "
-            f"during TDD sub-phases. You may set \"blocked\" or \"needs_context\" if genuinely stuck.\n"
+            f'4. Do NOT set the step status to "completed" in this sub-phase — the runner owns status '
+            f'during TDD sub-phases. You may set "blocked" or "needs_context" if genuinely stuck.\n'
             f"5. Do not commit — the runner commits the RED tests once confirmed.\n"
-            f"6. A pre-existing implementation from a prior attempt, deadline pressure, or \"the team "
-            f"usually skips this for changes this small\" are not reasons to skip RED — temporarily move "
+            f'6. A pre-existing implementation from a prior attempt, deadline pressure, or "the team '
+            f'usually skips this for changes this small" are not reasons to skip RED — temporarily move '
             f"existing implementation code aside, confirm the test fails without it, then restore it "
             f"before GREEN.\n"
             f"7. If the RED classifier rejects your test, do not edit it merely to satisfy the "
             f"classifier's surface pattern — fix the actual test/implementation mismatch it names, or set "
-            f"\"needs_context\" if you believe the rejection itself is wrong.\n\n"
+            f'"needs_context" if you believe the rejection itself is wrong.\n\n'
             f"{self.ESCALATION_PARAGRAPH}\n\n---\n\n"
         )
 
-    def _build_green_preamble(self, guardrails: str, step_context: str, test_cmd: str,
-                               prev_error: Optional[str] = None) -> str:
+    def _build_green_preamble(
+        self, guardrails: str, step_context: str, test_cmd: str, prev_error: str | None = None
+    ) -> str:
         commit_example = self.FEAT_MSG.format(phase=self._phase_name, num="N", name="<step-name>")
         retry_section = ""
         if prev_error:
@@ -524,20 +562,20 @@ class StepExecutor:
             f"1. Implement the MINIMUM code needed to make the already-committed RED test(s) pass. Do "
             f"not gold-plate or add untested scope.\n"
             f"2. Do NOT weaken, skip, or delete the RED-phase tests to force a pass — deadline pressure, "
-            f"a colleague's precedent, or \"it passed like this before\" are not grounds either; a "
+            f'a colleague\'s precedent, or "it passed like this before" are not grounds either; a '
             f"passing test that no longer tests the behavior is worse than a failing one.\n"
             f"3. The runner will confirm GREEN by running this exact test command:\n   {test_cmd}\n"
             f"4. Update the step status in /phases/{self._phase_dir_name}/index.json:\n"
-            f"   - Tests pass → \"completed\" + summarize this step's output in the \"summary\" field\n"
-            f"   - Still failing after {self.MAX_RETRIES} fix attempts → \"error\" + record in "
-            f"\"error_message\"\n"
-            f"   - User intervention required (API keys, auth, manual setup, etc.) → \"blocked\" + "
-            f"record in \"blocked_reason\" then stop immediately\n"
+            f'   - Tests pass → "completed" + summarize this step\'s output in the "summary" field\n'
+            f'   - Still failing after {self.MAX_RETRIES} fix attempts → "error" + record in '
+            f'"error_message"\n'
+            f'   - User intervention required (API keys, auth, manual setup, etc.) → "blocked" + '
+            f'record in "blocked_reason" then stop immediately\n'
             f"   - The step or plan itself is deficient (ambiguous, contradictory, missing artifacts) → "
-            f"\"needs_context\" + record in \"needs_context_detail\" then stop immediately\n"
-            f"5. Keep \"summary\" to ONE line. If more detail is needed, write it to "
+            f'"needs_context" + record in "needs_context_detail" then stop immediately\n'
+            f'5. Keep "summary" to ONE line. If more detail is needed, write it to '
             f"phases/{self._phase_dir_name}/step{{N}}-report.md (where N is this step's number) and "
-            f"reference that file from \"summary\" instead of pasting detail inline.\n"
+            f'reference that file from "summary" instead of pasting detail inline.\n'
             f"6. Commit all changes:\n"
             f"   {commit_example}\n\n"
             f"{self.ESCALATION_PARAGRAPH}\n\n---\n\n"
@@ -563,7 +601,10 @@ class StepExecutor:
                 self._invoke_claude(step, preamble)
 
             index = self._read_json(self._index_file)
-            status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
+            status = next(
+                (s.get("status", "pending") for s in index["steps"] if s["step"] == step_num),
+                "pending",
+            )
             ts = self._stamp()
 
             if status == "blocked":
@@ -572,7 +613,10 @@ class StepExecutor:
                         s["blocked_at"] = ts
                 self._write_json(self._index_file, index)
                 self._record_last_failure(step_num)
-                reason = next((s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num), "")
+                reason = next(
+                    (s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num),
+                    "",
+                )
                 print(f"  ⏸ Step {step_num} RED: {step_name} blocked")
                 print(f"    Reason: {reason}")
                 self._update_top_index("blocked")
@@ -584,7 +628,14 @@ class StepExecutor:
                         s["needs_context_at"] = ts
                 self._write_json(self._index_file, index)
                 self._record_last_failure(step_num)
-                detail = next((s.get("needs_context_detail", "") for s in index["steps"] if s["step"] == step_num), "")
+                detail = next(
+                    (
+                        s.get("needs_context_detail", "")
+                        for s in index["steps"]
+                        if s["step"] == step_num
+                    ),
+                    "",
+                )
                 print(f"  ? Step {step_num} RED: {step_name} needs context")
                 print(f"    Detail: {detail}")
                 self._update_top_index("needs_context")
@@ -596,10 +647,14 @@ class StepExecutor:
                     if s["step"] == step_num:
                         s["status"] = "pending"
                 self._write_json(self._index_file, index)
-                prev_reason = ("Runner owns status during TDD sub-phases — do not set status to "
-                                "\"completed\" in the RED sub-phase; only write the failing tests.")
-                print(f"  ↻ Step {step_num} RED: retry {attempt}/{self.MAX_RETRIES} — "
-                      f"session set completed during RED")
+                prev_reason = (
+                    "Runner owns status during TDD sub-phases — do not set status to "
+                    '"completed" in the RED sub-phase; only write the failing tests.'
+                )
+                print(
+                    f"  ↻ Step {step_num} RED: retry {attempt}/{self.MAX_RETRIES} — "
+                    f"session set completed during RED"
+                )
                 continue
 
             result = self._run_test_cmd(test_cmd)
@@ -608,10 +663,15 @@ class StepExecutor:
             output_tail = output[-4000:]
 
             if not mechanical_ok:
-                reason_bit = ("test command passed (exit 0)" if result.returncode == 0
-                               else "0 tests were collected/ran")
-                prev_reason = (f"Test command did not fail as expected — {reason_bit}. "
-                                f"Output tail:\n{output_tail[-1000:]}")
+                reason_bit = (
+                    "test command passed (exit 0)"
+                    if result.returncode == 0
+                    else "0 tests were collected/ran"
+                )
+                prev_reason = (
+                    f"Test command did not fail as expected — {reason_bit}. "
+                    f"Output tail:\n{output_tail[-1000:]}"
+                )
                 print(f"  ↻ Step {step_num} RED: retry {attempt}/{self.MAX_RETRIES} — {reason_bit}")
                 continue
 
@@ -621,7 +681,9 @@ class StepExecutor:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["blocked_at"] = ts
-                        s["blocked_reason"] = "RED classifier produced no readable verdict after 2 attempts"
+                        s["blocked_reason"] = (
+                            "RED classifier produced no readable verdict after 2 attempts"
+                        )
                 self._write_json(self._index_file, index)
                 self._record_last_failure(step_num)
                 self._update_top_index("blocked")
@@ -629,7 +691,9 @@ class StepExecutor:
 
             if not classifier.get("red_valid"):
                 prev_reason = f"RED classifier rejected this failure: {classifier.get('reason', '(no reason given)')}"
-                print(f"  ↻ Step {step_num} RED: retry {attempt}/{self.MAX_RETRIES} — classifier rejected RED")
+                print(
+                    f"  ↻ Step {step_num} RED: retry {attempt}/{self.MAX_RETRIES} — classifier rejected RED"
+                )
                 continue
 
             # Valid RED confirmed.
@@ -658,7 +722,9 @@ class StepExecutor:
         for s in index["steps"]:
             if s["step"] == step_num:
                 s["status"] = "error"
-                s["error_message"] = f"[RED sub-phase failed after {self.MAX_RETRIES} attempts] {prev_reason}"
+                s["error_message"] = (
+                    f"[RED sub-phase failed after {self.MAX_RETRIES} attempts] {prev_reason}"
+                )
                 s["failed_at"] = self._stamp()
         self._write_json(self._index_file, index)
         self._record_last_failure(step_num)
@@ -676,13 +742,26 @@ class StepExecutor:
         # unaffected either way). See gotcha-python-spawn-claude-cli-windows.
         return shutil.which("claude") or "claude"
 
-    def _run_claude(self, prompt: str, model: str, timeout: int = 1800) -> subprocess.CompletedProcess:
+    def _run_claude(
+        self, prompt: str, model: str, timeout: int = 1800
+    ) -> subprocess.CompletedProcess:
         # Prompt goes via stdin: guardrail-laden prompts exceed Windows' ~32k argv limit.
         return subprocess.run(
-            [self._claude_bin(), "-p", "--dangerously-skip-permissions", "--output-format", "json",
-             "--model", model],
-            input=prompt, cwd=self._root, capture_output=True, text=True,
-            encoding="utf-8", timeout=timeout,
+            [
+                self._claude_bin(),
+                "-p",
+                "--dangerously-skip-permissions",
+                "--output-format",
+                "json",
+                "--model",
+                model,
+            ],
+            input=prompt,
+            cwd=self._root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
         )
 
     def _invoke_claude(self, step: dict, preamble: str) -> dict:
@@ -705,9 +784,11 @@ class StepExecutor:
                 print(f"  stderr: {result.stderr[:500]}")
 
         output = {
-            "step": step_num, "name": step_name,
+            "step": step_num,
+            "name": step_name,
             "exitCode": result.returncode,
-            "stdout": result.stdout, "stderr": result.stderr,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
         }
         out_path = self._phase_dir / f"step{step_num}-output.json"
         with open(out_path, "w", encoding="utf-8") as f:
@@ -718,12 +799,12 @@ class StepExecutor:
     # --- header & validation ---
 
     def _print_header(self):
-        print(f"\n{'='*60}")
-        print(f"  Harness Step Executor")
+        print(f"\n{'=' * 60}")
+        print("  Harness Step Executor")
         print(f"  Phase: {self._phase_name} | Steps: {self._total}")
         if self._auto_push:
-            print(f"  Auto-push: enabled")
-        print(f"{'='*60}")
+            print("  Auto-push: enabled")
+        print(f"{'=' * 60}")
 
     def _validate_schema(self):
         """Schema preflight (v2). Hard-errors ONLY on:
@@ -736,16 +817,22 @@ class StepExecutor:
         schema_version = index.get("schema_version")
 
         if schema_version is None:
-            print("  WARN: index.json missing schema_version (assuming legacy v1); "
-                  "new tasks should set schema_version: 2")
+            print(
+                "  WARN: index.json missing schema_version (assuming legacy v1); "
+                "new tasks should set schema_version: 2"
+            )
         elif schema_version != 2:
-            print(f"  ERROR: unsupported schema_version {schema_version!r} in {self._index_file} (expected 2)")
+            print(
+                f"  ERROR: unsupported schema_version {schema_version!r} in {self._index_file} (expected 2)"
+            )
             sys.exit(1)
 
         for s in index.get("steps", []):
             if s.get("tdd") and not s.get("test_cmd"):
-                print(f"  ERROR: step {s.get('step')} ({s.get('name', '?')}) has tdd: true "
-                      f"but no test_cmd — required to mechanically confirm RED/GREEN.")
+                print(
+                    f"  ERROR: step {s.get('step')} ({s.get('name', '?')}) has tdd: true "
+                    f"but no test_cmd — required to mechanically confirm RED/GREEN."
+                )
                 sys.exit(1)
 
         self._validate_covers(index)
@@ -779,47 +866,62 @@ class StepExecutor:
             step_num = s.get("step")
             step_name = s.get("name", "?")
 
-            if s.get("covers_exempt") is True and s.get("status") not in ("completed", "done_with_concerns"):
-                print(f"  WARN: step {step_num} ({step_name}) is exempt but not finished; "
-                      f"if it was re-scoped, delete covers_exempt so it re-enters the gate.")
+            if s.get("covers_exempt") is True and s.get("status") not in (
+                "completed",
+                "done_with_concerns",
+            ):
+                print(
+                    f"  WARN: step {step_num} ({step_name}) is exempt but not finished; "
+                    f"if it was re-scoped, delete covers_exempt so it re-enters the gate."
+                )
 
             if not self._needs_covers(s):
                 continue
 
             covers = s.get("covers")
             if covers is None:
-                print(f"  ERROR: step {step_num} ({step_name}) is missing `covers` "
-                      f"(list of PRD-N ids it implements, or `covers: []` with a `covers_reason`).")
+                print(
+                    f"  ERROR: step {step_num} ({step_name}) is missing `covers` "
+                    f"(list of PRD-N ids it implements, or `covers: []` with a `covers_reason`)."
+                )
                 sys.exit(1)
             if not isinstance(covers, list):
                 print(f"  ERROR: step {step_num} ({step_name}) has `covers` that is not a list.")
                 sys.exit(1)
             if not covers:
                 if not s.get("covers_reason"):
-                    print(f"  ERROR: step {step_num} ({step_name}) has `covers: []` but no "
-                          f"non-empty `covers_reason` explaining why nothing applies.")
+                    print(
+                        f"  ERROR: step {step_num} ({step_name}) has `covers: []` but no "
+                        f"non-empty `covers_reason` explaining why nothing applies."
+                    )
                     sys.exit(1)
                 continue
 
             for cid in covers:
                 if not isinstance(cid, str) or not self.COVERS_ID_RE.match(cid):
-                    print(f"  ERROR: step {step_num} ({step_name}) has an invalid covers id "
-                          f"{cid!r} (expected form PRD-N).")
+                    print(
+                        f"  ERROR: step {step_num} ({step_name}) has an invalid covers id "
+                        f"{cid!r} (expected form PRD-N)."
+                    )
                     sys.exit(1)
 
                 if prd_ids is None:
                     prd_file = self._prd_file()
                     if not prd_file.exists():
-                        print(f"  ERROR: step {step_num} ({step_name}) declares {cid} but "
-                              f"{prd_file} does not exist. Create docs/PRD.md with permanent "
-                              f"PRD-N ids before declaring covers.")
+                        print(
+                            f"  ERROR: step {step_num} ({step_name}) declares {cid} but "
+                            f"{prd_file} does not exist. Create docs/PRD.md with permanent "
+                            f"PRD-N ids before declaring covers."
+                        )
                         sys.exit(1)
                     prd_ids = self._harvest_prd_ids()
 
                 num = int(self.COVERS_ID_RE.match(cid).group(0).split("-")[1])
                 if num not in prd_ids:
-                    print(f"  ERROR: step {step_num} ({step_name}) declares {cid}, which is "
-                          f"not present in {self._prd_file()}.")
+                    print(
+                        f"  ERROR: step {step_num} ({step_name}) declares {cid}, which is "
+                        f"not present in {self._prd_file()}."
+                    )
                     sys.exit(1)
 
     def _check_blockers(self):
@@ -828,17 +930,19 @@ class StepExecutor:
             if s["status"] == "error":
                 print(f"\n  ✗ Step {s['step']} ({s['name']}) failed.")
                 print(f"  Error: {s.get('error_message', 'unknown')}")
-                print(f"  Fix and reset status to 'pending' to retry.")
+                print("  Fix and reset status to 'pending' to retry.")
                 sys.exit(1)
             if s["status"] == "blocked":
                 print(f"\n  ⏸ Step {s['step']} ({s['name']}) blocked.")
                 print(f"  Reason: {s.get('blocked_reason', 'unknown')}")
-                print(f"  Resolve and reset status to 'pending' to retry.")
+                print("  Resolve and reset status to 'pending' to retry.")
                 sys.exit(2)
             if s["status"] == "needs_context":
                 print(f"\n  ? Step {s['step']} ({s['name']}) needs context.")
                 print(f"  Detail: {s.get('needs_context_detail', 'unknown')}")
-                print(f"  Amend the step file or index.json context (do not blind-retry) and reset status to 'pending'.")
+                print(
+                    "  Amend the step file or index.json context (do not blind-retry) and reset status to 'pending'."
+                )
                 sys.exit(3)
             if s["status"] != "pending":
                 break
@@ -851,8 +955,10 @@ class StepExecutor:
                         s.pop("last_failure", None)
                 self._write_json(self._index_file, index)
             elif self._is_identical_retry(pending):
-                print(f"\n  ERROR: Identical re-run refused: change the step file, model, or context, "
-                      f"or pass --force-retry")
+                print(
+                    "\n  ERROR: Identical re-run refused: change the step file, model, or context, "
+                    "or pass --force-retry"
+                )
                 sys.exit(1)
 
     def _ensure_created_at(self):
@@ -898,8 +1004,18 @@ class StepExecutor:
 
         index = self._read_json(self._index_file)
         created_at = index.get("created_at")
-        clear_keys = ("tdd_state", "tdd_evidence", "review", "concerns", "last_failure",
-                      "started_at", "completed_at", "failed_at", "blocked_at", "needs_context_at")
+        clear_keys = (
+            "tdd_state",
+            "tdd_evidence",
+            "review",
+            "concerns",
+            "last_failure",
+            "started_at",
+            "completed_at",
+            "failed_at",
+            "blocked_at",
+            "needs_context_at",
+        )
         for s in index["steps"]:
             s["status"] = "pending"
             for key in clear_keys:
@@ -908,8 +1024,10 @@ class StepExecutor:
             index["created_at"] = created_at
         self._write_json(self._index_file, index)
 
-        print(f"  ↺ --rerun: archived {len(moved)} artifact(s) to {archive_dir.name}/; "
-              f"all steps reset to pending")
+        print(
+            f"  ↺ --rerun: archived {len(moved)} artifact(s) to {archive_dir.name}/; "
+            f"all steps reset to pending"
+        )
         return archive_dir, moved
 
     # --- execution loop ---
@@ -930,14 +1048,18 @@ class StepExecutor:
         is_green = bool(step.get("tdd")) and step.get("tdd_state") == "red_done"
         test_cmd = step.get("test_cmd") if is_green else None
 
-        done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
+        done = sum(
+            1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed"
+        )
         prev_error = None
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             index = self._read_json(self._index_file)
             step_context = self._build_step_context(index)
             if is_green:
-                preamble = self._build_green_preamble(guardrails, step_context, test_cmd, prev_error)
+                preamble = self._build_green_preamble(
+                    guardrails, step_context, test_cmd, prev_error
+                )
             else:
                 preamble = self._build_preamble(guardrails, step_context, prev_error)
 
@@ -952,7 +1074,10 @@ class StepExecutor:
                 elapsed = int(pi.elapsed)
 
             index = self._read_json(self._index_file)
-            status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
+            status = next(
+                (s.get("status", "pending") for s in index["steps"] if s["step"] == step_num),
+                "pending",
+            )
             ts = self._stamp()
 
             if is_green and status in ("completed", "done_with_concerns"):
@@ -965,33 +1090,45 @@ class StepExecutor:
                         if s["step"] == step_num:
                             s["status"] = "pending"
                     self._write_json(self._index_file, index)
-                    msg = (f"GREEN verification failed: `{test_cmd}` exited {result.returncode}. "
-                           f"Session set status \"{status}\" but the test command did not confirm "
-                           f"green. Output tail:\n{output_tail}")
+                    msg = (
+                        f"GREEN verification failed: `{test_cmd}` exited {result.returncode}. "
+                        f'Session set status "{status}" but the test command did not confirm '
+                        f"green. Output tail:\n{output_tail}"
+                    )
                     if attempt < self.MAX_RETRIES:
                         prev_error = msg
-                        print(f"  ↻ Step {step_num}: GREEN retry {attempt}/{self.MAX_RETRIES} — tests still failing")
+                        print(
+                            f"  ↻ Step {step_num}: GREEN retry {attempt}/{self.MAX_RETRIES} — tests still failing"
+                        )
                         continue
                     for s in index["steps"]:
                         if s["step"] == step_num:
                             s["status"] = "error"
-                            s["error_message"] = (f"[GREEN verification failed after {self.MAX_RETRIES} "
-                                                   f"attempts] exit {result.returncode}")
+                            s["error_message"] = (
+                                f"[GREEN verification failed after {self.MAX_RETRIES} "
+                                f"attempts] exit {result.returncode}"
+                            )
                             s["failed_at"] = ts
                     self._write_json(self._index_file, index)
                     self._record_last_failure(step_num)
                     self._commit_step(step_num, step_name)
-                    print(f"  ✗ Step {step_num}: GREEN verification failed after {self.MAX_RETRIES} attempts")
+                    print(
+                        f"  ✗ Step {step_num}: GREEN verification failed after {self.MAX_RETRIES} attempts"
+                    )
                     self._update_top_index("error")
                     sys.exit(1)
 
                 green_log = self._phase_dir / f"step{step_num}-green.log"
-                green_log.write_text((result.stdout or "") + (result.stderr or ""), encoding="utf-8")
+                green_log.write_text(
+                    (result.stdout or "") + (result.stderr or ""), encoding="utf-8"
+                )
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s.setdefault("tdd_evidence", {})["green"] = {
-                            "command": test_cmd, "exit_code": result.returncode,
-                            "output_tail": output_tail, "at": self._stamp(),
+                            "command": test_cmd,
+                            "exit_code": result.returncode,
+                            "output_tail": output_tail,
+                            "at": self._stamp(),
                         }
                 self._write_json(self._index_file, index)
 
@@ -1005,7 +1142,9 @@ class StepExecutor:
                 self._step_review_gate(step, sha_before)
                 final_status = self._get_step(step_num).get("status", status)
                 if final_status == "done_with_concerns":
-                    print(f"  ~ Step {step_num}: {step_name} completed with concerns (review) [{elapsed}s]")
+                    print(
+                        f"  ~ Step {step_num}: {step_name} completed with concerns (review) [{elapsed}s]"
+                    )
                 else:
                     print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]")
                 return True
@@ -1016,7 +1155,9 @@ class StepExecutor:
                     if s["step"] == step_num:
                         s["completed_at"] = ts
                 self._write_json(self._index_file, index)
-                concerns = next((s.get("concerns", []) for s in index["steps"] if s["step"] == step_num), [])
+                concerns = next(
+                    (s.get("concerns", []) for s in index["steps"] if s["step"] == step_num), []
+                )
                 self._concerns.append({"step": step_num, "name": step_name, "concerns": concerns})
                 self._commit_step(step_num, step_name)
                 self._step_review_gate(step, sha_before)
@@ -1029,7 +1170,10 @@ class StepExecutor:
                         s["blocked_at"] = ts
                 self._write_json(self._index_file, index)
                 self._record_last_failure(step_num)
-                reason = next((s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num), "")
+                reason = next(
+                    (s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num),
+                    "",
+                )
                 print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
                 print(f"    Reason: {reason}")
                 self._update_top_index("blocked")
@@ -1041,14 +1185,25 @@ class StepExecutor:
                         s["needs_context_at"] = ts
                 self._write_json(self._index_file, index)
                 self._record_last_failure(step_num)
-                detail = next((s.get("needs_context_detail", "") for s in index["steps"] if s["step"] == step_num), "")
+                detail = next(
+                    (
+                        s.get("needs_context_detail", "")
+                        for s in index["steps"]
+                        if s["step"] == step_num
+                    ),
+                    "",
+                )
                 print(f"  ? Step {step_num}: {step_name} needs context [{elapsed}s]")
                 print(f"    Detail: {detail}")
                 self._update_top_index("needs_context")
                 sys.exit(3)
 
             err_msg = next(
-                (s.get("error_message", "Step did not update status") for s in index["steps"] if s["step"] == step_num),
+                (
+                    s.get("error_message", "Step did not update status")
+                    for s in index["steps"]
+                    if s["step"] == step_num
+                ),
                 "Step did not update status",
             )
 
@@ -1069,7 +1224,9 @@ class StepExecutor:
                 self._write_json(self._index_file, index)
                 self._record_last_failure(step_num)
                 self._commit_step(step_num, step_name)
-                print(f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]")
+                print(
+                    f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]"
+                )
                 print(f"    Error: {err_msg}")
                 self._update_top_index("error")
                 sys.exit(1)
@@ -1118,8 +1275,10 @@ class StepExecutor:
         normalize it to `important` on read (WARN) rather than trust it silently."""
         finding = dict(finding)
         if finding.get("severity") == "major":
-            print("  WARN: severity 'major' is not in the vocabulary (critical|important|minor) "
-                  "— normalizing to 'important'")
+            print(
+                "  WARN: severity 'major' is not in the vocabulary (critical|important|minor) "
+                "— normalizing to 'important'"
+            )
             finding["severity"] = "important"
         return finding
 
@@ -1157,7 +1316,7 @@ class StepExecutor:
                     return True
         return False
 
-    def _resolve_step_review_cfg(self) -> Optional[dict]:
+    def _resolve_step_review_cfg(self) -> dict | None:
         """Returns None when the per-step review gate is disabled (CLI flag or task
         `step_review: false`); otherwise the effective {model, max_fix_rounds} config."""
         if self._skip_step_review or self._step_review_cfg is False:
@@ -1168,8 +1327,14 @@ class StepExecutor:
             "max_fix_rounds": cfg.get("max_fix_rounds", self.DEFAULT_MAX_FIX_ROUNDS),
         }
 
-    def _build_step_review_prompt(self, step_num: int, step_file_rel: str, sha_before: str,
-                                   result_rel: str, rebuttal: Optional[str] = None) -> str:
+    def _build_step_review_prompt(
+        self,
+        step_num: int,
+        step_file_rel: str,
+        sha_before: str,
+        result_rel: str,
+        rebuttal: str | None = None,
+    ) -> str:
         rebuttal_block = ""
         if rebuttal:
             rebuttal_block = (
@@ -1209,18 +1374,21 @@ class StepExecutor:
             f'  {{"verdict": "approve" | "revise", "findings": '
             f'[{{"severity": "critical"|"important"|"minor", "file": "...", "line": 0, '
             f'"summary": "...", "suggestion": "..."}}]}}\n'
-            f"Use \"revise\" only when there is at least one critical or important finding. List "
+            f'Use "revise" only when there is at least one critical or important finding. List '
             f"minor findings but still approve.\n"
         )
 
-    def _run_step_reviewer(self, step: dict, sha_before: str, model: str,
-                            rebuttal: Optional[str] = None) -> Optional[dict]:
+    def _run_step_reviewer(
+        self, step: dict, sha_before: str, model: str, rebuttal: str | None = None
+    ) -> dict | None:
         step_num = step["step"]
         result_path = self._phase_dir / f"step{step_num}-review.json"
         result_path.unlink(missing_ok=True)
         result_rel = f"phases/{self._phase_dir_name}/step{step_num}-review.json"
         step_file_rel = f"phases/{self._phase_dir_name}/step{step_num}.md"
-        prompt = self._build_step_review_prompt(step_num, step_file_rel, sha_before, result_rel, rebuttal)
+        prompt = self._build_step_review_prompt(
+            step_num, step_file_rel, sha_before, result_rel, rebuttal
+        )
 
         result = None
         for attempt in (1, 2):
@@ -1231,7 +1399,7 @@ class StepExecutor:
                 break
         return result
 
-    def _read_step_review_result(self, step_num: int) -> Optional[dict]:
+    def _read_step_review_result(self, step_num: int) -> dict | None:
         p = self._phase_dir / f"step{step_num}-review.json"
         if not p.exists():
             return None
@@ -1242,8 +1410,11 @@ class StepExecutor:
         if not isinstance(data, dict) or data.get("verdict") not in ("approve", "revise"):
             return None
         findings = data.get("findings", [])
-        data["findings"] = [self._normalize_finding(f) for f in findings if isinstance(f, dict)] \
-            if isinstance(findings, list) else []
+        data["findings"] = (
+            [self._normalize_finding(f) for f in findings if isinstance(f, dict)]
+            if isinstance(findings, list)
+            else []
+        )
         return data
 
     FIX_INSTRUCTIONS_TEMPLATE = (
@@ -1255,8 +1426,9 @@ class StepExecutor:
         "scope. Do not modify RED tests. Do not update step status."
     )
 
-    def _build_step_fix_prompt(self, step: dict, sha_before: str, review_result: dict,
-                                round_num: int) -> str:
+    def _build_step_fix_prompt(
+        self, step: dict, sha_before: str, review_result: dict, round_num: int
+    ) -> str:
         step_num, step_name = step["step"], step["name"]
         step_file_rel = f"phases/{self._phase_dir_name}/step{step_num}.md"
         response_rel = f"phases/{self._phase_dir_name}/step{step_num}-review-response.md"
@@ -1300,7 +1472,7 @@ class StepExecutor:
             self._run_claude(prompt, model)
         self._commit_step_fix(step_num, round_num)
 
-    def _read_step_review_response(self, step_num: int) -> Optional[str]:
+    def _read_step_review_response(self, step_num: int) -> str | None:
         p = self._phase_dir / f"step{step_num}-review-response.md"
         if not p.exists():
             return None
@@ -1332,8 +1504,9 @@ class StepExecutor:
         self._write_json(self._index_file, index)
 
     def _promote_to_done_with_concerns(self, step_num: int, step_name: str, findings: list):
-        minor_summaries = [f"[review] {f.get('summary', '')}" for f in findings
-                            if f.get("severity") == "minor"]
+        minor_summaries = [
+            f"[review] {f.get('summary', '')}" for f in findings if f.get("severity") == "minor"
+        ]
         index = self._read_json(self._index_file)
         merged_concerns = None
         for s in index["steps"]:
@@ -1348,22 +1521,35 @@ class StepExecutor:
                 entry["concerns"] = merged_concerns
                 break
         else:
-            self._concerns.append({"step": step_num, "name": step_name, "concerns": merged_concerns})
+            self._concerns.append(
+                {"step": step_num, "name": step_name, "concerns": merged_concerns}
+            )
 
     def _step_review_unavailable(self, step_num: int, fix_rounds: int):
         print(f"  ⏸ Step {step_num} review: reviewer produced no valid verdict — needs you.")
-        self._record_step_review(step_num, {"verdict": "unavailable", "fix_rounds": fix_rounds,
-                                             "checked_at": self._stamp()})
+        self._record_step_review(
+            step_num,
+            {"verdict": "unavailable", "fix_rounds": fix_rounds, "checked_at": self._stamp()},
+        )
         self._update_top_index("blocked")
         sys.exit(2)
 
-    def _finalize_step_review(self, step_num: int, step_name: str, result: dict, fix_rounds: int,
-                               rebuttal: Optional[str] = None, review_model: Optional[str] = None,
-                               escalation: Optional[str] = None):
+    def _finalize_step_review(
+        self,
+        step_num: int,
+        step_name: str,
+        result: dict,
+        fix_rounds: int,
+        rebuttal: str | None = None,
+        review_model: str | None = None,
+        escalation: str | None = None,
+    ):
         counts = self._count_severities(result.get("findings", []))
         review_record = {
             "verdict": result["verdict"],
-            "critical": counts["critical"], "important": counts["important"], "minor": counts["minor"],
+            "critical": counts["critical"],
+            "important": counts["important"],
+            "minor": counts["minor"],
             "fix_rounds": fix_rounds,
             "result_file": f"phases/{self._phase_dir_name}/step{step_num}-review.json",
             "checked_at": self._stamp(),
@@ -1379,21 +1565,30 @@ class StepExecutor:
         self._record_step_review(step_num, review_record)
 
         if result["verdict"] == "revise":
-            outstanding = [f for f in result.get("findings", []) if f.get("severity") in ("critical", "important")]
+            outstanding = [
+                f
+                for f in result.get("findings", [])
+                if f.get("severity") in ("critical", "important")
+            ]
             summary = "; ".join(
-                f"[{f.get('severity')}] {f.get('file', '?')}: {f.get('summary', '')}" for f in outstanding
+                f"[{f.get('severity')}] {f.get('file', '?')}: {f.get('summary', '')}"
+                for f in outstanding
             )
             index = self._read_json(self._index_file)
             ts = self._stamp()
             for s in index["steps"]:
                 if s["step"] == step_num:
                     s["status"] = "error"
-                    s["error_message"] = f"[Step review still REVISE after {fix_rounds} fix round(s)] {summary}"
+                    s["error_message"] = (
+                        f"[Step review still REVISE after {fix_rounds} fix round(s)] {summary}"
+                    )
                     s["failed_at"] = ts
             self._write_json(self._index_file, index)
             print(f"  ✗ Step {step_num} review: still REVISE after {fix_rounds} fix round(s):")
             for f in outstanding:
-                print(f"    [{f.get('severity', '?')}] {f.get('file', '?')}: {f.get('summary', '')}")
+                print(
+                    f"    [{f.get('severity', '?')}] {f.get('file', '?')}: {f.get('summary', '')}"
+                )
             self._update_top_index("error")
             sys.exit(1)
 
@@ -1411,7 +1606,9 @@ class StepExecutor:
 
         diff = self._run_git("diff", f"{sha_before}..HEAD")
         if diff.returncode != 0 or not diff.stdout.strip():
-            self._record_step_review(step_num, {"verdict": "skipped_no_diff", "checked_at": self._stamp()})
+            self._record_step_review(
+                step_num, {"verdict": "skipped_no_diff", "checked_at": self._stamp()}
+            )
             return
 
         print(f"\n  ── Step {step_num} review ──")
@@ -1440,12 +1637,19 @@ class StepExecutor:
             if result is None:
                 self._step_review_unavailable(step_num, fix_rounds)
 
-        self._finalize_step_review(step_num, step_name, result, fix_rounds, rebuttal_at_final_round,
-                                    review_model=model, escalation=escalation)
+        self._finalize_step_review(
+            step_num,
+            step_name,
+            result,
+            fix_rounds,
+            rebuttal_at_final_round,
+            review_model=model,
+            escalation=escalation,
+        )
 
     # --- review gate (phase gate, runs after all steps, before live verification) ---
 
-    def _resolve_review_base(self, base: str) -> Optional[str]:
+    def _resolve_review_base(self, base: str) -> str | None:
         for candidate in (base, "master"):
             if self._run_git("rev-parse", "--verify", candidate).returncode == 0:
                 return candidate
@@ -1460,7 +1664,8 @@ class StepExecutor:
         ]
         return (
             "## Steps completed with concerns — verify each was addressed or is acceptable\n\n"
-            + "\n".join(lines) + "\n\n"
+            + "\n".join(lines)
+            + "\n\n"
         )
 
     def _build_review_prompt(self, base: str, model: str) -> str:
@@ -1485,11 +1690,11 @@ class StepExecutor:
             f"4. Write your verdict to {result_rel} as JSON:\n"
             f'   {{"verdict": "approve" | "revise", "issues": '
             f'[{{"severity": "critical|important|minor", "file": "...", "summary": "..."}}]}}\n'
-            f"   Use \"revise\" only when there is at least one critical or important issue. "
+            f'   Use "revise" only when there is at least one critical or important issue. '
             f"List minor issues but still approve.\n"
         )
 
-    def _read_review_result(self) -> Optional[dict]:
+    def _read_review_result(self) -> dict | None:
         p = self._phase_dir / self.REVIEW_RESULT_FILE
         if not p.exists():
             return None
@@ -1526,7 +1731,7 @@ class StepExecutor:
 
         result = None
         for attempt in (1, 2):
-            with progress_indicator(f"Review ({model}, attempt {attempt}/2)") as pi:
+            with progress_indicator(f"Review ({model}, attempt {attempt}/2)"):
                 self._run_claude(prompt, model)
             result = self._read_review_result()
             if result:
@@ -1562,7 +1767,7 @@ class StepExecutor:
     # --- live verification gate (phase gate, runs after all steps, before finalize) ---
 
     @staticmethod
-    def _redact_key(value: str, key: Optional[str] = None) -> str:
+    def _redact_key(value: str, key: str | None = None) -> str:
         """Redact auth key from URLs, errors, or other strings. Redact all 8+ char values in common patterns."""
         if not key or not value:
             return value
@@ -1570,28 +1775,29 @@ class StepExecutor:
         redacted = value.replace(key, "***")
         # Also redact query params and headers with long values (8+ chars, likely keys)
         import re
-        redacted = re.sub(r'([?&]key|Authorization)=([^\s&\'"]{8,})', r'\1=***', redacted)
-        redacted = re.sub(r': [^\s\'"]{8,}', ': ***', redacted)
+
+        redacted = re.sub(r'([?&]key|Authorization)=([^\s&\'"]{8,})', r"\1=***", redacted)
+        redacted = re.sub(r': [^\s\'"]{8,}', ": ***", redacted)
         return redacted
 
     @staticmethod
-    def _validate_deploy_cmd(cmd: str) -> Optional[str]:
+    def _validate_deploy_cmd(cmd: str) -> str | None:
         """Validate deploy command for dangerous patterns. Return rejection reason or None."""
         if not isinstance(cmd, str) or not cmd.strip():
             return "deploy command must be a non-empty string"
-        if '\n' in cmd or '\r' in cmd:
+        if "\n" in cmd or "\r" in cmd:
             return "deploy command contains newline/carriage return"
 
         # Deny patterns (case-insensitive)
         deny_patterns = [
-            r'rm\s+-rf\s+/',
-            r'curl\s+.*\|\s*(sh|bash)',
-            r'wget\s+.*\|\s*(sh|bash)',
-            r'mkfs',
-            r':\(\)\{',  # fork bomb
-            r'>\s*/dev/sd',
-            r'del\s+/f\s+/s\s+/q\s+C:\\',
-            r'Remove-Item\s+-Recurse\s+-Force\s+C:\\',
+            r"rm\s+-rf\s+/",
+            r"curl\s+.*\|\s*(sh|bash)",
+            r"wget\s+.*\|\s*(sh|bash)",
+            r"mkfs",
+            r":\(\)\{",  # fork bomb
+            r">\s*/dev/sd",
+            r"del\s+/f\s+/s\s+/q\s+C:\\",
+            r"Remove-Item\s+-Recurse\s+-Force\s+C:\\",
         ]
 
         cmd_lower = cmd.lower()
@@ -1631,8 +1837,11 @@ class StepExecutor:
 
         score = data.get("quality_score", data.get("score", 0))
         if score < threshold:
-            pending = any(c.get("async") or c.get("status") == "pending"
-                          for c in checks if not c.get("pass", False))
+            pending = any(
+                c.get("async") or c.get("status") == "pending"
+                for c in checks
+                if not c.get("pass", False)
+            )
             return (("retry" if pending else "fail"), f"quality_score {score} < {threshold}")
 
         return ("pass", "")
@@ -1656,8 +1865,12 @@ class StepExecutor:
             actual = self._http_get_json(probe["url"], headers, timeout)
         except Exception as e:
             # Extract key for redaction
-            auth_header = next((k for k in headers.keys()), None)
-            key = headers.get(auth_header) if auth_header and len(headers.get(auth_header, "")) >= 8 else None
+            auth_header = next((k for k in headers), None)
+            key = (
+                headers.get(auth_header)
+                if auth_header and len(headers.get(auth_header, "")) >= 8
+                else None
+            )
             error_msg = self._redact_key(str(e), key)
             return (False, f"probe request failed: {error_msg}")
         expect_path = ROOT / probe["expect_file"]
@@ -1691,18 +1904,32 @@ class StepExecutor:
         if deploy:
             validation_error = self._validate_deploy_cmd(deploy)
             if validation_error:
-                self._record_verify(index, {"pass": False, "reason": f"deploy validation failed: {validation_error}",
-                                            "checked_at": self._stamp()})
+                self._record_verify(
+                    index,
+                    {
+                        "pass": False,
+                        "reason": f"deploy validation failed: {validation_error}",
+                        "checked_at": self._stamp(),
+                    },
+                )
                 print(f"  ✗ Deploy command rejected: {validation_error}")
                 self._update_top_index("error")
                 sys.exit(1)
             with progress_indicator(f"Deploy: {deploy}"):
-                r = subprocess.run(deploy, cwd=self._root, shell=True,
-                                   capture_output=True, text=True, timeout=600,
-                                   encoding="utf-8", errors="replace")
+                r = subprocess.run(
+                    deploy,
+                    cwd=self._root,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    encoding="utf-8",
+                    errors="replace",
+                )
             if r.returncode != 0:
-                self._record_verify(index, {"pass": False, "reason": "deploy failed",
-                                            "checked_at": self._stamp()})
+                self._record_verify(
+                    index, {"pass": False, "reason": "deploy failed", "checked_at": self._stamp()}
+                )
                 print(f"  ✗ Deploy failed: {r.stderr.strip()[:300]}")
                 self._update_top_index("error")
                 sys.exit(1)
@@ -1727,19 +1954,27 @@ class StepExecutor:
             except Exception as e:
                 error_msg = self._redact_key(str(e), key)
                 verdict, reason = "retry", f"/__test request failed: {error_msg}"
-                time.sleep(min(2 ** attempt, 15))
+                time.sleep(min(2**attempt, 15))
                 continue
 
             verdict, reason = self._eval_verdict(data, threshold)
             if verdict == "escalate":
-                self._record_verify(index, {"pass": None, "escalate": True, "reason": reason,
-                                            "attempts": attempt, "checked_at": self._stamp()})
+                self._record_verify(
+                    index,
+                    {
+                        "pass": None,
+                        "escalate": True,
+                        "reason": reason,
+                        "attempts": attempt,
+                        "checked_at": self._stamp(),
+                    },
+                )
                 print(f"  ⏸ Live-verification needs you: {reason}")
                 self._update_top_index("blocked")
                 sys.exit(2)
             if verdict in ("pass", "fail"):  # decisive — stop early
                 break
-            time.sleep(min(2 ** attempt, 15))  # retry (async/pending)
+            time.sleep(min(2**attempt, 15))  # retry (async/pending)
 
         passed = verdict == "pass"
 
@@ -1750,10 +1985,16 @@ class StepExecutor:
                 passed, reason = False, f"independent probe failed: {preason}"
 
         score = data.get("quality_score", data.get("score"))
-        self._record_verify(index, {
-            "pass": passed, "quality_score": score, "attempts": attempts_used,
-            "reason": "" if passed else reason, "checked_at": self._stamp(),
-        })
+        self._record_verify(
+            index,
+            {
+                "pass": passed,
+                "quality_score": score,
+                "attempts": attempts_used,
+                "reason": "" if passed else reason,
+                "checked_at": self._stamp(),
+            },
+        )
 
         if passed:
             print(f"  ✓ Live-verification passed (score {score}, {attempts_used} attempt(s))")
@@ -1773,7 +2014,7 @@ class StepExecutor:
 
         covered_ids = set()
         for s in steps:
-            for cid in (s.get("covers") or []):
+            for cid in s.get("covers") or []:
                 if isinstance(cid, str) and self.COVERS_ID_RE.match(cid):
                     covered_ids.add(int(cid.split("-")[1]))
 
@@ -1787,8 +2028,10 @@ class StepExecutor:
         self._write_json(self._index_file, index)
 
         if uncovered:
-            print(f"\n  · Coverage report: {len(uncovered)} PRD id(s) not covered by this phase: "
-                  f"{', '.join('PRD-' + str(n) for n in uncovered)}")
+            print(
+                f"\n  · Coverage report: {len(uncovered)} PRD id(s) not covered by this phase: "
+                f"{', '.join('PRD-' + str(n) for n in uncovered)}"
+            )
         else:
             print("\n  · Coverage report: all declared PRD ids covered.")
 
@@ -1813,36 +2056,57 @@ class StepExecutor:
                 sys.exit(1)
             print(f"  ✓ Pushed to origin/{branch}")
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  Phase '{self._phase_name}' completed!")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Harness Step Executor")
     parser.add_argument("phase_dir", help="Phase directory name (e.g. 0-mvp)")
     parser.add_argument("--push", action="store_true", help="Push branch after completion")
-    parser.add_argument("--model", help="Override model for all steps (default: per-step/task config, else sonnet)")
+    parser.add_argument(
+        "--model", help="Override model for all steps (default: per-step/task config, else sonnet)"
+    )
     parser.add_argument("--no-review", action="store_true", help="Skip the phase-end review gate")
-    parser.add_argument("--no-step-review", action="store_true", help="Skip the per-step review gate")
-    parser.add_argument("--force-retry", action="store_true",
-                         help="Bypass the identical-retry ban (and clear last_failure) for the next pending step")
-    parser.add_argument("--rerun", action="store_true",
-                         help="Archive prior run artifacts into phases/<dir>/_prev-<timestamp>/ "
-                              "and reset all step statuses to pending (full re-run)")
-    parser.add_argument("--preflight", action="store_true",
-                         help="Validate schema + covers traceability only, then exit (no writes)")
+    parser.add_argument(
+        "--no-step-review", action="store_true", help="Skip the per-step review gate"
+    )
+    parser.add_argument(
+        "--force-retry",
+        action="store_true",
+        help="Bypass the identical-retry ban (and clear last_failure) for the next pending step",
+    )
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help="Archive prior run artifacts into phases/<dir>/_prev-<timestamp>/ "
+        "and reset all step statuses to pending (full re-run)",
+    )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Validate schema + covers traceability only, then exit (no writes)",
+    )
     args = parser.parse_args()
 
     if args.preflight and args.rerun:
-        print("ERROR: --preflight and --rerun are mutually exclusive "
-              "(--rerun would silently no-op under --preflight)")
+        print(
+            "ERROR: --preflight and --rerun are mutually exclusive "
+            "(--rerun would silently no-op under --preflight)"
+        )
         sys.exit(1)
 
-    StepExecutor(args.phase_dir, auto_push=args.push, model=args.model,
-                 skip_review=args.no_review, force_retry=args.force_retry,
-                 skip_step_review=args.no_step_review, rerun=args.rerun,
-                 preflight=args.preflight).run()
+    StepExecutor(
+        args.phase_dir,
+        auto_push=args.push,
+        model=args.model,
+        skip_review=args.no_review,
+        force_retry=args.force_retry,
+        skip_step_review=args.no_step_review,
+        rerun=args.rerun,
+        preflight=args.preflight,
+    ).run()
 
 
 if __name__ == "__main__":
