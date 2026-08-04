@@ -375,7 +375,7 @@
     {
       "step": 8,
       "name": "shopspend-coverage-endpoint",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -396,9 +396,17 @@
             "reason": "Test failures are assertion failures in the doGet dispatch logic, not test-code problems. 694 tests pass; 11 fail with consistent patterns: (1) shopspendCoverage function returns 'error' instead of 'ok' + returns undefined for count/weeks fields (empty tab case, missing tab case), indicating incomplete implementation; (2) unknown fn falls through to Summary response instead of erroring. These are implementation gaps (shopspendCoverage logic incomplete, unknown-fn guard missing), not test syntax/import issues. Valid RED — implementation work needed."
           },
           "at": "2026-08-04T18:59:48+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "705 passed, 0 failed",
+          "at": "2026-08-04T19:10:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done",
+      "summary": "Added fn dispatch to doGet (default summary unchanged) plus fn=shopspendCoverage delegating to shopSpendCoveredWeeks_; 705 tests pass, docs/api.md documents the new param + response.",
+      "completed_at": "2026-08-04T19:10:00+0900"
     },
     {
       "step": 9,

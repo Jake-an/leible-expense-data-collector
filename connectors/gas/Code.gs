@@ -1342,6 +1342,17 @@ function doGet(e) {
     var tokenCheck = checkReadToken_(params);
     if (!tokenCheck.ok) return jsonOut_({ result: 'error', message: tokenCheck.message });
 
+    var fn = params.fn || 'summary';
+    if (fn === 'summary') return doGetSummary_(params);
+    if (fn === 'shopspendCoverage') return doGetShopSpendCoverage_();
+    return jsonOut_({ result: 'error', message: 'unknown fn: ' + fn });
+  } catch (err) {
+    return jsonOut_({ result: 'error', message: String((err && err.message) || err) });
+  }
+}
+
+function doGetSummary_(params) {
+  try {
     var ss = getHubSpreadsheet_();
     var sheet = ss.getSheetByName(SUMMARY_TAB);
     if (!sheet) return jsonOut_({ result: 'error', message: 'Summary tab not found. Run weeklySummarize() first.' });
@@ -1391,6 +1402,24 @@ function doGet(e) {
   } catch (err) {
     return jsonOut_({ result: 'error', message: String((err && err.message) || err) });
   }
+}
+
+/**
+ * fn=shopspendCoverage — delegates span expansion to shopSpendCoveredWeeks_
+ * (shopspend.gs, step 7) so the watchdog and this endpoint never disagree on
+ * which weeks count as covered. A missing or empty ShopSpendPulls tab is a
+ * normal cold-start state, not an error.
+ */
+function doGetShopSpendCoverage_() {
+  var ss = getHubSpreadsheet_();
+  var sheet = ss.getSheetByName(SHOPSPEND_PULLS_TAB);
+  var pullsRows = [];
+  if (sheet) {
+    var data = sheet.getDataRange().getValues();
+    pullsRows = data.slice(1);
+  }
+  var weeks = shopSpendCoveredWeeks_(pullsRows);
+  return jsonOut_({ result: 'ok', count: weeks.length, weeks: weeks });
 }
 
 function checkReadToken_(params) {

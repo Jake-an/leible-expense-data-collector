@@ -22,9 +22,10 @@ The deployment ID is the same one used for `doPost` (tracked in `config/deployme
 | Param | Required | Default | Description |
 |---|---|---|---|
 | `token` | yes | — | API read token (must match `API_READ_TOKEN` Script Property) |
-| `from` | no | Last completed Mon | Start date filter (inclusive, `YYYY-MM-DD`). Compared against `week_start`. |
-| `to` | no | Last completed Sun | End date filter (inclusive, `YYYY-MM-DD`). Compared against `week_start`. |
-| `department` | no | all departments | Filter to `Cafe` or `Roastery`. Omit for every department. |
+| `fn` | no | `summary` | Which endpoint to serve: `summary` (default, the Summary payload below) or `shopspendCoverage` (the shopSpend coverage payload below). Omitting `fn` is unchanged legacy behaviour — existing callers are unaffected. Any other value is an error, never a fallback to `summary`. |
+| `from` | no | Last completed Mon | `fn=summary` only. Start date filter (inclusive, `YYYY-MM-DD`). Compared against `week_start`. |
+| `to` | no | Last completed Sun | `fn=summary` only. End date filter (inclusive, `YYYY-MM-DD`). Compared against `week_start`. |
+| `department` | no | all departments | `fn=summary` only. Filter to `Cafe` or `Roastery`. Omit for every department. |
 
 When `from` and `to` are both omitted, the API defaults to the **last completed Mon–Sun week** (e.g. calling on Monday 2026-06-22 returns the week of June 15–21).
 
@@ -80,7 +81,35 @@ separately per `kind` if you need a combined figure.
 ```json
 { "result": "error", "message": "unauthorized" }
 { "result": "error", "message": "Summary tab not found. Run weeklySummarize() first." }
+{ "result": "error", "message": "unknown fn: nope" }
 ```
+
+## `fn=shopspendCoverage` — shopSpend coverage
+
+Reports which ISO weeks the `ShopSpendPulls` tab already covers, so a caller
+(the Python `--backfill` runner, step 9) can request only the weeks it's
+missing instead of over-fetching. Read-only, outside the two-tab ingest
+contract (see `docs/schema.md` "shopSpend tabs"). Delegates span expansion to
+`shopSpendCoveredWeeks_` in `connectors/gas/shopspend.gs` — the same function
+the shopSpend watchdog (step 7) uses, so the two can never disagree about
+which weeks count as covered.
+
+```
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?token=<TOKEN>&fn=shopspendCoverage
+```
+
+```json
+{
+  "result": "ok",
+  "count": 3,
+  "weeks": ["2026-W29", "2026-W30", "2026-W31"]
+}
+```
+
+`weeks` is sorted ascending and de-duplicated, with each `ShopSpendPulls` row's
+`from_week..to_week` span expanded to every week it covers. A missing or empty
+`ShopSpendPulls` tab returns `{"result":"ok","count":0,"weeks":[]}` — cold
+start is a normal state here, not an error.
 
 ## Summary tab schema
 
