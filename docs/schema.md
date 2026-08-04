@@ -96,3 +96,93 @@ GAS resolves `supplier` from the `source` field via a `SUPPLIER_NAMES` map in `c
 ## Labour (not a tab built here)
 
 Labour cost (date × location: gross + super + weekend/PH penalties, **no tax**) is owned by the **LEIBLE_Payroll** project. This collector links to Payroll's output sheet rather than recomputing it. See `docs/ADR.md` ADR-007.
+
+## shopSpend tabs (separate silo — outside the two-tab ingest contract)
+
+Three tabs consume an **external** internal Apps Script JSON API (`shopSpend`) that
+reports per-shop, per-ISO-week order dollars. This is not the `Suppliers`/`Sales`/
+`Revenue`/`Summary` pipeline: no existing tab, header, or the `doGet` contract is
+touched by any of this. No report reads these tabs except `ShopSpend Report`
+(built from `ShopSpend` + `ShopSpendPulls`, not from any other tab).
+
+### Tab `ShopSpend` (append-only snapshot store)
+
+| Column | Type | Required | Description |
+|---|---|---|---|
+| `shop_id` | string | yes | Upstream shop identifier |
+| `week_label` | string | yes | ISO week label as returned by the API (e.g. `2026-W31`) |
+| `week_start` | date (YYYY-MM-DD) | yes | Passed through from the API — never recomputed here |
+| `week_end` | date (YYYY-MM-DD) | yes | Passed through from the API — never recomputed here |
+| `order_count` | number | yes | Confirmed order count for the shop-week |
+| `amended_count` | number | yes | Count of orders still in `Amendment Requested` state (dollars provisional) |
+| `total_ex_gst` | number | yes | Order dollars excluding GST |
+| `gst` | number | yes | GST component (`0` is normal — many coffee SKUs are GST-free) |
+| `total_inc_gst` | number | yes | Order dollars including GST |
+| `gst_treatment` | string | yes | GST treatment tag from the API meta (`EXCLUSIVE_PRIMARY` for shopSpend) |
+| `environment` | string | yes | Upstream environment the pull ran against (e.g. `prod`, `staging`) |
+| `fetched_at` | datetime (ISO 8601, AEST/AEDT offset) | yes | When this snapshot was pulled |
+| `source` | string | yes | Connector identifier (`shopspend`) |
+| `presence` | string | yes | `present` or `absent` (see tombstone rule below) |
+
+**Change-detection key:** `shop_id + week_label`. This tab is **append-only**: a
+re-pull writes a **new row only when a figure changed** for that key (identical
+figures for the same shop-week are skipped, not re-written). Rows are never
+edited or deleted in place — history is the append log itself.
+
+**`presence` tombstone semantics:** `presence` is normally `present`. If a
+shop-week that existed in a previous pull is **missing** from the current pull's
+results, a new row is appended for that key with `presence: 'absent'` — a
+tombstone marking "this shop-week disappeared from upstream as of this pull."
+A tombstone counts as a figure change for the change-detection rule above (a
+transition from `present` to `absent`, or back, always appends).
+
+**"Latest snapshot" = the last matching row in append order — explicitly NOT**
+`max(fetched_at)`. `fetched_at` carries a UTC offset (`+11:00`/`+10:00` across
+the Australia/Sydney DST flip) and a lexicographic string compare on it orders
+the DST transition wrongly. Always resolve "latest" by scanning for the last row
+matching `shop_id + week_label` in sheet-row order, never by comparing
+`fetched_at` values.
+
+### Tab `ShopSpendPulls` (one row per pull, always written)
+
+| Column | Type | Required | Description |
+|---|---|---|---|
+| `fetched_at` | datetime (ISO 8601) | yes | When this pull ran (shared across all `ShopSpend` rows it wrote) |
+| `environment` | string | yes | Upstream environment pulled against |
+| `from_week` | string | yes | First ISO week label requested |
+| `to_week` | string | yes | Last ISO week label requested |
+| `matched` | number | yes | Shop-weeks matched by the query |
+| `returned` | number | yes | Shop-weeks actually returned |
+| `truncated` | boolean | yes | Whether the API truncated the result set |
+| `warnings_count` | number | yes | Count of `warnings[]` entries from the API |
+| `warnings` | string (JSON array) | yes | The `warnings[]` payload itself |
+| `unpriced_sku_count` | number | yes | Count of SKUs the API skipped for lack of pricing |
+| `unpriced_skus` | string (JSON array) | yes | The `unpricedSkus` payload — these dollars are **missing**, not zero |
+| `amended_count` | number | yes | Total orders still in `Amendment Requested` across this pull |
+| `possible_duplicate_shop_names` | string (JSON array) | yes | Shop-name collisions the API flagged |
+| `empty_range_with_invalid_labels` | boolean | yes | Whether the requested range was empty AND carried invalid week labels |
+| `invalid_week_labels` | string (JSON array) | yes | Week labels the API rejected as malformed |
+| `gst_treatment` | string | yes | GST treatment tag for this pull (`EXCLUSIVE_PRIMARY`) |
+| `diverges_from_live_pricing` | boolean | yes | Whether returned totals diverge from the current live pricing sheet |
+| `matches_live_pricing` | boolean | yes | Whether returned totals match the current live pricing sheet |
+| `total_orders_scanned` | number | yes | Total orders the API scanned to build this response |
+| `absent_shop_ids` | string (JSON array) | yes | Shop ids tombstoned as `absent` in this pull |
+| `diagnostics_json` | string (JSON object) | yes | Full raw diagnostics blob, for anything not broken out above |
+
+**Always written**, even when zero `ShopSpend` rows changed — this is what makes
+history reproducible: the upstream API **recomputes totals live from a pricing
+sheet**, so re-pulling the same week can legitimately return different numbers
+on a later pull. `ShopSpendPulls` is the audit trail of every pull attempt and
+its diagnostics, independent of whether `ShopSpend` itself changed.
+
+### Tab `ShopSpend Report` (derived, rebuilt in place)
+
+Not append-only — this tab is fully rebuilt each time from the current contents
+of `ShopSpend` + `ShopSpendPulls`. A banner block at the top surfaces data-quality
+signals (warnings, unpriced SKUs, amended counts, possible duplicate shop names,
+absent shop-weeks, invalid week labels), followed by a grid of shops (rows) ×
+ISO weeks (columns). Columns are sorted numerically by parsed `(year, weekNumber)`
+from `week_label` — **never lexicographically on the label string** (lexicographic
+sort breaks across a year boundary, e.g. `2026-W5` vs `2026-W31` vs `2027-W1`).
+`week_start`/`week_end` values shown are passed through from `ShopSpend` as
+pulled from the API — this report never recomputes week boundaries.

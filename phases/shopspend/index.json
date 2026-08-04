@@ -9,7 +9,7 @@
     {
       "step": 0,
       "name": "shopspend-docs",
-      "status": "pending",
+      "status": "completed",
       "tdd": false,
       "tdd_reason": "Documentation only — adds the ShopSpend/ShopSpendPulls/ShopSpend Report tab specs to docs/schema.md and the shopSpend data flow to docs/ARCHITECTURE.md. No runtime behaviour, nothing to assert.",
       "covers": [
@@ -20,7 +20,8 @@
         "schema.md",
         "ARCHITECTURE.md"
       ],
-      "started_at": "2026-08-04T11:51:32+0900"
+      "started_at": "2026-08-04T11:51:32+0900",
+      "summary": "Documented the shopSpend silo: ShopSpend/ShopSpendPulls/ShopSpend Report tab specs (schema.md) and the runner→client→doPost→tabs flow with the EXCLUSIVE_PRIMARY/under-reporting/confirmed-orders-only facts (ARCHITECTURE.md); both edits purely additive, no existing tab or PRD-1..6 touched."
     },
     {
       "step": 1,

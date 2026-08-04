@@ -187,3 +187,37 @@ Playwright connectors POST to the GAS web-app URL with this shape (invoice-level
 - **Sheet** is the single source of truth (`Suppliers` + `Sales` tabs; `_staging` for test ingestion)
 - **`phases/` JSON files** track harness execution state (pending/completed/error/blocked)
 - **`sessions/`** holds browser auth state (gitignored — contains cookies)
+
+## shopSpend flow (separate silo)
+
+A third data flow, independent of the `Suppliers`/`Sales`/`Revenue` two-tab
+pipeline above: a Python runner + typed client pull an **external** internal
+Apps Script JSON API (`shopSpend`, per-shop per-ISO-week order dollars) and
+POST into three new tabs (`ShopSpend`, `ShopSpendPulls`, `ShopSpend Report`).
+See `docs/schema.md` for the tab specs.
+
+```
+Windows Task Scheduler (Mon 05:00)
+  -> connectors/shopspend/runner.py   (resolve env, find missing closed ISO weeks)
+  -> connectors/shopspend/client.py   (typed; follow redirects; branch on body.ok, NEVER on
+                                       HTTP status; retry only INTERNAL / non-JSON / transport)
+  -> our GAS doPost  kind:'shopspend' (chunks of 200 rows, one shared fetched_at,
+                                       ShopSpendPulls row LAST = commit marker)
+       -> ShopSpend        (append-only snapshots, only when changed)
+       -> ShopSpendPulls   (one row per pull + diagnostics)
+            -> buildShopSpendReport() -> "ShopSpend Report"
+  GAS trigger Mon 14:00 AEST: shopSpendWatchdog() — "did last week's pull land?"
+```
+
+**Non-obvious facts, easy to get wrong later:**
+
+- The external `shopSpend` API is `gstTreatment: EXCLUSIVE_PRIMARY`; the sibling
+  green-bean cost API is `INCLUSIVE`. Never chart one against the other without
+  asserting on `meta.gstTreatment`. `gst: 0` on a shop is normal — many coffee
+  SKUs are GST-free.
+- The API's main failure mode is **under-reporting real money**. Totals are a
+  floor, not a truth: when `unpricedSkus` is non-empty those line items were
+  skipped entirely.
+- Scope is confirmed orders only (`Receipt Confirmed` + `Amendment Requested`),
+  excluding Shopify/online shops. `amendedCount > 0` means those dollars are
+  still provisional.
