@@ -71,9 +71,16 @@ python -m connectors.shopspend.runner [--week 2026-W31] [--from-week X --to-week
 - **Default (no args): pull the ISO week that just CLOSED** — `date.today() - timedelta(days=7)`,
   then `.isocalendar()` → `f"{year}-W{week:02d}"`. A Monday 05:00 job asking for the *current*
   week would get a week five hours old.
-- **`--backfill`: the last 4 closed weeks.** On every run, compute which of those 4 weeks have no
-  `ShopSpendPulls` coverage yet and request only the missing span — this is what self-heals a
-  Monday when the machine was off.
+- **`--backfill`: request the last 4 closed weeks as one span, unconditionally.** This is what
+  self-heals a Monday when the machine was off. Over-fetching is safe: step 3's ingest is
+  idempotent, so weeks already stored come back as `duplicatesSkipped` and append nothing — the
+  cost is one extra API call.
+  **Gap detection (requesting only the *missing* weeks) is deliberately DEFERRED to steps 8-9.**
+  Reason: knowing which weeks `ShopSpendPulls` already covers requires a hub read endpoint that
+  does not exist — `doGet` (`Code.gs:1339`) is hardcoded to the `Summary` tab with no `fn`
+  dispatch. Building that endpoint is GAS work, and **this step's `test_cmd` is
+  `python -m pytest connectors/shopspend -q`**, which cannot mechanically verify a line of
+  `Code.gs`. Step 8 adds `fn=shopspendCoverage`; step 9 wires it into `--backfill`.
 - **`--dry-run`: fetch, parse, print a summary plus every triggered data-quality condition, and
   write NOTHING.** This is how the live contract gets validated before anything touches the Sheet.
 - Map API camelCase → our snake_case row shape: `shopId`→`shop_id`, `weekLabel`→`week_label`,
@@ -102,8 +109,11 @@ Test cases (definition of done):
 - **Just-closed week:** on a Monday, the default week is the previous ISO week, not the current one.
 - **Year boundary:** a date in early January 2027 resolves to `2026-W52`/`2026-W53` correctly, and
   a `2027-W01` label formats with the zero-padded `W01`.
-- **Gap detection:** given `ShopSpendPulls` coverage for 3 of the last 4 weeks, `--backfill`
-  requests the missing week.
+- **Gap-detection helper (pure, not yet wired):** `missing_weeks_for_backfill(candidate_weeks,
+  covered)` returns the candidates absent from `covered` — given 4 candidates and a `covered` set
+  holding 3 of them, it returns the one missing week; given full coverage it returns `[]`. Test
+  the helper directly by passing a `covered` set. Do **not** test end-to-end `--backfill`
+  behaviour against it — `main()` does not call it in this step (see Prohibitions).
 - **Chunking:** 450 rows at `chunk_size=200` issues 3 data requests plus the pulls request; every
   chunk carries the SAME `fetched_at`; the pulls request is LAST.
 - **`kind` is always sent** as `"shopspend"` on every chunk.
@@ -148,3 +158,9 @@ ruff check connectors/shopspend
   the shared script lock — that is the attended integration step.
 - Do not re-derive `week_start`/`week_end`. Reason: the API supplies them; recomputing invites an
   off-by-one against ISO weeks.
+- Do not wire `missing_weeks_for_backfill()` into `main()` in this step, and do not add a
+  coverage-read call anywhere. Reason: runtime coverage requires a hub read endpoint that does not
+  exist until step 8, and this step's `test_cmd` (`python -m pytest connectors/shopspend -q`)
+  cannot verify GAS code. The helper is intentionally implemented and unit-tested here with its
+  caller arriving in step 9 — **an uncalled `missing_weeks_for_backfill()` is expected at this
+  step and is not a review finding.**

@@ -4,9 +4,16 @@
     {
       "severity": "important",
       "file": "connectors/shopspend/runner.py",
-      "line": 175,
-      "summary": "--backfill does not meet step brief spec: should detect and fetch only missing weeks, but unconditionally fetches all 4",
-      "suggestion": "The step brief (lines 74-76) explicitly mandates: 'compute which of those 4 weeks have no ShopSpendPulls coverage yet and request only the missing span'. The implementation calls `last_n_closed_weeks()` and requests the full 4-week range; `missing_weeks_for_backfill()` is tested but never invoked. The rebuttal correctly notes no hub read endpoint exists for ShopSpendPulls — this would require adding new `doGet` behavior to Code.gs. However, Task 4 forbids 'behaviour change to Code.gs', creating a contradiction within the step's own requirements. This must be resolved by one of: (a) implementing the hub read (relaxing Task 4's constraint), (b) updating the step brief to acknowledge gap-detection is deferred pending a hub capability, or (c) documenting Jake's explicit waiver. Currently it is a specification violation left in code with only implicit acceptance (documented in step5-report.md and project memory). The behavior is safe (idempotent ingest) and the gap is tracked for step 7+, but the spec-code mismatch needs audit resolution."
+      "line": 169,
+      "summary": "--backfill does not implement gap detection as mandated by step brief (lines 74-76)",
+      "suggestion": "The step brief explicitly requires (lines 74-76): 'On every run, compute which of those 4 weeks have no ShopSpendPulls coverage yet and request only the missing span.' The implementation unconditionally fetches all 4 weeks (line 171: `from_week, to_week = candidates[0], candidates[-1]`) without calling `missing_weeks_for_backfill()`. The rebuttal correctly notes this creates a spec contradiction: gap-detection requires reading ShopSpendPulls (a hub endpoint), but Task 4 forbids Code.gs behavior changes. This is a real blocker that needs Jake to resolve (pick one: relax Task 4, defer the requirement, or document waiver). The behavior is currently safe (idempotent over-fetching), but the spec violation remains. Blocked pending Jake's decision on which constraint to relax or waive."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/shopspend/test_runner.py",
+      "line": 0,
+      "summary": "Required test case 'Gap detection' from step brief is not implemented",
+      "suggestion": "The step brief (lines 105-106) explicitly lists 'Gap detection' as a test case defining done: 'given ShopSpendPulls coverage for 3 of the last 4 weeks, --backfill requests the missing week.' This test is absent from the file. The helper function `missing_weeks_for_backfill()` is tested in isolation (lines 100-113), but there is no end-to-end test mocking ShopSpendPulls coverage and verifying main(['--backfill']) requests only missing weeks. For a TDD step, all listed test cases in the brief are contractual definition-of-done items. Either implement the test (requires adding hub-coverage-query capability) or formally waive/update the spec. Currently the test is listed in the step brief but missing from implementation."
     }
   ]
 }

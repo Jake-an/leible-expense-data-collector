@@ -1,0 +1,19 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/shopspend/runner.py",
+      "line": 169,
+      "summary": "--backfill does not implement gap detection as mandated by step brief (lines 74-76)",
+      "suggestion": "Step brief line 74-76 mandates: 'On every run, compute which of those 4 weeks have no ShopSpendPulls coverage yet and request only the missing span.' The implementation unconditionally requests the full 4-week range (candidates[0]..candidates[-1]) without calling `missing_weeks_for_backfill()` to detect which weeks are already covered. The rebuttal is correct that this creates a spec-code contradiction: gap-detection requires reading ShopSpendPulls (a hub endpoint), but Task 4 forbids behavior changes to Code.gs. This is a genuine product/spec decision that requires Jake's input — approve option (a) implement the hub read, (b) defer gap-detection, or (c) accept the current behavior as sufficient. The implementation is safe (idempotent) and is documented as a known gap in project memory, but the spec violation should not remain unresolved. Blocking on Jake's decision."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/shopspend/test_runner.py",
+      "line": 0,
+      "summary": "Test case 'Gap detection' from step brief is not implemented",
+      "suggestion": "The step brief (lines 105-106) lists 'Gap detection' as a required test case: 'given ShopSpendPulls coverage for 3 of the last 4 weeks, --backfill requests the missing week.' This test is not implemented. The helper function `missing_weeks_for_backfill()` is tested in isolation (lines 100-113), but there is no end-to-end test mocking ShopSpendPulls coverage and verifying main(['--backfill']) requests only missing weeks. Since the step is marked TDD ('Test First'), all listed test cases define 'done'. Either implement the test (requires adding coverage-query capability), or formally remove it from the spec's test case list. Currently the test is listed but missing."
+    }
+  ]
+}

@@ -52,12 +52,22 @@ In `connectors/gas/shopspend.gs`:
   is the documented fault that previously corrupted the Sales tab. If the function takes an
   optional "now" for testability, guard it the way `resolveDateArg_` (`Code.gs:1335`) does.
 
-Split the decision into a **pure helper** so it is testable without Calendar or Spreadsheet:
+Split the decision into **two pure helpers** so it is testable without Calendar or Spreadsheet:
 
 ```js
+/** Pure: (pullsRows) -> string[]  — every ISO week label covered by any pulls row,
+    expanding each row's from_week..to_week span. Sorted, de-duplicated. */
+function shopSpendCoveredWeeks_(pullsRows) { ... }
+
 /** Pure: (pullsRows, nowMs) -> {covered:boolean, weekLabel:string, lastPullMs:(number|null)} */
 function shopSpendWatchdogEvaluate_(pullsRows, nowMs) { ... }
 ```
+
+`shopSpendWatchdogEvaluate_` **must** decide `covered` by calling `shopSpendCoveredWeeks_` rather
+than parsing spans itself. Reason: step 8 exposes the same coverage answer over HTTP
+(`fn=shopspendCoverage`), and two independent span parsers will drift — the watchdog and the
+backfill would disagree about which weeks are covered. It still does its own `pullsRows` scan for
+`lastPullMs`, which the set helper does not carry; the invariant is one span parser, not one scan.
 
 **2. `installShopSpendWatchdogTrigger()`** — same idiom as the other five installers: loop
 `ScriptApp.getProjectTriggers()`, `deleteTrigger` any whose `getHandlerFunction()` matches, then
@@ -99,6 +109,13 @@ Test cases (definition of done):
 - **Empty tab (cold start) → alert** with `ageHours: null`, mirroring `stalenessEvaluate_`'s
   never-seen convention (`staleness.gs:200-202`).
 - **A pull for a DIFFERENT week does not count as coverage.**
+- **`shopSpendCoveredWeeks_` expands a span:** a single pulls row with `from_week: '2026-W29'`,
+  `to_week: '2026-W31'` yields every week in that span (`W29`, `W30`, `W31`), not just the
+  endpoints — and the result is sorted and de-duplicated across overlapping rows.
+- **`shopSpendCoveredWeeks_` on an empty tab yields `[]`**, not an error and not `null`.
+- **One span parser:** `shopSpendWatchdogEvaluate_`'s `covered` answer agrees with
+  `shopSpendCoveredWeeks_` for the same fixture rows — assert both against one fixture, so a
+  future divergence fails a test rather than silently splitting the watchdog from the backfill.
 - **Year boundary:** run on the first Monday of January 2027 → the just-closed week resolves
   correctly (`2026-W52`/`2026-W53`), not `2027-W00`.
 - **Never throws:** a `ShopSpendPulls` tab with malformed rows, and a Calendar that throws, both
