@@ -129,7 +129,7 @@
     {
       "step": 3,
       "name": "shopspend-ingest-change-detection",
-      "status": "completed",
+      "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -140,7 +140,20 @@
       ],
       "started_at": "2026-08-04T12:20:21+0900",
       "completed_at": "2026-08-04T03:32:52.365Z",
-      "summary": "Implemented append-only snapshot store with change detection, dedup, tombstones, and block writes. All 605 tests pass."
+      "summary": "Implemented append-only snapshot store with change detection, dedup, tombstones, and block writes. All 605 tests pass.",
+      "tdd_evidence": {
+        "red": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 1,
+          "output_tail": "the offending row index (row 1)\n  ok  - shopspend row without date → rejected\n  ok  - ...via the generic shared missing-date message\n  ok  - suppliers row missing invoice_ref → still rejected\n  ok  - revenue row missing order_ref → still rejected\n  ok  - valid suppliers payload still succeeds  (got \"ok\")\n  ok  - ...and writes to Suppliers\n  ok  - valid revenue payload still succeeds  (got \"ok\")\n  ok  - ...and writes to Revenue\n  ok  - successful shopspend post stamps the shopspend heartbeat\n  ok  - shopspend payload with pull → ok  (got \"ok\")\n  FAIL- data written as a single block write before the pulls row (commit-marker ordering)\n  ok  - exactly one row appended to ShopSpendPulls  (got 2)\n  ok  - pulls row lands in SHOPSPEND_PULLS_HEADERS order  (got [\"2026-08-03T09:30:00+10:00\",\"prod\",\"2026-W30\",\"2026-W31\",2,2,false,0,\"[]\",0,\"[]\",1,\"[]\",false,\"[]\",\"EXCLUSIVE_PRIMARY\",false,true,17,\"[]\",\"{}\"])\n\ningestShopSpendRows — change detection (step 3):\n  ok  - first pull: rowsAdded  (got 3)\n  ok  - first pull: duplicatesSkipped  (got 0)\n  ok  - first pull: rowsUpdated is always 0  (got 0)\n  FAIL- identical re-pull: rowsAdded  (got 3)\n  FAIL- identical re-pull: duplicatesSkipped  (got 0)\n  ok  - identical re-pull: rowsUpdated is always 0  (got 0)\n  FAIL- identical re-pull: tab row count unchanged (header + 3)  (got 7)\n  FAIL- changed figure: rowsAdded  (got 3)\n  FAIL- changed figure: duplicatesSkipped  (got 0)\n  FAIL- changed figure: tab now holds header + 4 rows  (got 10)\n  FAIL- both shop_1 snapshots (old + new) are present  (got 3)\n  ok  - old shop_1 snapshot is unmodified (total_ex_gst still 500)  (got 500)\n  FAIL- new shop_1 snapshot carries the changed figure (total_ex_gst 999)  (got 500)\n  ok  - order_count change alone → appends  (got 1)\n  ok  - amended_count change alone → appends  (got 1)\n  ok  - total_ex_gst change alone → appends  (got 1)\n  ok  - gst change alone → appends  (got 1)\n  ok  - total_inc_gst change alone → appends  (got 1)\n  FAIL- numerically-equal figure sent as a different string type is NOT a change  (got 1)\n  FAIL- ...and counts as a duplicate  (got 0)\n  ok  - DST fixture: first row appends  (got 1)\n  ok  - DST fixture: second row (changed figure) appends  (got 1)\n  FAIL- DST fixture: latest = append order — re-pull matching row B is unchanged  (got 1)\n  FAIL- ...and counted as a duplicate  (got 0)\n  ok  - tombstone setup: pull A appends both shops  (got 2)\n  ok  - tombstone: pull B (missing shopTombY) appends exactly one tombstone  (got 1)\n  FAIL- tombstone: shopTombX itself is unchanged (duplicate)  (got 0)\n  FAIL- tombstone row key is shopTombY / 2026-W31  (got [\"shopTombX\",\"2026-W31\"])\n  FAIL- tombstone row presence is absent  (got \"present\")\n  FAIL- tombstone row figures are all zero  (got [12,1,500,0,500])\n  ok  - scoped pull: only the new row is appended, no cross-week tombstone  (got 1)\n  ok  - scoped pull: tab holds header + 2 rows only  (got 3)\n  ok  - shopOldWeek / 2026-W30 row is untouched (still present)  (got \"present\")\n  FAIL- no double tombstone: shopTombY already absent → no new row for it  (got 1)\n  FAIL- ...shopTombX unchanged → duplicate  (got 0)\n  FAIL- reappearance: shopTombY returns → appends a fresh present row  (got 2)\n  FAIL- reappearance: shopTombX still unchanged → duplicate  (got 0)\n  FAIL- shopTombY snapshot history is present, absent, present  (got [\"present\",\"present\"])\n  ok  - empty payload: rowsAdded  (got 0)\n  ok  - empty payload: duplicatesSkipped  (got 0)\n  ok  - empty payload: tab row count unchanged (header + 1)  (got 2)\n  ok  - empty payload: existing shopZ row is still present, untombstoned  (got \"present\")\n  FAIL- single block write: exactly one write call for 3 new rows  (got 4)\n  FAIL- changed row + tombstone still land in a single block write  (got 4)\n  FAIL- an all-duplicate pull issues no write call at all  (got 3)\n  ok  - week_start round-trips via cellDate  (got \"2026-07-27\")\n  ok  - week_end round-trips via cellDate  (got \"2026-08-02\")\n\n577 passed, 25 failed\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "Test framework is healthy (577 passing, 25 failing with clean assertion messages). Failures are all in implementation logic: change detection (re-pulls should deduplicate, not re-add), tombstone generation (missing shops should create zero-figure rows), and block-write optimization (multiple rows should write in one call, not four). No syntax errors, import failures, or test-code issues — only incomplete/missing implementation, which is the correct RED condition."
+          },
+          "at": "2026-08-04T12:33:44+0900"
+        }
+      },
+      "tdd_state": "red_done"
     },
     {
       "step": 4,
