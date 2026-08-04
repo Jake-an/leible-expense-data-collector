@@ -148,7 +148,8 @@ function doPost(e) {
     var res = withScriptLock_(function () {
       var ss = getHubSpreadsheet_();
       if (kind === 'shopspend') {
-        return ingestShopSpendRows_(ss, body);
+        var tabs = ensureShopSpendTabs_(ss);
+        return ingestShopSpendRows(body.source, body.rows, body.extracted_at, tabs.data, tabs.pulls, body.pull);
       }
       if (kind === 'revenue') {
         var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
@@ -386,33 +387,6 @@ function ingestRevenueRows(source, rows, extractedAt, sheet) {
   }
   // amountCol=4 (amount), stampCol=7 (extracted_at)
   return upsertRows_(sheet, normalizedRows, REVENUE_KEY_COLS, 4, 7);
-}
-
-/**
- * Normalize + upsert a batch of ShopSpend rows into the ShopSpend tab.
- * If body.pull is present, also append one metadata row to ShopSpendPulls.
- * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
- */
-function ingestShopSpendRows_(ss, body) {
-  var rows = body.rows;
-  var source = body.source;
-  var extractedAt = body.extracted_at;
-
-  var normalizedRows = [];
-  for (var i = 0; i < rows.length; i++) {
-    normalizedRows.push(normalizeShopSpendRow(rows[i], source, extractedAt));
-  }
-
-  var dataSheet = ensureSheet(ss, SHOPSPEND_TAB, SHOPSPEND_HEADERS);
-  var res = upsertRows_(dataSheet, normalizedRows, SHOPSPEND_KEY_COLS, 6, 11);
-
-  if (body.pull) {
-    var pullsSheet = ensureSheet(ss, SHOPSPEND_PULLS_TAB, SHOPSPEND_PULLS_HEADERS);
-    var pullRow = normalizePullMetadataRow_(body.pull);
-    appendNewRows_(pullsSheet, [pullRow]);
-  }
-
-  return res;
 }
 
 /**

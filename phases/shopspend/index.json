@@ -82,7 +82,7 @@
     {
       "step": 2,
       "name": "dopost-shopspend-kind",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -93,7 +93,15 @@
         "ingest-contract.md"
       ],
       "started_at": "2026-08-04T12:03:02+0900",
+      "summary": "Widened validateIngest_ kind whitelist + added shopspend per-row checks (shop_id, week_label YYYY-Www, week_start, numeric totals); doPost routes kind:'shopspend' to a new append-only ingestShopSpendRows (shopspend.gs) that never uses upsertRows_, writing ShopSpendPulls last as the commit marker; 555 tests pass.",
+      "completed_at": "2026-08-04T13:13:16+1000",
       "tdd_evidence": {
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "doPost — shopspend kind (step 2):\n  ok  - well-formed shopspend payload → ok  (got \"ok\")\n  ok  - rowsAdded equals row count  (got 2)\n  ok  - ShopSpend has header + 2 rows  (got 3)\n  ok  - row 1 lands in SHOPSPEND_HEADERS order  (got [\"shop_1\",\"2026-W31\",\"2026-07-27\",\"2026-08-02\",12,1,500,0,500,\"EXCLUSIVE_PRIMARY\",\"prod\",\"2026-08-03T09:00:00+10:00\",\"shopspend\",\"present\"])\n  ok  - row 2 (no per-row fetched_at) falls back to extracted_at  (got \"2026-08-03T09:30:00+10:00\")\n  ok  - row 2 presence defaults to present  (got \"present\")\n  ok  - unknown kind → error  (got \"error\")\n  ok  - unknown kind → message names it  (got \"unknown kind: nonsense\")\n  ok  - missing shop_id → rejected\n  ok  - week_label '2026-W7' (single-digit week) → rejected\n  ok  - week_label '26-W07' (2-digit year) → rejected\n  ok  - non-numeric total_ex_gst → rejected\n  ok  - missing week_start → rejected\n  ok  - rejection message names the offending row index (row 1)\n  ok  - shopspend row without date → rejected\n  ok  - ...via the generic shared missing-date message\n  ok  - suppliers row missing invoice_ref → still rejected\n  ok  - revenue row missing order_ref → still rejected\n  ok  - valid suppliers payload still succeeds  (got \"ok\")\n  ok  - ...and writes to Suppliers\n  ok  - valid revenue payload still succeeds  (got \"ok\")\n  ok  - ...and writes to Revenue\n  ok  - successful shopspend post stamps the shopspend heartbeat\n  ok  - shopspend payload with pull → ok  (got \"ok\")\n  ok  - data rows written before the pulls row (commit-marker ordering)\n  ok  - exactly one row appended to ShopSpendPulls  (got 2)\n  ok  - pulls row lands in SHOPSPEND_PULLS_HEADERS order  (got [...])\n\n555 passed, 0 failed\n",
+          "at": "2026-08-04T13:13:16+1000"
+        },
         "red": {
           "command": "node connectors/gas/test_code.js",
           "exit_code": 1,
