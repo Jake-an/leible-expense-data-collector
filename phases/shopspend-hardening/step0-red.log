@@ -1,0 +1,31 @@
+mock harness: getRange/setValue can actually fail
+  ok  - getRange(2,1).setValue writes into the sheet, read back at row 2 col 1  (got "x")
+  ok  - getRange().setValue coerces a bare date string to a Date
+  ok  - ...and it round-trips to the same yyyy-MM-dd  (got "2026-08-03")
+  ok  - writing beyond current row length extends the row, does not throw
+  ok  - extended row has the value at the target column  (got "z")
+  ok  - SUPPLIERS_HEADERS used by tests is globalThis.SUPPLIERS_HEADERS (no shadow)
+  ok  - SALES_HEADERS used by tests is globalThis.SALES_HEADERS (no shadow)
+mock harness: getRange rejects invalid geometry (shopspend-hardening step 0)
+  ok  - getRange(1, 1, 1, 0) throws — numCols < 1 mirrors real GAS
+  ok  - getRange(1, 1, 0, 1) throws — numRows < 1 mirrors real GAS
+  ok  - getRange(row, col) with no numRows/numCols stays legal
+  ok  - getRange(row, col, numRows, numCols) with valid (>= 1) geometry stays legal
+ensureSheet — empty headers on a missing tab (shopspend-hardening step 0)
+C:\Users\mioja\.claude\projects\LEIBLE_Expense_Data_collector\connectors\gas\test_code.js:100
+      throw new Error('The number of columns in the range must be at least 1');
+      ^
+
+Error: The number of columns in the range must be at least 1
+    at makeRangeChain (C:\Users\mioja\.claude\projects\LEIBLE_Expense_Data_collector\connectors\gas\test_code.js:100:13)
+    at Object.getRange (C:\Users\mioja\.claude\projects\LEIBLE_Expense_Data_collector\connectors\gas\test_code.js:129:47)
+    at ensureSheet (eval at load (C:\Users\mioja\.claude\projects\LEIBLE_Expense_Data_collector\connectors\gas\test_code.js:310:12), <anonymous>:680:11)
+    at C:\Users\mioja\.claude\projects\LEIBLE_Expense_Data_collector\connectors\gas\test_code.js:449:15
+    at Object.<anonymous> (C:\Users\mioja\.claude\projects\LEIBLE_Expense_Data_collector\connectors\gas\test_code.js:469:3)
+    at Module._compile (node:internal/modules/cjs/loader:1812:14)
+    at Object..js (node:internal/modules/cjs/loader:1943:10)
+    at Module.load (node:internal/modules/cjs/loader:1533:32)
+    at Module._load (node:internal/modules/cjs/loader:1335:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+
+Node.js v24.14.0

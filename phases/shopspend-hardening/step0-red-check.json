@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test is correctly written and mock validation is correct. ensureSheet(…, []) with empty headers tries to call getRange with numCols=0, which violates the GAS constraint (numCols >= 1). This is a valid RED: the implementation is incomplete and needs to handle the empty-headers case (either skip header writes when headers array is empty, or validate/reject empty headers before attempting a write). Not a broken test or misconfiguration."
+}

@@ -85,11 +85,26 @@ function makeSheet(headers, name, globalWriteLog) {
   // setValues actually write into `rows` (upsertRows_'s entire mechanism is
   // getRange(row, col).setValue(v)); an unimplemented upsert and a correct
   // one must NOT produce identical sheet state.
-  function makeRangeChain(row, col) {
+  //
+  // Real GAS throws when numRows/numCols is present and < 1 — a call with
+  // only (row, col) stays legal (no geometry given, nothing to validate).
+  // Every geometry call is also recorded (with any style calls applied to
+  // it) so tests can assert both "no invalid geometry was ever requested"
+  // and "the header range was actually styled", not just resulting state.
+  const rangeCalls = [];
+  function makeRangeChain(row, col, numRows, numCols) {
+    if (numRows !== undefined && numRows < 1) {
+      throw new Error('The number of rows in the range must be at least 1');
+    }
+    if (numCols !== undefined && numCols < 1) {
+      throw new Error('The number of columns in the range must be at least 1');
+    }
+    const call = { row, col, numRows, numCols, background: null, fontColor: null, fontWeight: null };
+    rangeCalls.push(call);
     const chain = {
-      setBackground() { return chain; },
-      setFontColor() { return chain; },
-      setFontWeight() { return chain; },
+      setBackground(c) { call.background = c; return chain; },
+      setFontColor(c) { call.fontColor = c; return chain; },
+      setFontWeight(w) { call.fontWeight = w; return chain; },
       setValue(v) { setCell(row - 1, col - 1, v); return chain; },
       setValues(vals) {
         vals.forEach((rowVals, ri) => {
@@ -101,6 +116,7 @@ function makeSheet(headers, name, globalWriteLog) {
     };
     return chain;
   }
+  const frozenRowsCalls = [];
   return {
     _rows: rows,
     appendRow: (a) => { rows.push(a.map(sheetCoerceOnWrite)); recordWrite('appendRow', 1); },
@@ -110,11 +126,13 @@ function makeSheet(headers, name, globalWriteLog) {
     // header, so the mock just empties the row store.
     clearContents: () => { const n = rows.length; rows.length = 0; recordWrite('clearContents', n); },
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
-    getRange: (row, col) => makeRangeChain(row, col),
+    getRange: (row, col, numRows, numCols) => makeRangeChain(row, col, numRows, numCols),
+    getRangeCalls: () => rangeCalls.slice(),
     getLastRow: () => rows.length,
     getWriteCalls: () => writeCalls.slice(),
     clearWriteCalls: () => writeCalls.splice(0),
-    setFrozenRows() {},
+    setFrozenRows: (n) => { frozenRowsCalls.push(n); },
+    getFrozenRowsCalls: () => frozenRowsCalls.slice(),
   };
 }
 
@@ -377,6 +395,165 @@ console.log('mock harness: getRange/setValue can actually fail');
     SUPPLIERS_HEADERS === globalThis.SUPPLIERS_HEADERS);
   check('SALES_HEADERS used by tests is globalThis.SALES_HEADERS (no shadow)',
     SALES_HEADERS === globalThis.SALES_HEADERS);
+})();
+
+console.log('mock harness: getRange rejects invalid geometry (shopspend-hardening step 0)');
+(function () {
+  // Meta-assertion, mirrors the "getRange/setValue can actually fail" block
+  // above: this is the case that proves the geometry guard is not vacuous.
+  // Before this phase getRange(row, col) silently discarded numRows/numCols,
+  // which is exactly why ensureSheet(ss, name, []) crashing real GAS on
+  // getRange(1, 1, 1, 0) survived 705 green node tests.
+  freshSheets();
+  var sheet = currentSS.getSheetByName('Suppliers');
+
+  var threwZeroCols = false;
+  try {
+    sheet.getRange(1, 1, 1, 0);
+  } catch (err) {
+    threwZeroCols = true;
+  }
+  check('getRange(1, 1, 1, 0) throws — numCols < 1 mirrors real GAS', threwZeroCols);
+
+  var threwZeroRows = false;
+  try {
+    sheet.getRange(1, 1, 0, 1);
+  } catch (err) {
+    threwZeroRows = true;
+  }
+  check('getRange(1, 1, 0, 1) throws — numRows < 1 mirrors real GAS', threwZeroRows);
+
+  var threwBare = false;
+  try {
+    sheet.getRange(2, 1);
+  } catch (err) {
+    threwBare = true;
+  }
+  check('getRange(row, col) with no numRows/numCols stays legal', !threwBare);
+
+  var threwValid = false;
+  try {
+    sheet.getRange(1, 1, 1, 3);
+  } catch (err) {
+    threwValid = true;
+  }
+  check('getRange(row, col, numRows, numCols) with valid (>= 1) geometry stays legal', !threwValid);
+})();
+
+console.log('ensureSheet — empty headers on a missing tab (shopspend-hardening step 0)');
+(function () {
+  // ShopSpend Report is deliberately headerless — ensureSheet must still
+  // create + return the tab, and must never ask the mock for an invalid
+  // (numCols < 1) range while doing it.
+  freshSheets();
+  var sheet = ensureSheet(currentSS, 'ShopSpend Report', []);
+  check('ensureSheet(ss, name, []) returns a sheet object', !!sheet);
+  check('the tab now exists under that name',
+    currentSS.getSheetByName('ShopSpend Report') === sheet);
+
+  var invalidCalls = sheet.getRangeCalls().filter(function (c) {
+    return (c.numCols !== undefined && c.numCols < 1) ||
+           (c.numRows !== undefined && c.numRows < 1);
+  });
+  eq('ensureSheet(ss, name, []) never issues a getRange call with invalid (< 1) geometry',
+    invalidCalls.length, 0);
+
+  // Headerless creation applies none of the header styling/freezing — that
+  // only makes sense when there is a header row to style.
+  eq('no range on the new headerless sheet was styled', sheet.getRangeCalls().filter(function (c) {
+    return c.background !== null || c.fontColor !== null || c.fontWeight !== null;
+  }).length, 0);
+  eq('setFrozenRows was never called for a headerless tab', sheet.getFrozenRowsCalls().length, 0);
+  eq('the new sheet has no data rows (nothing was appended)',
+    sheet.getDataRange().getValues().length, 0);
+})();
+
+console.log('ensureSheet — non-empty headers, byte-identical to today (shopspend-hardening step 0)');
+(function () {
+  freshSheets();
+  var sheet = ensureSheet(currentSS, 'HeaderedTab', SUPPLIERS_HEADERS);
+
+  eq('header row is appended as row 1',
+    sheet.getDataRange().getValues()[0], SUPPLIERS_HEADERS);
+
+  var headerRangeCalls = sheet.getRangeCalls().filter(function (c) {
+    return c.row === 1 && c.col === 1 && c.numRows === 1 && c.numCols === SUPPLIERS_HEADERS.length;
+  });
+  check('getRange(1, 1, 1, headers.length) was called for the header row',
+    headerRangeCalls.length === 1);
+  if (headerRangeCalls.length === 1) {
+    var styled = headerRangeCalls[0];
+    eq('header range background is #a5b89d', styled.background, '#a5b89d');
+    eq('header range font color is white', styled.fontColor, '#ffffff');
+    eq('header range font weight is bold', styled.fontWeight, 'bold');
+  }
+  eq('setFrozenRows(1) was called exactly once', sheet.getFrozenRowsCalls(), [1]);
+})();
+
+console.log('ensureSheet — existing tab is untouched (shopspend-hardening step 0)');
+(function () {
+  freshSheets();
+  // First call creates + styles the tab.
+  var created = ensureSheet(currentSS, 'HeaderedTab2', SUPPLIERS_HEADERS);
+  created.clearWriteCalls();
+
+  // Second call against the now-existing tab must not re-append or re-style.
+  var again = ensureSheet(currentSS, 'HeaderedTab2', SUPPLIERS_HEADERS);
+  check('the same sheet object is returned', again === created);
+  eq('no new write calls (no re-append) on an existing tab',
+    again.getWriteCalls().length, 0);
+  eq('row count is still exactly 1 (header only, not duplicated)',
+    again.getDataRange().getValues().length, 1);
+
+  // Same check for the headerless path.
+  freshSheets();
+  var createdEmpty = ensureSheet(currentSS, 'ShopSpend Report', []);
+  var rangeCallsBefore = createdEmpty.getRangeCalls().length;
+  var againEmpty = ensureSheet(currentSS, 'ShopSpend Report', []);
+  check('headerless: the same sheet object is returned', againEmpty === createdEmpty);
+  eq('headerless: no new getRange calls on an existing tab',
+    againEmpty.getRangeCalls().length, rangeCallsBefore);
+})();
+
+console.log('ensureSheet — existing callers still get their real header rows (shopspend-hardening step 0)');
+(function () {
+  // Asserted against the real *_HEADERS globals (not literals) so a header
+  // change in Code.gs cannot silently desync from this test.
+  var cases = [
+    ['Suppliers', SUPPLIERS_HEADERS],
+    ['Sales', SALES_HEADERS],
+    ['Revenue', globalThis.REVENUE_HEADERS],
+    ['Summary', globalThis.SUMMARY_HEADERS],
+    ['Labour', globalThis.LABOUR_HEADERS],
+  ];
+  cases.forEach(function (pair) {
+    var tabName = pair[0], headers = pair[1];
+    if (!headers) return;
+    freshSheets();
+    var sheet = ensureSheet(currentSS, tabName, headers);
+    eq('ensureSheet(ss, "' + tabName + '", ' + tabName.toUpperCase() + '_HEADERS) writes the real header row',
+      sheet.getDataRange().getValues()[0], headers);
+  });
+})();
+
+console.log('ensureShopSpendTabs_ creates all three tabs without throwing (shopspend-hardening step 0)');
+(function () {
+  freshSheets();
+  var threw = false;
+  var tabs;
+  try {
+    tabs = ensureShopSpendTabs_(currentSS);
+  } catch (err) {
+    threw = true;
+  }
+  check('ensureShopSpendTabs_ does not throw when creating all three tabs from scratch', !threw);
+  if (!threw) {
+    check('ShopSpend tab created', !!tabs.data);
+    check('ShopSpendPulls tab created', !!tabs.pulls);
+    check('ShopSpend Report tab created (headerless)', !!tabs.report);
+    check('ShopSpend Report tab is retrievable by name',
+      currentSS.getSheetByName('ShopSpend Report') === tabs.report);
+  }
 })();
 
 console.log('normalizeSupplierRow');
