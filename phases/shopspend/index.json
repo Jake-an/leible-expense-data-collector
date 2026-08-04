@@ -406,7 +406,17 @@
       },
       "tdd_state": "green_done",
       "summary": "Added fn dispatch to doGet (default summary unchanged) plus fn=shopspendCoverage delegating to shopSpendCoveredWeeks_; 705 tests pass, docs/api.md documents the new param + response.",
-      "completed_at": "2026-08-04T19:02:16+0900"
+      "completed_at": "2026-08-04T19:02:16+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend/step8-review.json",
+        "checked_at": "2026-08-04T19:04:51+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 9,
@@ -420,7 +430,8 @@
       "docs": [
         "ARCHITECTURE.md",
         "api.md"
-      ]
+      ],
+      "started_at": "2026-08-04T19:04:51+0900"
     },
     {
       "step": 10,
