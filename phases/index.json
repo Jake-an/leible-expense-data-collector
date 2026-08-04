@@ -14,6 +14,10 @@
       "dir": "shopspend",
       "status": "blocked",
       "blocked_at": "2026-08-04T21:50:39+0900"
+    },
+    {
+      "dir": "shopspend-hardening",
+      "status": "pending"
     }
   ]
 }

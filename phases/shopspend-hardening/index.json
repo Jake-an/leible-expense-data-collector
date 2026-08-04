@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "shopspend-hardening",
+  "review": {
+    "base": "d63651d"
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "ensure-sheet-empty-headers",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-7",
+        "PRD-8"
+      ]
+    },
+    {
+      "step": 1,
+      "name": "tombstone-weeks-complete",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-7"
+      ],
+      "docs": [
+        "schema.md",
+        "api.md"
+      ]
+    },
+    {
+      "step": 2,
+      "name": "chunk-by-week-poster",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/shopspend -q",
+      "covers": [
+        "PRD-7"
+      ],
+      "docs": [
+        "schema.md",
+        "ingest-contract.md"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "pull-diagnostics-honest-values",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/shopspend -q",
+      "covers": [
+        "PRD-8"
+      ],
+      "docs": [
+        "schema.md"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "report-unassessed-pricing",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-8"
+      ],
+      "docs": [
+        "schema.md"
+      ]
+    },
+    {
+      "step": 5,
+      "name": "client-redaction-hardening",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/shopspend -q",
+      "covers": [
+        "PRD-7"
+      ]
+    },
+    {
+      "step": 6,
+      "name": "pagination-progress-guard",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/shopspend -q",
+      "covers": [
+        "PRD-7"
+      ]
+    }
+  ]
+}
