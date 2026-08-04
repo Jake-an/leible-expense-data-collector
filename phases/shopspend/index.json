@@ -204,7 +204,17 @@
           "at": "2026-08-04T14:23:34+0900"
         }
       },
-      "tdd_state": "green_done"
+      "tdd_state": "green_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend/step4-review.json",
+        "checked_at": "2026-08-04T14:31:49+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 5,
@@ -218,7 +228,8 @@
       "docs": [
         "ARCHITECTURE.md",
         "ingest-contract.md"
-      ]
+      ],
+      "started_at": "2026-08-04T14:31:49+0900"
     },
     {
       "step": 6,
