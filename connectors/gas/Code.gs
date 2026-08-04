@@ -149,6 +149,9 @@ function doPost(e) {
       var ss = getHubSpreadsheet_();
       if (kind === 'shopspend') {
         var tabs = ensureShopSpendTabs_(ss);
+        // step2.md:48-51's snippet passes 5 args (no pulls sheet), but writing the
+        // pull marker row to ShopSpendPulls requires a reference to that sheet —
+        // tabs.pulls is added here for that reason.
         return ingestShopSpendRows(body.source, body.rows, body.extracted_at, tabs.data, tabs.pulls, body.pull);
       }
       if (kind === 'revenue') {
@@ -220,8 +223,21 @@ function validateIngest_(body) {
         return { ok: false, message: 'row ' + i + ' invalid week_label' };
       }
       if (!r.week_start) return { ok: false, message: 'row ' + i + ' missing week_start' };
+      if (!r.week_end) return { ok: false, message: 'row ' + i + ' missing week_end' };
       if (r.total_ex_gst === undefined || r.total_ex_gst === null || isNaN(Number(r.total_ex_gst))) {
         return { ok: false, message: 'row ' + i + ' missing/invalid total_ex_gst' };
+      }
+      if (r.gst === undefined || r.gst === null || isNaN(Number(r.gst))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid gst' };
+      }
+      if (r.total_inc_gst === undefined || r.total_inc_gst === null || isNaN(Number(r.total_inc_gst))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid total_inc_gst' };
+      }
+      if (r.order_count === undefined || r.order_count === null || isNaN(Number(r.order_count))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid order_count' };
+      }
+      if (r.amended_count === undefined || r.amended_count === null || isNaN(Number(r.amended_count))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid amended_count' };
       }
     } else if (kind === 'revenue') {
       if (r.amount === undefined || r.amount === null || isNaN(Number(r.amount))) {
