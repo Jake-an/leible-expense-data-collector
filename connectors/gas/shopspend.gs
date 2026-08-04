@@ -21,18 +21,68 @@ function ensureShopSpendTabs_(ss) {
   };
 }
 
+// Below this many present shop-weeks in a declared-complete week, the
+// blast-radius breaker never applies — a 2-of-3-shop closure is ordinary,
+// not a signal of a client/scoping bug. See docs/schema.md and the step 1
+// task file for the full rationale (a wrong tombstone self-heals, a
+// suppressed one does not — so the floor exists to keep small, normal
+// closures from being permanently held back by the breaker below).
+var SHOPSPEND_TOMBSTONE_BREAKER_FLOOR_ = 5;
+
 /**
  * Normalize + ingest a batch of ShopSpend rows with change detection.
- * Append-only: a row is written only when a figure changed. Tombstones mark
- * shop-weeks that disappear. If `pull` is present, one metadata row is
- * appended to ShopSpendPulls LAST, after the data rows, as the commit marker
- * for a chunked pull.
- * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
+ * Append-only: a row is written only when a figure changed.
+ *
+ * Tombstoning is scoped to `weeksComplete` (array of ISO week labels the
+ * caller declares it carries IN FULL in this request) — never to "weeks seen
+ * in rows". A week absent from `weeksComplete` is never tombstoned, however
+ * many of its rows this payload carries; this is what makes a chunked pull
+ * safe to split (see docs/schema.md "shopSpend tabs" and the step 1 task
+ * file's C1 repro). Exact hash-set membership only — never substring/indexOf,
+ * which would let a truncated label match a longer one.
+ *
+ * A week whose tombstone candidates exceed both the floor
+ * (SHOPSPEND_TOMBSTONE_BREAKER_FLOOR_ present shop-weeks) and half of that
+ * week's present shop-weeks is SKIPPED rather than written, unless the week
+ * is also named in `weeksVerifiedEmpty` (the caller asserting it positively
+ * confirmed the week is empty upstream, not merely "I saw fewer rows than
+ * before"). A skip is sticky — it recomputes from the same sheet state every
+ * pull and never self-heals — so it is reported back on every response via
+ * tombstonesSkipped, not just logged.
+ *
+ * If `pull` is present, one metadata row is appended to ShopSpendPulls LAST,
+ * after the data rows, as the commit marker for a chunked pull.
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number,
+ *   tombstonesWritten:number, tombstonesSkipped:Array<{week:string,wouldHaveWritten:number,present:number}>}}
  */
-function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull) {
+function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull, weeksComplete, weeksVerifiedEmpty) {
   var normalizedRows = [];
   for (var i = 0; i < rows.length; i++) {
     normalizedRows.push(normalizeShopSpendRow(rows[i], source, extractedAt));
+  }
+
+  var completeSet = {};
+  var completeList = Array.isArray(weeksComplete) ? weeksComplete : [];
+  for (var wc = 0; wc < completeList.length; wc++) completeSet[completeList[wc]] = true;
+
+  // Belt-and-braces: a week is exempt from the breaker only if it is BOTH
+  // declared verified-empty AND actually carries no rows in this payload.
+  // validateIngest_ already rejects a payload where a verified-empty week has
+  // rows, but this function must not trust that flag blindly on its own.
+  var verifiedEmptySet = {};
+  var verifiedEmptyList = Array.isArray(weeksVerifiedEmpty) ? weeksVerifiedEmpty : [];
+  for (var ve = 0; ve < verifiedEmptyList.length; ve++) verifiedEmptySet[verifiedEmptyList[ve]] = true;
+
+  var weeksWithRowsThisPayload = {};
+  for (var wi = 0; wi < normalizedRows.length; wi++) weeksWithRowsThisPayload[normalizedRows[wi][1]] = true;
+  for (var week in weeksWithRowsThisPayload) {
+    if (Object.prototype.hasOwnProperty.call(weeksWithRowsThisPayload, week) && verifiedEmptySet[week]) {
+      delete verifiedEmptySet[week];
+    }
+  }
+
+  if (!Array.isArray(weeksComplete) && normalizedRows.length > 0) {
+    Logger.log('ingestShopSpendRows: weeks_complete absent — tombstoning skipped entirely for this pull (source=' + source + ')');
   }
 
   // 1. Build latest-snapshot index: for each (shop_id, week_label) key,
@@ -48,14 +98,12 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull)
   // 2. Change detection: collect rows to append.
   var toAppend = [];
   var duplicatesSkipped = 0;
-  var incomingKeys = {}; // keys present in this payload, scoped to weeks covered
-  var weeksInPayload = {}; // weeks covered by this payload
+  var incomingKeys = {}; // keys present in this payload
 
   for (var i = 0; i < normalizedRows.length; i++) {
     var row = normalizedRows[i];
     var key = rowKey_(row, [0, 1]); // shop_id, week_label
     incomingKeys[key] = true;
-    weeksInPayload[row[1]] = true; // week_label at index 1
 
     var latest = latestIndex[key];
     var isNew = latest === undefined;
@@ -86,52 +134,83 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull)
     }
   }
 
-  // 3. Tombstones for disappearing shop-weeks: build set of keys already on
-  // the sheet with presence='present' for weeks in this payload, but missing
-  // from the incoming payload.
+  // 3. Tombstone candidates, scoped strictly to weeks in `completeSet`
+  // (exact hash-set membership, never indexOf/substring). Group by week so
+  // the blast-radius breaker can be evaluated per week.
+  var candidatesByWeek = {}; // week -> [existingRow, ...] present + missing from incoming
+  var presentCountByWeek = {}; // week -> count of ALL currently-present shop-weeks (not just candidates)
+
+  for (var existingKey in latestIndex) {
+    if (!Object.prototype.hasOwnProperty.call(latestIndex, existingKey)) continue;
+    var existingRow = latestIndex[existingKey];
+    var existingWeek = existingRow[1]; // week_label
+    var existingPresence = existingRow[13]; // presence
+
+    if (!completeSet[existingWeek]) continue; // not declared complete — never a tombstone candidate
+    if (existingPresence !== 'present') continue;
+
+    presentCountByWeek[existingWeek] = (presentCountByWeek[existingWeek] || 0) + 1;
+
+    if (!incomingKeys[existingKey]) {
+      if (!candidatesByWeek[existingWeek]) candidatesByWeek[existingWeek] = [];
+      candidatesByWeek[existingWeek].push(existingRow);
+    }
+  }
+
   var tombstones = [];
-  if (Object.keys(weeksInPayload).length > 0) {
-    for (var existingKey in latestIndex) {
-      if (!Object.prototype.hasOwnProperty.call(latestIndex, existingKey)) continue;
+  var tombstonesSkipped = [];
 
-      var existingRow = latestIndex[existingKey];
-      var existingWeek = existingRow[1]; // week_label
-      var existingPresence = existingRow[13]; // presence
+  for (var candWeek in candidatesByWeek) {
+    if (!Object.prototype.hasOwnProperty.call(candidatesByWeek, candWeek)) continue;
+    var candidates = candidatesByWeek[candWeek];
+    var presentCount = presentCountByWeek[candWeek] || 0;
+    var wouldHaveWritten = candidates.length;
 
-      // Only tombstone if: (a) week is in this payload, (b) presence is
-      // 'present', and (c) key is absent from incoming.
-      if (weeksInPayload[existingWeek] && existingPresence === 'present' && !incomingKeys[existingKey]) {
-        // Build tombstone row: same shop_id/week_label/week_start/week_end,
-        // zeros for figures, presence='absent', current fetched_at.
-        var tombstone = [];
-        for (var c = 0; c < SHOPSPEND_HEADERS.length; c++) {
-          if (c === 0 || c === 1 || c === 2 || c === 3) {
-            // shop_id, week_label, week_start, week_end
-            tombstone.push(existingRow[c]);
-          } else if (c >= 4 && c <= 8) {
-            // order_count, amended_count, total_ex_gst, gst, total_inc_gst
-            tombstone.push(0);
-          } else if (c === 9) {
-            // gst_treatment
-            tombstone.push(existingRow[c]);
-          } else if (c === 10) {
-            // environment
-            tombstone.push(existingRow[c]);
-          } else if (c === 11) {
-            // fetched_at (current time)
-            tombstone.push(normalizedRows[0][c]); // use fetched_at from first incoming row
-          } else if (c === 12) {
-            // source
-            tombstone.push(source);
-          } else if (c === 13) {
-            // presence
-            tombstone.push('absent');
-          } else {
-            tombstone.push(existingRow[c]);
-          }
+    var meetsFloor = presentCount >= SHOPSPEND_TOMBSTONE_BREAKER_FLOOR_;
+    var exceedsHalf = wouldHaveWritten > presentCount / 2;
+    var isVerifiedEmpty = !!verifiedEmptySet[candWeek];
+
+    var skip = !isVerifiedEmpty && meetsFloor && exceedsHalf;
+
+    if (skip) {
+      tombstonesSkipped.push({ week: candWeek, wouldHaveWritten: wouldHaveWritten, present: presentCount });
+      continue;
+    }
+
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var srcRow = candidates[ci];
+      // Build tombstone row: same shop_id/week_label/week_start/week_end,
+      // zeros for figures, presence='absent', current fetched_at.
+      var tombstone = [];
+      for (var c = 0; c < SHOPSPEND_HEADERS.length; c++) {
+        if (c === 0 || c === 1 || c === 2 || c === 3) {
+          // shop_id, week_label, week_start, week_end
+          tombstone.push(srcRow[c]);
+        } else if (c >= 4 && c <= 8) {
+          // order_count, amended_count, total_ex_gst, gst, total_inc_gst
+          tombstone.push(0);
+        } else if (c === 9) {
+          // gst_treatment
+          tombstone.push(srcRow[c]);
+        } else if (c === 10) {
+          // environment
+          tombstone.push(srcRow[c]);
+        } else if (c === 11) {
+          // fetched_at — the extractedAt PARAMETER, never normalizedRows[0]:
+          // tombstoning is no longer gated on the payload having rows, so
+          // normalizedRows[0] is reachable-undefined for a rows:[] pull.
+          tombstone.push(extractedAt);
+        } else if (c === 12) {
+          // source
+          tombstone.push(source);
+        } else if (c === 13) {
+          // presence
+          tombstone.push('absent');
+        } else {
+          tombstone.push(srcRow[c]);
         }
-        tombstones.push(tombstone);
       }
+      tombstones.push(tombstone);
     }
   }
 
@@ -150,7 +229,9 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull)
   return {
     rowsAdded: toAppend.length + tombstones.length,
     rowsUpdated: 0,
-    duplicatesSkipped: duplicatesSkipped
+    duplicatesSkipped: duplicatesSkipped,
+    tombstonesWritten: tombstones.length,
+    tombstonesSkipped: tombstonesSkipped
   };
 }
 

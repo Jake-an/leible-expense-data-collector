@@ -152,7 +152,8 @@ function doPost(e) {
         // step2.md:48-51's snippet passes 5 args (no pulls sheet), but writing the
         // pull marker row to ShopSpendPulls requires a reference to that sheet —
         // tabs.pulls is added here for that reason.
-        return ingestShopSpendRows(body.source, body.rows, body.extracted_at, tabs.data, tabs.pulls, body.pull);
+        return ingestShopSpendRows(body.source, body.rows, body.extracted_at, tabs.data, tabs.pulls, body.pull,
+          body.weeks_complete, body.weeks_verified_empty);
       }
       if (kind === 'revenue') {
         var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
@@ -175,12 +176,17 @@ function doPost(e) {
     // staleness alert crying wolf on a quiet weekend. Never throws.
     stalenessStampHeartbeat_(body.source);
 
-    return jsonOut_({
+    var response = {
       result: 'ok',
       rowsAdded: res.rowsAdded,
       rowsUpdated: res.rowsUpdated,
       duplicatesSkipped: res.duplicatesSkipped
-    });
+    };
+    if (kind === 'shopspend') {
+      response.tombstonesWritten = res.tombstonesWritten;
+      response.tombstonesSkipped = res.tombstonesSkipped;
+    }
+    return jsonOut_(response);
   } catch (err) {
     return jsonOut_({ result: 'error', message: String((err && err.message) || err) });
   }
@@ -189,6 +195,20 @@ function doPost(e) {
 /* ------------------------------------------------------------------ *
  * Validation + normalization (pure, unit-tested)
  * ------------------------------------------------------------------ */
+
+/**
+ * True iff `v` is an array whose every element is a well-formed ISO week
+ * label ('YYYY-Www', always 2-digit week). Used to validate weeks_complete /
+ * weeks_verified_empty — a JSON string or a nested array must be rejected,
+ * not silently coerced.
+ */
+function isValidWeekLabelArray_(v) {
+  if (!Array.isArray(v)) return false;
+  for (var i = 0; i < v.length; i++) {
+    if (typeof v[i] !== 'string' || !/^\d{4}-W\d{2}$/.test(v[i])) return false;
+  }
+  return true;
+}
 
 /**
  * Validate an ingest payload. Returns { ok:boolean, message?:string }.
@@ -208,6 +228,27 @@ function validateIngest_(body) {
     return { ok: false, message: 'unknown kind: ' + kind };
   }
 
+  if (body.weeks_complete !== undefined && !isValidWeekLabelArray_(body.weeks_complete)) {
+    return { ok: false, message: 'invalid weeks_complete' };
+  }
+
+  var weeksVerifiedEmptySet_ = {};
+  if (body.weeks_verified_empty !== undefined) {
+    if (!isValidWeekLabelArray_(body.weeks_verified_empty)) {
+      return { ok: false, message: 'invalid weeks_verified_empty' };
+    }
+    var weeksCompleteSet_ = {};
+    var weeksCompleteArr_ = Array.isArray(body.weeks_complete) ? body.weeks_complete : [];
+    for (var wc = 0; wc < weeksCompleteArr_.length; wc++) weeksCompleteSet_[weeksCompleteArr_[wc]] = true;
+    for (var ve = 0; ve < body.weeks_verified_empty.length; ve++) {
+      var veWeek = body.weeks_verified_empty[ve];
+      if (!weeksCompleteSet_[veWeek]) {
+        return { ok: false, message: 'weeks_verified_empty entry not in weeks_complete: ' + veWeek };
+      }
+      weeksVerifiedEmptySet_[veWeek] = true;
+    }
+  }
+
   for (var i = 0; i < body.rows.length; i++) {
     var r = body.rows[i];
     if (!r || typeof r !== 'object') return { ok: false, message: 'row ' + i + ' is not an object' };
@@ -222,6 +263,9 @@ function validateIngest_(body) {
       if (!r.shop_id) return { ok: false, message: 'row ' + i + ' missing shop_id' };
       if (!r.week_label || !/^\d{4}-W\d{2}$/.test(String(r.week_label))) {
         return { ok: false, message: 'row ' + i + ' invalid week_label' };
+      }
+      if (weeksVerifiedEmptySet_[r.week_label]) {
+        return { ok: false, message: 'row ' + i + ' has week_label ' + r.week_label + ' but that week is in weeks_verified_empty' };
       }
       if (!r.week_start) return { ok: false, message: 'row ' + i + ' missing week_start' };
       if (!r.week_end) return { ok: false, message: 'row ' + i + ' missing week_end' };

@@ -52,7 +52,8 @@
     {
       "step": 1,
       "name": "tombstone-weeks-complete",
-      "status": "pending",
+      "status": "completed",
+      "summary": "GAS ingestShopSpendRows now tombstones only weeks_complete (hash-set, no indexOf) with a >=5-floor/>50% blast-radius breaker exempt via weeks_verified_empty; validateIngest_ validates both fields; doPost returns tombstonesWritten/tombstonesSkipped on shopspend responses; docs/api.md documents the procedure. 797/0 passing.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -73,9 +74,16 @@
             "reason": "All 48 failures are due to missing implementation, not broken test code. The test infrastructure is sound (749 passing). Failures fall into four categories: (1) weeks_complete/weeks_verified_empty validation not implemented (6 tests expect validateIngest_ to reject invalid payloads); (2) response fields missing (tombstonesWritten and tombstonesSkipped undefined in doPost responses); (3) tombstoning logic still incorrectly tombstones every week seen instead of only declared weeks (affects C1 repro, identical re-post, and scoped pull tests); (4) docs/api.md not yet documenting the new fields and mass-absence confirmation procedure. This is the correct RED state for step 1: tests fail because the features described in the step (weeks_complete validation, response fields, breaker circuit) don't exist yet."
           },
           "at": "2026-08-05T08:53:22+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "797 passed, 0 failed\n",
+          "at": "2026-08-05T08:58:48+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T08:58:48+0900"
     },
     {
       "step": 2,

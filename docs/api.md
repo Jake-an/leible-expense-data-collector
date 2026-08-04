@@ -111,6 +111,50 @@ GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?token=<TOKEN>&fn=sho
 `ShopSpendPulls` tab returns `{"result":"ok","count":0,"weeks":[]}` — cold
 start is a normal state here, not an error.
 
+## `doPost` shopspend ingest — tombstone response fields
+
+A `kind: 'shopspend'` `doPost` request tombstones a shop-week only for ISO
+weeks the payload declares complete via `weeks_complete` (see
+`docs/schema.md` "shopSpend tabs"). Every response to a `kind: 'shopspend'`
+request carries two extra fields (omitted entirely on `suppliers`/`revenue`
+responses):
+
+| Field | Type | Description |
+|---|---|---|
+| `tombstonesWritten` | number | Count of tombstone rows actually written this pull |
+| `tombstonesSkipped` | array | One entry per week the blast-radius breaker suppressed, `[]` when nothing was skipped (never omitted) |
+
+Each `tombstonesSkipped` entry has the shape:
+
+```json
+{ "week": "2026-W31", "wouldHaveWritten": 51, "present": 100 }
+```
+
+**Blast-radius breaker.** A declared-complete week is skipped rather than
+tombstoned when it would tombstone **more than half** of that week's
+currently-`present` shop-weeks **and** that week has **at least 5** present
+shop-weeks (below the floor, a small ordinary closure — e.g. 2 of 3 shops —
+always writes). A week named in `weeks_verified_empty` is exempt from the
+breaker (see `docs/schema.md`).
+
+**The skip is sticky and does not self-heal.** It recomputes from the same
+sheet state on every pull, so an unresolved mass-absence stays suppressed
+pull after pull — unlike a wrong tombstone, which self-corrects the moment
+the shop-week reappears in a good pull. That asymmetry is deliberate: a
+suppressed tombstone must stay suppressed **until a human confirms it**.
+
+**Confirming a genuine mass absence.** If `tombstonesSkipped` reports a week
+that really did lose more than half its shops (e.g. a supplier closure, an
+upstream outage that only partially recovered), do not try to force it
+through the breaker. Instead, in the Apps Script editor, call
+`ingestShopSpendRows` directly (or write the rows via the Sheet UI) with a
+one-off payload naming exactly the affected shop-weeks and
+`weeks_verified_empty` including the affected week — this is the same
+exemption path a genuinely empty week uses, applied by Jake's deliberate
+confirmation rather than the client's word alone. Do not edit `ShopSpend`
+rows in place; every tombstone, confirmed or not, is a new appended row (see
+`docs/schema.md`'s append-only rule).
+
 ## Summary tab schema
 
 | Column | Type | Description |
