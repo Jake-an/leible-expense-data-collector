@@ -234,10 +234,37 @@ function withMockNow(isoInstant, fn) {
   try { return fn(); } finally { Date.now = REAL_DATE_NOW; }
 }
 global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp not mocked'); } };
+// Trigger store: newTrigger(handler) now records the chain calls made on it
+// (weekday/hour/timezone/etc.) and create() actually appends to a list that
+// getProjectTriggers()/deleteTrigger() operate on. Previously getProjectTriggers
+// always returned [] and create() was a no-op, so every installer's own
+// dedup-by-handler loop ran against an eternally-empty list — idempotency was
+// never actually exercised, only "does not throw". Needed to make the shopSpend
+// watchdog installer's idempotency test (and its exact schedule) assertable.
+let scriptTriggers = [];
 global.ScriptApp = {
-  getProjectTriggers: () => [],
-  newTrigger: () => ({ timeBased: () => ({ onWeekDay: () => ({ atHour: () => ({ inTimezone: () => ({ create: () => {} }) }) }), everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }), atHour: () => ({ everyDays: () => ({ inTimezone: () => ({ create: () => {} }) }) }), onMonthDay: () => ({ atHour: () => ({ inTimezone: () => ({ create: () => {} }) }) }) }) }),
-  deleteTrigger: () => {},
+  getProjectTriggers: () => scriptTriggers.slice(),
+  newTrigger: (handlerName) => {
+    const cfg = { handler: handlerName, weekDay: null, hour: null, everyDaysN: null, monthDay: null, timezone: null };
+    const chain = {
+      timeBased: () => chain,
+      onWeekDay: (wd) => { cfg.weekDay = wd; return chain; },
+      atHour: (h) => { cfg.hour = h; return chain; },
+      everyDays: (n) => { cfg.everyDaysN = n; return chain; },
+      onMonthDay: (md) => { cfg.monthDay = md; return chain; },
+      inTimezone: (tz) => { cfg.timezone = tz; return chain; },
+      create: () => {
+        const trigger = { getHandlerFunction: () => cfg.handler, _cfg: cfg };
+        scriptTriggers.push(trigger);
+        return trigger;
+      },
+    };
+    return chain;
+  },
+  deleteTrigger: (t) => {
+    const idx = scriptTriggers.indexOf(t);
+    if (idx !== -1) scriptTriggers.splice(idx, 1);
+  },
   WeekDay: { MONDAY: 2 }
 };
 // LockService mock. __forceLockTimeout lets a test simulate a busy lock
@@ -2581,8 +2608,11 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 (function testEveryHeartbeatSourceIsWatched() {
   console.log('\nstaleness — every heartbeat source is watched:');
 
-  var STAMPS_HEARTBEAT = ['square', 'mayers', 'shopify', 'roastery', 'recurring'];
-  var EXEMPT = { recurring: 'monthly cadence exceeds STALENESS_THRESHOLD_HOURS' };
+  var STAMPS_HEARTBEAT = ['square', 'mayers', 'shopify', 'roastery', 'recurring', 'shopspend'];
+  var EXEMPT = {
+    recurring: 'monthly cadence exceeds STALENESS_THRESHOLD_HOURS',
+    shopspend: 'weekly cadence exceeds STALENESS_THRESHOLD_HOURS'
+  };
 
   for (var i = 0; i < STAMPS_HEARTBEAT.length; i++) {
     var src = STAMPS_HEARTBEAT[i];
@@ -3535,6 +3565,207 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   })();
 
   } // end hasBuildFn block
+})();
+
+(function testShopSpendWatchdog() {
+  console.log('\nshopSpend — watchdog and trigger (step 7):');
+
+  function spPullRow(overrides) {
+    var f = Object.assign({
+      fetched_at: '2026-08-03T05:00:00+10:00', environment: 'prod',
+      from_week: '2026-W31', to_week: '2026-W31',
+      matched: 1, returned: 1, truncated: false,
+      warnings_count: 0, warnings: '[]',
+      unpriced_sku_count: 0, unpriced_skus: '[]',
+      amended_count: 0, possible_duplicate_shop_names: '[]',
+      empty_range_with_invalid_labels: false, invalid_week_labels: '[]',
+      gst_treatment: 'EXCLUSIVE_PRIMARY',
+      diverges_from_live_pricing: false, matches_live_pricing: true,
+      total_orders_scanned: 10, absent_shop_ids: '[]',
+      diagnostics_json: '{}'
+    }, overrides);
+    return SHOPSPEND_PULLS_HEADERS.map(function (h) { return f[h]; });
+  }
+
+  // Monday 2026-08-03 14:00 Australia/Sydney (AEST, +10:00) — the watchdog's
+  // own install schedule. The week that just closed (ended Sunday 2026-08-02)
+  // is 2026-W31 (Jul27-Aug2 — the same span already used as fixture data
+  // elsewhere in this file for that label).
+  var NOW_MON = new Date('2026-08-03T04:00:00Z').getTime();
+
+  // First Monday of January 2027, same 14:00 Sydney anchor but in DST (AEDT,
+  // +11:00). The week that just closed spans 2026-12-28..2027-01-03, which is
+  // ISO week 2026-W53 — NOT 2027-W00 or 2027-W01. Year-boundary regression.
+  var NOW_YEAR_BOUNDARY = new Date('2027-01-04T03:00:00Z').getTime();
+
+  var hasEvalFn = typeof shopSpendWatchdogEvaluate_ === 'function';
+  var hasCoveredFn = typeof shopSpendCoveredWeeks_ === 'function';
+  var hasWatchdogFn = typeof shopSpendWatchdog === 'function';
+  var hasInstallFn = typeof installShopSpendWatchdogTrigger === 'function';
+  check('shopSpendCoveredWeeks_ is defined', hasCoveredFn);
+  check('shopSpendWatchdogEvaluate_ is defined', hasEvalFn);
+  check('shopSpendWatchdog is defined', hasWatchdogFn);
+  check('installShopSpendWatchdogTrigger is defined', hasInstallFn);
+
+  // --- Registration guard: watched-but-exempt, never in STALENESS_SOURCES ---
+  check('shopspend is NOT in STALENESS_SOURCES (global 96h threshold would false-alarm a 168h cadence)',
+    STALENESS_SOURCES.indexOf('shopspend') === -1);
+
+  if (!hasCoveredFn) {
+    console.log('  (skipping shopSpendCoveredWeeks_ cases — function not defined)');
+  } else {
+    // --- Expands a span, sorted + deduped across overlapping rows ---------
+    var spanRows = [
+      spPullRow({ from_week: '2026-W29', to_week: '2026-W31' }),
+      spPullRow({ from_week: '2026-W30', to_week: '2026-W32' })  // overlaps
+    ];
+    eq('expands + merges overlapping spans, sorted + deduped',
+      shopSpendCoveredWeeks_(spanRows),
+      ['2026-W29', '2026-W30', '2026-W31', '2026-W32']);
+
+    // --- Empty tab -> [] -----------------------------------------------------
+    eq('empty pulls tab yields [], not an error or null', shopSpendCoveredWeeks_([]), []);
+  }
+
+  if (!hasEvalFn) {
+    console.log('  (skipping shopSpendWatchdogEvaluate_ cases — function not defined)');
+  } else {
+    // --- Covered week -> no alert ---------------------------------------------
+    var coveredRows = [spPullRow({ fetched_at: '2026-08-03T05:00:00+10:00', from_week: '2026-W30', to_week: '2026-W31' })];
+    var coveredResult = shopSpendWatchdogEvaluate_(coveredRows, NOW_MON);
+    check('a pull spanning the just-closed week -> covered:true', coveredResult.covered === true);
+    eq('weekLabel resolves to the just-closed ISO week', coveredResult.weekLabel, '2026-W31');
+    eq("lastPullMs reflects the pull's fetched_at",
+      coveredResult.lastPullMs, new Date('2026-08-03T05:00:00+10:00').getTime());
+
+    // --- Missing week -> alert -------------------------------------------------
+    var missingRows = [spPullRow({ fetched_at: '2026-07-27T05:00:00+10:00', from_week: '2026-W29', to_week: '2026-W30' })];
+    var missingResult = shopSpendWatchdogEvaluate_(missingRows, NOW_MON);
+    check('no covering pulls row -> covered:false', missingResult.covered === false);
+    eq('weekLabel is still the just-closed week', missingResult.weekLabel, '2026-W31');
+    eq("lastPullMs still reports the newest pull seen (even though it doesn't cover)",
+      missingResult.lastPullMs, new Date('2026-07-27T05:00:00+10:00').getTime());
+
+    // --- A pull for a DIFFERENT week does not count as coverage ---------------
+    var differentWeekRows = [spPullRow({ from_week: '2026-W25', to_week: '2026-W25' })];
+    check('a pull for an unrelated week does not satisfy coverage',
+      shopSpendWatchdogEvaluate_(differentWeekRows, NOW_MON).covered === false);
+
+    // --- Empty tab (cold start) -> alert, lastPullMs null ----------------------
+    var coldResult = shopSpendWatchdogEvaluate_([], NOW_MON);
+    check('cold start -> covered:false', coldResult.covered === false);
+    eq("cold start -> lastPullMs null (mirrors stalenessEvaluate_'s never-seen convention)",
+      coldResult.lastPullMs, null);
+
+    // --- One span parser: shopSpendWatchdogEvaluate_ must AGREE with --------
+    // shopSpendCoveredWeeks_ on the same fixture, not parse spans itself.
+    if (hasCoveredFn) {
+      var agreeRows = [spPullRow({ from_week: '2026-W29', to_week: '2026-W31' })];
+      var agreeResult = shopSpendWatchdogEvaluate_(agreeRows, NOW_MON);
+      var coveredSet = shopSpendCoveredWeeks_(agreeRows);
+      eq('shopSpendWatchdogEvaluate_.covered agrees with shopSpendCoveredWeeks_ for the same fixture',
+        agreeResult.covered, coveredSet.indexOf(agreeResult.weekLabel) !== -1);
+      check('...and that agreement is a real "covered" (true), not both trivially false',
+        agreeResult.covered === true);
+    }
+
+    // --- Year boundary ----------------------------------------------------------
+    var yearBoundaryResult = shopSpendWatchdogEvaluate_([], NOW_YEAR_BOUNDARY);
+    eq('first Monday of Jan 2027 resolves the just-closed week to 2026-W53, not 2027-W00/W01',
+      yearBoundaryResult.weekLabel, '2026-W53');
+  }
+
+  if (!hasWatchdogFn) {
+    console.log('  (skipping shopSpendWatchdog() integration cases — function not defined)');
+  } else {
+    function buildPullsSheet(rows) {
+      freshSheets();
+      var tabs = ensureShopSpendTabs_(currentSS);
+      for (var i = 0; i < rows.length; i++) tabs.pulls.appendRow(rows[i]);
+      return tabs;
+    }
+    function resetCalendar() {
+      calendarEvents = [];
+      calendarFailMode = null;
+    }
+
+    // --- Covered week -> shopSpendWatchdog() raises no alert -------------------
+    resetCalendar();
+    buildPullsSheet([spPullRow({ fetched_at: '2026-08-03T05:00:00+10:00', from_week: '2026-W30', to_week: '2026-W31' })]);
+    withMockNow('2026-08-03T04:00:00Z', function () { shopSpendWatchdog(); });
+    eq('covered week: no calendar event raised', calendarEvents.length, 0);
+
+    // --- Missing week -> shopSpendWatchdog() raises exactly one alert ----------
+    resetCalendar();
+    buildPullsSheet([spPullRow({ fetched_at: '2026-07-27T05:00:00+10:00', from_week: '2026-W29', to_week: '2026-W30' })]);
+    withMockNow('2026-08-03T04:00:00Z', function () { shopSpendWatchdog(); });
+    eq('missing week: exactly one calendar event raised', calendarEvents.length, 1);
+    if (calendarEvents.length === 1) {
+      eq('alert title matches the shopspend source (stable, no varying number)',
+        calendarEvents[0]._title, stalenessEventTitle_('shopspend'));
+      check('alert is ORANGE like every other staleness alert', calendarEvents[0]._color === 'ORANGE');
+    }
+
+    // --- Cold start (empty ShopSpendPulls tab) -> alert, never-seen wording ----
+    resetCalendar();
+    buildPullsSheet([]);
+    withMockNow('2026-08-03T04:00:00Z', function () { shopSpendWatchdog(); });
+    eq('cold start: exactly one calendar event raised', calendarEvents.length, 1);
+    if (calendarEvents.length === 1) {
+      check('cold start: description uses the never-seen wording (ageHours: null)',
+        calendarEvents[0]._description.indexOf('never seen since the watchdog was installed') !== -1);
+    }
+
+    // --- Never throws: malformed rows + a Calendar that throws -----------------
+    resetCalendar();
+    calendarFailMode = 'all';
+    var malformedTabs = buildPullsSheet([]);
+    // Garbage rows a hand-edited or partially-written sheet could contain —
+    // written directly, bypassing normalizePullMetadataRow_ — the watchdog
+    // must survive reading these, not just well-formed data.
+    malformedTabs.pulls.appendRow([undefined, null, {}, [], 'not-a-number', NaN]);
+    malformedTabs.pulls.appendRow(['garbage']);
+    var threwMalformed = false;
+    withMockNow('2026-08-03T04:00:00Z', function () {
+      try { shopSpendWatchdog(); } catch (e) { threwMalformed = true; }
+    });
+    check('malformed pulls rows + a broken calendar never throw out of the handler', !threwMalformed);
+
+    // --- Zero-arg safe: an event-object argument must not corrupt the run -----
+    var fakeTriggerEvent = { triggerUid: 'some-trigger-id' };
+
+    resetCalendar();
+    buildPullsSheet([spPullRow({ fetched_at: '2026-07-27T05:00:00+10:00', from_week: '2026-W29', to_week: '2026-W30' })]);
+    withMockNow('2026-08-03T04:00:00Z', function () { shopSpendWatchdog(); });
+    var noArgEvents = calendarEvents.length;
+
+    resetCalendar();
+    buildPullsSheet([spPullRow({ fetched_at: '2026-07-27T05:00:00+10:00', from_week: '2026-W29', to_week: '2026-W30' })]);
+    var threwOnEventArg = false;
+    withMockNow('2026-08-03T04:00:00Z', function () {
+      try { shopSpendWatchdog(fakeTriggerEvent); } catch (e) { threwOnEventArg = true; }
+    });
+    check('an event-object argument does not throw', !threwOnEventArg);
+    eq('shopSpendWatchdog(eventObject) behaves identically to shopSpendWatchdog() (same alert count)',
+      calendarEvents.length, noArgEvents);
+  }
+
+  if (!hasInstallFn) {
+    console.log('  (skipping installShopSpendWatchdogTrigger cases — function not defined)');
+  } else {
+    // --- Trigger install is idempotent -----------------------------------------
+    installShopSpendWatchdogTrigger();
+    installShopSpendWatchdogTrigger();
+    var watchdogTriggers = ScriptApp.getProjectTriggers()
+      .filter(function (t) { return t.getHandlerFunction() === 'shopSpendWatchdog'; });
+    eq('installing twice leaves exactly one trigger for shopSpendWatchdog', watchdogTriggers.length, 1);
+    if (watchdogTriggers.length === 1) {
+      var cfg = watchdogTriggers[0]._cfg;
+      eq('trigger is MONDAY', cfg.weekDay, ScriptApp.WeekDay.MONDAY);
+      eq('trigger is hour 14', cfg.hour, 14);
+      eq('trigger is Australia/Sydney', cfg.timezone, 'Australia/Sydney');
+    }
+  }
 })();
 
 /* ------------------------------------------------------------------ */

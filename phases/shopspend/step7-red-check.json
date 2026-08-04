@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "Four functions not yet implemented (shopSpendCoveredWeeks_, shopSpendWatchdogEvaluate_, shopSpendWatchdog, installShopSpendWatchdogTrigger). Test harness working correctly; 651 other tests pass."}
