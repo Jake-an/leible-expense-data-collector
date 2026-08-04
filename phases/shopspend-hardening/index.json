@@ -16,7 +16,20 @@
         "PRD-7",
         "PRD-8"
       ],
-      "started_at": "2026-08-05T08:32:12+0900"
+      "started_at": "2026-08-05T08:32:12+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 1,
+          "output_tail": "mock harness: getRange/setValue can actually fail\n  ok  - getRange(2,1).setValue writes into the sheet, read back at row 2 col 1  (got \"x\")\n  ok  - getRange().setValue coerces a bare date string to a Date\n  ok  - ...and it round-trips to the same yyyy-MM-dd  (got \"2026-08-03\")\n  ok  - writing beyond current row length extends the row, does not throw\n  ok  - extended row has the value at the target column  (got \"z\")\n  ok  - SUPPLIERS_HEADERS used by tests is globalThis.SUPPLIERS_HEADERS (no shadow)\n  ok  - SALES_HEADERS used by tests is globalThis.SALES_HEADERS (no shadow)\nmock harness: getRange rejects invalid geometry (shopspend-hardening step 0)\n  ok  - getRange(1, 1, 1, 0) throws — numCols < 1 mirrors real GAS\n  ok  - getRange(1, 1, 0, 1) throws — numRows < 1 mirrors real GAS\n  ok  - getRange(row, col) with no numRows/numCols stays legal\n  ok  - getRange(row, col, numRows, numCols) with valid (>= 1) geometry stays legal\nensureSheet — empty headers on a missing tab (shopspend-hardening step 0)\nC:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\gas\\test_code.js:100\n      throw new Error('The number of columns in the range must be at least 1');\n      ^\n\nError: The number of columns in the range must be at least 1\n    at makeRangeChain (C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\gas\\test_code.js:100:13)\n    at Object.getRange (C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\gas\\test_code.js:129:47)\n    at ensureSheet (eval at load (C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\gas\\test_code.js:310:12), <anonymous>:680:11)\n    at C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\gas\\test_code.js:449:15\n    at Object.<anonymous> (C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\gas\\test_code.js:469:3)\n    at Module._compile (node:internal/modules/cjs/loader:1812:14)\n    at Object..js (node:internal/modules/cjs/loader:1943:10)\n    at Module.load (node:internal/modules/cjs/loader:1533:32)\n    at Module._load (node:internal/modules/cjs/loader:1335:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)\n\nNode.js v24.14.0\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "Test is correctly written and mock validation is correct. ensureSheet(…, []) with empty headers tries to call getRange with numCols=0, which violates the GAS constraint (numCols >= 1). This is a valid RED: the implementation is incomplete and needs to handle the empty-headers case (either skip header writes when headers array is empty, or validate/reject empty headers before attempting a write). Not a broken test or misconfiguration."
+          },
+          "at": "2026-08-05T08:37:57+0900"
+        }
+      },
+      "tdd_state": "red_done"
     },
     {
       "step": 1,
