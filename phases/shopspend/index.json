@@ -432,8 +432,8 @@
         "api.md"
       ],
       "started_at": "2026-08-04T19:04:51+0900",
-      "completed_at": "2026-08-04T21:50:00+0900",
-      "summary": "Added client.fetch_coverage() (fn=shopspendCoverage, GAS_READ_TOKEN, redacted errors, never empty-on-failure) and wired it into runner.py's --backfill branch via missing_weeks_for_backfill, degrading to the full 4-week span on any fetch_coverage failure; GAS_READ_TOKEN is a new required .env value for step 10 to document. 63 tests pass, ruff clean.",
+      "completed_at": "2026-08-04T21:39:55+0900",
+      "summary": "Added client.fetch_coverage() (fn=shopspendCoverage, GAS_READ_TOKEN, redacted errors, never empty-on-failure) and wired it into runner.py's --backfill branch via missing_weeks_for_backfill, degrading to the full 4-week span on any fetch_coverage failure; GAS_READ_TOKEN is a ne…",
       "tdd_evidence": {
         "red": {
           "command": "python -m pytest connectors/shopspend -q",
@@ -448,8 +448,8 @@
         "green": {
           "command": "python -m pytest connectors/shopspend -q",
           "exit_code": 0,
-          "output_tail": "...............................................................          [100%]\n63 passed in 0.90s\n",
-          "at": "2026-08-04T21:49:12+0900"
+          "output_tail": "...............................................................          [100%]\n63 passed in 0.44s\n",
+          "at": "2026-08-04T21:39:56+0900"
         }
       },
       "tdd_state": "red_done"
