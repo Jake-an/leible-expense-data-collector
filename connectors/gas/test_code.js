@@ -54,11 +54,22 @@ function cellDate(v) {
   return y + '-' + (m < 10 ? '0' + m : m) + '-' + (d < 10 ? '0' + d : d);
 }
 
-function makeSheet(headers) {
+function makeSheet(headers, name, globalWriteLog) {
   // A real insertSheet() yields an EMPTY sheet; ensureSheet then appends the
   // header row. Seeding [[]] here gave every inserted tab a phantom blank row 1,
   // shifting headers to row 2 and all data down one.
   const rows = (headers && headers.length) ? [headers.slice()] : [];
+  const writeCalls = [];
+  // Records multi-row/whole-row write calls (appendRow, setValues) so tests
+  // can assert HOW a batch was written — one setValues() block vs N
+  // appendRow() calls — not just the resulting sheet state, which the two
+  // approaches make identical. Per-cell setValue() is not recorded: no test
+  // needs its call count.
+  function recordWrite(type, numRows) {
+    const entry = { type, sheet: name, numRows };
+    writeCalls.push(entry);
+    if (globalWriteLog) globalWriteLog.push(entry);
+  }
   // Real Sheet 1-indexed row/col growth: writing past the current bounds
   // extends the sheet rather than throwing.
   function ensureRow(rowIdx) {
@@ -84,6 +95,7 @@ function makeSheet(headers) {
         vals.forEach((rowVals, ri) => {
           rowVals.forEach((v, ci) => setCell(row - 1 + ri, col - 1 + ci, v));
         });
+        recordWrite('setValues', vals.length);
         return chain;
       },
     };
@@ -91,23 +103,28 @@ function makeSheet(headers) {
   }
   return {
     _rows: rows,
-    appendRow: (a) => rows.push(a.map(sheetCoerceOnWrite)),
+    appendRow: (a) => { rows.push(a.map(sheetCoerceOnWrite)); recordWrite('appendRow', 1); },
     deleteRow: (rowNum) => rows.splice(rowNum - 1, 1),
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
     getRange: (row, col) => makeRangeChain(row, col),
+    getLastRow: () => rows.length,
+    getWriteCalls: () => writeCalls.slice(),
+    clearWriteCalls: () => writeCalls.splice(0),
     setFrozenRows() {},
   };
 }
 
 function makeSpreadsheet() {
+  const writeLog = [];
   const sheets = {
-    Suppliers: makeSheet(SUPPLIERS_HEADERS),
-    Sales: makeSheet(SALES_HEADERS),
+    Suppliers: makeSheet(SUPPLIERS_HEADERS, 'Suppliers', writeLog),
+    Sales: makeSheet(SALES_HEADERS, 'Sales', writeLog),
   };
   return {
     _sheets: sheets,
+    _writeLog: writeLog,
     getSheetByName: (n) => sheets[n] || null,
-    insertSheet: (n) => { sheets[n] = makeSheet([]); return sheets[n]; },
+    insertSheet: (n) => { sheets[n] = makeSheet([], n, writeLog); return sheets[n]; },
   };
 }
 
@@ -2843,17 +2860,15 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   // Pulls row: when body.pull is present, exactly one row is appended to
   // ShopSpendPulls, in SHOPSPEND_PULLS_HEADERS order, written AFTER the data
-  // rows (the commit marker for a chunked pull). Tabs pre-created so the
-  // append-order spy can wrap real sheet objects doPost's own
-  // ensureShopSpendTabs_ call will retrieve (ensureSheet returns the same
-  // object once it exists — see Code.gs:591-601).
+  // rows (the commit marker for a chunked pull). Tabs pre-created via
+  // ensureShopSpendTabs_ (returns the same objects doPost's own call will
+  // retrieve — see Code.gs:591-601). Since step 3, ShopSpend's data rows land
+  // via one setValues() block, not one appendRow() per row (see the
+  // "single block write" case below) — so ordering is asserted off the
+  // spreadsheet-wide write log (tagged by sheet name), not a per-row spy.
   freshSheets();
   var preTabs = ensureShopSpendTabs_(currentSS);
-  var writeOrder = [];
-  var origDataAppend = preTabs.data.appendRow.bind(preTabs.data);
-  var origPullsAppend = preTabs.pulls.appendRow.bind(preTabs.pulls);
-  preTabs.data.appendRow = function (a) { writeOrder.push('data'); return origDataAppend(a); };
-  preTabs.pulls.appendRow = function (a) { writeOrder.push('pulls'); return origPullsAppend(a); };
+  var writeLogStart = currentSS._writeLog.length;
 
   var pull = {
     fetched_at: '2026-08-03T09:30:00+10:00', environment: 'prod',
@@ -2873,8 +2888,11 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     rows: [goodRow1, goodRow2], pull: pull
   });
   eq('shopspend payload with pull → ok', pullRes.result, 'ok');
-  check('data rows written before the pulls row (commit-marker ordering)',
-    writeOrder.length === 3 && writeOrder[0] === 'data' && writeOrder[1] === 'data' && writeOrder[2] === 'pulls');
+  var writesAfterPull = currentSS._writeLog.slice(writeLogStart);
+  check('data written as a single block write before the pulls row (commit-marker ordering)',
+    writesAfterPull.length === 2 &&
+    writesAfterPull[0].sheet === 'ShopSpend' &&
+    writesAfterPull[1].sheet === 'ShopSpendPulls');
 
   var pullsData = currentSS.getSheetByName('ShopSpendPulls').getDataRange().getValues();
   eq('exactly one row appended to ShopSpendPulls', pullsData.length, 2);
@@ -2889,6 +2907,253 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
         pull.matches_live_pricing, pull.total_orders_scanned, pull.absent_shop_ids,
         pull.diagnostics_json]);
   }
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 3 — ShopSpend ingest: change detection + tombstones (step 3)
+ * ------------------------------------------------------------------ */
+
+(function testShopSpendChangeDetection() {
+  console.log('\ningestShopSpendRows — change detection (step 3):');
+
+  function spRow(overrides) {
+    return Object.assign({
+      shop_id: 'shop_1', week_label: '2026-W31',
+      week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1,
+      total_ex_gst: 500, gst: 0, total_inc_gst: 500,
+      gst_treatment: 'EXCLUSIVE_PRIMARY', environment: 'prod'
+    }, overrides);
+  }
+
+  // --- First pull appends everything ------------------------------------
+  freshSheets();
+  var tabs1 = ensureShopSpendTabs_(currentSS);
+  var firstPull = [
+    spRow({ shop_id: 'shop_1', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shop_2', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shop_3', week_label: '2026-W31' })
+  ];
+  var res1 = ingestShopSpendRows('shopspend', firstPull, 'T1', tabs1.data);
+  eq('first pull: rowsAdded', res1.rowsAdded, 3);
+  eq('first pull: duplicatesSkipped', res1.duplicatesSkipped, 0);
+  eq('first pull: rowsUpdated is always 0', res1.rowsUpdated, 0);
+
+  // --- Identical re-pull appends nothing (idempotent resume) ------------
+  var res2 = ingestShopSpendRows('shopspend', firstPull, 'T2', tabs1.data);
+  eq('identical re-pull: rowsAdded', res2.rowsAdded, 0);
+  eq('identical re-pull: duplicatesSkipped', res2.duplicatesSkipped, 3);
+  eq('identical re-pull: rowsUpdated is always 0', res2.rowsUpdated, 0);
+  eq('identical re-pull: tab row count unchanged (header + 3)',
+    tabs1.data.getDataRange().getValues().length, 4);
+
+  // --- A changed figure appends one row, old snapshot stays -------------
+  var changedPull = [
+    spRow({ shop_id: 'shop_1', week_label: '2026-W31', total_ex_gst: 999 }),
+    spRow({ shop_id: 'shop_2', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shop_3', week_label: '2026-W31' })
+  ];
+  var res3 = ingestShopSpendRows('shopspend', changedPull, 'T3', tabs1.data);
+  eq('changed figure: rowsAdded', res3.rowsAdded, 1);
+  eq('changed figure: duplicatesSkipped', res3.duplicatesSkipped, 2);
+
+  var afterChange = tabs1.data.getDataRange().getValues();
+  eq('changed figure: tab now holds header + 4 rows', afterChange.length, 5);
+  var shop1Snapshots = afterChange.filter(function (r, i) {
+    return i > 0 && r[0] === 'shop_1' && r[1] === '2026-W31';
+  });
+  eq('both shop_1 snapshots (old + new) are present', shop1Snapshots.length, 2);
+  eq('old shop_1 snapshot is unmodified (total_ex_gst still 500)',
+    Number(shop1Snapshots[0][6]), 500);
+  eq('new shop_1 snapshot carries the changed figure (total_ex_gst 999)',
+    Number(shop1Snapshots[1][6]), 999);
+
+  // --- Each of the five figures is watched individually ------------------
+  function checkSingleFigureChange(label, field, value) {
+    freshSheets();
+    var t = ensureShopSpendTabs_(currentSS);
+    ingestShopSpendRows('shopspend', [spRow({ shop_id: 'shopX', week_label: '2026-W31' })], 'T1', t.data);
+    var changed = spRow({ shop_id: 'shopX', week_label: '2026-W31' });
+    changed[field] = value;
+    var res = ingestShopSpendRows('shopspend', [changed], 'T2', t.data);
+    eq(label, res.rowsAdded, 1);
+  }
+  checkSingleFigureChange('order_count change alone → appends', 'order_count', 999);
+  checkSingleFigureChange('amended_count change alone → appends', 'amended_count', 999);
+  checkSingleFigureChange('total_ex_gst change alone → appends', 'total_ex_gst', 999);
+  checkSingleFigureChange('gst change alone → appends', 'gst', 999);
+  checkSingleFigureChange('total_inc_gst change alone → appends', 'total_inc_gst', 999);
+
+  // --- Numeric comparison, not string comparison -------------------------
+  freshSheets();
+  var tabsNum = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopNum', week_label: '2026-W31', total_ex_gst: 3360.7 })],
+    'T1', tabsNum.data);
+  var resNum = ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopNum', week_label: '2026-W31', total_ex_gst: '3360.70' })],
+    'T2', tabsNum.data);
+  eq('numerically-equal figure sent as a different string type is NOT a change',
+    resNum.rowsAdded, 0);
+  eq('...and counts as a duplicate', resNum.duplicatesSkipped, 1);
+
+  // --- Latest = append order, not fetched_at (DST fixture) --------------
+  freshSheets();
+  var tabsDst = ensureShopSpendTabs_(currentSS);
+  var rowA = spRow({
+    shop_id: 'shopDST', week_label: '2026-W15',
+    fetched_at: '2026-04-04T10:00:00+11:00', total_ex_gst: 100
+  });
+  var resDstA = ingestShopSpendRows('shopspend', [rowA], 'TA', tabsDst.data);
+  eq('DST fixture: first row appends', resDstA.rowsAdded, 1);
+
+  var rowB = spRow({
+    shop_id: 'shopDST', week_label: '2026-W15',
+    fetched_at: '2026-04-05T10:00:00+10:00', total_ex_gst: 200
+  });
+  var resDstB = ingestShopSpendRows('shopspend', [rowB], 'TB', tabsDst.data);
+  eq('DST fixture: second row (changed figure) appends', resDstB.rowsAdded, 1);
+
+  // A re-pull matching row B's figures must be treated as unchanged — the
+  // latest snapshot is row B (last in append order), not whichever row's
+  // fetched_at happens to compare largest as a string.
+  var rowC = spRow({
+    shop_id: 'shopDST', week_label: '2026-W15',
+    fetched_at: '2026-04-06T09:00:00+10:00', total_ex_gst: 200
+  });
+  var resDstC = ingestShopSpendRows('shopspend', [rowC], 'TC', tabsDst.data);
+  eq('DST fixture: latest = append order — re-pull matching row B is unchanged',
+    resDstC.rowsAdded, 0);
+  eq('...and counted as a duplicate', resDstC.duplicatesSkipped, 1);
+
+  // --- Tombstone on disappearance ----------------------------------------
+  freshSheets();
+  var tabsTomb = ensureShopSpendTabs_(currentSS);
+  var pullA = [
+    spRow({ shop_id: 'shopTombX', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopTombY', week_label: '2026-W31' })
+  ];
+  var resTombA = ingestShopSpendRows('shopspend', pullA, 'TA', tabsTomb.data);
+  eq('tombstone setup: pull A appends both shops', resTombA.rowsAdded, 2);
+
+  var pullB = [spRow({ shop_id: 'shopTombX', week_label: '2026-W31' })];
+  var resTombB = ingestShopSpendRows('shopspend', pullB, 'TB', tabsTomb.data);
+  eq('tombstone: pull B (missing shopTombY) appends exactly one tombstone', resTombB.rowsAdded, 1);
+  eq('tombstone: shopTombX itself is unchanged (duplicate)', resTombB.duplicatesSkipped, 1);
+
+  var dataAfterTombB = tabsTomb.data.getDataRange().getValues();
+  var tombRow = dataAfterTombB[dataAfterTombB.length - 1];
+  eq('tombstone row key is shopTombY / 2026-W31', [tombRow[0], tombRow[1]], ['shopTombY', '2026-W31']);
+  eq('tombstone row presence is absent', tombRow[13], 'absent');
+  eq('tombstone row figures are all zero',
+    [Number(tombRow[4]), Number(tombRow[5]), Number(tombRow[6]), Number(tombRow[7]), Number(tombRow[8])],
+    [0, 0, 0, 0, 0]);
+
+  // --- Tombstone scope: never tombstone a week the payload doesn't cover -
+  freshSheets();
+  var tabsScope = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopOldWeek', week_label: '2026-W30', week_start: '2026-07-20', week_end: '2026-07-26' })],
+    'T1', tabsScope.data);
+  var resScope = ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopNewWeek', week_label: '2026-W31' })],
+    'T2', tabsScope.data);
+  eq('scoped pull: only the new row is appended, no cross-week tombstone', resScope.rowsAdded, 1);
+
+  var dataScope = tabsScope.data.getDataRange().getValues();
+  eq('scoped pull: tab holds header + 2 rows only', dataScope.length, 3);
+  var oldWeekRow = dataScope.filter(function (r, i) { return i > 0 && r[0] === 'shopOldWeek'; })[0];
+  eq('shopOldWeek / 2026-W30 row is untouched (still present)', oldWeekRow[13], 'present');
+
+  // --- No double tombstone -------------------------------------------------
+  var pullC = [spRow({ shop_id: 'shopTombX', week_label: '2026-W31' })]; // still missing shopTombY
+  var resTombC = ingestShopSpendRows('shopspend', pullC, 'TC', tabsTomb.data);
+  eq('no double tombstone: shopTombY already absent → no new row for it', resTombC.rowsAdded, 0);
+  eq('...shopTombX unchanged → duplicate', resTombC.duplicatesSkipped, 1);
+
+  // --- Reappearance --------------------------------------------------------
+  var pullD = [
+    spRow({ shop_id: 'shopTombX', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopTombY', week_label: '2026-W31' }) // same figures as pull A
+  ];
+  var resTombD = ingestShopSpendRows('shopspend', pullD, 'TD', tabsTomb.data);
+  eq('reappearance: shopTombY returns → appends a fresh present row', resTombD.rowsAdded, 1);
+  eq('reappearance: shopTombX still unchanged → duplicate', resTombD.duplicatesSkipped, 1);
+
+  var dataAfterTombD = tabsTomb.data.getDataRange().getValues();
+  var shopYPresence = dataAfterTombD
+    .filter(function (r, i) { return i > 0 && r[0] === 'shopTombY'; })
+    .map(function (r) { return r[13]; });
+  eq('shopTombY snapshot history is present, absent, present', shopYPresence, ['present', 'absent', 'present']);
+
+  // --- Empty payload tombstones nothing -------------------------------------
+  freshSheets();
+  var tabsEmpty = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopZ', week_label: '2026-W31' })], 'T1', tabsEmpty.data);
+  var resEmpty = ingestShopSpendRows('shopspend', [], 'T2', tabsEmpty.data);
+  eq('empty payload: rowsAdded', resEmpty.rowsAdded, 0);
+  eq('empty payload: duplicatesSkipped', resEmpty.duplicatesSkipped, 0);
+  var dataEmpty = tabsEmpty.data.getDataRange().getValues();
+  eq('empty payload: tab row count unchanged (header + 1)', dataEmpty.length, 2);
+  eq('empty payload: existing shopZ row is still present, untombstoned', dataEmpty[1][13], 'present');
+
+  // --- Single block write, not one appendRow per row ------------------------
+  freshSheets();
+  var tabsBlock = ensureShopSpendTabs_(currentSS);
+  tabsBlock.data.clearWriteCalls(); // Clear setup writes (header row)
+  var blockPull = [
+    spRow({ shop_id: 's1', week_label: '2026-W31' }),
+    spRow({ shop_id: 's2', week_label: '2026-W31' }),
+    spRow({ shop_id: 's3', week_label: '2026-W31' })
+  ];
+  ingestShopSpendRows('shopspend', blockPull, 'T1', tabsBlock.data);
+  var writeCalls = tabsBlock.data.getWriteCalls();
+  eq('single block write: exactly one write call for 3 new rows', writeCalls.length, 1);
+  if (writeCalls.length === 1) {
+    eq('...and it is a setValues() call, not per-row appendRow()', writeCalls[0].type, 'setValues');
+    eq('...covering all 3 rows in one call', writeCalls[0].numRows, 3);
+  }
+
+  // A batch with a tombstone still writes changed rows + tombstone in ONE call.
+  freshSheets();
+  var tabsBlock2 = ensureShopSpendTabs_(currentSS);
+  tabsBlock2.data.clearWriteCalls(); // Clear setup writes (header row)
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'blkX', week_label: '2026-W31' }), spRow({ shop_id: 'blkY', week_label: '2026-W31' })],
+    'T1', tabsBlock2.data);
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'blkX', week_label: '2026-W31', total_ex_gst: 777 })], // blkY tombstoned too
+    'T2', tabsBlock2.data);
+  var writeCallsAfterTomb = tabsBlock2.data.getWriteCalls();
+  eq('changed row + tombstone still land in a single block write',
+    writeCallsAfterTomb.length, 2); // one for the first pull, one for the second
+  if (writeCallsAfterTomb.length === 2) {
+    eq('the second call covers both the changed row and the tombstone',
+      writeCallsAfterTomb[1].numRows, 2);
+  }
+
+  // A pull with nothing to write (no changes, no tombstones) issues NO write.
+  freshSheets();
+  var tabsNoWrite = ensureShopSpendTabs_(currentSS);
+  tabsNoWrite.data.clearWriteCalls(); // Clear setup writes (header row)
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'nwX', week_label: '2026-W31' })], 'T1', tabsNoWrite.data);
+  var callsBeforeNoop = tabsNoWrite.data.getWriteCalls().length;
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'nwX', week_label: '2026-W31' })], 'T2', tabsNoWrite.data);
+  eq('an all-duplicate pull issues no write call at all',
+    tabsNoWrite.data.getWriteCalls().length, callsBeforeNoop);
+
+  // --- Date cells round-trip correctly (cellDate, not String) --------------
+  freshSheets();
+  var tabsDate = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopDate', week_label: '2026-W31', week_start: '2026-07-27', week_end: '2026-08-02' })],
+    'T1', tabsDate.data);
+  var dateRow = tabsDate.data.getDataRange().getValues()[1];
+  eq('week_start round-trips via cellDate', cellDate(dateRow[2]), '2026-07-27');
+  eq('week_end round-trips via cellDate', cellDate(dateRow[3]), '2026-08-02');
 })();
 
 /* ------------------------------------------------------------------ */
