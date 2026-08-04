@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Tests fail for the RIGHT reason: the implementation is missing. All 10 failures are AttributeError: client module has no attribute 'fetch_coverage' — the feature being tested doesn't exist yet. Test code is syntactically correct, imports work, monkeypatch usage is valid. This is textbook TDD RED phase."
+}

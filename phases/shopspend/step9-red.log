@@ -1,0 +1,171 @@
+...........................FFFFF..........................FFFFF          [100%]
+================================== FAILURES ===================================
+_________________ test_fetch_coverage_parses_weeks_into_a_set _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228ADD520>
+
+    def test_fetch_coverage_parses_weeks_into_a_set(monkeypatch):
+        monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+        monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+        fake_get = _FakeGet(
+            [_FakeResponse(json_body={"result": "ok", "count": 2, "weeks": ["2026-W29", "2026-W30"]})]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+    
+>       result = client.fetch_coverage()
+                 ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_client.py:627: AttributeError
+_________________ test_fetch_coverage_raises_on_error_result __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228ADC4D0>
+
+    def test_fetch_coverage_raises_on_error_result(monkeypatch):
+        monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+        monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+        fake_get = _FakeGet([_FakeResponse(json_body={"result": "error", "message": "unauthorized"})])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       fetch_coverage = client.fetch_coverage  # resolved outside raises: a missing symbol must
+                         ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_client.py:640: AttributeError
+_________________ test_fetch_coverage_raises_on_non_json_body _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228ADC230>
+
+    def test_fetch_coverage_raises_on_non_json_body(monkeypatch):
+        monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+        monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+        fake_get = _FakeGet([_FakeResponse(json_raises=True, text="<html>Page not found</html>")])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       fetch_coverage = client.fetch_coverage  # resolved outside raises � see comment above
+                         ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_client.py:652: AttributeError
+_____________ test_fetch_coverage_error_result_never_leaks_token ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228ADE1E0>
+capsys = <_pytest.capture.CaptureFixture object at 0x0000018228ADE990>
+
+    def test_fetch_coverage_error_result_never_leaks_token(monkeypatch, capsys):
+        secret = "super-secret-read-token"  # noqa: S105 � fake, test-only value
+        monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+        monkeypatch.setenv("GAS_READ_TOKEN", secret)
+        fake_get = _FakeGet([_FakeResponse(json_body={"result": "error", "message": "unauthorized"})])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       fetch_coverage = client.fetch_coverage  # resolved outside raises � see comment above
+                         ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_client.py:664: AttributeError
+_______________ test_fetch_coverage_non_json_never_leaks_token ________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228ADC260>
+capsys = <_pytest.capture.CaptureFixture object at 0x0000018228ADE1B0>
+
+    def test_fetch_coverage_non_json_never_leaks_token(monkeypatch, capsys):
+        secret = "super-secret-read-token"  # noqa: S105 � fake, test-only value
+        monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+        monkeypatch.setenv("GAS_READ_TOKEN", secret)
+        fake_get = _FakeGet(
+            [
+                _FakeResponse(
+                    json_raises=True,
+                    text="<html>Page not found</html>",
+                    url=f"https://example.invalid/exec?fn=shopspendCoverage&token={secret}",
+                )
+            ]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       fetch_coverage = client.fetch_coverage  # resolved outside raises � see comment above
+                         ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_client.py:689: AttributeError
+_____ test_backfill_requests_only_missing_week_when_three_of_four_covered _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228B5F5F0>
+
+    def test_backfill_requests_only_missing_week_when_three_of_four_covered(monkeypatch):
+        monkeypatch.setattr(runner, "date", _FixedDate)
+        _set_shopspend_env(monkeypatch)
+>       monkeypatch.setattr(client, "fetch_coverage", lambda: {"2026-W28", "2026-W29", "2026-W31"})
+E       AttributeError: <module 'shopspend.client' from 'C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\shopspend\\client.py'> has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_runner.py:269: AttributeError
+_________ test_backfill_fully_covered_makes_no_request_and_exits_zero _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228B5D460>
+
+    def test_backfill_fully_covered_makes_no_request_and_exits_zero(monkeypatch):
+        monkeypatch.setattr(runner, "date", _FixedDate)
+        _set_shopspend_env(monkeypatch)
+>       monkeypatch.setattr(
+            client,
+            "fetch_coverage",
+            lambda: {"2026-W28", "2026-W29", "2026-W30", "2026-W31"},
+        )
+E       AttributeError: <module 'shopspend.client' from 'C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\shopspend\\client.py'> has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_runner.py:291: AttributeError
+_______ test_backfill_falls_back_to_full_span_when_coverage_unavailable _______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228B5ED80>
+
+    def test_backfill_falls_back_to_full_span_when_coverage_unavailable(monkeypatch):
+        monkeypatch.setattr(runner, "date", _FixedDate)
+        _set_shopspend_env(monkeypatch)
+    
+        coverage_calls = []
+    
+        def failing_coverage():
+            coverage_calls.append(True)
+            raise RuntimeError("hub is down")
+    
+>       monkeypatch.setattr(client, "fetch_coverage", failing_coverage)
+E       AttributeError: <module 'shopspend.client' from 'C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\shopspend\\client.py'> has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_runner.py:321: AttributeError
+________ test_dry_run_backfill_never_posts_even_when_weeks_are_missing ________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228B5CD10>
+
+    def test_dry_run_backfill_never_posts_even_when_weeks_are_missing(monkeypatch):
+        monkeypatch.setattr(runner, "date", _FixedDate)
+        _set_shopspend_env(monkeypatch)
+>       monkeypatch.setattr(client, "fetch_coverage", lambda: {"2026-W28", "2026-W29", "2026-W31"})
+E       AttributeError: <module 'shopspend.client' from 'C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\shopspend\\client.py'> has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_runner.py:344: AttributeError
+___________ test_backfill_actually_calls_missing_weeks_for_backfill ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018228B5CF80>
+
+    def test_backfill_actually_calls_missing_weeks_for_backfill(monkeypatch):
+        """The exact wiring this step exists to add � missing_weeks_for_backfill
+        was implemented and unit-tested in step 5 but left with no caller."""
+        monkeypatch.setattr(runner, "date", _FixedDate)
+        _set_shopspend_env(monkeypatch)
+>       monkeypatch.setattr(
+            client,
+            "fetch_coverage",
+            lambda: {"2026-W28", "2026-W29", "2026-W30", "2026-W31"},
+        )
+E       AttributeError: <module 'shopspend.client' from 'C:\\Users\\mioja\\.claude\\projects\\LEIBLE_Expense_Data_collector\\connectors\\shopspend\\client.py'> has no attribute 'fetch_coverage'
+
+connectors\shopspend\test_runner.py:362: AttributeError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_client.py::test_fetch_coverage_parses_weeks_into_a_set
+FAILED connectors/shopspend/test_client.py::test_fetch_coverage_raises_on_error_result
+FAILED connectors/shopspend/test_client.py::test_fetch_coverage_raises_on_non_json_body
+FAILED connectors/shopspend/test_client.py::test_fetch_coverage_error_result_never_leaks_token
+FAILED connectors/shopspend/test_client.py::test_fetch_coverage_non_json_never_leaks_token
+FAILED connectors/shopspend/test_runner.py::test_backfill_requests_only_missing_week_when_three_of_four_covered
+FAILED connectors/shopspend/test_runner.py::test_backfill_fully_covered_makes_no_request_and_exits_zero
+FAILED connectors/shopspend/test_runner.py::test_backfill_falls_back_to_full_span_when_coverage_unavailable
+FAILED connectors/shopspend/test_runner.py::test_dry_run_backfill_never_posts_even_when_weeks_are_missing
+FAILED connectors/shopspend/test_runner.py::test_backfill_actually_calls_missing_weeks_for_backfill
+10 failed, 53 passed in 0.72s

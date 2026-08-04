@@ -45,13 +45,15 @@ PROD_TOKEN = "super-secret-token-xyz"  # noqa: S105 — fake, test-only value
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    """Every test controls SHOPSPEND_* explicitly — never inherit the real env."""
+    """Every test controls SHOPSPEND_*/GAS_* explicitly — never inherit the real env."""
     for key in (
         "SHOPSPEND_ENV",
         "SHOPSPEND_URL_PROD",
         "SHOPSPEND_TOKEN_PROD",
         "SHOPSPEND_URL_DEV",
         "SHOPSPEND_TOKEN_DEV",
+        "GAS_EXEC_URL",
+        "GAS_READ_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -603,3 +605,93 @@ def test_unknown_response_fields_are_tolerated(monkeypatch):
     result = conn.fetch()
 
     assert len(result.rows) == 1
+
+
+# --------------------------------------------------------------------------- #
+# fetch_coverage — hub's fn=shopspendCoverage, advisory input to --backfill
+# (step 9). Resolves the hub URL exactly like ingest.py (GAS_EXEC_URL, else
+# config/deployment.json execUrl) and reads GAS_READ_TOKEN for the token
+# query param. Must never return an empty set on failure — that would be
+# indistinguishable from a genuine cold-start hub with nothing stored yet.
+# --------------------------------------------------------------------------- #
+
+
+def test_fetch_coverage_parses_weeks_into_a_set(monkeypatch):
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+    fake_get = _FakeGet(
+        [_FakeResponse(json_body={"result": "ok", "count": 2, "weeks": ["2026-W29", "2026-W30"]})]
+    )
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    result = client.fetch_coverage()
+
+    assert result == {"2026-W29", "2026-W30"}
+    params = fake_get.calls[0]["params"]
+    assert params["fn"] == "shopspendCoverage"
+    assert params["token"] == "read-tok"
+
+
+def test_fetch_coverage_raises_on_error_result(monkeypatch):
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+    fake_get = _FakeGet([_FakeResponse(json_body={"result": "error", "message": "unauthorized"})])
+    monkeypatch.setattr(requests, "get", fake_get)
+    fetch_coverage = client.fetch_coverage  # resolved outside raises: a missing symbol must
+    # error the test, not be swallowed as the "raises" this test is actually checking for.
+
+    with pytest.raises(Exception):  # noqa: B017 — exact exception type is client's to choose
+        fetch_coverage()
+
+
+def test_fetch_coverage_raises_on_non_json_body(monkeypatch):
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+    fake_get = _FakeGet([_FakeResponse(json_raises=True, text="<html>Page not found</html>")])
+    monkeypatch.setattr(requests, "get", fake_get)
+    fetch_coverage = client.fetch_coverage  # resolved outside raises — see comment above
+
+    with pytest.raises(Exception):  # noqa: B017 — exact exception type is client's to choose
+        fetch_coverage()
+
+
+def test_fetch_coverage_error_result_never_leaks_token(monkeypatch, capsys):
+    secret = "super-secret-read-token"  # noqa: S105 — fake, test-only value
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", secret)
+    fake_get = _FakeGet([_FakeResponse(json_body={"result": "error", "message": "unauthorized"})])
+    monkeypatch.setattr(requests, "get", fake_get)
+    fetch_coverage = client.fetch_coverage  # resolved outside raises — see comment above
+
+    with pytest.raises(Exception) as exc_info:  # noqa: B017 — exact type is client's to choose
+        fetch_coverage()
+
+    assert secret not in str(exc_info.value)
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+def test_fetch_coverage_non_json_never_leaks_token(monkeypatch, capsys):
+    secret = "super-secret-read-token"  # noqa: S105 — fake, test-only value
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", secret)
+    fake_get = _FakeGet(
+        [
+            _FakeResponse(
+                json_raises=True,
+                text="<html>Page not found</html>",
+                url=f"https://example.invalid/exec?fn=shopspendCoverage&token={secret}",
+            )
+        ]
+    )
+    monkeypatch.setattr(requests, "get", fake_get)
+    fetch_coverage = client.fetch_coverage  # resolved outside raises — see comment above
+
+    with pytest.raises(Exception) as exc_info:  # noqa: B017 — exact type is client's to choose
+        fetch_coverage()
+
+    assert secret not in str(exc_info.value)
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err

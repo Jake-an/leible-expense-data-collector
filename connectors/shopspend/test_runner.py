@@ -28,19 +28,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "playwright"))
 import base_connector as bc
 
 import shopspend.client as client
+import shopspend.ingest as ingest
 import shopspend.models as models
 import shopspend.runner as runner
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    """Every test controls SHOPSPEND_* explicitly — never inherit the real env."""
+    """Every test controls SHOPSPEND_*/GAS_* explicitly — never inherit the real env."""
     for key in (
         "SHOPSPEND_ENV",
         "SHOPSPEND_URL_PROD",
         "SHOPSPEND_TOKEN_PROD",
         "SHOPSPEND_URL_DEV",
         "SHOPSPEND_TOKEN_DEV",
+        "GAS_EXEC_URL",
+        "GAS_READ_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -234,3 +237,147 @@ def test_dry_run_never_posts_and_prints_data_quality_conditions(monkeypatch, cap
     assert posted["called"] is False
     assert exit_code == 0
     assert "missing pricing for SKU-1" in captured.out
+
+
+# --------------------------------------------------------------------------- #
+# --backfill wiring (step 9) — missing_weeks_for_backfill was implemented and
+# unit-tested in step 5 but never called from main(); these tests drive that
+# wiring. Coverage narrows the request when available and degrades to the
+# full 4-week span (never fewer weeks) when fetch_coverage() fails.
+# --------------------------------------------------------------------------- #
+
+
+class _FixedDate(date):
+    """monkeypatched in place of runner.date so --backfill tests control
+    'today' deterministically — matches last_n_closed_weeks(date(2026,8,3), 4)
+    == ["2026-W28", "2026-W29", "2026-W30", "2026-W31"] used elsewhere above."""
+
+    @classmethod
+    def today(cls):
+        return date(2026, 8, 3)
+
+
+def _set_shopspend_env(monkeypatch):
+    monkeypatch.setenv("SHOPSPEND_ENV", "PROD")
+    monkeypatch.setenv("SHOPSPEND_URL_PROD", "https://example.invalid/exec")
+    monkeypatch.setenv("SHOPSPEND_TOKEN_PROD", "tok")
+
+
+def test_backfill_requests_only_missing_week_when_three_of_four_covered(monkeypatch):
+    monkeypatch.setattr(runner, "date", _FixedDate)
+    _set_shopspend_env(monkeypatch)
+    monkeypatch.setattr(client, "fetch_coverage", lambda: {"2026-W28", "2026-W29", "2026-W31"})
+
+    fetch_calls = []
+
+    def fake_fetch(self, **kwargs):
+        fetch_calls.append(kwargs)
+        return _fake_response()
+
+    monkeypatch.setattr(client.ShopSpendClient, "fetch", fake_fetch)
+    monkeypatch.setattr(ingest, "post_pull", lambda *a, **kw: {"result": "ok"})
+
+    exit_code = runner.main(["--backfill"])
+
+    assert exit_code == 0
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0]["from_week"] == "2026-W30"
+    assert fetch_calls[0]["to_week"] == "2026-W30"
+
+
+def test_backfill_fully_covered_makes_no_request_and_exits_zero(monkeypatch):
+    monkeypatch.setattr(runner, "date", _FixedDate)
+    _set_shopspend_env(monkeypatch)
+    monkeypatch.setattr(
+        client,
+        "fetch_coverage",
+        lambda: {"2026-W28", "2026-W29", "2026-W30", "2026-W31"},
+    )
+
+    def fail_fetch(self, **kwargs):
+        raise AssertionError("shopSpend API must not be called when fully covered")
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("ingest poster must not be called when fully covered")
+
+    monkeypatch.setattr(client.ShopSpendClient, "fetch", fail_fetch)
+    monkeypatch.setattr(ingest, "post_pull", fail_post)
+
+    exit_code = runner.main(["--backfill"])
+
+    assert exit_code == 0
+
+
+def test_backfill_falls_back_to_full_span_when_coverage_unavailable(monkeypatch):
+    monkeypatch.setattr(runner, "date", _FixedDate)
+    _set_shopspend_env(monkeypatch)
+
+    coverage_calls = []
+
+    def failing_coverage():
+        coverage_calls.append(True)
+        raise RuntimeError("hub is down")
+
+    monkeypatch.setattr(client, "fetch_coverage", failing_coverage)
+
+    fetch_calls = []
+
+    def fake_fetch(self, **kwargs):
+        fetch_calls.append(kwargs)
+        return _fake_response()
+
+    monkeypatch.setattr(client.ShopSpendClient, "fetch", fake_fetch)
+    monkeypatch.setattr(ingest, "post_pull", lambda *a, **kw: {"result": "ok"})
+
+    exit_code = runner.main(["--backfill"])
+
+    assert coverage_calls == [True]
+    assert exit_code == 0
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0]["from_week"] == "2026-W28"
+    assert fetch_calls[0]["to_week"] == "2026-W31"
+
+
+def test_dry_run_backfill_never_posts_even_when_weeks_are_missing(monkeypatch):
+    monkeypatch.setattr(runner, "date", _FixedDate)
+    _set_shopspend_env(monkeypatch)
+    monkeypatch.setattr(client, "fetch_coverage", lambda: {"2026-W28", "2026-W29", "2026-W31"})
+    monkeypatch.setattr(client.ShopSpendClient, "fetch", lambda self, **kw: _fake_response())
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("--dry-run must never post")
+
+    monkeypatch.setattr(ingest, "post_pull", fail_post)
+
+    exit_code = runner.main(["--backfill", "--dry-run"])
+
+    assert exit_code == 0
+
+
+def test_backfill_actually_calls_missing_weeks_for_backfill(monkeypatch):
+    """The exact wiring this step exists to add — missing_weeks_for_backfill
+    was implemented and unit-tested in step 5 but left with no caller."""
+    monkeypatch.setattr(runner, "date", _FixedDate)
+    _set_shopspend_env(monkeypatch)
+    monkeypatch.setattr(
+        client,
+        "fetch_coverage",
+        lambda: {"2026-W28", "2026-W29", "2026-W30", "2026-W31"},
+    )
+    monkeypatch.setattr(client.ShopSpendClient, "fetch", lambda self, **kw: _fake_response())
+    monkeypatch.setattr(ingest, "post_pull", lambda *a, **kw: {"result": "ok"})
+
+    calls = []
+    original = runner.missing_weeks_for_backfill
+
+    def spy(candidate_weeks, covered):
+        calls.append((candidate_weeks, covered))
+        return original(candidate_weeks, covered)
+
+    monkeypatch.setattr(runner, "missing_weeks_for_backfill", spy)
+
+    exit_code = runner.main(["--backfill"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0][0] == ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
