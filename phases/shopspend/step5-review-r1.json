@@ -1,0 +1,19 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/shopspend/runner.py",
+      "line": 169,
+      "summary": "--backfill logic does not detect or fetch only missing weeks",
+      "suggestion": "The step brief (lines 75-76) explicitly specifies: 'compute which of those 4 weeks have no ShopSpendPulls coverage yet and request only the missing span'. However, the implementation unconditionally fetches all 4 weeks without checking Sheet coverage. The `missing_weeks_for_backfill()` function exists (line 48) and is tested, but is never called. To fix: (1) query the ShopSpendPulls tab to extract the set of covered weeks, (2) call `missing_weeks_for_backfill(candidates, covered)` to get the missing span, (3) pass only the missing weeks to the API. Without this, --backfill does not self-heal a Monday when the machine was off — it will redundantly re-fetch already-covered weeks every run."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/shopspend/runner.py",
+      "line": 125,
+      "summary": "Formatting issues detected by ruff format --check",
+      "suggestion": "Run `ruff format connectors/shopspend` to auto-fix formatting: (1) line 125-126 print statement needs line wrapping, (2) line 156-158 add_argument call should collapse to single line."
+    }
+  ]
+}

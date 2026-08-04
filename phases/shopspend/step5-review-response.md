@@ -1,39 +1,46 @@
-# Step 5 review response — round 1
+# Step 5 review response — round 2
 
-## Finding: runner.py:169 — `--backfill` doesn't detect/fetch only missing weeks
+## Finding: runner.py:175 — `--backfill` spec/code contradiction needs audit resolution
 
-**Status: not fixed — accepted as accurate about current behavior, but the suggested fix is
-infeasible within this step's scope.**
+**Status: not fixed — evidence confirms the finding's factual claims; the requested action is a
+product/spec decision outside the scope of an autonomous code fix.**
 
-The finding is correct that `main()`'s `--backfill` branch calls `last_n_closed_weeks()` and
-requests the full 4-week range unconditionally, and that `missing_weeks_for_backfill()` (tested,
-line ~48) is never called from `main()`.
+### Verification
 
-The suggested fix — "query the ShopSpendPulls tab to extract the set of covered weeks" — requires
-a hub-side HTTP read endpoint for `ShopSpendPulls` coverage. **No such endpoint exists.**
-`docs/api.md` confirms `doGet` serves only the `Summary` tab; there is no mode that exposes
-`ShopSpendPulls` rows or week coverage. Nothing in step 4 (`client.py`/`models.py`) or this step's
-brief provides a way to fetch that data over HTTP, and building one would mean adding new `doGet`
-behavior to `Code.gs` — which this step's own Task 4 requires to have **no behaviour change**
-("Correct the two stale docs... This is a comment/doc change to `Code.gs` only — no behaviour
-change to that file").
+Re-read `connectors/shopspend/runner.py:161-171` (current `HEAD`). Confirmed unchanged from round
+1: `--backfill` branch (169-171) calls `last_n_closed_weeks(today, _BACKFILL_WEEKS)` and requests
+the full `candidates[0]..candidates[-1]` range unconditionally. `missing_weeks_for_backfill()` is
+implemented and tested but never called from `main()`. The finding's description of current
+behavior is accurate.
 
-This gap was identified and disclosed during the original implementation (see
-`phases/shopspend/step5-report.md`, "One gap, called out rather than silently punted") and is
-tracked in project memory (`shopspend-backfill-coverage-gap.md`) as follow-up work for step 7
-(`shopspend-watchdog-and-trigger`) or later, once a hub-side coverage-read capability exists.
+### Why no code change was made
 
-It is not a correctness bug: step 3's ingest is fully idempotent (identical re-pulls come back as
-`duplicatesSkipped`, not re-added), so over-fetching the full 4-week range on every `--backfill`
-run costs one extra external API call and writes nothing new to the Sheet.
+This round's finding does not claim the round-1 rebuttal is wrong — it explicitly says "the
+rebuttal correctly notes no hub read endpoint exists for ShopSpendPulls." What it asks for is
+resolution of a genuine contradiction *within the step brief itself* (`phases/shopspend/step5.md`
+lines 74-76 mandate gap-detection; Task 4, line 94, forbids any `Code.gs` behaviour change; a hub
+read endpoint requires exactly that). It offers three resolution paths:
 
-**No code change made for this finding** — implementing it would require adding a new GAS `doGet`
-read capability, which is out of scope for `shopspend-runner-and-bridge` and violates this step's
-own "no behaviour change to `Code.gs`" constraint.
+- **(a) Implement the hub read, relaxing Task 4.** Not taken: Task 4's "no behaviour change to
+  Code.gs" is an explicit constraint of *this* step, and the step's own Prohibitions section
+  (lines 139-150) restricts this step to the poster/CLI/doc-comment surface. Silently relaxing a
+  named constraint of the step brief to satisfy a different clause of the same brief is a scope
+  decision I'm not positioned to make unilaterally — it's exactly the kind of contradiction that
+  needs a human call, not a unilateral pick between two conflicting spec lines.
+- **(b) Update the step brief to acknowledge deferral.** Not taken: `phases/shopspend/step5.md` is
+  the spec this step is graded against, not an implementation artifact. Editing the spec to match
+  what was actually built — after the fact, without Jake's sign-off — is self-grading and isn't
+  something I'll do from inside a "fix review findings" pass.
+- **(c) Document Jake's explicit waiver.** Not taken: no such waiver exists in this conversation.
+  I won't fabricate one.
 
-## Finding: runner.py:125 — ruff format issues
+### Disposition
 
-**Status: fixed.** Ran `ruff format connectors/shopspend` — reformatted lines 125-126 (print
-statement) and 156-158 (`--dry-run` `add_argument` call) to satisfy `ruff format --check`. No
-logic changed. Verified: `ruff format --check connectors/shopspend` passes, `ruff check
-connectors/shopspend` passes, `pytest connectors/shopspend -q` — 53 passed.
+This is a real spec-code mismatch, already disclosed twice (`step5-report.md` "One gap, called out
+rather than silently punted"; `shopspend-backfill-coverage-gap.md` project memory) and now
+confirmed accurate by two independent reviews. Resolving it requires Jake to pick (a), (b), or a
+fourth option he prefers — not something this pass can close out. Flagging as **blocked pending
+Jake's decision** rather than guessing. No files changed for this finding.
+
+**Behavior in the meantime remains safe**: step 3's ingest is idempotent, so over-fetching the full
+4-week range on `--backfill` costs one extra API call and writes nothing new.
