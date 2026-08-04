@@ -200,3 +200,50 @@ class ShopSpendClient:
 
     def _redact(self, text: str) -> str:
         return _redact(text, self.token)
+
+
+def fetch_coverage() -> set[str]:
+    """Covered ISO week labels from the hub's `ShopSpendPulls` tab
+    (`fn=shopspendCoverage`, docs/api.md) — advisory input to `--backfill`
+    narrowing (runner.py). Resolves the hub URL exactly like ingest.py
+    (`GAS_EXEC_URL`, else `execUrl` in config/deployment.json) and reads the
+    token from `GAS_READ_TOKEN`, a separate credential from the shopSpend
+    external-API token.
+
+    Never returns an empty set on failure — that would be indistinguishable
+    from a genuine cold-start hub with nothing stored yet, so callers must
+    treat any exception here as "coverage unknown", not "nothing covered".
+    """
+    url = bc.resolve_exec_url()
+    if not url:
+        raise RuntimeError(
+            "No GAS /exec URL: GAS_EXEC_URL is unset and config/deployment.json has no execUrl."
+        )
+
+    token = bc.get_credential("GAS_READ_TOKEN")
+    if not token:
+        raise RuntimeError("GAS_READ_TOKEN is not set")
+
+    params = {"fn": "shopspendCoverage", "token": token}
+
+    try:
+        resp = requests.get(url, params=params, timeout=30, allow_redirects=True)
+    except (
+        requests.ConnectionError,
+        requests.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+    ) as err:
+        raise ShopSpendTransientError(_redact(f"coverage request failed: {err}", token)) from None
+
+    try:
+        body = resp.json()
+    except ValueError:
+        raise ShopSpendTransientError(
+            _redact(f"coverage: non-JSON response (url={resp.url}): {resp.text[:200]}", token)
+        ) from None
+
+    if body.get("result") != "ok":
+        message = body.get("message") or "unknown coverage error"
+        raise ShopSpendError(code="COVERAGE_ERROR", detail=_redact(str(message), token))
+
+    return set(body.get("weeks") or [])

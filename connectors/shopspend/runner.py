@@ -168,7 +168,22 @@ def main(argv: list[str] | None = None) -> int:
         from_week, to_week = args.from_week, args.to_week
     elif args.backfill:
         candidates = last_n_closed_weeks(today, _BACKFILL_WEEKS)
-        from_week, to_week = candidates[0], candidates[-1]
+        try:
+            covered = client.fetch_coverage()
+        except (RuntimeError, client.ShopSpendError, client.ShopSpendTransientError) as err:
+            print(
+                f"[shopspend] coverage unavailable, requesting full backfill span: {err}",
+                file=sys.stderr,
+            )
+            weeks = candidates
+        else:
+            weeks = missing_weeks_for_backfill(candidates, covered)
+
+        if not weeks:
+            print("[shopspend] backfill: all candidate weeks already covered, nothing to pull")
+            return 0
+
+        from_week, to_week = weeks[0], weeks[-1]
     else:
         from_week = to_week = default_week_label(today)
 
