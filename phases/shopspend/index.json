@@ -311,7 +311,17 @@
           "at": "2026-08-04T18:30:48+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend/step6-review.json",
+        "checked_at": "2026-08-04T18:39:10+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 7,
@@ -325,7 +335,8 @@
       "docs": [
         "schema.md",
         "rules.md"
-      ]
+      ],
+      "started_at": "2026-08-04T18:39:10+0900"
     },
     {
       "step": 8,
