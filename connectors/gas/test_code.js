@@ -3768,6 +3768,121 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   }
 })();
 
+(function testDoGetShopSpendCoverage() {
+  console.log('\ndoGet — fn dispatch + shopspendCoverage (step 8):');
+
+  function spPullRow(overrides) {
+    var f = Object.assign({
+      fetched_at: '2026-08-03T05:00:00+10:00', environment: 'prod',
+      from_week: '2026-W31', to_week: '2026-W31',
+      matched: 1, returned: 1, truncated: false,
+      warnings_count: 0, warnings: '[]',
+      unpriced_sku_count: 0, unpriced_skus: '[]',
+      amended_count: 0, possible_duplicate_shop_names: '[]',
+      empty_range_with_invalid_labels: false, invalid_week_labels: '[]',
+      gst_treatment: 'EXCLUSIVE_PRIMARY',
+      diverges_from_live_pricing: false, matches_live_pricing: true,
+      total_orders_scanned: 10, absent_shop_ids: '[]',
+      diagnostics_json: '{}'
+    }, overrides);
+    return SHOPSPEND_PULLS_HEADERS.map(function (h) { return f[h]; });
+  }
+
+  function seedSummary() {
+    freshSheets();
+    var summSheet = makeSheet(['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at']);
+    summSheet.appendRow(['2026-06-15', '2026-06-21', 'Food and Dairy Co', 'York St', 300, 'TS']);
+    summSheet.appendRow(['2026-06-15', '2026-06-21', 'Butterboy', 'York St', 80, 'TS']);
+    summSheet.appendRow(['2026-06-08', '2026-06-14', 'Food and Dairy Co', 'York St', 250, 'TS']);
+    currentSS._sheets['Summary'] = summSheet;
+    scriptProps = { API_READ_TOKEN: 'secret123' };
+  }
+
+  // --- No fn → unchanged legacy Summary response --------------------------
+  seedSummary();
+  var noFn = JSON.parse(doGet({
+    parameter: { token: 'secret123', from: '2026-06-15', to: '2026-06-21' }
+  }).getContent());
+  eq('no fn: result ok', noFn.result, 'ok');
+  eq('no fn: count', noFn.count, 2);
+  eq('no fn: week_start', noFn.week_start, '2026-06-15');
+  eq('no fn: week_end', noFn.week_end, '2026-06-21');
+  eq('no fn: first row supplier', noFn.rows[0].supplier, 'Food and Dairy Co');
+  eq('no fn: first row total_spend', noFn.rows[0].total_spend, 300);
+
+  // --- fn=summary → identical to omitting fn -------------------------------
+  seedSummary();
+  var explicitSummary = JSON.parse(doGet({
+    parameter: { token: 'secret123', from: '2026-06-15', to: '2026-06-21', fn: 'summary' }
+  }).getContent());
+  eq('fn=summary matches omitted-fn response', explicitSummary, noFn);
+
+  // --- fn=shopspendCoverage → covered weeks from ShopSpendPulls -----------
+  freshSheets();
+  var tabs = ensureShopSpendTabs_(currentSS);
+  tabs.pulls.appendRow(spPullRow({ from_week: '2026-W29', to_week: '2026-W31' }));
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  var coverage = JSON.parse(doGet({
+    parameter: { token: 'secret123', fn: 'shopspendCoverage' }
+  }).getContent());
+  eq('shopspendCoverage: result ok', coverage.result, 'ok');
+  eq('shopspendCoverage: count', coverage.count, 3);
+  eq('shopspendCoverage: weeks match shopSpendCoveredWeeks_ span expansion',
+    coverage.weeks, ['2026-W29', '2026-W30', '2026-W31']);
+
+  // --- Empty / missing ShopSpendPulls → ok, count 0, weeks [] -------------
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  var emptyCoverage = JSON.parse(doGet({
+    parameter: { token: 'secret123', fn: 'shopspendCoverage' }
+  }).getContent());
+  eq('empty ShopSpendPulls: result ok (not error)', emptyCoverage.result, 'ok');
+  eq('empty ShopSpendPulls: count 0', emptyCoverage.count, 0);
+  eq('empty ShopSpendPulls: weeks []', emptyCoverage.weeks, []);
+
+  freshSheets(); // no ensureShopSpendTabs_ call at all — tab genuinely missing
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  var missingTabCoverage = JSON.parse(doGet({
+    parameter: { token: 'secret123', fn: 'shopspendCoverage' }
+  }).getContent());
+  eq('missing ShopSpendPulls tab: result ok (not error)', missingTabCoverage.result, 'ok');
+  eq('missing ShopSpendPulls tab: count 0', missingTabCoverage.count, 0);
+  eq('missing ShopSpendPulls tab: weeks []', missingTabCoverage.weeks, []);
+
+  // --- Missing token → unauthorized on the coverage path -------------------
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  var noToken = JSON.parse(doGet({ parameter: { fn: 'shopspendCoverage' } }).getContent());
+  eq('coverage path: missing token → error', noToken.result, 'error');
+  eq('coverage path: missing token → unauthorized message', noToken.message, 'unauthorized');
+
+  // --- Bad token → unauthorized on the coverage path ------------------------
+  var badToken = JSON.parse(doGet({
+    parameter: { token: 'wrong', fn: 'shopspendCoverage' }
+  }).getContent());
+  eq('coverage path: bad token → error', badToken.result, 'error');
+  eq('coverage path: bad token → unauthorized message', badToken.message, 'unauthorized');
+
+  // --- Unknown fn → error, NOT the Summary payload --------------------------
+  seedSummary();
+  var unknownFn = JSON.parse(doGet({
+    parameter: { token: 'secret123', from: '2026-06-15', to: '2026-06-21', fn: 'nope' }
+  }).getContent());
+  eq('unknown fn: result error', unknownFn.result, 'error');
+  check('unknown fn: response has no rows array (did not fall through to Summary)',
+    unknownFn.rows === undefined);
+
+  // --- Auth runs before dispatch: unknown fn + bad token → unauthorized ----
+  scriptProps = { API_READ_TOKEN: 'secret123' };
+  var unknownFnBadToken = JSON.parse(doGet({
+    parameter: { token: 'wrong', fn: 'nope' }
+  }).getContent());
+  eq('unknown fn + bad token: still unauthorized, not an unknown-fn error',
+    unknownFnBadToken.message, 'unauthorized');
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

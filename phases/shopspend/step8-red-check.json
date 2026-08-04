@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test failures are assertion failures in the doGet dispatch logic, not test-code problems. 694 tests pass; 11 fail with consistent patterns: (1) shopspendCoverage function returns 'error' instead of 'ok' + returns undefined for count/weeks fields (empty tab case, missing tab case), indicating incomplete implementation; (2) unknown fn falls through to Summary response instead of erroring. These are implementation gaps (shopspendCoverage logic incomplete, unknown-fn guard missing), not test syntax/import issues. Valid RED — implementation work needed."
+}
