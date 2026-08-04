@@ -336,3 +336,189 @@ function buildShopSpendReport() {
   }
   return res;
 }
+
+/* ------------------------------------------------------------------ *
+ * Watchdog (step 7) — weekly cadence, own trigger. See docs/schema.md
+ * and the step 7 task file for why this cannot share STALENESS_SOURCES
+ * (global 96h threshold vs a 168h cadence would false-alarm ~3 days in 7).
+ * ------------------------------------------------------------------ */
+
+/**
+ * Parse a 'YYYY-Www' label strictly — unlike parseShopSpendWeekLabel_ (report
+ * builder, tolerant, returns {year:0,week:0} on failure) this returns null so
+ * callers can distinguish "malformed" from "week zero of year zero" and bail
+ * out without walking a bogus multi-century span.
+ */
+function shopSpendParseWeekLabelStrict_(label) {
+  var m = /^(\d{4})-W(\d{1,2})$/.exec(String(label));
+  if (!m) return null;
+  var week = Number(m[2]);
+  if (week < 1 || week > 53) return null;
+  return { year: Number(m[1]), week: week };
+}
+
+/** ISO 8601 week label ('YYYY-Www') for a Date, via the Thursday-of-the-week rule. */
+function shopSpendIsoWeekLabelForDate_(d) {
+  var date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  var dayNum = date.getUTCDay() || 7; // Mon=1..Sun=7
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum); // Thursday of this ISO week
+  var isoYear = date.getUTCFullYear();
+  var yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  var weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  var weekStr = weekNo < 10 ? '0' + weekNo : String(weekNo);
+  return isoYear + '-W' + weekStr;
+}
+
+/** The Monday (UTC) of a given ISO year+week. Inverse of shopSpendIsoWeekLabelForDate_. */
+function shopSpendIsoWeekMonday_(isoYear, isoWeek) {
+  var jan4 = new Date(Date.UTC(isoYear, 0, 4));
+  var jan4Day = jan4.getUTCDay() || 7; // Mon=1..Sun=7
+  var week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1);
+  var monday = new Date(week1Monday);
+  monday.setUTCDate(week1Monday.getUTCDate() + (isoWeek - 1) * 7);
+  return monday;
+}
+
+/**
+ * Every ISO week label from fromWeek..toWeek inclusive. Recomputes the label
+ * for each Monday via shopSpendIsoWeekLabelForDate_ rather than incrementing
+ * the printed week number, so a span crossing a year (or W52/W53) boundary
+ * still resolves correctly. Malformed/reversed input yields [], never throws.
+ */
+function shopSpendWeekSpan_(fromWeek, toWeek) {
+  var fromParsed = shopSpendParseWeekLabelStrict_(fromWeek);
+  var toParsed = shopSpendParseWeekLabelStrict_(toWeek);
+  if (!fromParsed || !toParsed) return [];
+
+  var cursor = shopSpendIsoWeekMonday_(fromParsed.year, fromParsed.week);
+  var endMonday = shopSpendIsoWeekMonday_(toParsed.year, toParsed.week);
+  if (isNaN(cursor.getTime()) || isNaN(endMonday.getTime()) || cursor.getTime() > endMonday.getTime()) {
+    return [];
+  }
+
+  var labels = [];
+  var guard = 0; // ~11.5 years of weeks — a sane upper bound, never a real span
+  while (cursor.getTime() <= endMonday.getTime() && guard < 600) {
+    labels.push(shopSpendIsoWeekLabelForDate_(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 7);
+    guard++;
+  }
+  return labels;
+}
+
+/**
+ * Pure: (pullsRows) -> string[] — every ISO week label covered by any pulls
+ * row, expanding each row's from_week..to_week span. Sorted, de-duplicated.
+ * The ONE span parser: shopSpendWatchdogEvaluate_ and (step 8) the HTTP
+ * coverage endpoint both call this rather than parsing spans themselves, so
+ * they cannot drift apart on which weeks count as covered.
+ */
+function shopSpendCoveredWeeks_(pullsRows) {
+  var rows = pullsRows || [];
+  var set = {};
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row) continue;
+    var fromWeek = row[2]; // from_week
+    var toWeek = row[3];   // to_week
+    if (fromWeek === undefined || fromWeek === null || toWeek === undefined || toWeek === null) continue;
+    var span = shopSpendWeekSpan_(fromWeek, toWeek);
+    for (var j = 0; j < span.length; j++) set[span[j]] = true;
+  }
+  return Object.keys(set).sort(compareShopSpendWeekLabels_);
+}
+
+/** The ISO week that just closed as of nowMs — always one week back, mirroring runner.py's default_week_label. */
+function shopSpendJustClosedWeekLabel_(nowMs) {
+  return shopSpendIsoWeekLabelForDate_(new Date(nowMs - 7 * 86400000));
+}
+
+/**
+ * Pure: (pullsRows, nowMs) -> {covered, weekLabel, lastPullMs}. Decides
+ * coverage via shopSpendCoveredWeeks_ (see its comment on why); does its own
+ * scan for lastPullMs, which the set helper does not carry.
+ */
+function shopSpendWatchdogEvaluate_(pullsRows, nowMs) {
+  var rows = pullsRows || [];
+  var weekLabel = shopSpendJustClosedWeekLabel_(nowMs);
+  var coveredWeeks = shopSpendCoveredWeeks_(rows);
+  var covered = coveredWeeks.indexOf(weekLabel) !== -1;
+
+  var lastPullMs = null;
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row) continue;
+    var ms = stalenessParseTs_(row[0]); // fetched_at
+    if (ms !== null && (lastPullMs === null || ms > lastPullMs)) lastPullMs = ms;
+  }
+
+  return { covered: covered, weekLabel: weekLabel, lastPullMs: lastPullMs };
+}
+
+function shopSpendWatchdogRun_(nowMs) {
+  var pullsRows = [];
+  try {
+    var ss = getHubSpreadsheet_();
+    var pullsSheet = ss.getSheetByName(SHOPSPEND_PULLS_TAB);
+    if (pullsSheet) {
+      pullsRows = pullsSheet.getDataRange().getValues().slice(1); // drop header
+    }
+  } catch (err) {
+    Logger.log('shopSpendWatchdog: could not read ' + SHOPSPEND_PULLS_TAB + ' — ' + err.message);
+  }
+
+  var result = shopSpendWatchdogEvaluate_(pullsRows, nowMs);
+
+  if (!result.covered) {
+    var entry = {
+      source: 'shopspend',
+      ageHours: (result.lastPullMs === null) ? null : Math.round(((nowMs - result.lastPullMs) / 3600000) * 10) / 10,
+      stale: true,
+      lastSeenMs: result.lastPullMs
+    };
+    try {
+      stalenessRaiseAlerts_([entry], nowMs);
+    } catch (err2) {
+      Logger.log('shopSpendWatchdog: stalenessRaiseAlerts_ failed — ' + err2.message);
+    }
+  }
+
+  Logger.log('shopSpendWatchdog: weekLabel=' + result.weekLabel + ', covered=' + result.covered);
+  return result;
+}
+
+/**
+ * Trigger handler. Takes an OPTIONAL arg for testability only — guarded the
+ * way resolveDateArg_ (Code.gs) guards its date arg: a time-based trigger
+ * passes an event object as arg 1 (the fault that once corrupted the Sales
+ * tab), so anything that isn't a plain number falls back to the real clock
+ * rather than being mistaken for "now". Never throws.
+ */
+function shopSpendWatchdog(nowMsOverride) {
+  try {
+    var nowMs = (typeof nowMsOverride === 'number') ? nowMsOverride : Date.now();
+    return shopSpendWatchdogRun_(nowMs);
+  } catch (err) {
+    Logger.log('shopSpendWatchdog: unexpected error — ' + (err && err.message));
+    return { covered: null, weekLabel: null, lastPullMs: null };
+  }
+}
+
+/**
+ * Monday 14:00 Australia/Sydney — the afternoon after the Monday 05:00 pull,
+ * so a failed pull is caught the same day. Run from the editor (Jake only);
+ * never auto-installed.
+ */
+function installShopSpendWatchdogTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'shopSpendWatchdog') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('shopSpendWatchdog')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(14)
+    .inTimezone('Australia/Sydney').create();
+  Logger.log('installShopSpendWatchdogTrigger: Monday 14:00 Australia/Sydney trigger installed');
+}

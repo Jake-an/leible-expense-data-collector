@@ -326,7 +326,7 @@
     {
       "step": 7,
       "name": "shopspend-watchdog-and-trigger",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -337,7 +337,15 @@
         "rules.md"
       ],
       "started_at": "2026-08-04T18:39:10+0900",
+      "completed_at": "2026-08-04T19:55:00+0900",
+      "summary": "Implemented shopSpendWatchdog (weekly, own Monday 14:00 trigger) with pure helpers shopSpendCoveredWeeks_/shopSpendWatchdogEvaluate_ (Thursday-anchor ISO week math, one span parser) and installShopSpendWatchdogTrigger; 'shopspend' stays out of STALENESS_SOURCES per the 96h-vs-168h mismatch. 682 tests pass.",
       "tdd_evidence": {
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "shopSpend — watchdog and trigger (step 7):\n  ok  - shopSpendCoveredWeeks_ is defined\n  ok  - shopSpendWatchdogEvaluate_ is defined\n  ok  - shopSpendWatchdog is defined\n  ok  - installShopSpendWatchdogTrigger is defined\n  ok  - shopspend is NOT in STALENESS_SOURCES (global 96h threshold would false-alarm a 168h cadence)\n  ok  - expands + merges overlapping spans, sorted + deduped  (got [\"2026-W29\",\"2026-W30\",\"2026-W31\",\"2026-W32\"])\n  ok  - empty pulls tab yields [], not an error or null  (got [])\n  ok  - a pull spanning the just-closed week -> covered:true\n  ok  - weekLabel resolves to the just-closed ISO week  (got \"2026-W31\")\n  ok  - lastPullMs reflects the pull's fetched_at  (got 1785697200000)\n  ok  - no covering pulls row -> covered:false\n  ok  - a pull for an unrelated week does not satisfy coverage\n  ok  - cold start -> covered:false\n  ok  - cold start -> lastPullMs null (mirrors stalenessEvaluate_'s never-seen convention)  (got null)\n  ok  - shopSpendWatchdogEvaluate_.covered agrees with shopSpendCoveredWeeks_ for the same fixture  (got true)\n  ok  - first Monday of Jan 2027 resolves the just-closed week to 2026-W53, not 2027-W00/W01  (got \"2026-W53\")\n  ok  - covered week: no calendar event raised  (got 0)\n  ok  - missing week: exactly one calendar event raised  (got 1)\n  ok  - alert title matches the shopspend source (stable, no varying number)  (got \"LEIBLE expense stale: shopspend\")\n  ok  - alert is ORANGE like every other staleness alert\n  ok  - cold start: exactly one calendar event raised  (got 1)\n  ok  - cold start: description uses the never-seen wording (ageHours: null)\n  ok  - malformed pulls rows + a broken calendar never throw out of the handler\n  ok  - an event-object argument does not throw\n  ok  - shopSpendWatchdog(eventObject) behaves identically to shopSpendWatchdog() (same alert count)  (got 1)\n  ok  - installing twice leaves exactly one trigger for shopSpendWatchdog  (got 1)\n  ok  - trigger is MONDAY  (got 2)\n  ok  - trigger is hour 14  (got 14)\n  ok  - trigger is Australia/Sydney  (got \"Australia/Sydney\")\n\n682 passed, 0 failed\n",
+          "at": "2026-08-04T19:55:00+0900"
+        },
         "red": {
           "command": "node connectors/gas/test_code.js",
           "exit_code": 1,
