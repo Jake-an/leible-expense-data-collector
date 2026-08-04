@@ -261,6 +261,7 @@ load('mayers.gs');
 load('staleness.gs');
 load('recurring.gs');
 load('roastery_email.gs');
+load('shopspend.gs');
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -2636,6 +2637,80 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
         { date: '2026-08-03', department: 'Roastery', channel: 'wholesale', customer: 'Cafe X', amount: '340.00abc', order_ref: 'ORD-1' }
       ] })).ok);
   })();
+})();
+
+(function testShopSpendTabsAndConstants() {
+  console.log('\nshopSpend — tabs and constants (step 1):');
+
+  // Constants exist on the globals. Not declared locally here — see the
+  // shadowing note near the top of this file re: SUPPLIERS_HEADERS.
+  eq('SHOPSPEND_TAB', globalThis.SHOPSPEND_TAB, 'ShopSpend');
+  eq('SHOPSPEND_PULLS_TAB', globalThis.SHOPSPEND_PULLS_TAB, 'ShopSpendPulls');
+  eq('SHOPSPEND_REPORT_TAB', globalThis.SHOPSPEND_REPORT_TAB, 'ShopSpend Report');
+
+  // Header arrays are exact and ordered.
+  var shHeaders = globalThis.SHOPSPEND_HEADERS;
+  check('SHOPSPEND_HEADERS has 14 entries', !!shHeaders && shHeaders.length === 14);
+  check('SHOPSPEND_HEADERS[0] is shop_id', !!shHeaders && shHeaders[0] === 'shop_id');
+  check('SHOPSPEND_HEADERS[1] is week_label', !!shHeaders && shHeaders[1] === 'week_label');
+  check('SHOPSPEND_HEADERS ends in presence',
+    !!shHeaders && shHeaders[shHeaders.length - 1] === 'presence');
+
+  var spHeaders = globalThis.SHOPSPEND_PULLS_HEADERS;
+  check('SHOPSPEND_PULLS_HEADERS has 21 entries', !!spHeaders && spHeaders.length === 21);
+  check('SHOPSPEND_PULLS_HEADERS[0] is fetched_at', !!spHeaders && spHeaders[0] === 'fetched_at');
+  check('SHOPSPEND_PULLS_HEADERS ends in diagnostics_json',
+    !!spHeaders && spHeaders[spHeaders.length - 1] === 'diagnostics_json');
+
+  // Key cols point at the right columns, asserted through the header array so
+  // a future column insert that silently breaks the key fails the suite.
+  var keyCols = globalThis.SHOPSPEND_KEY_COLS;
+  check('SHOPSPEND_KEY_COLS[0] indexes shop_id',
+    !!shHeaders && !!keyCols && shHeaders[keyCols[0]] === 'shop_id');
+  check('SHOPSPEND_KEY_COLS[1] indexes week_label',
+    !!shHeaders && !!keyCols && shHeaders[keyCols[1]] === 'week_label');
+
+  // Tab creation + idempotency + silo isolation.
+  freshSheets();
+  var hasFn = typeof globalThis.ensureShopSpendTabs_ === 'function';
+  check('ensureShopSpendTabs_ is defined', hasFn);
+
+  if (hasFn) {
+    var tabs = ensureShopSpendTabs_(currentSS);
+    check('ensureShopSpendTabs_ returns a data sheet', !!tabs && !!tabs.data);
+    check('ensureShopSpendTabs_ returns a pulls sheet', !!tabs && !!tabs.pulls);
+    check('ensureShopSpendTabs_ returns a report sheet', !!tabs && !!tabs.report);
+
+    if (tabs && tabs.data && tabs.pulls && tabs.report && shHeaders && spHeaders) {
+      eq('ShopSpend row 1 equals SHOPSPEND_HEADERS',
+        tabs.data.getDataRange().getValues()[0], shHeaders);
+      eq('ShopSpendPulls row 1 equals SHOPSPEND_PULLS_HEADERS',
+        tabs.pulls.getDataRange().getValues()[0], spHeaders);
+      eq('ShopSpend has exactly 1 row (header only, no phantom blank row)',
+        tabs.data.getDataRange().getValues().length, 1);
+
+      // Idempotent: a second call must not duplicate or rewrite the header.
+      var tabs2 = ensureShopSpendTabs_(currentSS);
+      eq('re-call: ShopSpend row count unchanged',
+        tabs2.data.getDataRange().getValues().length, 1);
+      eq('re-call: ShopSpend header row unchanged',
+        tabs2.data.getDataRange().getValues()[0], shHeaders);
+      check('re-call: same sheet objects returned, nothing new created',
+        tabs2.data === tabs.data && tabs2.pulls === tabs.pulls && tabs2.report === tabs.report);
+    }
+
+    // Silo intact: pre-existing tabs untouched, and shopSpend tabs stay out
+    // of the department-migration blast radius (never created as a side
+    // effect of ensureShopSpendTabs_).
+    eq('Suppliers headers unchanged',
+      currentSS.getSheetByName('Suppliers').getDataRange().getValues()[0], SUPPLIERS_HEADERS);
+    eq('Sales headers unchanged',
+      currentSS.getSheetByName('Sales').getDataRange().getValues()[0], SALES_HEADERS);
+    check('Revenue tab NOT created as a side effect of ensureShopSpendTabs_',
+      currentSS.getSheetByName('Revenue') === null);
+    check('Summary tab NOT created as a side effect of ensureShopSpendTabs_',
+      currentSS.getSheetByName('Summary') === null);
+  }
 })();
 
 /* ------------------------------------------------------------------ */

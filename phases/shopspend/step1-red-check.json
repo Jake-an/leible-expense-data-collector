@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 13 failures are missing constants (SHOPSPEND_TAB, SHOPSPEND_PULLS_TAB, SHOPSPEND_REPORT_TAB, SHOPSPEND_HEADERS, SHOPSPEND_PULLS_HEADERS, SHOPSPEND_KEY_COLS) and one missing function (ensureShopSpendTabs_) — implementation is incomplete. Test framework itself is healthy: 502 other tests passed, test file is syntactically valid. This is the correct RED-phase failure mode."
+}
