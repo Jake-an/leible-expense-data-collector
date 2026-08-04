@@ -22,7 +22,17 @@
       ],
       "started_at": "2026-08-04T11:51:32+0900",
       "summary": "Documented the shopSpend silo: ShopSpend/ShopSpendPulls/ShopSpend Report tab specs (schema.md) and the runner→client→doPost→tabs flow with the EXCLUSIVE_PRIMARY/under-reporting/confirmed-orders-only facts (ARCHITECTURE.md); both edits purely additive, no existing tab or PRD-1.…",
-      "completed_at": "2026-08-04T11:53:33+0900"
+      "completed_at": "2026-08-04T11:53:33+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend/step0-review.json",
+        "checked_at": "2026-08-04T11:55:42+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 1,
@@ -35,7 +45,8 @@
       ],
       "docs": [
         "schema.md"
-      ]
+      ],
+      "started_at": "2026-08-04T11:55:42+0900"
     },
     {
       "step": 2,
