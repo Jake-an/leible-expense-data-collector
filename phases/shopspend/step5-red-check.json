@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 26 test failures are AttributeError for missing implementation symbols (truncate_diagnostics_json, main, etc. in ingest.py and runner.py). Both modules contain only docstrings — no implementation. Tests are well-formed (27 pass), proving the test infrastructure and syntax are correct. Failures are legitimate: implementation is missing, not test code broken."
+}

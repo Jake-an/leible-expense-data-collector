@@ -1,0 +1,388 @@
+...........................FFFFFFFFFFFFFFFFFFFFFFFFFF                    [100%]
+================================== FAILURES ===================================
+___________________ test_kind_is_shopspend_on_every_request ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066D9DC7D0>
+
+    def test_kind_is_shopspend_on_every_request(monkeypatch):
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:155: AttributeError
+______________________ test_source_defaults_to_shopspend ______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066D909D90>
+
+    def test_source_defaults_to_shopspend(monkeypatch):
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:165: AttributeError
+_______________________ test_source_override_is_honored _______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066D9DFA70>
+
+    def test_source_override_is_honored(monkeypatch):
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull([_row()], _pull(), source="shopspend-backfill", exec_url=PROD_URL)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:174: AttributeError
+_________________________ test_post_uses_timeout_300 __________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DA74590>
+
+    def test_post_uses_timeout_300(monkeypatch):
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:183: AttributeError
+____________________ test_synthetic_date_equals_week_start ____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066D9DFE30>
+
+    def test_synthetic_date_equals_week_start(monkeypatch):
+        rows = [_row(0, week_start="2026-07-27"), _row(1, week_start="2026-08-03")]
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, _pull(), exec_url=PROD_URL)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:198: AttributeError
+__________ test_synthetic_date_overwrites_a_pre_existing_wrong_date ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066D9DF680>
+
+    def test_synthetic_date_overwrites_a_pre_existing_wrong_date(monkeypatch):
+        rows = [_row(0, week_start="2026-07-27", date="1999-01-01")]
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, _pull(), exec_url=PROD_URL)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:210: AttributeError
+_ test_chunking_450_rows_at_200_issues_three_data_requests_plus_pulls_request _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DA77D10>
+
+    def test_chunking_450_rows_at_200_issues_three_data_requests_plus_pulls_request(monkeypatch):
+        rows = [_row(i) for i in range(450)]
+        fake_post = _FakePost(
+            [
+                _ok_resp(rows_added=200),
+                _ok_resp(rows_added=200),
+                _ok_resp(rows_added=50),
+                _ok_resp(rows_added=0),
+            ]
+        )
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, _pull(), exec_url=PROD_URL, chunk_size=200)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:232: AttributeError
+____________ test_pulls_request_is_last_and_carries_the_pull_dict _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DA77F50>
+
+    def test_pulls_request_is_last_and_carries_the_pull_dict(monkeypatch):
+        rows = [_row(i) for i in range(450)]
+        pull = _pull()
+        fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, pull, exec_url=PROD_URL, chunk_size=200)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:245: AttributeError
+________________ test_all_requests_share_the_same_extracted_at ________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DA77680>
+
+    def test_all_requests_share_the_same_extracted_at(monkeypatch):
+        rows = [_row(i) for i in range(450)]
+        fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, _pull(), exec_url=PROD_URL, chunk_size=200)
+        ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:257: AttributeError
+___________________ test_locked_retried_once_then_succeeds ____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DB1F440>
+fake_sleep = []
+
+    def test_locked_retried_once_then_succeeds(monkeypatch, fake_sleep):
+        fake_post = _FakePost([_locked_resp(), _ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       result = ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+                 ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:272: AttributeError
+__________ test_locked_twice_raises_ingest_failed_with_code_surfaced __________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DB1FDA0>
+fake_sleep = []
+
+    def test_locked_twice_raises_ingest_failed_with_code_surfaced(monkeypatch, fake_sleep):
+        fake_post = _FakePost([_locked_resp(), _locked_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       with pytest.raises(ingest.IngestFailed) as exc_info:
+                           ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'IngestFailed'
+
+connectors\shopspend\test_ingest.py:283: AttributeError
+___________ test_validation_error_raises_ingest_failed_with_message ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DB1D880>
+
+    def test_validation_error_raises_ingest_failed_with_message(monkeypatch):
+        fake_post = _FakePost([_error_resp("row 0 missing shop_id")])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       with pytest.raises(ingest.IngestFailed) as exc_info:
+                           ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'IngestFailed'
+
+connectors\shopspend\test_ingest.py:301: AttributeError
+_________________ test_non_json_response_raises_ingest_failed _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DB1E1E0>
+
+    def test_non_json_response_raises_ingest_failed(monkeypatch):
+        fake_post = _FakePost([_non_json_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       with pytest.raises(ingest.IngestFailed):
+                           ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'IngestFailed'
+
+connectors\shopspend\test_ingest.py:311: AttributeError
+______ test_zero_rows_added_with_duplicates_skipped_is_success_not_error ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DB1EF90>
+
+    def test_zero_rows_added_with_duplicates_skipped_is_success_not_error(monkeypatch):
+        fake_post = _FakePost(
+            [_ok_resp(rows_added=0, duplicates_skipped=1), _ok_resp(rows_added=0, duplicates_skipped=0)]
+        )
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       result = ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+                 ^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:326: AttributeError
+______________ test_missing_exec_url_raises_loud_and_never_posts ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DB1FF50>
+
+    def test_missing_exec_url_raises_loud_and_never_posts(monkeypatch):
+        """RuntimeError, not bare Exception: AttributeError (a missing `post_pull`
+        symbol) is also an Exception, so asserting the broad base class here would
+        pass vacuously before the function even exists. RuntimeError matches
+        BaseConnector._require_exec_url's own convention for this exact failure."""
+        monkeypatch.setattr(bc, "resolve_exec_url", lambda: "")
+        fake_post = _FakePost([])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+        with pytest.raises(RuntimeError):
+>           ingest.post_pull([_row()], _pull())
+            ^^^^^^^^^^^^^^^^
+E           AttributeError: module 'shopspend.ingest' has no attribute 'post_pull'
+
+connectors\shopspend\test_ingest.py:346: AttributeError
+__________ test_default_week_label_is_previous_iso_week_not_current ___________
+
+    def test_default_week_label_is_previous_iso_week_not_current():
+        monday = date(2026, 8, 3)  # isocalendar (2026, 32, 1) -> closed week is 2026-W31
+    
+>       assert runner.default_week_label(monday) == "2026-W31"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'default_week_label'
+
+connectors\shopspend\test_runner.py:67: AttributeError
+_ test_default_week_label_year_boundary_early_january_resolves_to_prior_year __
+
+    def test_default_week_label_year_boundary_early_january_resolves_to_prior_year():
+        early_jan = date(2027, 1, 5)  # today - 7 days lands in ISO week 2026-W53
+    
+>       assert runner.default_week_label(early_jan) == "2026-W53"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'default_week_label'
+
+connectors\shopspend\test_runner.py:73: AttributeError
+____________________ test_default_week_label_zero_pads_w01 ____________________
+
+    def test_default_week_label_zero_pads_w01():
+        mid_jan = date(2027, 1, 11)  # today - 7 days lands in ISO week 2027-W01
+    
+>       assert runner.default_week_label(mid_jan) == "2027-W01"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'default_week_label'
+
+connectors\shopspend\test_runner.py:79: AttributeError
+________ test_last_n_closed_weeks_returns_four_weeks_ending_at_default ________
+
+    def test_last_n_closed_weeks_returns_four_weeks_ending_at_default():
+        today = date(2026, 8, 3)  # default_week_label(today) == 2026-W31
+    
+>       weeks = runner.last_n_closed_weeks(today, 4)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'last_n_closed_weeks'
+
+connectors\shopspend\test_runner.py:90: AttributeError
+______________ test_missing_weeks_for_backfill_finds_the_one_gap ______________
+
+    def test_missing_weeks_for_backfill_finds_the_one_gap():
+        candidate_weeks = ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
+        covered = {"2026-W28", "2026-W29", "2026-W31"}
+    
+>       missing = runner.missing_weeks_for_backfill(candidate_weeks, covered)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'missing_weeks_for_backfill'
+
+connectors\shopspend\test_runner.py:104: AttributeError
+______ test_missing_weeks_for_backfill_returns_empty_when_fully_covered _______
+
+    def test_missing_weeks_for_backfill_returns_empty_when_fully_covered():
+        candidate_weeks = ["2026-W28", "2026-W29"]
+        covered = {"2026-W28", "2026-W29"}
+    
+>       assert runner.missing_weeks_for_backfill(candidate_weeks, covered) == []
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'missing_weeks_for_backfill'
+
+connectors\shopspend\test_runner.py:113: AttributeError
+_______ test_map_api_row_produces_full_snake_case_row_with_no_none_gaps _______
+
+    def test_map_api_row_produces_full_snake_case_row_with_no_none_gaps():
+        row = models.ShopSpendRow(
+            shopId="Leible York",
+            weekLabel="2026-W31",
+            weekStart="2026-07-27",
+            weekEnd="2026-08-02",
+            orderCount=12,
+            amendedCount=1,
+            totalExGst=1000.0,
+            gst=100.0,
+            totalIncGst=1100.0,
+        )
+    
+>       mapped = runner.map_api_row(row, gst_treatment="EXCLUSIVE_PRIMARY", environment="PROD")
+                 ^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'map_api_row'
+
+connectors\shopspend\test_runner.py:134: AttributeError
+_______________ test_map_api_row_date_always_equals_week_start ________________
+
+    def test_map_api_row_date_always_equals_week_start():
+        row = models.ShopSpendRow(weekStart="2026-08-03", weekEnd="2026-08-09")
+    
+>       mapped = runner.map_api_row(row, gst_treatment="EXCLUSIVE_PRIMARY", environment="PROD")
+                 ^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'map_api_row'
+
+connectors\shopspend\test_runner.py:156: AttributeError
+________ test_truncate_diagnostics_json_keeps_output_below_50000_chars ________
+
+    def test_truncate_diagnostics_json_keeps_output_below_50000_chars():
+        oversized = "x" * 60000
+    
+>       result = runner.truncate_diagnostics_json(oversized)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'truncate_diagnostics_json'
+
+connectors\shopspend\test_runner.py:170: AttributeError
+_________ test_truncate_diagnostics_json_leaves_small_blobs_untouched _________
+
+    def test_truncate_diagnostics_json_leaves_small_blobs_untouched():
+        small = '{"warnings": []}'
+    
+>       assert runner.truncate_diagnostics_json(small) == small
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'truncate_diagnostics_json'
+
+connectors\shopspend\test_runner.py:178: AttributeError
+_________ test_dry_run_never_posts_and_prints_data_quality_conditions _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002066DA75B50>
+capsys = <_pytest.capture.CaptureFixture object at 0x000002066DA760F0>
+
+    def test_dry_run_never_posts_and_prints_data_quality_conditions(monkeypatch, capsys):
+        monkeypatch.setattr(
+            client.ShopSpendClient,
+            "fetch",
+            lambda self, **kw: _fake_response(warnings=["missing pricing for SKU-1"]),
+        )
+        monkeypatch.setenv("SHOPSPEND_ENV", "PROD")
+        monkeypatch.setenv("SHOPSPEND_URL_PROD", "https://example.invalid/exec")
+        monkeypatch.setenv("SHOPSPEND_TOKEN_PROD", "tok")
+    
+        posted = {"called": False}
+    
+        def fake_post(*args, **kwargs):
+            posted["called"] = True
+            raise AssertionError("requests.post must never be called in --dry-run")
+    
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       exit_code = runner.main(["--week", "2026-W31", "--dry-run"])
+                    ^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'main'
+
+connectors\shopspend\test_runner.py:231: AttributeError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_ingest.py::test_kind_is_shopspend_on_every_request
+FAILED connectors/shopspend/test_ingest.py::test_source_defaults_to_shopspend
+FAILED connectors/shopspend/test_ingest.py::test_source_override_is_honored
+FAILED connectors/shopspend/test_ingest.py::test_post_uses_timeout_300 - Attr...
+FAILED connectors/shopspend/test_ingest.py::test_synthetic_date_equals_week_start
+FAILED connectors/shopspend/test_ingest.py::test_synthetic_date_overwrites_a_pre_existing_wrong_date
+FAILED connectors/shopspend/test_ingest.py::test_chunking_450_rows_at_200_issues_three_data_requests_plus_pulls_request
+FAILED connectors/shopspend/test_ingest.py::test_pulls_request_is_last_and_carries_the_pull_dict
+FAILED connectors/shopspend/test_ingest.py::test_all_requests_share_the_same_extracted_at
+FAILED connectors/shopspend/test_ingest.py::test_locked_retried_once_then_succeeds
+FAILED connectors/shopspend/test_ingest.py::test_locked_twice_raises_ingest_failed_with_code_surfaced
+FAILED connectors/shopspend/test_ingest.py::test_validation_error_raises_ingest_failed_with_message
+FAILED connectors/shopspend/test_ingest.py::test_non_json_response_raises_ingest_failed
+FAILED connectors/shopspend/test_ingest.py::test_zero_rows_added_with_duplicates_skipped_is_success_not_error
+FAILED connectors/shopspend/test_ingest.py::test_missing_exec_url_raises_loud_and_never_posts
+FAILED connectors/shopspend/test_runner.py::test_default_week_label_is_previous_iso_week_not_current
+FAILED connectors/shopspend/test_runner.py::test_default_week_label_year_boundary_early_january_resolves_to_prior_year
+FAILED connectors/shopspend/test_runner.py::test_default_week_label_zero_pads_w01
+FAILED connectors/shopspend/test_runner.py::test_last_n_closed_weeks_returns_four_weeks_ending_at_default
+FAILED connectors/shopspend/test_runner.py::test_missing_weeks_for_backfill_finds_the_one_gap
+FAILED connectors/shopspend/test_runner.py::test_missing_weeks_for_backfill_returns_empty_when_fully_covered
+FAILED connectors/shopspend/test_runner.py::test_map_api_row_produces_full_snake_case_row_with_no_none_gaps
+FAILED connectors/shopspend/test_runner.py::test_map_api_row_date_always_equals_week_start
+FAILED connectors/shopspend/test_runner.py::test_truncate_diagnostics_json_keeps_output_below_50000_chars
+FAILED connectors/shopspend/test_runner.py::test_truncate_diagnostics_json_leaves_small_blobs_untouched
+FAILED connectors/shopspend/test_runner.py::test_dry_run_never_posts_and_prints_data_quality_conditions
+26 failed, 27 passed in 0.65s
