@@ -37,7 +37,7 @@
     {
       "step": 1,
       "name": "shopspend-tabs-and-constants",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -47,7 +47,15 @@
         "schema.md"
       ],
       "started_at": "2026-08-04T11:55:42+0900",
+      "summary": "Added SHOPSPEND_TAB/PULLS/REPORT + SHOPSPEND_HEADERS/PULLS_HEADERS/KEY_COLS constants to Code.gs and ensureShopSpendTabs_ in new shopspend.gs (3x ensureSheet, idempotent); 528 tests pass, silo isolated from DEPARTMENT_TABS/setupSheets.",
+      "completed_at": "2026-08-04T12:10:00+0900",
       "tdd_evidence": {
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "528 passed, 0 failed",
+          "at": "2026-08-04T12:10:00+0900"
+        },
         "red": {
           "command": "node connectors/gas/test_code.js",
           "exit_code": 1,

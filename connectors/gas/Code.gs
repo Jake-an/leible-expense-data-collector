@@ -38,6 +38,24 @@ var SALES_HEADERS = ['date', 'location', 'gross_sales', 'source', 'extracted_at'
 var DEFAULT_DEPARTMENT = 'Cafe';
 var DEPARTMENTS = ['Cafe', 'Roastery'];
 
+var SHOPSPEND_TAB = 'ShopSpend';
+var SHOPSPEND_PULLS_TAB = 'ShopSpendPulls';
+var SHOPSPEND_REPORT_TAB = 'ShopSpend Report';
+
+var SHOPSPEND_HEADERS = ['shop_id', 'week_label', 'week_start', 'week_end', 'order_count',
+  'amended_count', 'total_ex_gst', 'gst', 'total_inc_gst', 'gst_treatment', 'environment',
+  'fetched_at', 'source', 'presence'];
+
+var SHOPSPEND_PULLS_HEADERS = ['fetched_at', 'environment', 'from_week', 'to_week', 'matched',
+  'returned', 'truncated', 'warnings_count', 'warnings', 'unpriced_sku_count', 'unpriced_skus',
+  'amended_count', 'possible_duplicate_shop_names', 'empty_range_with_invalid_labels',
+  'invalid_week_labels', 'gst_treatment', 'diverges_from_live_pricing', 'matches_live_pricing',
+  'total_orders_scanned', 'absent_shop_ids', 'diagnostics_json'];
+
+// Change-detection key into a normalized ShopSpend row array: shop_id + week_label.
+// NOT an upsert key — ShopSpend is append-only (see step 3).
+var SHOPSPEND_KEY_COLS = [0, 1];
+
 // Dedup column indexes into a normalized row array.
 var SUPPLIERS_KEY_COLS = [5, 3]; // source + invoice_ref
 var SALES_KEY_COLS = [0, 1];     // date + location
