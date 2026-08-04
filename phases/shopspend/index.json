@@ -281,7 +281,7 @@
     {
       "step": 6,
       "name": "shopspend-report-builder",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -291,7 +291,15 @@
         "schema.md"
       ],
       "started_at": "2026-08-04T18:20:22+0900",
+      "completed_at": "2026-08-04T19:45:00+0900",
+      "summary": "Implemented shopSpendReportBlock_ (pure banner+grid builder, numeric week sort, latest-snapshot-by-append-order, unpriced/amended/duplicate/absent/empty-range banners) and buildShopSpendReport (withScriptLock_ entry point, one clearContents + one setValues); 649 tests pass.",
       "tdd_evidence": {
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "shopSpend — report builder (step 6):\n  ok  - shopSpendReportBlock_ is defined\n  ok  - buildShopSpendReport is defined\n  ok  - grid header row found (first cell literal \"Shop\")\n  ok  - week columns sorted numerically: W9, W10, W52, then 2027-W01  (got [\"2026-W9\",\"2026-W10\",\"2026-W52\",\"2027-W01\"])\n  ok  - contrast: a lexicographic string sort of the same labels puts 2026-W10 before 2026-W9 — proving the grid is NOT string-sorted\n  ok  - latest (last-appended) snapshot wins — cell shows 999, not 500\n  ok  - DST fixture: latest = append order — resolves to the SECOND row (222), not the first (111)\n  ok  - no unpriced-SKU banner\n  ok  - no amended-orders banner\n  ok  - no duplicate-shop-names banner\n  ok  - no absent/stale banner\n  ok  - no unconfirmed cells\n  ok  - always: GST treatment stated on the tab\n  ok  - always: gst:0-is-normal note mentions GST-free SKUs\n  ok  - always: drift wording present, never \"stale pricing\"\n  ok  - always: confirmed-orders-only note excludes Shopify/online\n  ok  - always: last fetched_at shown\n  ok  - mentions drift\n  ok  - never labelled \"stale pricing\"\n  ok  - warning 1 listed verbatim\n  ok  - warning 2 listed verbatim\n  ok  - banner names the count and says line items were skipped entirely\n  ok  - rendered total carries the ~ marker\n  ok  - banner names exactly 1 amended shop-week, marked provisional\n  ok  - amended shop-week cell is marked\n  ok  - non-amended shop-week cell is NOT marked\n  ok  - banner states fix upstream, NOT merged automatically\n  ok  - both flagged names listed\n  ok  - both shop_ids remain two SEPARATE grid rows (never auto-merged)\n  ok  - no cell renders as literal \"$0\" anywhere in the block\n  ok  - no cell is the bare number 0\n  ok  - shopE1's missing 2026-W32 cell reads 'unconfirmed'\n  ok  - shopE2's missing 2026-W31 cell reads 'unconfirmed'\n  ok  - banner names exactly 1 absent shop-week and calls the value stale\n  ok  - absent latest snapshot renders as 'stale', not a dollar figure\n  ok  - buildShopSpendReport returns something\n  ok  - exactly two write calls on the Report tab (clear + set)  (got 2)\n  ok  - first call is clearContents  (got \"clearContents\")\n  ok  - second call is a single setValues (not per-row appendRow)  (got \"setValues\")\n  ok  - a held lock is reported (refused:\"locked\") and nothing is written\n  ok  - ShopSpend tab byte-identical after a rebuild\n  ok  - ShopSpendPulls tab byte-identical after a rebuild\n\n649 passed, 0 failed\n",
+          "at": "2026-08-04T19:45:00+0900"
+        },
         "red": {
           "command": "node connectors/gas/test_code.js",
           "exit_code": 1,
