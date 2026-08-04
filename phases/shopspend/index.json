@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "shopspend",
+  "review": {
+    "base": "41bde6b"
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "shopspend-docs",
+      "status": "pending",
+      "tdd": false,
+      "tdd_reason": "Documentation only — adds the ShopSpend/ShopSpendPulls/ShopSpend Report tab specs to docs/schema.md and the shopSpend data flow to docs/ARCHITECTURE.md. No runtime behaviour, nothing to assert.",
+      "covers": ["PRD-7", "PRD-8"],
+      "docs": ["schema.md", "ARCHITECTURE.md"]
+    },
+    {
+      "step": 1,
+      "name": "shopspend-tabs-and-constants",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-7"],
+      "docs": ["schema.md"]
+    },
+    {
+      "step": 2,
+      "name": "dopost-shopspend-kind",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-7"],
+      "docs": ["schema.md", "ingest-contract.md"]
+    },
+    {
+      "step": 3,
+      "name": "shopspend-ingest-change-detection",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-7"],
+      "docs": ["schema.md"]
+    },
+    {
+      "step": 4,
+      "name": "shopspend-python-client",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/shopspend -q",
+      "covers": ["PRD-7"],
+      "docs": ["ARCHITECTURE.md"]
+    },
+    {
+      "step": 5,
+      "name": "shopspend-runner-and-bridge",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "python -m pytest connectors/shopspend -q",
+      "covers": ["PRD-7"],
+      "docs": ["ARCHITECTURE.md", "ingest-contract.md"]
+    },
+    {
+      "step": 6,
+      "name": "shopspend-report-builder",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-8"],
+      "docs": ["schema.md"]
+    },
+    {
+      "step": 7,
+      "name": "shopspend-watchdog-and-trigger",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-8"],
+      "docs": ["schema.md", "rules.md"]
+    },
+    {
+      "step": 8,
+      "name": "task-scheduler-registration",
+      "status": "pending",
+      "tdd": false,
+      "tdd_reason": "Registers an OS-level Windows Scheduled Task and documents the attended first run. Requires Jake plus a live token; the PowerShell registration script has no unit-testable pure logic and its effect is external to the repo.",
+      "covers": ["PRD-7"],
+      "docs": ["rules.md"]
+    }
+  ],
+  "created_at": "2026-08-04T00:00:00+10:00"
+}
