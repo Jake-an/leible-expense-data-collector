@@ -421,7 +421,7 @@
     {
       "step": 9,
       "name": "shopspend-backfill-wiring",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -452,7 +452,20 @@
           "at": "2026-08-04T21:39:56+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 1,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend/step9-review.json",
+        "checked_at": "2026-08-04T21:43:45+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] Exception handling catches specific types only; other requests exceptions would not be caught"
+      ]
     },
     {
       "step": 10,
@@ -465,7 +478,8 @@
       ],
       "docs": [
         "rules.md"
-      ]
+      ],
+      "started_at": "2026-08-04T21:43:45+0900"
     }
   ],
   "created_at": "2026-08-04T00:00:00+10:00"
