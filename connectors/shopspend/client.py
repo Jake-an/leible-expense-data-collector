@@ -228,11 +228,13 @@ def fetch_coverage() -> set[str]:
 
     try:
         resp = requests.get(url, params=params, timeout=30, allow_redirects=True)
-    except (
-        requests.ConnectionError,
-        requests.Timeout,
-        requests.exceptions.ChunkedEncodingError,
-    ) as err:
+    except requests.RequestException as err:
+        # Base class on purpose, not a subclass tuple. runner.py's --backfill only
+        # degrades to the full 4-week span for (RuntimeError, ShopSpendError,
+        # ShopSpendTransientError); anything else escapes and kills the run, which
+        # from the Scheduled Task means no data that week. TooManyRedirects is the
+        # live case — allow_redirects=True and GAS /exec redirects to
+        # googleusercontent (same reason probes need `curl -sL`).
         raise ShopSpendTransientError(_redact(f"coverage request failed: {err}", token)) from None
 
     try:

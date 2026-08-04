@@ -12,7 +12,8 @@
     },
     {
       "dir": "shopspend",
-      "status": "pending"
+      "status": "blocked",
+      "blocked_at": "2026-08-04T21:50:39+0900"
     }
   ]
 }

@@ -695,3 +695,43 @@ def test_fetch_coverage_non_json_never_leaks_token(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert secret not in captured.out
     assert secret not in captured.err
+
+
+# Every transport failure must surface as ShopSpendTransientError so runner.py's
+# --backfill branch — which catches (RuntimeError, ShopSpendError,
+# ShopSpendTransientError) — degrades to the full 4-week span instead of dying.
+# TooManyRedirects is not hypothetical: allow_redirects=True is set and GAS /exec
+# redirects to googleusercontent (the same reason probes need `curl -sL`).
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        requests.TooManyRedirects("exceeded 30 redirects"),
+        requests.exceptions.MissingSchema("Invalid URL 'nonsense': No scheme supplied"),
+        requests.exceptions.InvalidURL("Failed to parse"),
+        requests.exceptions.ContentDecodingError("failed to decode response"),
+    ],
+    ids=["too_many_redirects", "missing_schema", "invalid_url", "content_decoding"],
+)
+def test_fetch_coverage_converts_every_transport_error_to_transient(monkeypatch, transport_error):
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", "read-tok")
+    monkeypatch.setattr(requests, "get", _FakeGet([transport_error]))
+    fetch_coverage = client.fetch_coverage  # resolved outside raises — see comment above
+
+    with pytest.raises(client.ShopSpendTransientError):
+        fetch_coverage()
+
+
+def test_fetch_coverage_transport_error_never_leaks_token(monkeypatch):
+    secret = "super-secret-read-token"  # noqa: S105 — fake, test-only value
+    monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
+    monkeypatch.setenv("GAS_READ_TOKEN", secret)
+    monkeypatch.setattr(
+        requests, "get", _FakeGet([requests.TooManyRedirects(f"redirected to ?token={secret}")])
+    )
+    fetch_coverage = client.fetch_coverage  # resolved outside raises — see comment above
+
+    with pytest.raises(client.ShopSpendTransientError) as exc_info:
+        fetch_coverage()
+
+    assert secret not in str(exc_info.value)
