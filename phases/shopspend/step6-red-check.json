@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "shopSpendReportBlock_ and buildShopSpendReport functions are not implemented in the code under test. Test file is syntactically correct (605 passing tests prove the harness works); failures are clean symbol-not-defined errors, which is the correct RED state for TDD step 6."}

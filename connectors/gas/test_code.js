@@ -105,6 +105,10 @@ function makeSheet(headers, name, globalWriteLog) {
     _rows: rows,
     appendRow: (a) => { rows.push(a.map(sheetCoerceOnWrite)); recordWrite('appendRow', 1); },
     deleteRow: (rowNum) => rows.splice(rowNum - 1, 1),
+    // Real Sheet#clearContents wipes every cell (incl. the header row) but
+    // leaves the sheet object itself intact — a rebuilt report has no fixed
+    // header, so the mock just empties the row store.
+    clearContents: () => { const n = rows.length; rows.length = 0; recordWrite('clearContents', n); },
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
     getRange: (row, col) => makeRangeChain(row, col),
     getLastRow: () => rows.length,
@@ -3154,6 +3158,383 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var dateRow = tabsDate.data.getDataRange().getValues()[1];
   eq('week_start round-trips via cellDate', cellDate(dateRow[2]), '2026-07-27');
   eq('week_end round-trips via cellDate', cellDate(dateRow[3]), '2026-08-02');
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 4 — ShopSpend Report builder (step 6)
+ *
+ * shopspend.gs has no prior report-builder code to follow, so this test
+ * section FIXES the contract the implementation must match:
+ *
+ *   shopSpendReportBlock_(snapshotRows, latestPullRow) -> Array<Array>
+ *     snapshotRows  — raw ShopSpend data rows, SHOPSPEND_HEADERS column
+ *                      order, append order, HEADER ROW EXCLUDED (exactly
+ *                      sheet.getDataRange().getValues().slice(1)).
+ *     latestPullRow — the single most-recent ShopSpendPulls row,
+ *                      SHOPSPEND_PULLS_HEADERS column order (the last
+ *                      element of pullsSheet.getDataRange().getValues()).
+ *     Returns banner rows, then a grid header row (first cell literal
+ *     'Shop', remaining cells ISO week labels sorted numerically), then one
+ *     row per shop (first cell shop_id, remaining cells the per-week
+ *     rendering below).
+ *
+ *   Per-cell grid rendering for (shop, week):
+ *     - no snapshot for that key             → '' normally, 'unconfirmed'
+ *                                               when the pull's
+ *                                               empty_range_with_invalid_labels
+ *                                               is true.
+ *     - latest snapshot presence === 'absent' → 'stale' (never a number).
+ *     - otherwise                             → a string containing the
+ *                                               total_inc_gst figure,
+ *                                               prefixed with '~' when the
+ *                                               pull's unpriced_sku_count > 0,
+ *                                               containing 'amended' when
+ *                                               that snapshot's amended_count
+ *                                               > 0.
+ *
+ *   buildShopSpendReport() -> { refused: 'locked' } | object
+ *     Zero-arg entry point wrapped in withScriptLock_, mirroring
+ *     weeklySummarize (Code.gs:1595-1606). Reads ShopSpend + ShopSpendPulls
+ *     off the hub, builds the block via shopSpendReportBlock_, then issues
+ *     exactly ONE report.clearContents() followed by ONE
+ *     report.getRange(...).setValues(block) — never a per-row write. Never
+ *     writes to ShopSpend or ShopSpendPulls.
+ * ------------------------------------------------------------------ */
+
+(function testShopSpendReportBuilder() {
+  console.log('\nshopSpend — report builder (step 6):');
+
+  function ssRow(overrides) {
+    var defaults = {
+      shop_id: 'shop_1', week_label: '2026-W31', week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 0, total_ex_gst: 500, gst: 0, total_inc_gst: 500,
+      gst_treatment: 'EXCLUSIVE_PRIMARY', environment: 'prod', fetched_at: '2026-08-03T09:00:00+10:00',
+      source: 'shopspend', presence: 'present'
+    };
+    var merged = Object.assign({}, defaults, overrides);
+    return SHOPSPEND_HEADERS.map(function (h) { return merged[h]; });
+  }
+
+  function pullFields(overrides) {
+    return Object.assign({
+      fetched_at: '2026-08-03T09:30:00+10:00', environment: 'prod',
+      from_week: '2026-W30', to_week: '2026-W31',
+      matched: 1, returned: 1, truncated: false,
+      warnings_count: 0, warnings: '[]',
+      unpriced_sku_count: 0, unpriced_skus: '[]',
+      amended_count: 0, possible_duplicate_shop_names: '[]',
+      empty_range_with_invalid_labels: false, invalid_week_labels: '[]',
+      gst_treatment: 'EXCLUSIVE_PRIMARY',
+      diverges_from_live_pricing: false, matches_live_pricing: true,
+      total_orders_scanned: 10, absent_shop_ids: '[]',
+      diagnostics_json: '{}'
+    }, overrides);
+  }
+  function pullRow(overrides) {
+    var f = pullFields(overrides);
+    return SHOPSPEND_PULLS_HEADERS.map(function (h) { return f[h]; });
+  }
+
+  function shopSpendRowObj(overrides) {
+    return Object.assign({
+      shop_id: 'shop_1', week_label: '2026-W31',
+      week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1,
+      total_ex_gst: 500, gst: 0, total_inc_gst: 500,
+      gst_treatment: 'EXCLUSIVE_PRIMARY', environment: 'prod'
+    }, overrides);
+  }
+
+  // Every cell joined so a banner phrase or figure can be found regardless
+  // of which row/column the implementation places it in.
+  function flattenBlock(block) {
+    return block.map(function (row) { return row.join(' ␟ '); }).join('\n');
+  }
+  function findGridHeaderRow(block) {
+    for (var i = 0; i < block.length; i++) {
+      if (block[i] && block[i][0] === 'Shop') return block[i];
+    }
+    return null;
+  }
+  function findShopRow(block, shopId) {
+    for (var i = 0; i < block.length; i++) {
+      if (block[i] && block[i][0] === shopId) return block[i];
+    }
+    return null;
+  }
+
+  var hasBlockFn = typeof shopSpendReportBlock_ === 'function';
+  var hasBuildFn = typeof buildShopSpendReport === 'function';
+  check('shopSpendReportBlock_ is defined', hasBlockFn);
+  check('buildShopSpendReport is defined', hasBuildFn);
+
+  if (!hasBlockFn) {
+    console.log('  (skipping shopSpendReportBlock_ cases — function not defined)');
+  } else {
+
+  // --- Week ordering: numeric (year, weekNumber), never lexicographic ----
+  (function () {
+    var rows = [
+      ssRow({ shop_id: 'shopA', week_label: '2026-W52', total_inc_gst: 100 }),
+      ssRow({ shop_id: 'shopA', week_label: '2026-W9', total_inc_gst: 200 }),
+      ssRow({ shop_id: 'shopA', week_label: '2027-W01', total_inc_gst: 300 }),
+      ssRow({ shop_id: 'shopA', week_label: '2026-W10', total_inc_gst: 400 })
+    ];
+    var block = shopSpendReportBlock_(rows, pullRow());
+    var header = findGridHeaderRow(block);
+    check('grid header row found (first cell literal "Shop")', !!header);
+    if (header) {
+      eq('week columns sorted numerically: W9, W10, W52, then 2027-W01',
+        header.slice(1), ['2026-W9', '2026-W10', '2026-W52', '2027-W01']);
+      var lexOrder = header.slice(1).slice().sort();
+      check('contrast: a lexicographic string sort of the same labels puts 2026-W10 before 2026-W9 — proving the grid is NOT string-sorted',
+        lexOrder[0] === '2026-W10' && lexOrder.indexOf('2026-W9') > lexOrder.indexOf('2026-W10'));
+    }
+  })();
+
+  // --- Latest snapshot wins: append order, not fetched_at --------------
+  (function () {
+    var rows = [
+      ssRow({ shop_id: 'shopB', week_label: '2026-W31', total_inc_gst: 500, fetched_at: '2026-08-01T09:00:00+10:00' }),
+      ssRow({ shop_id: 'shopB', week_label: '2026-W31', total_inc_gst: 999, fetched_at: '2026-08-02T09:00:00+10:00' })
+    ];
+    var block = shopSpendReportBlock_(rows, pullRow());
+    var header = findGridHeaderRow(block);
+    var shopRow = findShopRow(block, 'shopB');
+    check('shop row found', !!shopRow && !!header);
+    if (shopRow && header) {
+      var col = header.indexOf('2026-W31');
+      check('latest (last-appended) snapshot wins — cell shows 999, not 500',
+        col > 0 && String(shopRow[col]).indexOf('999') !== -1 && String(shopRow[col]).indexOf('500') === -1);
+    }
+
+    // DST fixture: a +11:00 row appended BEFORE a +10:00 row for the same
+    // key. A lexicographic compare on fetched_at text would rank '+10:00'
+    // ahead of '+11:00' and pick the wrong row — resolution must be by
+    // ARRAY (append) order only, per docs/schema.md's "latest = last row in
+    // append order, never max(fetched_at)" rule.
+    var dstRows = [
+      ssRow({ shop_id: 'shopDst', week_label: '2026-W15', total_inc_gst: 111, fetched_at: '2026-04-05T08:00:00+11:00' }),
+      ssRow({ shop_id: 'shopDst', week_label: '2026-W15', total_inc_gst: 222, fetched_at: '2026-04-05T08:30:00+10:00' })
+    ];
+    var dstBlock = shopSpendReportBlock_(dstRows, pullRow());
+    var dstHeader = findGridHeaderRow(dstBlock);
+    var dstShopRow = findShopRow(dstBlock, 'shopDst');
+    check('DST fixture: shop row found', !!dstShopRow && !!dstHeader);
+    if (dstShopRow && dstHeader) {
+      var dstCol = dstHeader.indexOf('2026-W15');
+      check('DST fixture: latest = append order — resolves to the SECOND row (222), not the first (111)',
+        dstCol > 0 && String(dstShopRow[dstCol]).indexOf('222') !== -1 && String(dstShopRow[dstCol]).indexOf('111') === -1);
+    }
+  })();
+
+  // --- Baseline build: only the "always" banners fire -------------------
+  (function () {
+    var rows = [ssRow({ shop_id: 'shopClean', week_label: '2026-W31', total_inc_gst: 500 })];
+    var fetchedAt = '2026-08-03T09:30:00+10:00';
+    var pull = pullRow({ fetched_at: fetchedAt });
+    var block = shopSpendReportBlock_(rows, pull);
+    var flat = flattenBlock(block);
+
+    check('no unpriced-SKU banner', flat.indexOf('TOTALS ARE APPROXIMATE') === -1);
+    check('no amended-orders banner', flat.indexOf('contain amended orders') === -1);
+    check('no duplicate-shop-names banner', flat.indexOf('Possible duplicate shop names') === -1);
+    check('no absent/stale banner', flat.indexOf('are absent from the latest pull') === -1);
+    check('no unconfirmed cells', flat.indexOf('unconfirmed') === -1);
+
+    check('always: GST treatment stated on the tab', flat.indexOf('EXCLUSIVE_PRIMARY') !== -1);
+    check('always: gst:0-is-normal note mentions GST-free SKUs', flat.indexOf('GST-free') !== -1);
+    check('always: drift wording present, never "stale pricing"',
+      flat.toLowerCase().indexOf('drift') !== -1 && flat.indexOf('stale pricing') === -1);
+    check('always: confirmed-orders-only note excludes Shopify/online',
+      flat.indexOf('Confirmed orders only') !== -1 && flat.indexOf('Shopify') !== -1);
+    check('always: last fetched_at shown', flat.indexOf(fetchedAt) !== -1);
+  })();
+
+  // --- Drift wording never says "stale pricing", even when it diverges --
+  (function () {
+    var rows = [ssRow({ shop_id: 'shopDrift', week_label: '2026-W31' })];
+    var pull = pullRow({ diverges_from_live_pricing: true, matches_live_pricing: false });
+    var flat = flattenBlock(shopSpendReportBlock_(rows, pull));
+    check('mentions drift', flat.toLowerCase().indexOf('drift') !== -1);
+    check('never labelled "stale pricing"', flat.indexOf('stale pricing') === -1);
+  })();
+
+  // --- Banner: warnings[] listed verbatim, never suppressed -------------
+  (function () {
+    var rows = [ssRow({ shop_id: 'shopW', week_label: '2026-W31' })];
+    var pull = pullRow({
+      warnings_count: 2,
+      warnings: JSON.stringify(['upstream SKU pricing sheet stale for shopW', 'partial data returned for 2026-W31'])
+    });
+    var flat = flattenBlock(shopSpendReportBlock_(rows, pull));
+    check('warning 1 listed verbatim', flat.indexOf('upstream SKU pricing sheet stale for shopW') !== -1);
+    check('warning 2 listed verbatim', flat.indexOf('partial data returned for 2026-W31') !== -1);
+  })();
+
+  // --- Banner: unpriced SKUs -> approximate totals, '~' prefix ----------
+  (function () {
+    var rows = [ssRow({ shop_id: 'shopU', week_label: '2026-W31', total_inc_gst: 500 })];
+    var pull = pullRow({ unpriced_sku_count: 6, unpriced_skus: JSON.stringify(['SKU-1', 'SKU-2']) });
+    var block = shopSpendReportBlock_(rows, pull);
+    var flat = flattenBlock(block);
+    check('banner names the count and says line items were skipped entirely',
+      flat.indexOf('TOTALS ARE APPROXIMATE') !== -1 &&
+      flat.indexOf('6 SKUs unpriced') !== -1 &&
+      flat.indexOf('skipped entirely') !== -1);
+
+    var header = findGridHeaderRow(block);
+    var shopRow = findShopRow(block, 'shopU');
+    if (header && shopRow) {
+      var col = header.indexOf('2026-W31');
+      check('rendered total carries the ~ marker', col > 0 && String(shopRow[col]).indexOf('~') !== -1);
+    }
+  })();
+
+  // --- Banner: amended orders -> provisional marking ---------------------
+  (function () {
+    var rows = [
+      ssRow({ shop_id: 'shopAmA', week_label: '2026-W31', amended_count: 0, total_inc_gst: 100 }),
+      ssRow({ shop_id: 'shopAmB', week_label: '2026-W31', amended_count: 3, total_inc_gst: 200 })
+    ];
+    var block = shopSpendReportBlock_(rows, pullRow());
+    var flat = flattenBlock(block);
+    check('banner names exactly 1 amended shop-week, marked provisional',
+      flat.indexOf('1 shop-weeks contain amended orders') !== -1 && flat.indexOf('provisional') !== -1);
+
+    var header = findGridHeaderRow(block);
+    var amendedRow = findShopRow(block, 'shopAmB');
+    var cleanRow = findShopRow(block, 'shopAmA');
+    if (header && amendedRow && cleanRow) {
+      var col = header.indexOf('2026-W31');
+      check('amended shop-week cell is marked', col > 0 && String(amendedRow[col]).indexOf('amended') !== -1);
+      check('non-amended shop-week cell is NOT marked', col > 0 && String(cleanRow[col]).indexOf('amended') === -1);
+    }
+  })();
+
+  // --- Banner: possible duplicate shop names, surfaced but NOT merged ---
+  (function () {
+    var rows = [
+      ssRow({ shop_id: 'Acme Cafe', week_label: '2026-W31', total_inc_gst: 100 }),
+      ssRow({ shop_id: 'Acme Café', week_label: '2026-W31', total_inc_gst: 150 })
+    ];
+    var pull = pullRow({ possible_duplicate_shop_names: JSON.stringify(['Acme Cafe', 'Acme Café']) });
+    var block = shopSpendReportBlock_(rows, pull);
+    var flat = flattenBlock(block);
+    check('banner states fix upstream, NOT merged automatically',
+      flat.indexOf('Possible duplicate shop names') !== -1 && flat.indexOf('NOT merged automatically') !== -1);
+    check('both flagged names listed', flat.indexOf('Acme Cafe') !== -1 && flat.indexOf('Acme Café') !== -1);
+    check('both shop_ids remain two SEPARATE grid rows (never auto-merged)',
+      !!findShopRow(block, 'Acme Cafe') && !!findShopRow(block, 'Acme Café') &&
+      findShopRow(block, 'Acme Cafe') !== findShopRow(block, 'Acme Café'));
+  })();
+
+  // --- Banner: empty range + invalid labels -> 'unconfirmed', never $0 --
+  (function () {
+    var rows = [
+      ssRow({ shop_id: 'shopE1', week_label: '2026-W31', total_inc_gst: 100 }),
+      ssRow({ shop_id: 'shopE2', week_label: '2026-W32', total_inc_gst: 200 })
+    ];
+    var pull = pullRow({ empty_range_with_invalid_labels: true, invalid_week_labels: JSON.stringify(['2026-W99']) });
+    var block = shopSpendReportBlock_(rows, pull);
+    var flat = flattenBlock(block);
+    check('no cell renders as literal "$0" anywhere in the block', flat.indexOf('$0') === -1);
+    check('no cell is the bare number 0',
+      block.every(function (row) { return row.every(function (cell) { return cell !== 0; }); }));
+
+    var header = findGridHeaderRow(block);
+    var row1 = findShopRow(block, 'shopE1');
+    var row2 = findShopRow(block, 'shopE2');
+    if (header && row1 && row2) {
+      var col32 = header.indexOf('2026-W32');
+      var col31 = header.indexOf('2026-W31');
+      check("shopE1's missing 2026-W32 cell reads 'unconfirmed'", col32 > 0 && row1[col32] === 'unconfirmed');
+      check("shopE2's missing 2026-W31 cell reads 'unconfirmed'", col31 > 0 && row2[col31] === 'unconfirmed');
+    }
+  })();
+
+  // --- Banner: absent tombstone -> stale marking, not a dollar figure ---
+  (function () {
+    var rows = [
+      ssRow({ shop_id: 'shopT', week_label: '2026-W31', presence: 'present', total_inc_gst: 400, fetched_at: '2026-08-01T09:00:00+10:00' }),
+      ssRow({ shop_id: 'shopT', week_label: '2026-W31', presence: 'absent', total_inc_gst: 0, fetched_at: '2026-08-05T09:00:00+10:00' })
+    ];
+    var block = shopSpendReportBlock_(rows, pullRow());
+    var flat = flattenBlock(block);
+    check('banner names exactly 1 absent shop-week and calls the value stale',
+      flat.indexOf('1 shop-weeks present in a prior pull are absent from the latest pull') !== -1 &&
+      flat.indexOf('stale') !== -1);
+
+    var header = findGridHeaderRow(block);
+    var shopRow = findShopRow(block, 'shopT');
+    if (header && shopRow) {
+      var col = header.indexOf('2026-W31');
+      check("absent latest snapshot renders as 'stale', not a dollar figure",
+        col > 0 && shopRow[col] === 'stale');
+    }
+  })();
+
+  } // end hasBlockFn block
+
+  if (!hasBuildFn) {
+    console.log('  (skipping buildShopSpendReport cases — function not defined)');
+  } else {
+
+  // --- Single write: exactly one clearContents + one setValues ----------
+  (function () {
+    freshSheets();
+    var tabs = ensureShopSpendTabs_(currentSS);
+    ingestShopSpendRows('shopspend', [shopSpendRowObj({ shop_id: 'shopSW', week_label: '2026-W31' })], 'T1', tabs.data);
+    appendNewRows_(tabs.pulls, [pullRow()]);
+    tabs.report.appendRow(['stale', 'report', 'content', 'from', 'a', 'prior', 'run']);
+
+    var startLen = currentSS._writeLog.length;
+    var res = buildShopSpendReport();
+    var reportWrites = currentSS._writeLog.slice(startLen).filter(function (w) { return w.sheet === SHOPSPEND_REPORT_TAB; });
+
+    check('buildShopSpendReport returns something', !!res);
+    eq('exactly two write calls on the Report tab (clear + set)', reportWrites.length, 2);
+    if (reportWrites.length === 2) {
+      eq('first call is clearContents', reportWrites[0].type, 'clearContents');
+      eq('second call is a single setValues (not per-row appendRow)', reportWrites[1].type, 'setValues');
+    }
+  })();
+
+  // --- Lock: a held script lock is reported, not silently swallowed -----
+  (function () {
+    freshSheets();
+    ensureShopSpendTabs_(currentSS);
+    global.__forceLockTimeout = true;
+    var startLen = currentSS._writeLog.length;
+    var res;
+    try {
+      res = buildShopSpendReport();
+    } finally {
+      global.__forceLockTimeout = false;
+    }
+    var reportWrites = currentSS._writeLog.slice(startLen).filter(function (w) { return w.sheet === SHOPSPEND_REPORT_TAB; });
+    check('a held lock is reported (refused:"locked") and nothing is written',
+      !!res && res.refused === 'locked' && reportWrites.length === 0);
+  })();
+
+  // --- No mutation: ShopSpend / ShopSpendPulls are read-only inputs -----
+  (function () {
+    freshSheets();
+    var tabs = ensureShopSpendTabs_(currentSS);
+    ingestShopSpendRows('shopspend', [
+      shopSpendRowObj({ shop_id: 'shopNM1', week_label: '2026-W31' }),
+      shopSpendRowObj({ shop_id: 'shopNM2', week_label: '2026-W32', total_inc_gst: 300 })
+    ], 'T1', tabs.data);
+    appendNewRows_(tabs.pulls, [pullRow()]);
+
+    var beforeData = tabs.data.getDataRange().getValues();
+    var beforePulls = tabs.pulls.getDataRange().getValues();
+    buildShopSpendReport();
+    eq('ShopSpend tab byte-identical after a rebuild', tabs.data.getDataRange().getValues(), beforeData);
+    eq('ShopSpendPulls tab byte-identical after a rebuild', tabs.pulls.getDataRange().getValues(), beforePulls);
+  })();
+
+  } // end hasBuildFn block
 })();
 
 /* ------------------------------------------------------------------ */
