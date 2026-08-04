@@ -23,6 +23,46 @@
 14. **Harness phases are self-contained.** Each step file must include all context — no "as discussed previously."
 15. **Blocked = human needed.** API keys, manual auth, external setup — mark `blocked` with a clear reason and stop immediately.
 
+## ShopSpend Weekly Backfill — Attended First Run
+
+`scripts/register_shopspend_task.ps1` registers a Windows Scheduled Task ("LEIBLE
+ShopSpend Weekly", Monday 05:00 local) that runs `python -m connectors.shopspend.runner
+--backfill` unattended. Before that task is ever registered or left to run unattended,
+one attended pass is required:
+
+1. **Populate `.env`** (repo root, gitignored) with the shopSpend API credentials and the
+   hub read token:
+   ```
+   SHOPSPEND_ENV=PROD
+   SHOPSPEND_URL_PROD=<shopSpend API URL for PROD>
+   SHOPSPEND_TOKEN_PROD=<shopSpend API token for PROD>
+   SHOPSPEND_URL_DEV=<shopSpend API URL for DEV>
+   SHOPSPEND_TOKEN_DEV=<shopSpend API token for DEV>
+   GAS_READ_TOKEN=<same secret as this hub's own API_READ_TOKEN Script Property>
+   ```
+   `SHOPSPEND_ENV` picks which `_PROD`/`_DEV` pair `connectors/shopspend/client.py`'s
+   `resolve_config()` reads — only that pair needs a real value, but keeping both around
+   makes switching environments a one-line edit. `GAS_READ_TOKEN` is a **separate**
+   credential from the shopSpend API token: it authenticates `fn=shopspendCoverage`
+   against this project's own hub (`connectors/gas/Code.gs` `checkReadToken_`, see
+   `docs/api.md`), not the shopSpend supplier's API.
+2. **Verify with `--dry-run`** before anything is ever posted:
+   ```
+   python -m connectors.shopspend.runner --backfill --dry-run
+   ```
+   This fetches and prints the missing weeks' figures (and any data-quality warnings)
+   without writing to the hub. Confirm the printed weeks and totals look right before
+   dropping `--dry-run`.
+3. **Run the first real backfill attended and off-hours.** A multi-week backfill posts in
+   chunks (`connectors/shopspend/ingest.py` `post_pull`), and each chunk holds the hub's
+   shared script lock — the same lock every other connector's writes go through. Running
+   it unattended or during business hours risks lock contention with a live
+   Square/Mayers/portal pull. Run it manually, watch it complete, then hand subsequent
+   Mondays to the scheduled task.
+4. **Only after 1–3 succeed**, register the task: `powershell -File
+   scripts/register_shopspend_task.ps1` (add `-WhatIf` first to preview what would be
+   registered without applying it).
+
 ## How to Apply
 - Is it secret or PII? → gitignore it.
 - Is it risky / irreversible / outward-facing? → confirm with Jake first.

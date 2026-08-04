@@ -470,7 +470,7 @@
     {
       "step": 10,
       "name": "task-scheduler-registration",
-      "status": "pending",
+      "status": "blocked",
       "tdd": false,
       "tdd_reason": "Registers an OS-level Windows Scheduled Task and documents the attended first run. Requires Jake plus a live token; the PowerShell registration script has no unit-testable pure logic and its effect is external to the repo.",
       "covers": [
@@ -479,7 +479,8 @@
       "docs": [
         "rules.md"
       ],
-      "started_at": "2026-08-04T21:43:45+0900"
+      "started_at": "2026-08-04T21:43:45+0900",
+      "blocked_reason": "Wrote scripts/register_shopspend_task.ps1 (parses clean, no secret in Arguments/XML, working dir = repo root, action runs --backfill, idempotent via -Force, -WhatIf previews without applying) and docs/rules.md 'ShopSpend Weekly Backfill — Attended First Run'. Jake must: (1) populate .env with SHOPSPEND_ENV/SHOPSPEND_URL_<ENV>/SHOPSPEND_TOKEN_<ENV> and GAS_READ_TOKEN (same secret as the hub's API_READ_TOKEN Script Property); (2) run `python -m connectors.shopspend.runner --backfill --dry-run` to verify; (3) run one real backfill attended and off-hours (multi-chunk posts hold the shared GAS script lock); (4) only then run scripts/register_shopspend_task.ps1 (optionally with -WhatIf first) to register the task. This step does not and must not perform any of those four — see step brief Prohibitions."
     }
   ],
   "created_at": "2026-08-04T00:00:00+10:00"
