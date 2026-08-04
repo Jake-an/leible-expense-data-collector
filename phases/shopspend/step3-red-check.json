@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test framework is healthy (577 passing, 25 failing with clean assertion messages). Failures are all in implementation logic: change detection (re-pulls should deduplicate, not re-add), tombstone generation (missing shops should create zero-figure rows), and block-write optimization (multiple rows should write in one call, not four). No syntax errors, import failures, or test-code issues — only incomplete/missing implementation, which is the correct RED condition."
+}
