@@ -207,7 +207,13 @@ global.ContentService = {
   createTextOutput: (s) => ({ _s: s, setMimeType() { return this; }, getContent() { return this._s; } }),
   MimeType: { JSON: 'json' },
 };
-global.Logger = { log: () => {} };
+// Captures Logger.log() calls so tests can assert a degraded-mode warning was
+// actually emitted (step 1: weeks_complete absent + rows present), not just
+// that the function didn't throw.
+let loggedMessages = [];
+global.Logger = { log: (msg) => { loggedMessages.push(String(msg)); } };
+function lastLoggedMessages() { return loggedMessages; }
+function clearLoggedMessages() { loggedMessages = []; }
 // Stubs so the connector modules load cleanly (their callers aren't tested here).
 //
 // formatDate is a REAL (if minimal) implementation, not a constant: the Fault 3
@@ -3038,6 +3044,42 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('shopspend row without date → rejected', !noDateRes.ok);
   check('...via the generic shared missing-date message', noDateRes.message.indexOf('missing date') !== -1);
 
+  // --- weeks_complete / weeks_verified_empty validation (step 1) -----------
+  check('weeks_complete as a JSON string → rejected',
+    !validateIngest_(Object.assign({}, base, { rows: [], weeks_complete: '["2026-W31"]' })).ok);
+  check('weeks_complete as a nested array → rejected',
+    !validateIngest_(Object.assign({}, base, { rows: [], weeks_complete: [['2026-W31']] })).ok);
+  check('weeks_complete with a bogus label → rejected',
+    !validateIngest_(Object.assign({}, base, { rows: [], weeks_complete: ['2026-W3'] })).ok);
+  check('weeks_complete with a valid label → accepted',
+    validateIngest_(Object.assign({}, base, { rows: [], weeks_complete: ['2026-W31'] })).ok);
+
+  check('weeks_verified_empty as a JSON string → rejected',
+    !validateIngest_(Object.assign({}, base, {
+      rows: [], weeks_complete: ['2026-W31'], weeks_verified_empty: '["2026-W31"]'
+    })).ok);
+  check('weeks_verified_empty as a nested array → rejected',
+    !validateIngest_(Object.assign({}, base, {
+      rows: [], weeks_complete: ['2026-W31'], weeks_verified_empty: [['2026-W31']]
+    })).ok);
+  check('weeks_verified_empty with a bogus label → rejected',
+    !validateIngest_(Object.assign({}, base, {
+      rows: [], weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W3']
+    })).ok);
+  check('weeks_verified_empty naming a week absent from weeks_complete → rejected',
+    !validateIngest_(Object.assign({}, base, {
+      rows: [], weeks_complete: ['2026-W30'], weeks_verified_empty: ['2026-W31']
+    })).ok);
+  check('weeks_verified_empty naming a week with >=1 row in the same payload → rejected',
+    !validateIngest_(Object.assign({}, base, {
+      rows: [shopspendRow({ week_label: '2026-W31' })],
+      weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31']
+    })).ok);
+  check('weeks_verified_empty valid (declared complete, no rows for it) → accepted',
+    validateIngest_(Object.assign({}, base, {
+      rows: [], weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31']
+    })).ok);
+
   // Existing kinds unregressed: still rejects, still succeeds and writes to
   // their own tab.
   check('suppliers row missing invoice_ref → still rejected',
@@ -3059,6 +3101,26 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('valid revenue payload still succeeds', revOk.result, 'ok');
   check('...and writes to Revenue',
     currentSS.getSheetByName('Revenue').getDataRange().getValues().length === 2);
+
+  // tombstonesWritten / tombstonesSkipped are ALWAYS present on a shopspend
+  // doPost response — an empty array, not an omission, when nothing was
+  // skipped — and absent entirely on non-shopspend responses.
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  var tombFieldsRes = doPostJson({
+    kind: 'shopspend', source: 'shopspend', extracted_at: 'TS',
+    rows: [goodRow1], weeks_complete: ['2026-W31']
+  });
+  eq('shopspend response → ok', tombFieldsRes.result, 'ok');
+  check('tombstonesWritten present on shopspend response', 'tombstonesWritten' in tombFieldsRes);
+  check('tombstonesSkipped present on shopspend response', 'tombstonesSkipped' in tombFieldsRes);
+  eq('tombstonesWritten is 0 for a first, non-tombstoning pull', tombFieldsRes.tombstonesWritten, 0);
+  eq('tombstonesSkipped is an empty array when nothing was skipped', tombFieldsRes.tombstonesSkipped, []);
+
+  check('tombstonesWritten omitted on a suppliers response', !('tombstonesWritten' in suppOk));
+  check('tombstonesSkipped omitted on a suppliers response', !('tombstonesSkipped' in suppOk));
+  check('tombstonesWritten omitted on a revenue response', !('tombstonesWritten' in revOk));
+  check('tombstonesSkipped omitted on a revenue response', !('tombstonesSkipped' in revOk));
 
   // Heartbeat: a successful shopspend post stamps the shopspend heartbeat via
   // the existing generic call (Code.gs:150 stalenessStampHeartbeat_).
@@ -3237,20 +3299,23 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     resDstC.rowsAdded, 0);
   eq('...and counted as a duplicate', resDstC.duplicatesSkipped, 1);
 
-  // --- Tombstone on disappearance ----------------------------------------
+  // --- Tombstone on disappearance (declared complete) ---------------------
   freshSheets();
   var tabsTomb = ensureShopSpendTabs_(currentSS);
   var pullA = [
     spRow({ shop_id: 'shopTombX', week_label: '2026-W31' }),
     spRow({ shop_id: 'shopTombY', week_label: '2026-W31' })
   ];
-  var resTombA = ingestShopSpendRows('shopspend', pullA, 'TA', tabsTomb.data);
+  var resTombA = ingestShopSpendRows('shopspend', pullA, 'TA', tabsTomb.data, undefined, undefined, ['2026-W31']);
   eq('tombstone setup: pull A appends both shops', resTombA.rowsAdded, 2);
 
   var pullB = [spRow({ shop_id: 'shopTombX', week_label: '2026-W31' })];
-  var resTombB = ingestShopSpendRows('shopspend', pullB, 'TB', tabsTomb.data);
-  eq('tombstone: pull B (missing shopTombY) appends exactly one tombstone', resTombB.rowsAdded, 1);
+  var resTombB = ingestShopSpendRows('shopspend', pullB, 'TB', tabsTomb.data, undefined, undefined, ['2026-W31']);
+  eq('tombstone: pull B declares 2026-W31 complete, missing shopTombY → appends exactly one tombstone',
+    resTombB.rowsAdded, 1);
   eq('tombstone: shopTombX itself is unchanged (duplicate)', resTombB.duplicatesSkipped, 1);
+  eq('tombstone: tombstonesWritten reflects the one write', resTombB.tombstonesWritten, 1);
+  eq('tombstone: nothing skipped by the breaker (below the 5-shop floor)', resTombB.tombstonesSkipped, []);
 
   var dataAfterTombB = tabsTomb.data.getDataRange().getValues();
   var tombRow = dataAfterTombB[dataAfterTombB.length - 1];
@@ -3260,34 +3325,68 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     [Number(tombRow[4]), Number(tombRow[5]), Number(tombRow[6]), Number(tombRow[7]), Number(tombRow[8])],
     [0, 0, 0, 0, 0]);
 
-  // --- Tombstone scope: never tombstone a week the payload doesn't cover -
+  // --- Undeclared week: rows present, weeks_complete absent → tombstones
+  // nothing, and a Logger warning is emitted (the field-absent degraded mode
+  // must be visible, not silent).
+  freshSheets();
+  var tabsUndeclared = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopUndX', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopUndY', week_label: '2026-W31' })
+  ], 'T1', tabsUndeclared.data);
+  clearLoggedMessages();
+  var resUndeclared = ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopUndX', week_label: '2026-W31' })], 'T2', tabsUndeclared.data);
+  eq('week not declared complete: missing shopUndY is NOT tombstoned', resUndeclared.rowsAdded, 0);
+  eq('week not declared complete: tombstonesWritten is 0', resUndeclared.tombstonesWritten, 0);
+  check('weeks_complete absent + rows present → a Logger warning is logged',
+    lastLoggedMessages().some(function (m) { return /weeks_complete/i.test(m); }));
+  var dataUndeclared = tabsUndeclared.data.getDataRange().getValues();
+  var shopUndYRow = dataUndeclared.filter(function (r, i) { return i > 0 && r[0] === 'shopUndY'; })[0];
+  eq('shopUndY row is still present, untouched', shopUndYRow[13], 'present');
+
+  clearLoggedMessages();
+  ingestShopSpendRows('shopspend', [], 'T3', tabsUndeclared.data);
+  check('weeks_complete absent + rows EMPTY → no warning (nothing to warn about)',
+    !lastLoggedMessages().some(function (m) { return /weeks_complete/i.test(m); }));
+
+  // --- Tombstone scope: only weeks_complete declares scope, never rows seen
   freshSheets();
   var tabsScope = ensureShopSpendTabs_(currentSS);
-  ingestShopSpendRows('shopspend',
-    [spRow({ shop_id: 'shopOldWeek', week_label: '2026-W30', week_start: '2026-07-20', week_end: '2026-07-26' })],
-    'T1', tabsScope.data);
-  var resScope = ingestShopSpendRows('shopspend',
-    [spRow({ shop_id: 'shopNewWeek', week_label: '2026-W31' })],
-    'T2', tabsScope.data);
-  eq('scoped pull: only the new row is appended, no cross-week tombstone', resScope.rowsAdded, 1);
+  ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopOldWeekA', week_label: '2026-W30', week_start: '2026-07-20', week_end: '2026-07-26' }),
+    spRow({ shop_id: 'shopOldWeekB', week_label: '2026-W30', week_start: '2026-07-20', week_end: '2026-07-26' })
+  ], 'T1', tabsScope.data);
+  // Second pull carries a ROW for week 30 (shopOldWeekA, unchanged) alongside
+  // a new week-31 shop, but declares ONLY 2026-W31 complete. Under the OLD
+  // "weeks seen in rows" scoping this would tombstone shopOldWeekB (missing
+  // from this payload); under the new declared-scope design it must not.
+  var resScope = ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopOldWeekA', week_label: '2026-W30', week_start: '2026-07-20', week_end: '2026-07-26' }),
+    spRow({ shop_id: 'shopNewWeek', week_label: '2026-W31' })
+  ], 'T2', tabsScope.data, undefined, undefined, ['2026-W31']);
+  eq('scoped pull: only the new week-31 row is appended (shopOldWeekA is a duplicate)', resScope.rowsAdded, 1);
+  eq('scoped pull: tombstonesWritten is 0 — week 30 has rows but is not declared complete',
+    resScope.tombstonesWritten, 0);
 
   var dataScope = tabsScope.data.getDataRange().getValues();
-  eq('scoped pull: tab holds header + 2 rows only', dataScope.length, 3);
-  var oldWeekRow = dataScope.filter(function (r, i) { return i > 0 && r[0] === 'shopOldWeek'; })[0];
-  eq('shopOldWeek / 2026-W30 row is untouched (still present)', oldWeekRow[13], 'present');
+  var oldWeekBRow = dataScope.filter(function (r, i) { return i > 0 && r[0] === 'shopOldWeekB'; })[0];
+  eq('shopOldWeekB / 2026-W30 row is untouched (still present) — week 30 not declared complete',
+    oldWeekBRow[13], 'present');
 
   // --- No double tombstone -------------------------------------------------
   var pullC = [spRow({ shop_id: 'shopTombX', week_label: '2026-W31' })]; // still missing shopTombY
-  var resTombC = ingestShopSpendRows('shopspend', pullC, 'TC', tabsTomb.data);
+  var resTombC = ingestShopSpendRows('shopspend', pullC, 'TC', tabsTomb.data, undefined, undefined, ['2026-W31']);
   eq('no double tombstone: shopTombY already absent → no new row for it', resTombC.rowsAdded, 0);
   eq('...shopTombX unchanged → duplicate', resTombC.duplicatesSkipped, 1);
+  eq('no double tombstone: tombstonesWritten is 0', resTombC.tombstonesWritten, 0);
 
   // --- Reappearance --------------------------------------------------------
   var pullD = [
     spRow({ shop_id: 'shopTombX', week_label: '2026-W31' }),
     spRow({ shop_id: 'shopTombY', week_label: '2026-W31' }) // same figures as pull A
   ];
-  var resTombD = ingestShopSpendRows('shopspend', pullD, 'TD', tabsTomb.data);
+  var resTombD = ingestShopSpendRows('shopspend', pullD, 'TD', tabsTomb.data, undefined, undefined, ['2026-W31']);
   eq('reappearance: shopTombY returns → appends a fresh present row', resTombD.rowsAdded, 1);
   eq('reappearance: shopTombX still unchanged → duplicate', resTombD.duplicatesSkipped, 1);
 
@@ -3335,7 +3434,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     'T1', tabsBlock2.data);
   ingestShopSpendRows('shopspend',
     [spRow({ shop_id: 'blkX', week_label: '2026-W31', total_ex_gst: 777 })], // blkY tombstoned too
-    'T2', tabsBlock2.data);
+    'T2', tabsBlock2.data, undefined, undefined, ['2026-W31']);
   var writeCallsAfterTomb = tabsBlock2.data.getWriteCalls();
   eq('changed row + tombstone still land in a single block write',
     writeCallsAfterTomb.length, 2); // one for the first pull, one for the second
@@ -3365,6 +3464,201 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var dateRow = tabsDate.data.getDataRange().getValues()[1];
   eq('week_start round-trips via cellDate', cellDate(dateRow[2]), '2026-07-27');
   eq('week_end round-trips via cellDate', cellDate(dateRow[3]), '2026-08-02');
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 3b — tombstone-weeks-complete (step 1): weeks_complete gates
+ * tombstoning, plus the blast-radius circuit breaker.
+ * ------------------------------------------------------------------ */
+
+(function testShopSpendTombstoneWeeksComplete() {
+  console.log('\ningestShopSpendRows — weeks_complete tombstone gating + breaker (step 1):');
+
+  function spRow(overrides) {
+    return Object.assign({
+      shop_id: 'shop_1', week_label: '2026-W31',
+      week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1,
+      total_ex_gst: 500, gst: 0, total_inc_gst: 500,
+      gst_treatment: 'EXCLUSIVE_PRIMARY', environment: 'prod'
+    }, overrides);
+  }
+
+  function buildShops(n, weekLabel, prefix) {
+    var arr = [];
+    for (var i = 0; i < n; i++) {
+      arr.push(spRow({ shop_id: (prefix || 'shop') + i, week_label: weekLabel }));
+    }
+    return arr;
+  }
+
+  // --- C1 repro: two sequential half-payloads for one week, neither
+  // declaring it complete (the real split-chunk shape) → zero tombstones.
+  freshSheets();
+  var tabsSplit = ensureShopSpendTabs_(currentSS);
+  var splitRes1 = ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopSplitA', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopSplitB', week_label: '2026-W31' })
+  ], 'T1', tabsSplit.data); // half 1 — split week, not declared complete
+  var splitRes2 = ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopSplitC', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopSplitD', week_label: '2026-W31' })
+  ], 'T2', tabsSplit.data); // half 2 — split week, not declared complete
+  eq('C1 repro: half 1 writes zero tombstones', splitRes1.tombstonesWritten, 0);
+  eq('C1 repro: half 2 writes zero tombstones (does not tombstone half 1s shops)', splitRes2.tombstonesWritten, 0);
+  var dataSplit = tabsSplit.data.getDataRange().getValues();
+  eq('C1 repro: exactly header + 4 data rows, no tombstone rows appended', dataSplit.length, 5);
+  check('C1 repro: all four shops remain present',
+    dataSplit.slice(1).every(function (r) { return r[13] === 'present'; }));
+
+  var splitRes1b = ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopSplitA', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopSplitB', week_label: '2026-W31' })
+  ], 'T3', tabsSplit.data);
+  eq('C1 repro: identical re-post of half 1 appends nothing', splitRes1b.rowsAdded, 0);
+  eq('C1 repro: identical re-post writes zero tombstones', splitRes1b.tombstonesWritten, 0);
+
+  // --- Identical re-post of a COMPLETE week appends nothing ---------------
+  freshSheets();
+  var tabsCompleteRepost = ensureShopSpendTabs_(currentSS);
+  var completeWeekRows = [
+    spRow({ shop_id: 'shopCompA', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopCompB', week_label: '2026-W31' })
+  ];
+  ingestShopSpendRows('shopspend', completeWeekRows, 'T1', tabsCompleteRepost.data, undefined, undefined, ['2026-W31']);
+  var repostRes = ingestShopSpendRows('shopspend', completeWeekRows, 'T2', tabsCompleteRepost.data,
+    undefined, undefined, ['2026-W31']);
+  eq('identical re-post of a complete week: rowsAdded is 0', repostRes.rowsAdded, 0);
+  eq('identical re-post of a complete week: tombstonesWritten is 0', repostRes.tombstonesWritten, 0);
+  eq('identical re-post of a complete week: duplicatesSkipped is 2', repostRes.duplicatesSkipped, 2);
+
+  // --- Truncated label never matches: "2026-W3" must not cover "2026-W31" -
+  freshSheets();
+  var tabsTrunc = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', [
+    spRow({ shop_id: 'shopTruncA', week_label: '2026-W31' }),
+    spRow({ shop_id: 'shopTruncB', week_label: '2026-W31' })
+  ], 'T1', tabsTrunc.data, undefined, undefined, ['2026-W31']);
+  var resTrunc = ingestShopSpendRows('shopspend',
+    [spRow({ shop_id: 'shopTruncA', week_label: '2026-W31' })], 'T2', tabsTrunc.data,
+    undefined, undefined, ['2026-W3']); // truncated label — must not indexOf-match '2026-W31'
+  eq('truncated label 2026-W3 does not match 2026-W31 — no tombstone', resTrunc.tombstonesWritten, 0);
+  eq('truncated label: shopTruncB (missing from payload) is not tombstoned', resTrunc.rowsAdded, 0);
+  var dataTrunc = tabsTrunc.data.getDataRange().getValues();
+  var shopTruncBRow = dataTrunc.filter(function (r, i) { return i > 0 && r[0] === 'shopTruncB'; })[0];
+  eq('shopTruncB stays present', shopTruncBRow[13], 'present');
+
+  // --- Breaker floor: below 5 present shop-weeks, a 100% unverified
+  // tombstone still WRITES (the floor exists so a 2-of-3-shop closure isn't
+  // permanently suppressed).
+  freshSheets();
+  var tabsFloor3 = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', buildShops(3, '2026-W31', 'floor3'), 'T1', tabsFloor3.data,
+    undefined, undefined, ['2026-W31']);
+  var resFloor3 = ingestShopSpendRows('shopspend', [], 'T2', tabsFloor3.data, undefined, undefined, ['2026-W31']);
+  eq('below the 5-shop floor: 100% unverified still writes (floor not met)', resFloor3.tombstonesWritten, 3);
+  eq('below the 5-shop floor: nothing skipped', resFloor3.tombstonesSkipped, []);
+
+  // --- Breaker: >=5 present, 100% unverified missing → SKIPPED, reported.
+  freshSheets();
+  var tabsUnverified5 = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', buildShops(5, '2026-W31', 'unv5'), 'T1', tabsUnverified5.data,
+    undefined, undefined, ['2026-W31']);
+  var resUnverified5 = ingestShopSpendRows('shopspend', [], 'T2', tabsUnverified5.data,
+    undefined, undefined, ['2026-W31']);
+  eq('unverified 100% with 5 present (>= floor): breaker skips, tombstonesWritten 0',
+    resUnverified5.tombstonesWritten, 0);
+  eq('unverified 100% with 5 present: rowsAdded 0 (skip means no tombstone rows land)', resUnverified5.rowsAdded, 0);
+  eq('unverified 100% with 5 present: week appears in tombstonesSkipped',
+    resUnverified5.tombstonesSkipped, [{ week: '2026-W31', wouldHaveWritten: 5, present: 5 }]);
+  var dataUnverified5 = tabsUnverified5.data.getDataRange().getValues();
+  check('unverified 100% with 5 present: all 5 shops remain present (suppressed, not written)',
+    dataUnverified5.slice(1).every(function (r) { return r[13] === 'present'; }));
+
+  // --- Breaker boundary: exactly 50% still writes; 51% is skipped ---------
+  freshSheets();
+  var tabsHalf = ensureShopSpendTabs_(currentSS);
+  var hundredShops = buildShops(100, '2026-W31', 'half');
+  ingestShopSpendRows('shopspend', hundredShops, 'T1', tabsHalf.data, undefined, undefined, ['2026-W31']);
+  var keep50 = hundredShops.slice(0, 50); // 50 missing → exactly 50%, not "more than half"
+  var res50 = ingestShopSpendRows('shopspend', keep50, 'T2', tabsHalf.data, undefined, undefined, ['2026-W31']);
+  eq('exactly 50% missing (not more than half): still writes', res50.tombstonesWritten, 50);
+  eq('exactly 50%: nothing skipped', res50.tombstonesSkipped, []);
+
+  freshSheets();
+  var tabsFiftyOne = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', hundredShops, 'T1', tabsFiftyOne.data, undefined, undefined, ['2026-W31']);
+  var keep49 = hundredShops.slice(0, 49); // 51 missing → 51%, "more than half"
+  var res51 = ingestShopSpendRows('shopspend', keep49, 'T2', tabsFiftyOne.data, undefined, undefined, ['2026-W31']);
+  eq('51% missing (more than half): breaker skips', res51.tombstonesWritten, 0);
+  eq('51% missing: week reported in tombstonesSkipped',
+    res51.tombstonesSkipped, [{ week: '2026-W31', wouldHaveWritten: 51, present: 100 }]);
+
+  // --- The skip is sticky: it never self-heals on its own ------------------
+  freshSheets();
+  var tabsSticky = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', buildShops(5, '2026-W31', 'sticky'), 'T1', tabsSticky.data,
+    undefined, undefined, ['2026-W31']);
+  var stickyRes1 = ingestShopSpendRows('shopspend', [], 'T2', tabsSticky.data, undefined, undefined, ['2026-W31']);
+  var stickyRes2 = ingestShopSpendRows('shopspend', [], 'T3', tabsSticky.data, undefined, undefined, ['2026-W31']);
+  eq('sticky skip: pull 1 skips', stickyRes1.tombstonesWritten, 0);
+  eq('sticky skip: pull 1 reports the week skipped',
+    stickyRes1.tombstonesSkipped, [{ week: '2026-W31', wouldHaveWritten: 5, present: 5 }]);
+  eq('sticky skip: pull 2 (identical) skips again', stickyRes2.tombstonesWritten, 0);
+  eq('sticky skip: pull 2 reports the week skipped again (non-self-healing)',
+    stickyRes2.tombstonesSkipped, [{ week: '2026-W31', wouldHaveWritten: 5, present: 5 }]);
+
+  // --- weeks_verified_empty exemption: rows:[] + declared complete + -----
+  // verified empty → tombstones every present shop (100%, breaker exempt),
+  // without throwing even though nothing to iterate for figures.
+  freshSheets();
+  var tabsVerifiedEmpty = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', buildShops(5, '2026-W31', 'vEmpty'), 'T1', tabsVerifiedEmpty.data,
+    undefined, undefined, ['2026-W31']);
+  var resVerifiedEmpty;
+  var verifiedEmptyThrew = false;
+  try {
+    resVerifiedEmpty = ingestShopSpendRows('shopspend', [], 'T2', tabsVerifiedEmpty.data,
+      undefined, undefined, ['2026-W31'], ['2026-W31']);
+  } catch (e) {
+    verifiedEmptyThrew = true;
+  }
+  check('rows:[] + weeks_complete + weeks_verified_empty does not throw', !verifiedEmptyThrew);
+  if (!verifiedEmptyThrew) {
+    eq('verified-empty week: tombstones every present shop (100%, breaker exempt)',
+      resVerifiedEmpty.tombstonesWritten, 5);
+    eq('verified-empty week: nothing skipped', resVerifiedEmpty.tombstonesSkipped, []);
+  }
+
+  // --- Belt-and-braces: even with validation bypassed, a rows-carrying week
+  // is dropped from the exemption set rather than trusted blindly.
+  freshSheets();
+  var tabsBelt = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', buildShops(5, '2026-W31', 'belt'), 'T1', tabsBelt.data,
+    undefined, undefined, ['2026-W31']);
+  var beltRows = [spRow({ shop_id: 'beltNew', week_label: '2026-W31' })]; // a row for the "verified empty" week
+  var resBelt = ingestShopSpendRows('shopspend', beltRows, 'T2', tabsBelt.data,
+    undefined, undefined, ['2026-W31'], ['2026-W31']); // validateIngest_ would reject this combo — bypassed here
+  eq('belt-and-braces: a rows-carrying "verified empty" week is NOT treated as exempt — breaker still applies',
+    resBelt.tombstonesWritten, 0);
+  eq('belt-and-braces: the week is reported skipped, not silently 100%-tombstoned',
+    resBelt.tombstonesSkipped, [{ week: '2026-W31', wouldHaveWritten: 5, present: 5 }]);
+})();
+
+/* ------------------------------------------------------------------ *
+ * Phase 3c — docs/api.md documents the tombstone response fields and the
+ * mass-absence confirmation procedure (step 1).
+ * ------------------------------------------------------------------ */
+
+(function testShopSpendApiDocsUpdated() {
+  console.log('\ndocs/api.md — tombstone fields + confirmation procedure (step 1):');
+
+  var apiDocPath = path.join(GAS_DIR, '..', '..', 'docs', 'api.md');
+  var apiDoc = fs.existsSync(apiDocPath) ? fs.readFileSync(apiDocPath, 'utf8') : '';
+  check('docs/api.md documents tombstonesWritten', apiDoc.indexOf('tombstonesWritten') !== -1);
+  check('docs/api.md documents tombstonesSkipped', apiDoc.indexOf('tombstonesSkipped') !== -1);
+  check('docs/api.md documents a mass-absence confirmation procedure',
+    /confirm/i.test(apiDoc) && /absen/i.test(apiDoc));
 })();
 
 /* ------------------------------------------------------------------ *

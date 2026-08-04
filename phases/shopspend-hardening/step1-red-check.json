@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 48 failures are due to missing implementation, not broken test code. The test infrastructure is sound (749 passing). Failures fall into four categories: (1) weeks_complete/weeks_verified_empty validation not implemented (6 tests expect validateIngest_ to reject invalid payloads); (2) response fields missing (tombstonesWritten and tombstonesSkipped undefined in doPost responses); (3) tombstoning logic still incorrectly tombstones every week seen instead of only declared weeks (affects C1 repro, identical re-post, and scoped pull tests); (4) docs/api.md not yet documenting the new fields and mass-absence confirmation procedure. This is the correct RED state for step 1: tests fail because the features described in the step (weeks_complete validation, response fields, breaker circuit) don't exist yet."
+}
