@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 9 failures cluster in the shopspend doPost handler — implementation incomplete. Framework (542 passed), tabs, and other payload types all work. Failures show missing code path: doPost returns error instead of ok, response lacks rowsAdded, ShopSpend tab stays empty, heartbeat not stamped. No test-code issues."
+}

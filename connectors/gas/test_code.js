@@ -2713,6 +2713,184 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   }
 })();
 
+/* ------------------------------------------------------------------ *
+ * Phase 2 — doPost shopspend kind: validation + routing (step 2)
+ * ------------------------------------------------------------------ */
+
+(function testDoPostShopspendKind() {
+  console.log('\ndoPost — shopspend kind (step 2):');
+
+  function shopspendRow(overrides) {
+    return Object.assign({
+      date: '2026-07-27', shop_id: 'shop_1', week_label: '2026-W31',
+      week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1, total_ex_gst: 500, gst: 0, total_inc_gst: 500
+    }, overrides);
+  }
+
+  var goodRow1 = {
+    date: '2026-07-27', shop_id: 'shop_1', week_label: '2026-W31',
+    week_start: '2026-07-27', week_end: '2026-08-02',
+    order_count: 12, amended_count: 1,
+    total_ex_gst: 500, gst: 0, total_inc_gst: 500,
+    gst_treatment: 'EXCLUSIVE_PRIMARY', environment: 'prod',
+    fetched_at: '2026-08-03T09:00:00+10:00'
+  };
+  var goodRow2 = {
+    date: '2026-07-20', shop_id: 'shop_2', week_label: '2026-W30',
+    week_start: '2026-07-20', week_end: '2026-07-26',
+    order_count: 5, amended_count: 0,
+    total_ex_gst: 200, gst: 0, total_inc_gst: 200,
+    gst_treatment: 'EXCLUSIVE_PRIMARY', environment: 'prod'
+    // no fetched_at → falls back to body.extracted_at
+  };
+
+  // Well-formed shopspend payload → ok, rowsAdded = row count, rows land on
+  // ShopSpend in SHOPSPEND_HEADERS order. Tabs pre-created via
+  // ensureShopSpendTabs_ (step 1, already implemented) so a rejected/no-op
+  // doPost still leaves a real (header-only) sheet to read back safely,
+  // rather than null-deref-ing getSheetByName.
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  var res = doPostJson({
+    kind: 'shopspend', source: 'shopspend', extracted_at: '2026-08-03T09:30:00+10:00',
+    rows: [goodRow1, goodRow2]
+  });
+  eq('well-formed shopspend payload → ok', res.result, 'ok');
+  eq('rowsAdded equals row count', res.rowsAdded, 2);
+
+  var data = currentSS.getSheetByName('ShopSpend').getDataRange().getValues();
+  eq('ShopSpend has header + 2 rows', data.length, 3);
+  if (data.length >= 3) {
+    var row1 = data[1];
+    eq('row 1 lands in SHOPSPEND_HEADERS order',
+      [row1[0], row1[1], cellDate(row1[2]), cellDate(row1[3])].concat(row1.slice(4)),
+      ['shop_1', '2026-W31', '2026-07-27', '2026-08-02', 12, 1, 500, 0, 500,
+        'EXCLUSIVE_PRIMARY', 'prod', '2026-08-03T09:00:00+10:00', 'shopspend', 'present']);
+
+    var row2 = data[2];
+    eq('row 2 (no per-row fetched_at) falls back to extracted_at', row2[11], '2026-08-03T09:30:00+10:00');
+    eq('row 2 presence defaults to present', row2[13], 'present');
+  }
+
+  // Unknown kind still rejected — the whitelist widened, it did not open.
+  var unknownRes = doPostJson({ kind: 'nonsense', source: 'x', extracted_at: 'TS',
+    rows: [{ date: '2026-07-27' }] });
+  eq('unknown kind → error', unknownRes.result, 'error');
+  eq('unknown kind → message names it', unknownRes.message, 'unknown kind: nonsense');
+
+  // Per-row validation, row index named in the message.
+  var base = { kind: 'shopspend', source: 'shopspend', extracted_at: 'TS' };
+
+  check('missing shop_id → rejected',
+    !validateIngest_(Object.assign({}, base, { rows: [shopspendRow({ shop_id: '' })] })).ok);
+
+  check("week_label '2026-W7' (single-digit week) → rejected",
+    !validateIngest_(Object.assign({}, base, { rows: [shopspendRow({ week_label: '2026-W7' })] })).ok);
+
+  check("week_label '26-W07' (2-digit year) → rejected",
+    !validateIngest_(Object.assign({}, base, { rows: [shopspendRow({ week_label: '26-W07' })] })).ok);
+
+  check('non-numeric total_ex_gst → rejected',
+    !validateIngest_(Object.assign({}, base, { rows: [shopspendRow({ total_ex_gst: 'abc' })] })).ok);
+
+  check('missing week_start → rejected',
+    !validateIngest_(Object.assign({}, base, { rows: [shopspendRow({ week_start: undefined })] })).ok);
+
+  var idxMsg = validateIngest_(Object.assign({}, base, { rows: [
+    shopspendRow(), shopspendRow({ shop_id: '' })
+  ] }));
+  check('rejection message names the offending row index (row 1)', idxMsg.message.indexOf('row 1') !== -1);
+
+  // date is still required on every kind — line 188 was not relaxed. The
+  // client satisfies this by sending date = week_start.
+  var noDateRow = shopspendRow();
+  delete noDateRow.date;
+  var noDateRes = validateIngest_(Object.assign({}, base, { rows: [noDateRow] }));
+  check('shopspend row without date → rejected', !noDateRes.ok);
+  check('...via the generic shared missing-date message', noDateRes.message.indexOf('missing date') !== -1);
+
+  // Existing kinds unregressed: still rejects, still succeeds and writes to
+  // their own tab.
+  check('suppliers row missing invoice_ref → still rejected',
+    !validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS',
+      rows: [{ date: '2026-07-01', total: 10 }] }).ok);
+  check('revenue row missing order_ref → still rejected',
+    !validateIngest_({ kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS',
+      rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 10 }] }).ok);
+
+  freshSheets();
+  var suppOk = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS',
+    rows: [{ date: '2026-07-01', total: 10, invoice_ref: 'REG-1' }] });
+  eq('valid suppliers payload still succeeds', suppOk.result, 'ok');
+  check('...and writes to Suppliers',
+    currentSS.getSheetByName('Suppliers').getDataRange().getValues().length === 2);
+
+  var revOk = doPostJson({ kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS',
+    rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 10, order_ref: 'REG-2' }] });
+  eq('valid revenue payload still succeeds', revOk.result, 'ok');
+  check('...and writes to Revenue',
+    currentSS.getSheetByName('Revenue').getDataRange().getValues().length === 2);
+
+  // Heartbeat: a successful shopspend post stamps the shopspend heartbeat via
+  // the existing generic call (Code.gs:150 stalenessStampHeartbeat_).
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  scriptProps = {};
+  doPostJson({ kind: 'shopspend', source: 'shopspend', extracted_at: 'TS', rows: [goodRow1] });
+  check('successful shopspend post stamps the shopspend heartbeat',
+    'LAST_INGEST_shopspend' in scriptProps);
+
+  // Pulls row: when body.pull is present, exactly one row is appended to
+  // ShopSpendPulls, in SHOPSPEND_PULLS_HEADERS order, written AFTER the data
+  // rows (the commit marker for a chunked pull). Tabs pre-created so the
+  // append-order spy can wrap real sheet objects doPost's own
+  // ensureShopSpendTabs_ call will retrieve (ensureSheet returns the same
+  // object once it exists — see Code.gs:591-601).
+  freshSheets();
+  var preTabs = ensureShopSpendTabs_(currentSS);
+  var writeOrder = [];
+  var origDataAppend = preTabs.data.appendRow.bind(preTabs.data);
+  var origPullsAppend = preTabs.pulls.appendRow.bind(preTabs.pulls);
+  preTabs.data.appendRow = function (a) { writeOrder.push('data'); return origDataAppend(a); };
+  preTabs.pulls.appendRow = function (a) { writeOrder.push('pulls'); return origPullsAppend(a); };
+
+  var pull = {
+    fetched_at: '2026-08-03T09:30:00+10:00', environment: 'prod',
+    from_week: '2026-W30', to_week: '2026-W31',
+    matched: 2, returned: 2, truncated: false,
+    warnings_count: 0, warnings: '[]',
+    unpriced_sku_count: 0, unpriced_skus: '[]',
+    amended_count: 1, possible_duplicate_shop_names: '[]',
+    empty_range_with_invalid_labels: false, invalid_week_labels: '[]',
+    gst_treatment: 'EXCLUSIVE_PRIMARY',
+    diverges_from_live_pricing: false, matches_live_pricing: true,
+    total_orders_scanned: 17, absent_shop_ids: '[]',
+    diagnostics_json: '{}'
+  };
+  var pullRes = doPostJson({
+    kind: 'shopspend', source: 'shopspend', extracted_at: '2026-08-03T09:30:00+10:00',
+    rows: [goodRow1, goodRow2], pull: pull
+  });
+  eq('shopspend payload with pull → ok', pullRes.result, 'ok');
+  check('data rows written before the pulls row (commit-marker ordering)',
+    writeOrder.length === 3 && writeOrder[0] === 'data' && writeOrder[1] === 'data' && writeOrder[2] === 'pulls');
+
+  var pullsData = currentSS.getSheetByName('ShopSpendPulls').getDataRange().getValues();
+  eq('exactly one row appended to ShopSpendPulls', pullsData.length, 2);
+  if (pullsData.length >= 2) {
+    eq('pulls row lands in SHOPSPEND_PULLS_HEADERS order',
+      pullsData[1],
+      [pull.fetched_at, pull.environment, pull.from_week, pull.to_week, pull.matched,
+        pull.returned, pull.truncated, pull.warnings_count, pull.warnings,
+        pull.unpriced_sku_count, pull.unpriced_skus, pull.amended_count,
+        pull.possible_duplicate_shop_names, pull.empty_range_with_invalid_labels,
+        pull.invalid_week_labels, pull.gst_treatment, pull.diverges_from_live_pricing,
+        pull.matches_live_pricing, pull.total_orders_scanned, pull.absent_shop_ids,
+        pull.diagnostics_json]);
+  }
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
