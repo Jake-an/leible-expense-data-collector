@@ -1,0 +1,661 @@
+FFFFFFFFFFFFFFFFFFFFFFFF..F                                              [100%]
+================================== FAILURES ===================================
+_________ test_unauthorized_raises_shopspend_error_with_zero_retries __________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC30CE540>
+fake_sleep = []
+
+    def test_unauthorized_raises_shopspend_error_with_zero_retries(monkeypatch, fake_sleep):
+        fake_get = _FakeGet([_FakeResponse(json_body={"ok": False, "error": "UNAUTHORIZED"})])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:200: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+_ test_bad_request_and_schema_raise_shopspend_error_with_zero_retries[BAD_REQUEST] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC2BA6D80>
+fake_sleep = [], error_code = 'BAD_REQUEST'
+
+    @pytest.mark.parametrize("error_code", ["BAD_REQUEST", "SCHEMA"])
+    def test_bad_request_and_schema_raise_shopspend_error_with_zero_retries(
+        monkeypatch, fake_sleep, error_code
+    ):
+        fake_get = _FakeGet(
+            [_FakeResponse(json_body={"ok": False, "error": error_code, "detail": "explain"})]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:219: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+_ test_bad_request_and_schema_raise_shopspend_error_with_zero_retries[SCHEMA] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310A8D0>
+fake_sleep = [], error_code = 'SCHEMA'
+
+    @pytest.mark.parametrize("error_code", ["BAD_REQUEST", "SCHEMA"])
+    def test_bad_request_and_schema_raise_shopspend_error_with_zero_retries(
+        monkeypatch, fake_sleep, error_code
+    ):
+        fake_get = _FakeGet(
+            [_FakeResponse(json_body={"ok": False, "error": error_code, "detail": "explain"})]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:219: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+__________________ test_internal_error_retries_then_succeeds __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310B1A0>
+
+    def test_internal_error_retries_then_succeeds(monkeypatch):
+        fake_get = _FakeGet(
+            [
+                _FakeResponse(
+                    json_body={
+                        "ok": False,
+                        "error": "INTERNAL",
+                        "detail": "boom",
+                        "traceId": "trace-1",
+                    }
+                ),
+                _FakeResponse(json_body=_ok_body(rows=[_row()])),
+            ]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:250: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+______________________ test_internal_error_logs_trace_id ______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3108B60>
+capsys = <_pytest.capture.CaptureFixture object at 0x0000019DC310A540>
+
+    def test_internal_error_logs_trace_id(monkeypatch, capsys):
+        fake_get = _FakeGet(
+            [
+                _FakeResponse(
+                    json_body={
+                        "ok": False,
+                        "error": "INTERNAL",
+                        "detail": "boom",
+                        "traceId": "trace-abc-123",
+                    }
+                ),
+                _FakeResponse(json_body=_ok_body(rows=[])),
+            ]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:273: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+__ test_internal_error_raises_transient_error_after_backoff_ladder_exhausted __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310B470>
+fake_sleep = []
+
+    def test_internal_error_raises_transient_error_after_backoff_ladder_exhausted(
+        monkeypatch, fake_sleep
+    ):
+        responses = [
+            _FakeResponse(
+                json_body={"ok": False, "error": "INTERNAL", "detail": "boom", "traceId": f"trace-{i}"}
+            )
+            for i in range(6)  # 1 initial attempt + 5 backoff retries (2,5,10,20,30s ladder)
+        ]
+        fake_get = _FakeGet(responses)
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:292: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+__________________ test_non_json_body_retries_then_succeeds ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC2B1EF00>
+
+    def test_non_json_body_retries_then_succeeds(monkeypatch):
+        fake_get = _FakeGet(
+            [
+                _FakeResponse(json_raises=True, text="<html>Page not found</html>"),
+                _FakeResponse(json_body=_ok_body(rows=[])),
+            ]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:314: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+__ test_non_json_body_raises_transient_error_after_backoff_ladder_exhausted ___
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310AD20>
+fake_sleep = []
+
+    def test_non_json_body_raises_transient_error_after_backoff_ladder_exhausted(
+        monkeypatch, fake_sleep
+    ):
+        fake_get = _FakeGet(
+            [_FakeResponse(json_raises=True, text="<html>Page not found</html>") for _ in range(6)]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:329: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+________ test_transport_failure_retries_then_succeeds[ConnectionError] ________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310AA50>
+exc_cls = <class 'requests.exceptions.ConnectionError'>
+
+    @pytest.mark.parametrize("exc_cls", [requests.ConnectionError, requests.Timeout])
+    def test_transport_failure_retries_then_succeeds(monkeypatch, exc_cls):
+        fake_get = _FakeGet([exc_cls("boom"), _FakeResponse(json_body=_ok_body(rows=[]))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:347: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+____________ test_transport_failure_retries_then_succeeds[Timeout] ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC30CE450>
+exc_cls = <class 'requests.exceptions.Timeout'>
+
+    @pytest.mark.parametrize("exc_cls", [requests.ConnectionError, requests.Timeout])
+    def test_transport_failure_retries_then_succeeds(monkeypatch, exc_cls):
+        fake_get = _FakeGet([exc_cls("boom"), _FakeResponse(json_body=_ok_body(rows=[]))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:347: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+_ test_transport_failure_raises_transient_error_after_backoff_ladder_exhausted _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3175D60>
+fake_sleep = []
+
+    def test_transport_failure_raises_transient_error_after_backoff_ladder_exhausted(
+        monkeypatch, fake_sleep
+    ):
+        fake_get = _FakeGet([requests.ConnectionError("boom") for _ in range(6)])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:360: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+__________________ test_request_passes_allow_redirects_true ___________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3176360>
+
+    def test_request_passes_allow_redirects_true(monkeypatch):
+        fake_get = _FakeGet([_FakeResponse(json_body=_ok_body(rows=[]))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:377: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+___________________ test_fetch_sends_expected_query_params ____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3177200>
+
+    def test_fetch_sends_expected_query_params(monkeypatch):
+        fake_get = _FakeGet([_FakeResponse(json_body=_ok_body(rows=[]))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:387: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+_______________ test_fetch_defaults_include_to_rows_and_summary _______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3177D10>
+
+    def test_fetch_defaults_include_to_rows_and_summary(monkeypatch):
+        fake_get = _FakeGet([_FakeResponse(json_body=_ok_body(rows=[]))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:402: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+____________________ test_fetch_passes_configured_timeout _____________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3175BE0>
+
+    def test_fetch_passes_configured_timeout(monkeypatch):
+        fake_get = _FakeGet([_FakeResponse(json_body=_ok_body(rows=[]))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client(timeout=45)
+               ^^^^^^^^^^^^^^^^^^^
+
+connectors\shopspend\test_client.py:412: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {'timeout': 45}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+____________ test_paging_issues_three_calls_and_concatenates_rows _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3176690>
+
+    def test_paging_issues_three_calls_and_concatenates_rows(monkeypatch):
+        page1 = _page_body([_row()] * 2000, matched=4500, offset=0)
+        page2 = _page_body([_row()] * 2000, matched=4500, offset=2000)
+        page3 = _page_body([_row()] * 500, matched=4500, offset=4000)
+        fake_get = _FakeGet(
+            [
+                _FakeResponse(json_body=page1),
+                _FakeResponse(json_body=page2),
+                _FakeResponse(json_body=page3),
+            ]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:436: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+______________ test_single_page_response_issues_exactly_one_call ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC31D5280>
+
+    def test_single_page_response_issues_exactly_one_call(monkeypatch):
+        body = _page_body([_row()] * 10, matched=10, offset=0)
+        fake_get = _FakeGet([_FakeResponse(json_body=body)])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:449: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+______________ test_parse_week_label_returns_year_week_int_tuple ______________
+
+    def test_parse_week_label_returns_year_week_int_tuple():
+>       assert client.parse_week_label("2026-W31") == (2026, 31)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'parse_week_label'
+
+connectors\shopspend\test_client.py:463: AttributeError
+______ test_sorting_by_parse_week_label_orders_numerically_not_lexically ______
+
+    def test_sorting_by_parse_week_label_orders_numerically_not_lexically():
+        labels = ["2026-W10", "2026-W9", "2027-W01", "2026-W52"]
+        expected = ["2026-W9", "2026-W10", "2026-W52", "2027-W01"]
+    
+>       assert sorted(labels, key=client.parse_week_label) == expected
+                                  ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'parse_week_label'
+
+connectors\shopspend\test_client.py:470: AttributeError
+__________________ test_redact_helper_strips_token_from_text __________________
+
+    def test_redact_helper_strips_token_from_text():
+        text = f"GET {PROD_URL}?api=shopSpend&token={PROD_TOKEN}&fromWeek=2026-W31 failed"
+    
+>       redacted = client._redact(text, PROD_TOKEN)
+                   ^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute '_redact'
+
+connectors\shopspend\test_client.py:483: AttributeError
+_____ test_transport_exception_and_response_url_token_leaks_are_redacted ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3175F70>
+fake_sleep = []
+
+    def test_transport_exception_and_response_url_token_leaks_are_redacted(monkeypatch, fake_sleep):
+        """Two leak sources in one scenario: (1) requests.ConnectionError embeds the
+        full URL (token included) in its message � this is real `requests`
+        behaviour, not test artifice; (2) a fake response's .url also carries the
+        token, standing in for GAS's redirect target. Neither may survive into
+        the exception this client ultimately raises."""
+        boom = requests.ConnectionError(
+            f"Failed to establish a new connection to {PROD_URL}?token={PROD_TOKEN}"
+        )
+        leaky_response = _FakeResponse(
+            json_raises=True,
+            text="<html>Page not found</html>",
+            url=f"{PROD_URL}?api=shopSpend&token={PROD_TOKEN}",
+        )
+        fake_get = _FakeGet(
+            [boom, leaky_response, leaky_response, leaky_response, leaky_response, leaky_response]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:507: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+______________ test_log_output_never_contains_token_or_full_url _______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC3175550>
+capsys = <_pytest.capture.CaptureFixture object at 0x0000019DC3174110>
+
+    def test_log_output_never_contains_token_or_full_url(monkeypatch, capsys):
+        fake_get = _FakeGet(
+            [
+                _FakeResponse(
+                    json_body={
+                        "ok": False,
+                        "error": "INTERNAL",
+                        "detail": "boom",
+                        "traceId": "trace-1",
+                    },
+                    url=f"{PROD_URL}?api=shopSpend&token={PROD_TOKEN}",
+                ),
+                _FakeResponse(json_body=_ok_body(rows=[])),
+            ]
+        )
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:533: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+_____________ test_environment_mismatch_raises_and_yields_no_data _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310AC90>
+
+    def test_environment_mismatch_raises_and_yields_no_data(monkeypatch):
+        fake_get = _FakeGet([_FakeResponse(json_body=_ok_body(rows=[_row()], environment="DEV"))])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client(environment="PROD")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+connectors\shopspend\test_client.py:552: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {'environment': 'PROD'}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+______________ test_resolve_config_returns_url_token_environment ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC310A1E0>
+
+    def test_resolve_config_returns_url_token_environment(monkeypatch):
+        monkeypatch.setenv("SHOPSPEND_ENV", "DEV")
+        monkeypatch.setenv("SHOPSPEND_URL_DEV", "https://example.invalid/exec-dev")
+        monkeypatch.setenv("SHOPSPEND_TOKEN_DEV", "dev-token")
+    
+>       url, token, environment = client.resolve_config()
+                                  ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'resolve_config'
+
+connectors\shopspend\test_client.py:568: AttributeError
+_________________ test_unknown_response_fields_are_tolerated __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019DC2B1F260>
+
+    def test_unknown_response_fields_are_tolerated(monkeypatch):
+        body = _ok_body(rows=[_row()])
+        body["meta"]["somethingNew"] = "unexpected-value"
+        fake_get = _FakeGet([_FakeResponse(json_body=body)])
+        monkeypatch.setattr(requests, "get", fake_get)
+>       conn = _client()
+               ^^^^^^^^^
+
+connectors\shopspend\test_client.py:601: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+overrides = {}
+
+    def _client(**overrides):
+        kwargs = {"url": PROD_URL, "token": PROD_TOKEN, "environment": "PROD", "timeout": 30}
+        kwargs.update(overrides)
+>       return client.ShopSpendClient(**kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.client' has no attribute 'ShopSpendClient'
+
+connectors\shopspend\test_client.py:83: AttributeError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_client.py::test_unauthorized_raises_shopspend_error_with_zero_retries
+FAILED connectors/shopspend/test_client.py::test_bad_request_and_schema_raise_shopspend_error_with_zero_retries[BAD_REQUEST]
+FAILED connectors/shopspend/test_client.py::test_bad_request_and_schema_raise_shopspend_error_with_zero_retries[SCHEMA]
+FAILED connectors/shopspend/test_client.py::test_internal_error_retries_then_succeeds
+FAILED connectors/shopspend/test_client.py::test_internal_error_logs_trace_id
+FAILED connectors/shopspend/test_client.py::test_internal_error_raises_transient_error_after_backoff_ladder_exhausted
+FAILED connectors/shopspend/test_client.py::test_non_json_body_retries_then_succeeds
+FAILED connectors/shopspend/test_client.py::test_non_json_body_raises_transient_error_after_backoff_ladder_exhausted
+FAILED connectors/shopspend/test_client.py::test_transport_failure_retries_then_succeeds[ConnectionError]
+FAILED connectors/shopspend/test_client.py::test_transport_failure_retries_then_succeeds[Timeout]
+FAILED connectors/shopspend/test_client.py::test_transport_failure_raises_transient_error_after_backoff_ladder_exhausted
+FAILED connectors/shopspend/test_client.py::test_request_passes_allow_redirects_true
+FAILED connectors/shopspend/test_client.py::test_fetch_sends_expected_query_params
+FAILED connectors/shopspend/test_client.py::test_fetch_defaults_include_to_rows_and_summary
+FAILED connectors/shopspend/test_client.py::test_fetch_passes_configured_timeout
+FAILED connectors/shopspend/test_client.py::test_paging_issues_three_calls_and_concatenates_rows
+FAILED connectors/shopspend/test_client.py::test_single_page_response_issues_exactly_one_call
+FAILED connectors/shopspend/test_client.py::test_parse_week_label_returns_year_week_int_tuple
+FAILED connectors/shopspend/test_client.py::test_sorting_by_parse_week_label_orders_numerically_not_lexically
+FAILED connectors/shopspend/test_client.py::test_redact_helper_strips_token_from_text
+FAILED connectors/shopspend/test_client.py::test_transport_exception_and_response_url_token_leaks_are_redacted
+FAILED connectors/shopspend/test_client.py::test_log_output_never_contains_token_or_full_url
+FAILED connectors/shopspend/test_client.py::test_environment_mismatch_raises_and_yields_no_data
+FAILED connectors/shopspend/test_client.py::test_resolve_config_returns_url_token_environment
+FAILED connectors/shopspend/test_client.py::test_unknown_response_fields_are_tolerated
+25 failed, 2 passed in 0.70s

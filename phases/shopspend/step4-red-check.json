@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Tests fail due to missing implementation: `ShopSpendClient` class and `resolve_config()` function do not exist in shopspend.client module. Test code is well-formed; failures are expected in RED phase."
+}
