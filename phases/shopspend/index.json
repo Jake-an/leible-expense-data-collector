@@ -326,7 +326,7 @@
     {
       "step": 7,
       "name": "shopspend-watchdog-and-trigger",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -357,7 +357,20 @@
           "at": "2026-08-04T18:47:56+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 1,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend/step7-review.json",
+        "checked_at": "2026-08-04T18:56:37+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] ScriptApp trigger mock enhancement increases test maintainability"
+      ]
     },
     {
       "step": 8,
@@ -371,7 +384,8 @@
       "docs": [
         "schema.md",
         "api.md"
-      ]
+      ],
+      "started_at": "2026-08-04T18:56:37+0900"
     },
     {
       "step": 9,
