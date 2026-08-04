@@ -147,6 +147,9 @@ function doPost(e) {
 
     var res = withScriptLock_(function () {
       var ss = getHubSpreadsheet_();
+      if (kind === 'shopspend') {
+        return ingestShopSpendRows_(ss, body);
+      }
       if (kind === 'revenue') {
         var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
         return ingestRevenueRows(body.source, body.rows, body.extracted_at, revSheet);
@@ -196,7 +199,7 @@ function validateIngest_(body) {
   if (!body.extracted_at) return { ok: false, message: 'missing extracted_at' };
 
   var kind = body.kind || 'suppliers';
-  if (kind !== 'suppliers' && kind !== 'revenue') {
+  if (kind !== 'suppliers' && kind !== 'revenue' && kind !== 'shopspend') {
     return { ok: false, message: 'unknown kind: ' + kind };
   }
 
@@ -210,7 +213,16 @@ function validateIngest_(body) {
       return { ok: false, message: 'row ' + i + ' invalid department: ' + r.department };
     }
 
-    if (kind === 'revenue') {
+    if (kind === 'shopspend') {
+      if (!r.shop_id) return { ok: false, message: 'row ' + i + ' missing shop_id' };
+      if (!r.week_label || !/^\d{4}-W\d{2}$/.test(String(r.week_label))) {
+        return { ok: false, message: 'row ' + i + ' invalid week_label' };
+      }
+      if (!r.week_start) return { ok: false, message: 'row ' + i + ' missing week_start' };
+      if (r.total_ex_gst === undefined || r.total_ex_gst === null || isNaN(Number(r.total_ex_gst))) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid total_ex_gst' };
+      }
+    } else if (kind === 'revenue') {
       if (r.amount === undefined || r.amount === null || isNaN(Number(r.amount))) {
         return { ok: false, message: 'row ' + i + ' missing/invalid amount' };
       }
@@ -289,6 +301,60 @@ function normalizeSalesRow_(dateStr, location, gross, source, extractedAt, depar
   ];
 }
 
+/**
+ * Map a raw shopspend row to the ShopSpend column order.
+ * Per-row fetched_at (if present) overrides extracted_at; presence defaults to 'present'.
+ * @returns {Array} [shop_id, week_label, week_start, week_end, order_count, amended_count, total_ex_gst, gst, total_inc_gst, gst_treatment, environment, fetched_at, source, presence]
+ */
+function normalizeShopSpendRow(row, source, extractedAt) {
+  return [
+    String(row.shop_id),
+    String(row.week_label),
+    String(row.week_start),
+    String(row.week_end),
+    Number(row.order_count),
+    Number(row.amended_count),
+    Number(row.total_ex_gst),
+    Number(row.gst),
+    Number(row.total_inc_gst),
+    row.gst_treatment ? String(row.gst_treatment) : '',
+    row.environment ? String(row.environment) : '',
+    row.fetched_at ? String(row.fetched_at) : extractedAt,
+    source,
+    'present'
+  ];
+}
+
+/**
+ * Map a pull metadata object to the ShopSpendPulls column order.
+ * @returns {Array} [fetched_at, environment, from_week, to_week, matched, returned, truncated, warnings_count, warnings, unpriced_sku_count, unpriced_skus, amended_count, possible_duplicate_shop_names, empty_range_with_invalid_labels, invalid_week_labels, gst_treatment, diverges_from_live_pricing, matches_live_pricing, total_orders_scanned, absent_shop_ids, diagnostics_json]
+ */
+function normalizePullMetadataRow_(pull) {
+  return [
+    String(pull.fetched_at),
+    String(pull.environment),
+    String(pull.from_week),
+    String(pull.to_week),
+    Number(pull.matched),
+    Number(pull.returned),
+    pull.truncated,
+    Number(pull.warnings_count),
+    String(pull.warnings),
+    Number(pull.unpriced_sku_count),
+    String(pull.unpriced_skus),
+    Number(pull.amended_count),
+    String(pull.possible_duplicate_shop_names),
+    pull.empty_range_with_invalid_labels,
+    String(pull.invalid_week_labels),
+    String(pull.gst_treatment),
+    pull.diverges_from_live_pricing,
+    pull.matches_live_pricing,
+    Number(pull.total_orders_scanned),
+    String(pull.absent_shop_ids),
+    String(pull.diagnostics_json)
+  ];
+}
+
 /* ------------------------------------------------------------------ *
  * Ingest + dedup
  * ------------------------------------------------------------------ */
@@ -320,6 +386,33 @@ function ingestRevenueRows(source, rows, extractedAt, sheet) {
   }
   // amountCol=4 (amount), stampCol=7 (extracted_at)
   return upsertRows_(sheet, normalizedRows, REVENUE_KEY_COLS, 4, 7);
+}
+
+/**
+ * Normalize + upsert a batch of ShopSpend rows into the ShopSpend tab.
+ * If body.pull is present, also append one metadata row to ShopSpendPulls.
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
+ */
+function ingestShopSpendRows_(ss, body) {
+  var rows = body.rows;
+  var source = body.source;
+  var extractedAt = body.extracted_at;
+
+  var normalizedRows = [];
+  for (var i = 0; i < rows.length; i++) {
+    normalizedRows.push(normalizeShopSpendRow(rows[i], source, extractedAt));
+  }
+
+  var dataSheet = ensureSheet(ss, SHOPSPEND_TAB, SHOPSPEND_HEADERS);
+  var res = upsertRows_(dataSheet, normalizedRows, SHOPSPEND_KEY_COLS, 6, 11);
+
+  if (body.pull) {
+    var pullsSheet = ensureSheet(ss, SHOPSPEND_PULLS_TAB, SHOPSPEND_PULLS_HEADERS);
+    var pullRow = normalizePullMetadataRow_(body.pull);
+    appendNewRows_(pullsSheet, [pullRow]);
+  }
+
+  return res;
 }
 
 /**
