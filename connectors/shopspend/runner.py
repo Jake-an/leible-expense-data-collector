@@ -123,7 +123,9 @@ def _build_pull(response, from_week: str, to_week: str, environment: str) -> dic
 
 
 def _print_dry_run_summary(response, from_week: str, to_week: str) -> None:
-    print(f"[shopspend] dry-run {from_week}..{to_week}: {len(response.rows)} row(s), writes nothing")
+    print(
+        f"[shopspend] dry-run {from_week}..{to_week}: {len(response.rows)} row(s), writes nothing"
+    )
 
     diag = response.diagnostics
     if diag:
@@ -152,9 +154,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backfill", action="store_true", help=f"the last {_BACKFILL_WEEKS} closed weeks"
     )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="fetch and print, but write nothing"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="fetch and print, but write nothing")
     return parser
 
 
