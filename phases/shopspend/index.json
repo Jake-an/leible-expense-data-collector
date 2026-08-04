@@ -129,7 +129,7 @@
     {
       "step": 3,
       "name": "shopspend-ingest-change-detection",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -140,8 +140,14 @@
       ],
       "started_at": "2026-08-04T12:20:21+0900",
       "completed_at": "2026-08-04T03:32:52.365Z",
-      "summary": "Implemented append-only snapshot store with change detection, dedup, tombstones, and block writes. All 605 tests pass.",
+      "summary": "Implemented append-only snapshot store with change detection, dedup, tombstones, and block writes. All 605 tests pass. (Re-recorded after a concurrent backup commit clobbered this step's completed status back to pending — see git log e4f6fca/958b480/8ad3c1d.)",
       "tdd_evidence": {
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "605 passed, 0 failed\n",
+          "at": "2026-08-04T13:45:00+1000"
+        },
         "red": {
           "command": "node connectors/gas/test_code.js",
           "exit_code": 1,
@@ -153,7 +159,7 @@
           "at": "2026-08-04T12:33:44+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done"
     },
     {
       "step": 4,
