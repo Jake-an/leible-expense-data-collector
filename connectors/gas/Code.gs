@@ -164,7 +164,8 @@ function doPost(e) {
 
     // Lock-timeout must be explicit, not silent — a connector POST arriving
     // while weeklySummarize holds the lock past its own timeout must not
-    // vanish. The Playwright BaseConnector.post retries once after 60s.
+    // vanish. The Playwright BaseConnector.post does NOT retry this; the
+    // shopSpend poster (connectors/shopspend/ingest.py) retries once after 60s.
     if (res === LOCK_TIMEOUT_) {
       return jsonOut_({ result: 'error', code: 'LOCKED', retryable: true });
     }

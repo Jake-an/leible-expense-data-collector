@@ -219,7 +219,7 @@
     {
       "step": 5,
       "name": "shopspend-runner-and-bridge",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -230,6 +230,8 @@
         "ingest-contract.md"
       ],
       "started_at": "2026-08-04T14:31:49+0900",
+      "completed_at": "2026-08-04T15:45:00+0900",
+      "summary": "Implemented ingest.py's post_pull (kind:'shopspend', chunked, synthetic date=week_start, pulls row last as commit marker, LOCKED retried once after 60s) and runner.py's CLI (week resolution, map_api_row, truncate_diagnostics_json, --dry-run); corrected the two stale LOCKED-retry docs. See phases/shopspend/step5-report.md for the one untested gap (--backfill's coverage source).",
       "tdd_evidence": {
         "red": {
           "command": "python -m pytest connectors/shopspend -q",
@@ -240,9 +242,15 @@
             "reason": "All 26 test failures are AttributeError for missing implementation symbols (truncate_diagnostics_json, main, etc. in ingest.py and runner.py). Both modules contain only docstrings — no implementation. Tests are well-formed (27 pass), proving the test infrastructure and syntax are correct. Failures are legitimate: implementation is missing, not test code broken."
           },
           "at": "2026-08-04T14:39:48+0900"
+        },
+        "green": {
+          "command": "python -m pytest connectors/shopspend -q",
+          "exit_code": 0,
+          "output_tail": ".....................................................                    [100%]\n53 passed in 0.44s\n",
+          "at": "2026-08-04T15:44:12+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done"
     },
     {
       "step": 6,

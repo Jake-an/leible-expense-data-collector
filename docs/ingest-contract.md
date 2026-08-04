@@ -82,11 +82,14 @@ stamped:
 { "result": "error", "code": "LOCKED", "retryable": true }
 ```
 
-The app should retry once after ~60s on `code: 'LOCKED'`, matching the
-Playwright `BaseConnector.post` convention already used by every other
-connector. Any other `result: 'error'` (a validation failure) should NOT be
-retried blindly — the payload itself is malformed and will fail again
-identically.
+The app should retry once after ~60s on `code: 'LOCKED'`. Note this is NOT
+the Playwright `BaseConnector.post` convention — that method sends no `kind`
+and does not retry at all; the shopSpend poster
+(`connectors/shopspend/ingest.py`) is the one connector in this repo that
+implements the LOCKED retry, and any new connector should follow its
+example rather than `BaseConnector.post`. Any other `result: 'error'` (a
+validation failure) should NOT be retried blindly — the payload itself is
+malformed and will fail again identically.
 
 ## Field rules
 
