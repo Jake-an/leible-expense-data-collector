@@ -1,0 +1,12 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/shopspend/runner.py",
+      "line": 46,
+      "summary": "Parameter name `pull` is misleading—function now called with minimal dict before _build_pull, not after",
+      "suggestion": "Rename parameter from `pull: dict` to `week_range: dict` or `coordinates: dict`, and update docstring to reflect that this is called before _build_pull. The docstring's reference to '_build_pull degrades those when paging is absent' no longer applies since `pull` is no longer the result of _build_pull."
+    }
+  ]
+}

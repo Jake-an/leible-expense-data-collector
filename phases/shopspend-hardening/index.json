@@ -174,7 +174,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-05T09:49:42+0900"
+      "completed_at": "2026-08-05T09:49:42+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 1,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend-hardening/step3-review.json",
+        "checked_at": "2026-08-05T09:52:32+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 4,
@@ -187,7 +197,8 @@
       ],
       "docs": [
         "schema.md"
-      ]
+      ],
+      "started_at": "2026-08-05T09:52:32+0900"
     },
     {
       "step": 5,
