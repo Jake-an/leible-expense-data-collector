@@ -136,6 +136,14 @@ class ShopSpendClient:
             matched = paging.matched if paging else len(rows)
             if offset + returned >= matched:
                 break
+            if returned == 0:
+                raise ShopSpendError(
+                    code="NO_PROGRESS",
+                    detail=(
+                        f"no rows returned at offset={offset} with matched={matched} "
+                        "— pagination cannot advance"
+                    ),
+                )
             offset += returned
 
         return ShopSpendResponse(
