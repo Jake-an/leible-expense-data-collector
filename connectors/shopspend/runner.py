@@ -96,6 +96,10 @@ def compute_weeks_complete(
         return [], []
 
     if paging.truncated:
+        print(
+            "[shopspend] WARNING: response paging truncated — zero weeks declared",
+            file=sys.stderr,
+        )
         return [], []
 
     if len(response.rows) < paging.matched:

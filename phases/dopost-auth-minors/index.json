@@ -95,7 +95,8 @@
     {
       "step": 2,
       "name": "truncated-warning",
-      "status": "pending",
+      "status": "completed",
+      "summary": "paging.truncated branch in compute_weeks_complete now prints the same stderr WARNING format as its five sibling zero-declare branches; 126/126 tests pass.",
       "tdd": true,
       "test_cmd": "pytest connectors/shopspend -q",
       "covers": [],
@@ -111,9 +112,16 @@
             "reason": "Test correctly detects missing warning emission. When response.truncated=True, compute_weeks_complete should print a warning to stderr, but currently does not. Implementation incomplete — test is well-formed and 125 others pass."
           },
           "at": "2026-08-05T14:36:53+0900"
+        },
+        "green": {
+          "command": "pytest connectors/shopspend -q",
+          "exit_code": 0,
+          "output_tail": "........................................................................ [ 57%]\n......................................................                   [100%]\n126 passed in 1.79s\n",
+          "at": "2026-08-05T15:40:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T15:40:00+0900"
     },
     {
       "step": 3,
