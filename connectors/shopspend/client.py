@@ -132,6 +132,12 @@ class ShopSpendClient:
                 schema_version = body.get("schemaVersion")
 
             paging = meta.paging
+            # `truncated` must be an OR across every page: response_meta is
+            # frozen to the FIRST page, so a pull the API flags as truncated only
+            # on a later page would otherwise pass the completeness gate and be
+            # declared complete.
+            if paging and paging.truncated and response_meta and response_meta.paging:
+                response_meta.paging.truncated = True
             returned = paging.returned if paging else len(rows)
             matched = paging.matched if paging else len(rows)
             if offset + returned >= matched:

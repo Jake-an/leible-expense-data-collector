@@ -1061,3 +1061,42 @@ def test_fatal_non_string_detail_does_not_crash_redaction(monkeypatch, fake_slee
     assert exc_info.value.code == "UNAUTHORIZED"
     assert PROD_TOKEN not in str(exc_info.value)
     assert PROD_TOKEN not in str(exc_info.value.detail or "")
+
+
+def test_truncated_is_ored_across_all_pages(monkeypatch, fake_sleep):
+    """Review round-3 finding: response_meta is frozen to the FIRST page, so a
+    pull the API flags as truncated only on a later page passed the completeness
+    gate and was declared complete."""
+    page1 = _FakeResponse(
+        json_body={
+            "ok": True,
+            "rows": [{"shopId": "s1", "weekLabel": "2026-W31", "totalExGst": 1.0}],
+            "meta": {
+                "environment": "PROD",
+                "paging": {
+                    "limit": 1,
+                    "offset": 0,
+                    "matched": 2,
+                    "returned": 1,
+                    "truncated": False,
+                },
+            },
+            "diagnostics": {"totalOrdersScanned": 5},
+        }
+    )
+    page2 = _FakeResponse(
+        json_body={
+            "ok": True,
+            "rows": [{"shopId": "s2", "weekLabel": "2026-W31", "totalExGst": 2.0}],
+            "meta": {
+                "environment": "PROD",
+                "paging": {"limit": 1, "offset": 1, "matched": 2, "returned": 1, "truncated": True},
+            },
+            "diagnostics": {"totalOrdersScanned": 5},
+        }
+    )
+    monkeypatch.setattr(requests, "get", _FakeGet([page1, page2]))
+
+    resp = _client().fetch()
+
+    assert resp.meta.paging.truncated is True, "truncation on a later page must not be lost"

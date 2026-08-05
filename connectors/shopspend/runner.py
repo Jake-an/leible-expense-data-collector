@@ -58,7 +58,7 @@ def iso_week_span(from_week: str, to_week: str) -> list[str]:
 
 
 def compute_weeks_complete(
-    response, pull: dict, mapped_rows: list[dict]
+    response, pull: dict, mapped_rows: list[dict], requested_weeks: list[str] | None = None
 ) -> tuple[list[str], list[str]]:
     """Completeness gate: which weeks passed the fetch trust check, and which spanned
     weeks returned no rows. Returns (weeks_complete, weeks_verified_empty).
@@ -66,7 +66,16 @@ def compute_weeks_complete(
     Reads response.meta.paging directly, never pull["matched"] or pull["truncated"],
     because _build_pull degrades those when paging is absent.
     """
-    span_weeks = set(iso_week_span(pull["from_week"], pull["to_week"]))
+    # `requested_weeks` is what the pull ACTUALLY asked for. --backfill narrows
+    # to the missing weeks and then collapses them to a contiguous span for the
+    # API call, so re-expanding that span here would declare — and, finding them
+    # empty, tombstone — weeks that were deliberately not refreshed because they
+    # were already covered. Only fall back to the span when no explicit request
+    # list was supplied.
+    if requested_weeks is not None:
+        span_weeks = set(requested_weeks)
+    else:
+        span_weeks = set(iso_week_span(pull["from_week"], pull["to_week"]))
     returned_weeks = {row["week_label"] for row in mapped_rows}
 
     meta = response.meta
@@ -267,9 +276,12 @@ def _week_label(value: str) -> str:
     AFTER a successful fetch and dies with an unhandled ValueError traceback,
     instead of the clean '[shopspend] ...' failure every other path produces.
     """
-    if not re.fullmatch(r"\d{4}-W\d{2}", value or ""):
+    # Week number bounded to 01-53: a bare \d{2} accepted 2026-W00 / 2026-W99,
+    # which survive argparse, flow into iso_week_span, and get declared complete
+    # (and, having no rows, verified-empty).
+    if not re.fullmatch(r"\d{4}-W(0[1-9]|[1-4]\d|5[0-3])", value or ""):
         raise argparse.ArgumentTypeError(
-            f"malformed ISO week label {value!r} — expected e.g. 2026-W31"
+            f"malformed ISO week label {value!r} — expected e.g. 2026-W31 (week 01-53)"
         )
     return value
 
@@ -289,6 +301,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     today = date.today()
+
+    # None => "the contiguous span IS the request" (--week / --from-week..--to-week).
+    # --backfill overrides it with the real, possibly non-adjacent, week list.
+    requested_weeks = None
 
     if args.week:
         from_week = to_week = args.week
@@ -311,6 +327,11 @@ def main(argv: list[str] | None = None) -> int:
             print("[shopspend] backfill: all candidate weeks already covered, nothing to pull")
             return 0
 
+        # The span is only how we ASK the API (one contiguous call); the weeks we
+        # actually requested may be non-adjacent. Keep the real list so the
+        # completeness gate never declares — and tombstone — a covered week we
+        # deliberately skipped.
+        requested_weeks = list(weeks)
         from_week, to_week = weeks[0], weeks[-1]
     else:
         from_week = to_week = default_week_label(today)
@@ -341,16 +362,24 @@ def main(argv: list[str] | None = None) -> int:
     mapped_rows.sort(key=lambda r: client.parse_week_label(r["week_label"]))
 
     weeks_complete, weeks_verified_empty = compute_weeks_complete(
-        response, {"from_week": from_week, "to_week": to_week}, mapped_rows
+        response,
+        {"from_week": from_week, "to_week": to_week},
+        mapped_rows,
+        requested_weeks=requested_weeks,
     )
+
+    # Record what will ACTUALLY be declared, not what the gate proposed: a split
+    # week is posted undeclared, and diagnostics_json.harness exists precisely to
+    # make that case visible in the Sheet rather than claim the opposite.
+    actually_declared = ingest.declared_weeks(mapped_rows, weeks_complete)
 
     pull = _build_pull(
         response,
         from_week,
         to_week,
         environment,
-        weeks_complete=weeks_complete,
-        weeks_verified_empty=weeks_verified_empty,
+        weeks_complete=actually_declared,
+        weeks_verified_empty=[w for w in weeks_verified_empty if w in set(actually_declared)],
     )
 
     try:

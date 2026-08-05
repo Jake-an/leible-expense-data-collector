@@ -105,6 +105,24 @@ reports per-shop, per-ISO-week order dollars. This is not the `Suppliers`/`Sales
 touched by any of this. No report reads these tabs except `ShopSpend Report`
 (built from `ShopSpend` + `ShopSpendPulls`, not from any other tab).
 
+### `doPost` request fields for `kind: 'shopspend'`
+
+Two request-only fields govern absence detection. They are the contract of
+record for the destructive path — `docs/api.md` cross-references them here.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `weeks_complete` | array of `YYYY-Www` | no | Weeks this request carries **in full**. GAS tombstones missing shop-weeks **only** for weeks named here. Absent ⇒ tombstone nothing (a `Logger.log` warning records the degraded mode). A week split across requests is named in **no** request's `weeks_complete`, so it degrades to a stale `present` row rather than a wrong `absent` one. |
+| `weeks_verified_empty` | array of `YYYY-Www` | no | Weeks the caller declares genuinely empty. Every entry **must** also appear in this request's `weeks_complete`, and **must not** have any row in this request's `rows` — `validateIngest_` rejects the payload otherwise. Standing the blast-radius breaker down for a legitimate 100% absence is its only purpose. |
+
+Both are validated element-by-element against `^\d{4}-W\d{2}$`. Each request is
+validated **alone**, so `weeks_verified_empty` must be scoped to the chunk that
+declares it — attaching the full list to every chunk aborts a multi-chunk pull.
+
+What backs `weeks_verified_empty` is a whole-fetch completeness gate plus that
+week returning zero rows — **not** a per-week positive probe. See `docs/api.md`
+for the gate's conditions and the mass-absence confirmation procedure.
+
 ### Tab `ShopSpend` (append-only snapshot store)
 
 | Column | Type | Required | Description |

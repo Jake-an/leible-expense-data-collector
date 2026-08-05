@@ -85,6 +85,21 @@ def _send(url: str, payload: dict) -> dict:
     raise IngestFailed(f"shopspend ingest failed: {message}", code=code)
 
 
+def declared_weeks(rows: list[dict], weeks_complete: list[str], chunk_size: int = 200) -> list[str]:
+    """The weeks post_pull will ACTUALLY declare to GAS.
+
+    A week whose row count exceeds chunk_size has to be split across requests,
+    and a split week is posted with no `weeks_complete` at all (it cannot be
+    declared without re-opening the C1 bug class). Recording the gate's full
+    list instead would make diagnostics_json.harness claim a week was declared
+    in precisely the case that key exists to expose.
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["week_label"]] = counts.get(row["week_label"], 0) + 1
+    return [w for w in weeks_complete if counts.get(w, 0) <= chunk_size]
+
+
 def post_pull(
     rows: list[dict],
     pull: dict,

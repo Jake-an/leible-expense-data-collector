@@ -675,3 +675,16 @@ def test_post_pull_does_not_mutate_the_caller_rows(monkeypatch):
             posted[row["shop_id"]] += 1
     assert all(count == 1 for count in posted.values())
     assert len(posted) == 9
+
+
+def test_declared_weeks_excludes_split_weeks():
+    """Review round-3 finding: _build_pull recorded the gate's FULL weeks_complete
+    into diagnostics_json.harness, but post_pull strips split weeks before
+    posting — so the Sheet claimed a week WAS declared when it never was, in
+    exactly the case the harness key exists to make visible."""
+    rows = _week_rows("2026-W28", "2026-07-06", 2, start_i=0) + _week_rows(
+        "2026-W29", "2026-07-13", 5, start_i=100
+    )
+    declared = ingest.declared_weeks(rows, ["2026-W28", "2026-W29"], chunk_size=3)
+
+    assert declared == ["2026-W28"], "a split week is posted undeclared, so it is not declared"

@@ -815,3 +815,38 @@ def test_reversed_span_warns_instead_of_silently_declaring_nothing(capsys):
     assert runner.iso_week_span("2026-W31", "2026-W28") == []
     captured = capsys.readouterr()
     assert "WARNING" in captured.out + captured.err
+
+
+def test_backfill_with_a_gap_never_declares_unrequested_weeks(capsys):
+    """Review round-3 finding: --backfill narrows to MISSING weeks, then collapses
+    them to a contiguous span. compute_weeks_complete re-expanded that span and
+    declared every week in it — including weeks deliberately NOT refreshed
+    because they were already covered. Those weeks return no rows, so they became
+    weeks_verified_empty and every present shop-week in them was tombstoned to
+    zero, breaker-exempt."""
+    requested = ["2026-W28", "2026-W31"]  # non-adjacent: W29/W30 already covered
+    rows = [_shop_row("2026-W28"), _shop_row("2026-W31")]
+    response = _gate_response(rows, matched=2, total_orders_scanned=10)
+    pull = {"from_week": "2026-W28", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows), requested_weeks=requested
+    )
+
+    assert weeks_complete == requested
+    for week in ("2026-W29", "2026-W30"):
+        assert week not in weeks_complete, f"{week} was never requested"
+        assert week not in weeks_verified_empty, f"{week} must not be tombstoned"
+    assert weeks_verified_empty == []
+
+
+def test_week_label_rejects_out_of_range_week_numbers():
+    """Review round-3 finding: the validator's own docstring says it rejects
+    malformed labels, but a bare two-digit week accepted 2026-W00 and 2026-W99."""
+    import argparse
+
+    for bad in ("2026-W00", "2026-W99", "2026-W54"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            runner._week_label(bad)
+    for good in ("2026-W01", "2026-W31", "2026-W53"):
+        assert runner._week_label(good) == good

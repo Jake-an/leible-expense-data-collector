@@ -18,6 +18,34 @@
 
 ## Active
 
+### 🔒 DECISION NEEDED — `doPost` is unauthenticated and now carries a destructive field
+Raised by the `shopspend-hardening` phase-end review (round 3), **not fixed in that phase** —
+it changes the ingest contract for every connector, so it is Jake's call.
+
+`appsscript.json` is `access: ANYONE_ANONYMOUS` / `executeAs: USER_DEPLOYING`. `doGet` is
+token-gated (`checkReadToken_`, `Code.gs:1471`); **`doPost` has no equivalent check.** Before this
+phase the worst an anonymous POST could do was append rows — self-correcting on the next pull.
+The phase added `weeks_verified_empty`, whose entire purpose is to *bypass* the blast-radius
+breaker, so a single anonymous POST now zeroes every present shop-week in a named week:
+
+```
+{"kind":"shopspend","rows":[],"weeks_complete":["2026-W31"],"weeks_verified_empty":["2026-W31"]}
+```
+
+`docs/api.md` publishes that exact curl as the mass-absence remediation procedure.
+
+Options, cheapest first:
+- **(a) Gate only `weeks_verified_empty` on a shared token.** Closes the new destructive surface;
+  no existing connector changes, since none sends the field. Needs one GAS script property + the
+  same secret in `.env`. ← recommended
+- **(b) Gate all of `doPost` on a token.** Closes the whole hole, but every connector
+  (suppliers, revenue, Square, shopSpend) must send it in lockstep or ingest breaks.
+- **(c) Accept the risk** — the `/exec` URL is unpublished and the blast radius self-heals on the
+  next good pull. Record the decision here so it is deliberate rather than forgotten.
+
+Blocks nothing except the phase-end gate's `approve`.
+
+
 ### Roastery department — ✅ MIGRATED + DEPLOYED 2026-08-03 (version 23)
 Branch `feat-roastery-department`. Phase 1 migration runbook executed end-to-end against the
 live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unchanged).
