@@ -308,7 +308,7 @@ function shopSpendReportBlock_(snapshotRows, latestPullRow) {
   var pullUnpricedSkuCount = Number(pull[9]) || 0; // unpriced_sku_count
   var pullEmptyRangeInvalid = pull[13] === true; // empty_range_with_invalid_labels
   var pullGstTreatment = pull[15]; // gst_treatment
-  var pullDivergesFromLivePricing = pull[16] === true; // diverges_from_live_pricing
+  var pullDivergesRaw = pull[16]; // diverges_from_live_pricing: true/false/''/undefined
   var pullFetchedAt = pull[0]; // fetched_at
   var pullWarnings = safeJsonArray_(pull[8]); // warnings
   var pullDuplicateShopNames = safeJsonArray_(pull[12]); // possible_duplicate_shop_names
@@ -356,8 +356,11 @@ function shopSpendReportBlock_(snapshotRows, latestPullRow) {
     ' (gst: 0 is normal — many coffee SKUs are GST-free).']);
   // "Drift", never "stale pricing" — divergesFromLivePricing counts ordinary
   // post-invoice price changes too, so it is a drift signal, not provenance.
-  banners.push(['Pricing drift vs current live pricing: ' +
-    (pullDivergesFromLivePricing ? 'diverges' : 'matches') + '.']);
+  // '' or undefined (the normal case since step 3 — the API exposes no
+  // pricing-divergence signal) renders "not assessed", never a verdict.
+  var pricingDriftText = pullDivergesRaw === true ? 'diverges' :
+    (pullDivergesRaw === false ? 'matches' : 'not assessed');
+  banners.push(['Pricing drift vs current live pricing: ' + pricingDriftText + '.']);
   banners.push(['Confirmed orders only; excludes Shopify/online shops. Last fetched: ' + pullFetchedAt]);
 
   var header = ['Shop'].concat(weeks);

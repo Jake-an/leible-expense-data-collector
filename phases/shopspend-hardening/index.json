@@ -189,7 +189,8 @@
     {
       "step": 4,
       "name": "report-unassessed-pricing",
-      "status": "pending",
+      "status": "completed",
+      "summary": "shopSpendReportBlock_'s pricing banner now renders 'not assessed' for '' or undefined diverges_from_live_pricing (the honest step-3 default), while legacy true/false rows still render diverges/matches — was 'matches', corrected to remove a false assurance; 801/0 passing.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -209,9 +210,16 @@
             "reason": "Test infrastructure is healthy (798 passed). The 3 failures are implementation-level: shopSpend Report rendering for 'not assessed' status on unpriced pulls (default case, empty string, and undefined/legacy short row). Test file loads, imports work, framework executes normally — failures are expected incomplete implementation, not broken test code."
           },
           "at": "2026-08-05T10:02:29+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "801 passed, 0 failed\n",
+          "at": "2026-08-05T10:15:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T10:15:00+0900"
     },
     {
       "step": 5,
