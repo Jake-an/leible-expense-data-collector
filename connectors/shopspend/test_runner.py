@@ -778,3 +778,40 @@ def test_pull_returned_counts_all_pages_not_just_the_first():
 
     assert pull["returned"] == 7, "returned must count every page, not just the first"
     assert pull["matched"] == 7
+
+
+def test_accept_path_warns_when_weeks_will_be_tombstoned(capsys):
+    """Review round-2 finding [0]: the accept path printed nothing, so a pull
+    that declares 3 weeks verified-empty — authorising GAS to zero every present
+    shop-week in them — produced no operator-visible signal at all."""
+    rows = [_shop_row("2026-W28")]
+    response = _gate_response(rows, matched=1, total_orders_scanned=10)
+    pull = {"from_week": "2026-W28", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
+
+    assert weeks_verified_empty == ["2026-W29", "2026-W30", "2026-W31"]
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "WARNING" in combined
+    for week in ("2026-W29", "2026-W30", "2026-W31"):
+        assert week in combined, f"{week} about to be tombstoned but never named"
+
+
+def test_malformed_week_label_fails_cleanly_not_with_a_traceback():
+    """Review round-2 finding [4]: argparse applied no format validation, so a
+    malformed label reached iso_week_span and died with an unhandled ValueError
+    instead of the clean '[shopspend] ...' + return 1 every other path uses."""
+    with pytest.raises(SystemExit) as exc_info:
+        runner.main(["--week", "not-a-week"])
+    assert exc_info.value.code != 0
+
+
+def test_reversed_span_warns_instead_of_silently_declaring_nothing(capsys):
+    """Review round-2 finding [4]: from_week > to_week yields an empty span,
+    which silently disables tombstoning with no warning."""
+    assert runner.iso_week_span("2026-W31", "2026-W28") == []
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out + captured.err

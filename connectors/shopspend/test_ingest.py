@@ -616,3 +616,62 @@ def test_rows_for_undeclared_weeks_are_still_posted(monkeypatch):
             assert not req.get("weeks_complete"), (
                 "an undeclared week's rows must travel in a request that declares nothing"
             )
+
+
+def test_tombstones_written_is_reported_not_silently_discarded(monkeypatch, capsys):
+    """Review round-2 finding [0]: GAS returns tombstonesWritten and nothing read
+    it, so the tombstone WRITE path was invisible while only suppression warned.
+    A pull that zeroes out shop-weeks must say so."""
+    rows = _week_rows("2026-W28", "2026-07-06", 2, start_i=0)
+    pull = _pull(from_week="2026-W28", to_week="2026-W28")
+
+    resp = _FakeResp(
+        {
+            "result": "ok",
+            "rowsAdded": 2,
+            "rowsUpdated": 0,
+            "duplicatesSkipped": 0,
+            "tombstonesWritten": 7,
+            "tombstonesSkipped": [],
+        }
+    )
+    fake_post = _FakePost([resp, _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(rows, pull, exec_url=PROD_URL, weeks_complete=["2026-W28"])
+
+    out = capsys.readouterr()
+    assert "7" in (out.out + out.err), "tombstonesWritten must be surfaced to the operator"
+
+
+def test_post_pull_does_not_mutate_the_caller_rows(monkeypatch):
+    """Review round-2 finding [2]: the overflow branch bound `chunk` to the live
+    rows_by_week[week] list, so the next chunk.extend() mutated that entry in
+    place. Harmless only by accident today."""
+    rows = (
+        _week_rows("2026-W01", "2026-01-05", 3, start_i=0)
+        + _week_rows("2026-W02", "2026-01-12", 2, start_i=100)
+        + _week_rows("2026-W03", "2026-01-19", 4, start_i=200)
+    )
+    before = [dict(r) for r in rows]
+    pull = _pull(from_week="2026-W01", to_week="2026-W03")
+
+    fake_post = _FakePost([_ok_resp() for _ in range(20)])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        chunk_size=5,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W01", "2026-W02", "2026-W03"],
+    )
+
+    assert rows == before, "post_pull must not mutate the caller's row list"
+    # Every row still posted exactly once despite the packing boundaries.
+    posted = Counter()
+    for req in _data_requests(fake_post):
+        for row in req["rows"]:
+            posted[row["shop_id"]] += 1
+    assert all(count == 1 for count in posted.values())
+    assert len(posted) == 9

@@ -174,6 +174,15 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull,
 
     if (skip) {
       tombstonesSkipped.push({ week: candWeek, wouldHaveWritten: wouldHaveWritten, present: presentCount });
+      // Durable server-side record. The skip is STICKY — it recomputes from the
+      // same sheet state every pull, so it stays suppressed until a human
+      // confirms it (docs/api.md). The wire field alone is not enough: the
+      // weekly task runs unattended and its stderr goes to a gitignored log,
+      // and the watchdog still reports healthy because a ShopSpendPulls row
+      // was written. Without this line nobody is ever told.
+      Logger.log('ingestShopSpendRows: tombstoning SKIPPED for week ' + candWeek +
+        ' — would have written ' + wouldHaveWritten + ' of ' + presentCount +
+        ' present shop-week(s); suppressed until a human confirms (source=' + source + ')');
       continue;
     }
 

@@ -157,14 +157,31 @@ suppressed tombstone must stay suppressed **until a human confirms it**.
 **Confirming a genuine mass absence.** If `tombstonesSkipped` reports a week
 that really did lose more than half its shops (e.g. a supplier closure, an
 upstream outage that only partially recovered), do not try to force it
-through the breaker. Instead, in the Apps Script editor, call
-`ingestShopSpendRows` directly (or write the rows via the Sheet UI) with a
-one-off payload naming exactly the affected shop-weeks and
-`weeks_verified_empty` including the affected week — this is the same
-exemption path a genuinely empty week uses, applied by Jake's deliberate
-confirmation rather than the client's word alone. Do not edit `ShopSpend`
-rows in place; every tombstone, confirmed or not, is a new appended row (see
-`docs/schema.md`'s append-only rule).
+through the breaker. Send **one deliberate `doPost` request** naming exactly
+the affected week in both `weeks_complete` and `weeks_verified_empty`, with
+`rows: []`:
+
+```bash
+curl -sL "$GAS_EXEC_URL" \
+  -d '{"source":"shopspend","kind":"shopspend","rows":[],
+       "extracted_at":"2026-08-05T09:00:00+10:00",
+       "weeks_complete":["2026-W31"],
+       "weeks_verified_empty":["2026-W31"]}'
+```
+
+This is the same exemption path a genuinely empty week uses, applied by Jake's
+deliberate confirmation rather than the client's word alone.
+
+**Do not call `ingestShopSpendRows` from the Apps Script editor, and do not
+write the rows via the Sheet UI.** Both bypass `validateIngest_` — so a
+malformed `weeks_verified_empty` is no longer rejected, defeating the very
+guard that makes the exemption safe — and both bypass `withScriptLock_`, so an
+append can interleave with a concurrent `doPost` or `weeklySummarize` on an
+append-only sheet. CLAUDE.md's CRITICAL rule stands here too: all ingest flows
+through `doPost` → `validateIngest_`, including manual remediation.
+
+Do not edit `ShopSpend` rows in place; every tombstone, confirmed or not, is a
+new appended row (see `docs/schema.md`'s append-only rule).
 
 ## Summary tab schema
 

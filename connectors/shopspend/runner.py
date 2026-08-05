@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,15 @@ def iso_week_span(from_week: str, to_week: str) -> list[str]:
     """All ISO weeks in ascending order from from_week to to_week (inclusive)."""
     from_y, from_w = map(int, from_week.split("-W"))
     to_y, to_w = map(int, to_week.split("-W"))
+
+    if (from_y, from_w) > (to_y, to_w):
+        # An empty span silently disables tombstoning for the whole pull.
+        print(
+            f"[shopspend] WARNING: reversed week range {from_week} > {to_week} — "
+            "empty span, no weeks will be declared complete",
+            file=sys.stderr,
+        )
+        return []
 
     weeks = []
     y, w = from_y, from_w
@@ -101,6 +111,18 @@ def compute_weeks_complete(
 
     weeks_complete = sorted(span_weeks)
     weeks_verified_empty = sorted(span_weeks - returned_weeks)
+
+    # The accept path is the destructive one: every week named here is exempt
+    # from the blast-radius breaker, so GAS will tombstone each of its present
+    # shop-weeks to zero spend. Previously this produced no operator output at
+    # all — only the suppressed path warned.
+    if weeks_verified_empty:
+        print(
+            "[shopspend] WARNING: declaring "
+            f"{', '.join(weeks_verified_empty)} verified-empty — every present "
+            "shop-week in them will be tombstoned as absent",
+            file=sys.stderr,
+        )
 
     return weeks_complete, weeks_verified_empty
 
@@ -238,11 +260,25 @@ def _print_dry_run_summary(response, from_week: str, to_week: str) -> None:
         print("[shopspend] WARNING: response truncated by the API")
 
 
+def _week_label(value: str) -> str:
+    """argparse type for an ISO week label.
+
+    Without this, a malformed label reaches iso_week_span's `map(int, ...)` only
+    AFTER a successful fetch and dies with an unhandled ValueError traceback,
+    instead of the clean '[shopspend] ...' failure every other path produces.
+    """
+    if not re.fullmatch(r"\d{4}-W\d{2}", value or ""):
+        raise argparse.ArgumentTypeError(
+            f"malformed ISO week label {value!r} — expected e.g. 2026-W31"
+        )
+    return value
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pull shopSpend weekly figures into the hub")
-    parser.add_argument("--week", help="single ISO week label, e.g. 2026-W31")
-    parser.add_argument("--from-week", help="range start ISO week label")
-    parser.add_argument("--to-week", help="range end ISO week label")
+    parser.add_argument("--week", type=_week_label, help="single ISO week label, e.g. 2026-W31")
+    parser.add_argument("--from-week", type=_week_label, help="range start ISO week label")
+    parser.add_argument("--to-week", type=_week_label, help="range end ISO week label")
     parser.add_argument(
         "--backfill", action="store_true", help=f"the last {_BACKFILL_WEEKS} closed weeks"
     )

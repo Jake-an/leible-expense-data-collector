@@ -1,0 +1,59 @@
+{
+  "verdict": "revise",
+  "reviewed_range": "d63651d...HEAD",
+  "reviewer_note": "Round 2. HEAD (9e78046) already addressed the round-1 findings; all seven are verified fixed WITH tests (weeks_verified_empty chunk scoping, undeclared-week posting, iso_week_span real ISO-year length, str(detail) redaction, returned=len(all pages), the three missing gate warnings, root test_output.log removed + /*.log ignored). The issues below are new and independent of that round.",
+  "tests_run": {
+    "node connectors/gas/test_code.js": "801 passed, 0 failed",
+    "python -m pytest connectors/shopspend -q": "115 passed"
+  },
+  "tdd_audit": "All 7 steps are tdd:true, each with a test_cmd and both red+green tdd_evidence in phases/shopspend-hardening/index.json. No tdd:false scaffolding step exists, so no escape-hatch logic to audit. Business rules added this phase (completeness gate, week packing, blast-radius breaker, week-label validation, pricing tri-state) all carry direct tests.",
+  "issues": [
+    {
+      "severity": "important",
+      "file": "connectors/shopspend/ingest.py",
+      "line": 47,
+      "summary": "Orphaned response field + silent accept path: the tombstone WRITE path is completely invisible to the operator, while only the suppressed path warns. GAS returns tombstonesWritten (Code.gs:186, documented in docs/api.md's response table) and no code anywhere reads it — _warn_tombstones_skipped consumes only tombstonesSkipped. Meanwhile compute_weeks_complete (runner.py:102) prints nothing on the accept path. Failure scenario: the Monday --backfill task pulls a 4-week span, upstream returns rows for 1 week only, the gate passes, 3 weeks become breaker-exempt weeks_verified_empty, and every present shop-week across those 3 weeks is tombstoned to zero spend. Total operator output is 'posted 12 row(s) for 2026-W28..2026-W31' and exit 0. Fix: log tombstonesWritten from _warn_tombstones_skipped (rename accordingly) and warn on the accept path when weeks_verified_empty is non-empty, naming the weeks about to be tombstoned.",
+      "test_gap": "No test asserts any operator-visible output for a pull that writes tombstones; test_tombstones_skipped_response_prints_warning_and_does_not_raise (test_ingest.py:469) covers only the skip path."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/gas/shopspend.gs",
+      "line": 176,
+      "summary": "The sticky tombstone skip is durably recorded nowhere, despite docs/api.md stating it 'must stay suppressed until a human confirms it'. On skip, ingestShopSpendRows only pushes to the returned array — no Logger.log, no ShopSpendPulls column, no stalenessRaiseAlerts_. The sole consumer prints to stderr, and scripts/register_shopspend_task.ps1 runs the weekly task unattended with '>> logs\\shopspend.log 2>&1' into a gitignored file. post_pull still exits 0, and shopSpendWatchdogEvaluate_ counts the week as covered because a ShopSpendPulls row was written — so the watchdog reports healthy. Failure scenario: Monday 05:00 task, half a week's shops vanish from the API, the breaker correctly suppresses, one line lands in logs\\shopspend.log, nobody is told, and because the skip recomputes identically every pull it stays suppressed indefinitely while the Sheet silently keeps stale 'present' figures. Fix: Logger.log the skip in GAS and/or surface it through the existing staleness alert path, or record it in the ShopSpendPulls row (absent_shop_ids is now unused and free).",
+      "test_gap": "GAS tests assert tombstonesSkipped contents (test_code.js:3569, :3593) but nothing asserts the skip is persisted or alerted."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/shopspend/ingest.py",
+      "line": 172,
+      "summary": "List-aliasing trap in the week packer: on the overflow branch `chunk = week_rows` binds chunk to the live rows_by_week[week] list, so the next iteration's chunk.extend(...) mutates that dict entry in place. Harmless today only because the split_weeks/undeclared_weeks loop below never revisits a week that reached complete_weeks_only, and split_weeks was computed from len(rows_by_week[w]) before the mutation. Any future reuse of rows_by_week after packing (e.g. a per-week reconciliation count) would silently read a polluted list. Fix: `chunk = list(week_rows)`."
+    },
+    {
+      "severity": "minor",
+      "file": "docs/api.md",
+      "line": 158,
+      "summary": "The documented remediation for a genuine mass absence tells the operator to 'call ingestShopSpendRows directly (or write the rows via the Sheet UI)' from the Apps Script editor. That path bypasses both validateIngest_ (so a malformed weeks_verified_empty is no longer rejected — the very guard added in step 1) and withScriptLock_ (doPost:147 wraps every real ingest; a direct editor call takes no lock and can interleave appends with a concurrent doPost or weeklySummarize on an append-only sheet). It also sits awkwardly against CLAUDE.md's 'All ingest flows through doPost -> validateIngest_'. Fix: document the remediation as a one-off doPost request (curl with kind:'shopspend' + weeks_verified_empty), or add a small locked wrapper function for it."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/shopspend/runner.py",
+      "line": 32,
+      "summary": "iso_week_span parses with `map(int, from_week.split('-W'))` and argparse applies no format validation to --week / --from-week / --to-week. A malformed label that the upstream API happens to accept reaches compute_weeks_complete after a successful fetch and dies with an unhandled ValueError traceback (exit 1 via crash) instead of the clean '[shopspend] ...' + return 1 every other failure path uses. Also note a reversed range (from_week > to_week) returns [], which silently disables tombstoning with no warning. Fix: validate both labels against ^\\d{4}-W\\d{2}$ at argument-parse time and warn on an empty span."
+    }
+  ],
+  "checked_and_clean": [
+    "Two-runtime boundary (CLAUDE.md CRITICAL): connectors still only POST to doPost; every Sheet write, normalization and tombstone decision stays in GAS. No drift.",
+    "All ingest still flows doPost -> validateIngest_ -> ingestShopSpendRows; no tab written outside that path (the only exception is the docs-only advice flagged above).",
+    "No secrets, credentials or business data in the diff. _redact now covers the URL-encoded token form (quote(token, safe='')) as well as the raw token, and every error path (transport, non-JSON body, INTERNAL retry, fatal raise) redacts. register_shopspend_task.ps1 deliberately keeps tokens out of the Task Scheduler XML.",
+    "Boundary shapes: tombstonesWritten/tombstonesSkipped are emitted only for kind=='shopspend' and always populated by ingestShopSpendRows; ingest.py reads the same camelCase keys and tolerates their absence via .get(default). No naming drift, no ambiguous response shape.",
+    "weeks_complete/weeks_verified_empty round-trip: connector sends snake_case, validateIngest_ and doPost read the same snake_case keys, ingestShopSpendRows receives them as positional args 7/8. Shapes match.",
+    "ShopSpendPulls column order verified against SHOPSPEND_PULLS_HEADERS (21 wide); normalizePullMetadataRow_ passes diverges_from_live_pricing through UN-coerced, so the connector's '' survives to pull[16] and shopSpendReportBlock_:311 renders 'not assessed' rather than a false verdict. matches_live_pricing and absent_shop_ids have no reader.",
+    "Chunk/tombstone interaction: the packer never splits a declared week across requests, so each request's incomingKeys covers every row of every week it declares — a chunk can't tombstone a shop-week that a sibling chunk carries. Verified the else-branch is unreachable with an empty chunk, so zero-row weeks accumulated in chunk_weeks are never dropped. The final pull-marker payload carries no weeks_complete, so it cannot re-tombstone with rows:[].",
+    "Breaker arithmetic: candidates are a strict subset of present; floor 5 AND >half are both required; verifiedEmptySet is defensively re-cleared for any week that actually carries rows, independent of validateIngest_'s check.",
+    "iso_week_span verified empirically against a date.fromisocalendar walk across 52/53-week year boundaries (2025-W51..2026-W02, 2026-W51..2027-W02, 2020-W52..2021-W03) — all match. It also agrees with the GAS-side span parser shopSpendWeekSpan_, which walks Mondays, so coverage and declaration cannot drift.",
+    "Tombstone fetched_at correctly switched from normalizedRows[0][11] to the extractedAt parameter — the rows:[] pull no longer reads an undefined index.",
+    "ensureSheet's empty-headers guard is real, and the test_code.js mock now rejects getRange numRows/numCols < 1, so the previously-masked geometry class is genuinely covered.",
+    "Pagination guard: returned==0 with matched>0 raises NO_PROGRESS; the paging-None path still terminates via matched=len(rows).",
+    "The /*.log gitignore entry is correctly root-anchored — all 20 phases/**/step*-red|green.log TDD-evidence files remain tracked, and the previously-committed root test_output.log is gone from the index."
+  ]
+}

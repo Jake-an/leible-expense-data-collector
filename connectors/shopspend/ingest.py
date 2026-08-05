@@ -43,7 +43,17 @@ def _parse_response(resp) -> dict:
         raise IngestFailed(f"shopspend ingest: non-JSON response ({err})") from err
 
 
-def _warn_tombstones_skipped(body: dict) -> None:
+def _report_tombstones(body: dict) -> None:
+    # The WRITE path was previously invisible: GAS returns tombstonesWritten and
+    # nobody read it, so a pull that zeroed out shop-weeks looked identical to
+    # one that changed nothing. Suppression warned; the destructive path didn't.
+    written = body.get("tombstonesWritten")
+    if written:
+        print(
+            f"[shopspend] {written} shop-week(s) tombstoned as absent",
+            file=sys.stderr,
+        )
+
     for entry in body.get("tombstonesSkipped", []):
         week = entry.get("week")
         would_write = entry.get("wouldHaveWritten")
@@ -58,7 +68,7 @@ def _send(url: str, payload: dict) -> dict:
     resp = requests.post(url, json=payload, timeout=300)
     body = _parse_response(resp)
     if body.get("result") == "ok":
-        _warn_tombstones_skipped(body)
+        _report_tombstones(body)
         return body
 
     code = body.get("code")
@@ -67,7 +77,7 @@ def _send(url: str, payload: dict) -> dict:
         resp = requests.post(url, json=payload, timeout=300)
         body = _parse_response(resp)
         if body.get("result") == "ok":
-            _warn_tombstones_skipped(body)
+            _report_tombstones(body)
             return body
         code = body.get("code")
 
@@ -164,7 +174,7 @@ def post_pull(
             else:
                 if chunk:
                     _send_declared(chunk, chunk_weeks)
-                chunk = week_rows
+                chunk = list(week_rows)
                 chunk_weeks = [week]
 
         if chunk or chunk_weeks:

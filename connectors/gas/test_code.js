@@ -3575,6 +3575,24 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('unverified 100% with 5 present: all 5 shops remain present (suppressed, not written)',
     dataUnverified5.slice(1).every(function (r) { return r[13] === 'present'; }));
 
+  // --- Review finding [1]: the skip is STICKY and must be durably recorded --
+  // docs/api.md promises the suppression "stays suppressed until a human
+  // confirms it", but the only trace was the returned array -> stderr -> a
+  // gitignored log file. The watchdog still reports healthy because a
+  // ShopSpendPulls row was written. A Logger.log entry is the durable
+  // server-side record that survives the client not being watched.
+  freshSheets();
+  clearLoggedMessages();
+  var tabsSticky = ensureShopSpendTabs_(currentSS);
+  ingestShopSpendRows('shopspend', buildShops(5, '2026-W31', 'sticky'), 'T1', tabsSticky.data,
+    undefined, undefined, ['2026-W31']);
+  var resSticky = ingestShopSpendRows('shopspend', [], 'T2', tabsSticky.data,
+    undefined, undefined, ['2026-W31']);
+  eq('sticky skip: still suppressed', resSticky.tombstonesWritten, 0);
+  var stickyLogs = lastLoggedMessages().join('\n');
+  check('breaker skip is Logger.logged, not only returned on the wire',
+    stickyLogs.indexOf('2026-W31') !== -1 && stickyLogs.toLowerCase().indexOf('skip') !== -1);
+
   // --- Breaker boundary: exactly 50% still writes; 51% is skipped ---------
   freshSheets();
   var tabsHalf = ensureShopSpendTabs_(currentSS);
