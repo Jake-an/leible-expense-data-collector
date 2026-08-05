@@ -408,7 +408,12 @@ def _shop_row(week_label, shop_id="shop-1"):
 
 
 def _gate_response(
-    rows, matched, truncated=False, total_orders_scanned=None, empty_range_invalid=False, paging=True
+    rows,
+    matched,
+    truncated=False,
+    total_orders_scanned=None,
+    empty_range_invalid=False,
+    paging=True,
 ):
     if total_orders_scanned is None:
         total_orders_scanned = len(rows)
@@ -418,7 +423,9 @@ def _gate_response(
         gstTreatment="EXCLUSIVE_PRIMARY",
         scope="Confirmed orders only",
         paging=(
-            models.Paging(limit=100, offset=0, matched=matched, returned=len(rows), truncated=truncated)
+            models.Paging(
+                limit=100, offset=0, matched=matched, returned=len(rows), truncated=truncated
+            )
             if paging
             else None
         ),
@@ -432,7 +439,9 @@ def _gate_response(
 
 
 def _mapped(rows):
-    return [runner.map_api_row(r, gst_treatment="EXCLUSIVE_PRIMARY", environment="PROD") for r in rows]
+    return [
+        runner.map_api_row(r, gst_treatment="EXCLUSIVE_PRIMARY", environment="PROD") for r in rows
+    ]
 
 
 def test_iso_week_span_single_week_returns_one_label():
@@ -453,7 +462,9 @@ def test_gate_truncated_response_declares_zero_weeks():
     response = _gate_response(rows, matched=1, truncated=True)
     pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == []
     assert weeks_verified_empty == []
@@ -464,7 +475,9 @@ def test_gate_matched_greater_than_returned_rows_declares_zero_weeks():
     response = _gate_response(rows, matched=5, truncated=False)
     pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == []
     assert weeks_verified_empty == []
@@ -487,7 +500,9 @@ def test_gate_total_orders_scanned_zero_declares_zero_weeks():
     response = _gate_response(rows, matched=1, truncated=False, total_orders_scanned=0)
     pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == []
     assert weeks_verified_empty == []
@@ -500,7 +515,9 @@ def test_gate_empty_range_with_invalid_labels_declares_zero_weeks():
     )
     pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == []
     assert weeks_verified_empty == []
@@ -517,7 +534,9 @@ def test_gate_meta_paging_none_declares_zero_weeks_and_warns_reading_response_no
     pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
     assert pull["matched"] == len(rows)
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == []
     assert weeks_verified_empty == []
@@ -530,7 +549,9 @@ def test_gate_complete_fetch_with_zero_row_spanned_week_declares_both_complete_a
     response = _gate_response(rows, matched=1, truncated=False)
     pull = {"from_week": "2026-W30", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == ["2026-W30", "2026-W31"]
     assert weeks_verified_empty == ["2026-W30"]
@@ -541,7 +562,9 @@ def test_gate_declared_weeks_equal_pull_span_never_the_returned_rows():
     response = _gate_response(rows, matched=2, truncated=False)
     pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     assert weeks_complete == ["2026-W31"]
     assert "2026-W32" not in weeks_complete
@@ -553,7 +576,9 @@ def test_gate_weeks_verified_empty_is_subset_of_zero_row_spanned_weeks():
     response = _gate_response(rows, matched=2, truncated=False)
     pull = {"from_week": "2026-W28", "to_week": "2026-W31"}
 
-    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
 
     zero_row_spanned_weeks = {"2026-W29", "2026-W31"}
     assert set(weeks_verified_empty) <= zero_row_spanned_weeks
