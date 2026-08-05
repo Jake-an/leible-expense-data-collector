@@ -98,8 +98,8 @@
     {
       "step": 2,
       "name": "chunk-by-week-poster",
-      "status": "pending",
-      "summary": "Implemented iso_week_span and compute_weeks_complete in runner.py; refactored post_pull to pack weeks into chunks, declare weeks_complete per request, detect split weeks and warn; added tombstonesSkipped warning in _send; 87/87 tests pass.",
+      "status": "completed",
+      "summary": "Re-verified GREEN fresh (not trusting recorded RED evidence per project history): 87/87 pytest pass, ruff clean; post_pull packs whole weeks per request from pull span, gate reads response.meta.paging directly (adversarial paging-None test proves it), split weeks declare in no request and warn, tombstonesSkipped prints WARNING without raising.",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -110,7 +110,6 @@
         "ingest-contract.md"
       ],
       "started_at": "2026-08-05T09:02:11+0900",
-      "completed_at": "2026-08-05T10:23:48+0900",
       "tdd_evidence": {
         "red": {
           "command": "python -m pytest connectors/shopspend -q",
@@ -121,9 +120,16 @@
             "reason": "Tests fail because compute_weeks_complete() function is missing from shopspend.runner and main() isn't computing/passing weeks_complete and weeks_verified_empty to post_pull — pure missing implementation, no test code issues."
           },
           "at": "2026-08-05T09:30:39+0900"
+        },
+        "green": {
+          "command": "python -m pytest connectors/shopspend -q",
+          "exit_code": 0,
+          "output_tail": "........................................................................ [ 82%]\n...............                                                          [100%]\n87 passed in 0.59s\n",
+          "at": "2026-08-05T10:45:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T10:45:00+0900"
     },
     {
       "step": 3,
