@@ -147,10 +147,36 @@ def post_pull(
             # Machine-visible in the pull marker too — the Monday 05:00
             # Scheduled Task may not capture stderr, so a token outage must
             # not be invisible-but-successful in the Sheet.
-            warnings = json.loads(pull.get("warnings") or "[]")
+            raw_warnings = pull.get("warnings")
+            warnings = (
+                list(raw_warnings)
+                if isinstance(raw_warnings, list)
+                else json.loads(raw_warnings or "[]")
+            )
             warnings.append(degradation_message)
             pull["warnings"] = json.dumps(warnings)
             pull["warnings_count"] = len(warnings)
+            # runner._build_pull froze harness.weeks_verified_empty into
+            # diagnostics_json BEFORE this drop, so the stored marker would
+            # otherwise assert a tombstone bypass that was never sent —
+            # the exact "claim the opposite" failure the harness key exists
+            # to prevent.
+            raw_diag = pull.get("diagnostics_json")
+            try:
+                diagnostics = (
+                    dict(raw_diag) if isinstance(raw_diag, dict) else json.loads(raw_diag or "{}")
+                )
+            except ValueError:
+                # A truncated blob (runner.truncate_diagnostics_json) is
+                # already visibly unreliable ("...TRUNCATED"); warnings[]
+                # above carries the truth, so leave it as-is.
+                diagnostics = None
+            if isinstance(diagnostics, dict):
+                harness = diagnostics.setdefault("harness", {})
+                if isinstance(harness, dict):
+                    harness["weeks_verified_empty"] = []
+                    harness["verified_empty_dropped"] = "no_token"
+                pull["diagnostics_json"] = json.dumps(diagnostics)
 
     from collections import defaultdict
 

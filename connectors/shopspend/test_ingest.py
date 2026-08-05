@@ -16,6 +16,7 @@ Two hard rules under test (see step 5 spec, docs/ingest-contract.md):
     the raised error must surface `code`, not a KeyError or a blank message.
 """
 
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -824,6 +825,115 @@ def test_healthy_pull_marker_does_not_record_degradation_warning(monkeypatch):
     marker_pull = fake_post.calls[-1]["json"]["pull"]
     assert marker_pull["warnings_count"] == 0
     assert "GAS_READ_TOKEN" not in marker_pull["warnings"]
+
+
+def _diag_claiming_verified_empty(week="2026-W31"):
+    # The shape runner._build_pull freezes BEFORE post_pull runs: the harness
+    # key claims the week was declared verified-empty.
+    return json.dumps(
+        {
+            "warnings": [],
+            "harness": {"weeks_complete": [week], "weeks_verified_empty": [week]},
+        }
+    )
+
+
+def test_degraded_pull_marker_rewrites_diagnostics_harness(monkeypatch):
+    # Phase-end review (important): warnings alone is not enough — the frozen
+    # diagnostics_json.harness must stop claiming a tombstone bypass that was
+    # never sent.
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(
+        from_week="2026-W31",
+        to_week="2026-W31",
+        diagnostics_json=_diag_claiming_verified_empty(),
+    )
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    harness = json.loads(marker_pull["diagnostics_json"])["harness"]
+    assert harness["weeks_verified_empty"] == []
+    assert harness["verified_empty_dropped"] == "no_token"
+    # The weeks_complete claim is true (still declared) and stays.
+    assert harness["weeks_complete"] == ["2026-W31"]
+
+
+def test_healthy_pull_marker_leaves_diagnostics_untouched(monkeypatch):
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    diag = _diag_claiming_verified_empty()
+    pull = _pull(from_week="2026-W31", to_week="2026-W31", diagnostics_json=diag)
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    assert marker_pull["diagnostics_json"] == diag
+
+
+def test_degraded_truncated_diagnostics_json_does_not_raise(monkeypatch):
+    # runner.truncate_diagnostics_json can leave an unparseable blob; the
+    # degradation path must not fail harder than the outage it is handling.
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    truncated_blob = '{"warnings": ["x", "y...TRUNCATED'
+    pull = _pull(from_week="2026-W31", to_week="2026-W31", diagnostics_json=truncated_blob)
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    assert marker_pull["diagnostics_json"] == truncated_blob
+    # The warnings channel still records the degradation.
+    assert "GAS_READ_TOKEN" in marker_pull["warnings"]
+
+
+def test_degraded_warnings_as_raw_list_does_not_raise(monkeypatch):
+    # Defensive: a future caller passing warnings as a list (the sibling dict
+    # shape) must not make the degradation path raise TypeError.
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31", warnings=["pre-existing"])
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    recorded = json.loads(marker_pull["warnings"])
+    assert recorded[0] == "pre-existing"
+    assert any("GAS_READ_TOKEN" in w for w in recorded)
+    assert marker_pull["warnings_count"] == 2
 
 
 def test_token_value_never_printed(monkeypatch, capsys):

@@ -23,7 +23,8 @@
     },
     {
       "dir": "dopost-auth-minors",
-      "status": "pending"
+      "status": "error",
+      "failed_at": "2026-08-05T15:00:37+0900"
     }
   ]
 }

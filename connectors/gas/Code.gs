@@ -206,12 +206,18 @@ function doPost(e) {
  * weeks_verified_empty — a JSON string or a nested array must be rejected,
  * not silently coerced.
  */
+function isValidWeekLabel_(s) {
+  if (typeof s !== 'string' || !/^\d{4}-W\d{2}$/.test(s)) return false;
+  // Bound 01-53: no ISO year has a W00 or a W54+. A flat 53 accepts W53 in
+  // 52-week years — a cheap sanity bound, not a calendar computation.
+  var week = parseInt(s.slice(-2), 10);
+  return week >= 1 && week <= 53;
+}
+
 function isValidWeekLabelArray_(v) {
   if (!Array.isArray(v)) return false;
   for (var i = 0; i < v.length; i++) {
-    if (typeof v[i] !== 'string' || !/^\d{4}-W\d{2}$/.test(v[i])) return false;
-    var week = parseInt(v[i].slice(-2), 10);
-    if (week < 1 || week > 53) return false;
+    if (!isValidWeekLabel_(v[i])) return false;
   }
   return true;
 }
@@ -267,7 +273,7 @@ function validateIngest_(body) {
 
     if (kind === 'shopspend') {
       if (!r.shop_id) return { ok: false, message: 'row ' + i + ' missing shop_id' };
-      if (!r.week_label || !/^\d{4}-W\d{2}$/.test(String(r.week_label))) {
+      if (!r.week_label || !isValidWeekLabel_(String(r.week_label))) {
         return { ok: false, message: 'row ' + i + ' invalid week_label' };
       }
       if (weeksVerifiedEmptySet_[r.week_label]) {
@@ -1474,11 +1480,26 @@ function doGetShopSpendCoverage_() {
   return jsonOut_({ result: 'ok', count: weeks.length, weeks: weeks });
 }
 
+function timingSafeEqual_(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  var mismatch = a.length === b.length ? 0 : 1;
+  // Compare a against itself when lengths differ, so the loop's cost tracks
+  // the caller-supplied value rather than leaking the secret's length.
+  var other = mismatch ? a : b;
+  for (var i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ other.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
 function checkReadToken_(params) {
   var stored = PropertiesService.getScriptProperties().getProperty('API_READ_TOKEN');
   if (!stored) return { ok: false, message: 'unauthorized' };
   if (!params.token) return { ok: false, message: 'unauthorized' };
-  if (params.token !== stored) return { ok: false, message: 'unauthorized' };
+  // Not a plain !== — since the write path (doPost weeks_verified_empty) reuses
+  // this check, the comparison guards a destructive operation and must not
+  // short-circuit on the first differing character.
+  if (!timingSafeEqual_(String(params.token), stored)) return { ok: false, message: 'unauthorized' };
   return { ok: true };
 }
 

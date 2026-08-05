@@ -45,3 +45,6 @@ logs/
 # a bare *.log would also swallow phases/**/step*-red.log, which the harness
 # commits as TDD evidence.
 /*.log
+
+# Harness/test run artifacts at repo root
+test_output.txt

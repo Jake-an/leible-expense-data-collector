@@ -3098,6 +3098,23 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     validateIngest_(Object.assign({}, base, { rows: [], weeks_complete: ['2026-W00'] })).message,
     'invalid weeks_complete');
 
+  // Same bound on the per-row week_label path — one field, one strictness
+  // (phase-end review minor: the row check previously kept the bare regex).
+  eq('shopspend row with week_label 2026-W00 → rejected at the row level',
+    validateIngest_(Object.assign({}, base, {
+      rows: [Object.assign({}, goodRow1, { week_label: '2026-W00' })]
+    })).message,
+    'row 0 invalid week_label');
+  eq('shopspend row with week_label 2026-W99 → rejected at the row level',
+    validateIngest_(Object.assign({}, base, {
+      rows: [Object.assign({}, goodRow1, { week_label: '2026-W99' })]
+    })).message,
+    'row 0 invalid week_label');
+  check('shopspend row with week_label 2026-W53 → still accepted at the row level',
+    validateIngest_(Object.assign({}, base, {
+      rows: [Object.assign({}, goodRow1, { week_label: '2026-W53' })]
+    })).ok);
+
   // Existing kinds unregressed: still rejects, still succeeds and writes to
   // their own tab.
   check('suppliers row missing invoice_ref → still rejected',

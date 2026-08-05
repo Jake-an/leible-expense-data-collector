@@ -181,8 +181,65 @@
         "api.md"
       ],
       "started_at": "2026-08-05T14:51:36+0900",
-      "completed_at": "2026-08-05T14:53:59+0900"
+      "completed_at": "2026-08-05T14:53:59+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/dopost-auth-minors/step4-review.json",
+        "checked_at": "2026-08-05T14:55:44+0900",
+        "review_model": "haiku"
+      }
     }
   ],
-  "created_at": "2026-08-05T14:20:17+0900"
+  "created_at": "2026-08-05T14:20:17+0900",
+  "review_result": {
+    "verdict": "revise",
+    "issues": [
+      {
+        "severity": "important",
+        "file": "connectors/shopspend/ingest.py",
+        "summary": "Degradation path updates pull['warnings'] but not pull['diagnostics_json'], so the pull marker contradicts itself. runner._build_pull (runner.py:386) serializes harness.weeks_verified_empty into diagnostics_json BEFORE post_pull runs; when GAS_READ_TOKEN is unresolvable, post_pull (ingest.py:139-153) drops weeks_verified_empty from every request and appends a warning, but the already-frozen diagnostics_json still asserts those weeks were declared verified-empty. The ShopSpendPulls row therefore claims a tombstone bypass that was never sent — exactly the 'claim the opposite' failure the harness key was added to prevent (see the comment at ingest.py:90-97 and runner.py:380-383). No test covers it: the step-3 tests assert warnings/warnings_count only, and test_ingest.py's _pull fixture hardcodes diagnostics_json to '{}'."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/gas/Code.gs",
+        "summary": "Week-range tightening is applied to only one of the two week_label validation paths. isValidWeekLabelArray_ (line 210-214) now rejects week numbers outside 01-53, but the per-row check in validateIngest_ (line 270) still uses the bare /^\\d{4}-W\\d{2}$/ regex, so a row with week_label '2026-W00' or '2026-W99' is still accepted and written to ShopSpend. Same field, two strictness levels in the same function. (Also: the bound is a flat 1-53, so W53 is accepted in ISO years that have only 52 weeks — acceptable as a cheap sanity bound, but worth stating.)"
+      },
+      {
+        "severity": "minor",
+        "file": "test_output.txt",
+        "summary": "946-line stray test-harness artifact committed to the repo root and not gitignored (git check-ignore returns not-ignored). Verified it contains no real credentials — only the literal 'test-token' from the GAS mock — so this is repo hygiene, not a secret leak. It duplicates the per-step logs already under phases/dopost-auth-minors/ and should be deleted and added to .gitignore."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/gas/Code.gs",
+        "summary": "checkReadToken_ (line 1477-1482) compares the shared secret with a plain !== short-circuit, which is not constant-time. Pre-existing on the doGet read path, but this phase puts it on a write path that authorises tombstone-bypass, so it is now guarding a destructive operation. Low practical exploitability over an Apps Script /exec endpoint; noting it because the diff moves the comparison into the auth-for-writes role."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/shopspend/ingest.py",
+        "summary": "json.loads(pull.get('warnings') or '[]') at line 150 assumes the caller passes warnings as a JSON string. runner._build_pull does (runner.py:242, json.dumps(diag.warnings)), so this is correct today, but the sibling dict built ten lines earlier at runner.py:218 uses a raw list under the same key name. Any future caller passing a list makes the degradation path raise TypeError and abort the whole pull — i.e. the error handler fails harder than the error it handles. A defensive isinstance check would remove the trap."
+      },
+      {
+        "severity": "minor",
+        "file": "phases/index.json",
+        "summary": "Phase bookkeeping is inconsistent with the delivered work: phases/index.json still records dopost-auth-minors as 'status': 'pending' while phases/dopost-auth-minors/index.json shows all five steps completed, and phases/dopost-auth-minors/step4-review.json is untracked. Also note the file has no trailing newline. Does not affect runtime behaviour."
+      },
+      {
+        "severity": "minor",
+        "file": "docs/api.md",
+        "summary": "Residual anonymous-write surface, correctly documented but worth restating in review terms: the gate is keyed on presence of weeks_verified_empty only, so every other doPost payload — suppliers, revenue, Square, and shopspend rows carrying weeks_complete — remains fully unauthenticated. weeks_complete alone still authorises tombstoning up to the SHOPSPEND_TOMBSTONE_BREAKER_FLOOR_ blast-radius limit. This matches PRD-9's stated scope and api.md's 'stays tokenless' sentence, so it is scope rather than a defect, but it means the phase title 'dopost-auth' should not be read as doPost being authenticated."
+      }
+    ],
+    "notes": {
+      "reviewed_range": "55eaac0...HEAD",
+      "tdd_audit": "PASS - all four tdd:true steps (dopost-token-gate, gas-minors, truncated-warning, poster-token-degradation) carry tdd_evidence in phases/dopost-auth-minors/index.json; the only tdd:false step (docs-closeout) contains no logic, just docs/api.md + docs/PRD.md edits and one Logger.log wording change in shopspend.gs. No logic smuggled through the escape hatch.",
+      "boundary_audit": "Checked all six classes across the doPost JSON contract, the ShopSpendPulls row shape, and the Python->GAS payload. token passes validateIngest_ cleanly (no strict-key whitelist). warnings/warnings_count are snake_case on both sides and land at SHOPSPEND_PULLS_HEADERS indices 7 and 8, matching shopSpendReportBlock_'s positional read of pull[8]. Token is attached only to chunks that carry weeks_verified_empty and never to the pull-marker request, and never reaches the Sheet. No orphan endpoints or callsites. Only defect found is the state-map-vs-mutation case listed as the important issue above.",
+      "tests_run": "node connectors/gas/test_code.js -> 827 passed, 0 failed. python -m pytest connectors/shopspend -q -> 133 passed."
+    },
+    "checked_at": "2026-08-05T15:00:37+0900"
+  }
 }
