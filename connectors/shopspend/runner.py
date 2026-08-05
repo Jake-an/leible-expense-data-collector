@@ -60,7 +60,10 @@ def compute_weeks_complete(
     diag = response.diagnostics
 
     if paging is None:
-        print("[shopspend] WARNING: response missing paging info — zero weeks declared", file=sys.stderr)
+        print(
+            "[shopspend] WARNING: response missing paging info — zero weeks declared",
+            file=sys.stderr,
+        )
         return [], []
 
     if paging.truncated:
@@ -276,7 +279,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         ingest.post_pull(
-            mapped_rows, pull, weeks_complete=weeks_complete, weeks_verified_empty=weeks_verified_empty
+            mapped_rows,
+            pull,
+            weeks_complete=weeks_complete,
+            weeks_verified_empty=weeks_verified_empty,
         )
     except (ingest.IngestFailed, RuntimeError) as err:
         print(f"[shopspend] ingest failed: {err}", file=sys.stderr)

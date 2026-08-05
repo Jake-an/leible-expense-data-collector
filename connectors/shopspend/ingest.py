@@ -43,19 +43,22 @@ def _parse_response(resp) -> dict:
         raise IngestFailed(f"shopspend ingest: non-JSON response ({err})") from err
 
 
+def _warn_tombstones_skipped(body: dict) -> None:
+    for entry in body.get("tombstonesSkipped", []):
+        week = entry.get("week")
+        would_write = entry.get("wouldHaveWritten")
+        present = entry.get("present")
+        print(
+            f"[shopspend] WARNING: tombstones skipped for week {week}: {would_write} would have been written, {present} present",
+            file=sys.stderr,
+        )
+
+
 def _send(url: str, payload: dict) -> dict:
     resp = requests.post(url, json=payload, timeout=300)
     body = _parse_response(resp)
     if body.get("result") == "ok":
-        if "tombstonesSkipped" in body:
-            for entry in body["tombstonesSkipped"]:
-                week = entry.get("week")
-                would_write = entry.get("wouldHaveWritten")
-                present = entry.get("present")
-                print(
-                    f"[shopspend] WARNING: tombstones skipped for week {week}: {would_write} would have been written, {present} present",
-                    file=sys.stderr,
-                )
+        _warn_tombstones_skipped(body)
         return body
 
     code = body.get("code")
@@ -64,15 +67,7 @@ def _send(url: str, payload: dict) -> dict:
         resp = requests.post(url, json=payload, timeout=300)
         body = _parse_response(resp)
         if body.get("result") == "ok":
-            if "tombstonesSkipped" in body:
-                for entry in body["tombstonesSkipped"]:
-                    week = entry.get("week")
-                    would_write = entry.get("wouldHaveWritten")
-                    present = entry.get("present")
-                    print(
-                        f"[shopspend] WARNING: tombstones skipped for week {week}: {would_write} would have been written, {present} present",
-                        file=sys.stderr,
-                    )
+            _warn_tombstones_skipped(body)
             return body
         code = body.get("code")
 
