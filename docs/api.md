@@ -137,6 +137,17 @@ shop-weeks (below the floor, a small ordinary closure — e.g. 2 of 3 shops —
 always writes). A week named in `weeks_verified_empty` is exempt from the
 breaker (see `docs/schema.md`).
 
+**What backs that exemption — read this before trusting it.** The connector
+does *not* positively confirm a week is empty upstream. It derives
+`weeks_verified_empty` as `spanned weeks − weeks that returned rows`, and only
+after the whole fetch clears the completeness gate (paging present, not
+truncated, every matched row returned, `matched > 0`, orders actually scanned,
+no invalid-label empty range). So the assertion is "this fetch was trustworthy
+as a whole, and within it this week returned nothing" — not a per-week probe.
+A fetch that is complete-looking but wrong upstream would still exempt the
+week. That is the residual risk the ≥5 floor and the sticky skip exist to
+bound; treat `weeks_verified_empty` as strong evidence, not proof.
+
 **The skip is sticky and does not self-heal.** It recomputes from the same
 sheet state on every pull, so an unresolved mass-absence stays suppressed
 pull after pull — unlike a wrong tombstone, which self-corrects the moment

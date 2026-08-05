@@ -706,3 +706,75 @@ def test_pull_row_matches_shopspend_pulls_headers_width_and_order():
     pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
 
     assert list(pull.keys()) == headers
+
+
+# --------------------------------------------------------------------------- #
+# Phase-end review fixes — ISO year length, gate warnings, honest `returned`
+# --------------------------------------------------------------------------- #
+
+
+def test_iso_week_span_respects_real_iso_year_length():
+    """Review finding [2]: the span always rolled over at week 53, emitting a
+    phantom 2025-W53 (ISO 2025 has only 52 weeks). A phantom week is declared
+    complete and, having no rows, verified-empty."""
+    # 2025 has 52 ISO weeks — W53 does not exist.
+    assert runner.iso_week_span("2025-W51", "2026-W02") == [
+        "2025-W51",
+        "2025-W52",
+        "2026-W01",
+        "2026-W02",
+    ]
+    # 2026 genuinely HAS 53 ISO weeks — W53 must be preserved, not capped away.
+    assert runner.iso_week_span("2026-W52", "2027-W01") == [
+        "2026-W52",
+        "2026-W53",
+        "2027-W01",
+    ]
+
+
+def test_gate_rows_short_of_matched_warns(capsys):
+    """Review finding [4]: this branch disabled tombstoning silently."""
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=5, total_orders_scanned=10)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    assert runner.compute_weeks_complete(response, pull, _mapped(rows)) == ([], [])
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out + captured.err
+
+
+def test_gate_total_orders_scanned_zero_warns(capsys):
+    """Review finding [4]."""
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, total_orders_scanned=0)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    assert runner.compute_weeks_complete(response, pull, _mapped(rows)) == ([], [])
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out + captured.err
+
+
+def test_gate_empty_range_with_invalid_labels_warns(capsys):
+    """Review finding [4]."""
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, total_orders_scanned=10, empty_range_invalid=True)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    assert runner.compute_weeks_complete(response, pull, _mapped(rows)) == ([], [])
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out + captured.err
+
+
+def test_pull_returned_counts_all_pages_not_just_the_first():
+    """Review finding [5]: `returned` was paging.returned — the FIRST page's count
+    only — while response.rows holds every page. A paginated pull therefore
+    recorded returned < matched and read as truncated when it was complete."""
+    rows = [_shop_row("2026-W31", shop_id=f"shop-{n}") for n in range(7)]
+    response = _gate_response(rows, matched=7, total_orders_scanned=10)
+    # Simulate a paginated fetch: the first page carried 3 of the 7 rows.
+    response.meta.paging.returned = 3
+
+    pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+
+    assert pull["returned"] == 7, "returned must count every page, not just the first"
+    assert pull["matched"] == 7

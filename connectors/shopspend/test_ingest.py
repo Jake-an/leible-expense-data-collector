@@ -530,3 +530,86 @@ def test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_
             request_counts = Counter(r["week_label"] for r in call["json"]["rows"])
             for week in declared:
                 assert request_counts.get(week, 0) == full_counts[week]
+
+
+# --------------------------------------------------------------------------- #
+# Phase-end review fixes — multi-chunk scoping + no silent row loss
+# --------------------------------------------------------------------------- #
+
+
+def _data_requests(fake_post):
+    """Every shopspend data request (excludes the pulls commit marker)."""
+    return [c["json"] for c in fake_post.calls if c["json"].get("kind") == "shopspend"
+            and "pull" not in c["json"]]
+
+
+def test_weeks_verified_empty_is_scoped_to_the_chunk_that_declares_it(monkeypatch):
+    """Review finding [0]: the FULL weeks_verified_empty list was attached to every
+    chunk while weeks_complete carried only that chunk's weeks. validateIngest_
+    rejects any payload whose weeks_verified_empty entry is absent from that
+    request's weeks_complete, so a multi-chunk pull with an empty spanned week
+    aborted entirely (IngestFailed, no data, no pull marker)."""
+    rows = _week_rows("2026-W28", "2026-07-06", 4, start_i=0) + _week_rows(
+        "2026-W29", "2026-07-13", 4, start_i=100
+    )
+    pull = _pull(from_week="2026-W28", to_week="2026-W31")
+
+    fake_post = _FakePost([_ok_resp() for _ in range(20)])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        chunk_size=5,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W28", "2026-W29", "2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    reqs = _data_requests(fake_post)
+    assert len(reqs) > 1, "scenario must span more than one chunk to be meaningful"
+    for req in reqs:
+        declared = set(req.get("weeks_complete") or [])
+        verified = set(req.get("weeks_verified_empty") or [])
+        assert verified <= declared, (
+            f"weeks_verified_empty {sorted(verified)} not a subset of this request's "
+            f"weeks_complete {sorted(declared)} — GAS validateIngest_ would reject it"
+        )
+
+
+def test_rows_for_undeclared_weeks_are_still_posted(monkeypatch):
+    """Review finding [1]: silent row loss. When weeks_complete was non-empty the
+    packer iterated only over weeks_complete, so rows for any other week were
+    dropped with no warning and no non-zero exit. Before this phase every mapped
+    row was posted unconditionally."""
+    rows = _week_rows("2026-W28", "2026-07-06", 2, start_i=0) + _week_rows(
+        "2026-W99", "2026-07-13", 1, start_i=100
+    )
+    pull = _pull(from_week="2026-W28", to_week="2026-W28")
+
+    fake_post = _FakePost([_ok_resp() for _ in range(20)])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        chunk_size=200,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W28"],
+    )
+
+    posted = Counter()
+    for req in _data_requests(fake_post):
+        for row in req["rows"]:
+            posted[row["week_label"]] += 1
+
+    assert posted["2026-W28"] == 2
+    assert posted["2026-W99"] == 1, "rows for an undeclared week must not be silently dropped"
+
+    # And they must never be declared complete — that would authorise tombstoning
+    # a week we did not verify.
+    for req in _data_requests(fake_post):
+        if any(r["week_label"] == "2026-W99" for r in req["rows"]):
+            assert not req.get("weeks_complete"), (
+                "an undeclared week's rows must travel in a request that declares nothing"
+            )

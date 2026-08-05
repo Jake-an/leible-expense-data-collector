@@ -205,7 +205,12 @@ class ShopSpendClient:
                 continue
 
             # Fatal — including unrecognized codes, which we don't retry either.
-            raise ShopSpendError(code=error_code, detail=self._redact(detail) if detail else None)
+            # `detail` is untrusted JSON — it can arrive as a dict or list, and
+            # _redact's str.replace would raise AttributeError from inside the
+            # fatal path, replacing the real error with an opaque crash.
+            raise ShopSpendError(
+                code=error_code, detail=self._redact(str(detail)) if detail else None
+            )
 
         raise ShopSpendTransientError(
             f"shopSpend request failed after {_MAX_ATTEMPTS} attempts: {last_error_message}"

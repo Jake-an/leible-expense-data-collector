@@ -1033,3 +1033,31 @@ def test_fetch_coverage_transport_error_never_leaks_token(monkeypatch):
         fetch_coverage()
 
     assert secret not in str(exc_info.value)
+
+
+def test_fatal_non_string_detail_does_not_crash_redaction(monkeypatch, fake_sleep):
+    """Review finding [3]: `detail` is untrusted JSON. When it arrives as a dict
+    the redaction call raised AttributeError ('dict' object has no attribute
+    'replace') from inside the fatal path, replacing the clean ShopSpendError
+    with an opaque crash. Robustness, not disclosure."""
+    fake_get = _FakeGet(
+        [
+            _FakeResponse(
+                json_body={
+                    "ok": False,
+                    "error": "UNAUTHORIZED",
+                    "detail": {"reason": "bad token", "token": PROD_TOKEN},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    with pytest.raises(client.ShopSpendError) as exc_info:
+        conn.fetch()
+
+    # The real error survives — not an AttributeError — and still redacts.
+    assert exc_info.value.code == "UNAUTHORIZED"
+    assert PROD_TOKEN not in str(exc_info.value)
+    assert PROD_TOKEN not in str(exc_info.value.detail or "")

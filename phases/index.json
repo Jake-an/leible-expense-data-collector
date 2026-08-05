@@ -17,7 +17,8 @@
     },
     {
       "dir": "shopspend-hardening",
-      "status": "pending"
+      "status": "error",
+      "failed_at": "2026-08-05T10:31:18+0900"
     }
   ]
 }

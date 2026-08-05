@@ -37,7 +37,11 @@ def iso_week_span(from_week: str, to_week: str) -> list[str]:
     while (y, w) <= (to_y, to_w):
         weeks.append(f"{y}-W{w:02d}")
         w += 1
-        if w > 53:
+        # An ISO year has 52 or 53 weeks; rolling over at a fixed 53 invents a
+        # phantom label (e.g. 2025-W53) which then gets declared complete and,
+        # having no rows, verified-empty. Dec 28 is always in the year's last
+        # ISO week, so its week number IS that year's length.
+        if w > date(y, 12, 28).isocalendar()[1]:
             y += 1
             w = 1
     return weeks
@@ -70,6 +74,11 @@ def compute_weeks_complete(
         return [], []
 
     if len(response.rows) < paging.matched:
+        print(
+            f"[shopspend] WARNING: only {len(response.rows)} of {paging.matched} matched row(s) "
+            "returned — zero weeks declared",
+            file=sys.stderr,
+        )
         return [], []
 
     if paging.matched == 0:
@@ -77,9 +86,17 @@ def compute_weeks_complete(
         return [], []
 
     if diag and diag.totalOrdersScanned == 0:
+        print(
+            "[shopspend] WARNING: API scanned zero orders — absence unproven, zero weeks declared",
+            file=sys.stderr,
+        )
         return [], []
 
     if diag and diag.emptyRangeWithInvalidLabels:
+        print(
+            "[shopspend] WARNING: empty range with invalid week labels — zero weeks declared",
+            file=sys.stderr,
+        )
         return [], []
 
     weeks_complete = sorted(span_weeks)
@@ -175,7 +192,10 @@ def _build_pull(
         "from_week": from_week,
         "to_week": to_week,
         "matched": paging.matched if paging else len(response.rows),
-        "returned": paging.returned if paging else len(response.rows),
+        # Every page, not paging.returned — that is the FIRST page's count only,
+        # so a paginated pull would record returned < matched and read as
+        # truncated when it was in fact complete.
+        "returned": len(response.rows),
         "truncated": bool(paging.truncated) if paging else False,
         "warnings_count": len(diag.warnings),
         "warnings": json.dumps(diag.warnings),

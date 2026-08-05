@@ -40,3 +40,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 logs/
+
+# stray test/build logs at repo ROOT only — leading slash is load-bearing:
+# a bare *.log would also swallow phases/**/step*-red.log, which the harness
+# commits as TDD evidence.
+/*.log

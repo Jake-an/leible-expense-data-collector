@@ -112,6 +112,8 @@ def post_pull(
         rows_by_week[row["week_label"]].append(row)
 
     if weeks_complete:
+        declared = set(weeks_complete)
+        verified_empty_set = set(weeks_verified_empty)
         split_weeks = {w for w in weeks_complete if len(rows_by_week[w]) > chunk_size}
 
         for week in sorted(split_weeks):
@@ -120,7 +122,36 @@ def post_pull(
                 file=sys.stderr,
             )
 
+        # Weeks carrying rows that nobody declared complete. They must still be
+        # posted — dropping them silently loses spend data — but must never be
+        # declared, since declaring authorises GAS to tombstone a week whose
+        # completeness we never established. Same shape as the split-week path.
+        undeclared_weeks = sorted(w for w in rows_by_week if w not in declared and rows_by_week[w])
+        if undeclared_weeks:
+            print(
+                f"[shopspend] WARNING: rows for undeclared week(s) {undeclared_weeks} posted "
+                "without weeks_complete — absence not assessed for them",
+                file=sys.stderr,
+            )
+
         complete_weeks_only = [w for w in weeks_complete if w not in split_weeks]
+
+        def _send_declared(chunk_rows, chunk_weeks):
+            payload = {
+                "source": source,
+                "kind": "shopspend",
+                "rows": chunk_rows,
+                "extracted_at": extracted_at,
+                "weeks_complete": chunk_weeks,
+            }
+            # Scope to THIS request. validateIngest_ rejects any
+            # weeks_verified_empty entry absent from the same payload's
+            # weeks_complete, and each request is validated alone — attaching
+            # the full list to every chunk aborts the whole pull.
+            chunk_verified = [w for w in chunk_weeks if w in verified_empty_set]
+            if chunk_verified:
+                payload["weeks_verified_empty"] = chunk_verified
+            _send(url, payload)
 
         chunk = []
         chunk_weeks = []
@@ -132,32 +163,14 @@ def post_pull(
                 chunk_weeks.append(week)
             else:
                 if chunk:
-                    payload = {
-                        "source": source,
-                        "kind": "shopspend",
-                        "rows": chunk,
-                        "extracted_at": extracted_at,
-                        "weeks_complete": chunk_weeks,
-                    }
-                    if weeks_verified_empty:
-                        payload["weeks_verified_empty"] = weeks_verified_empty
-                    _send(url, payload)
+                    _send_declared(chunk, chunk_weeks)
                 chunk = week_rows
                 chunk_weeks = [week]
 
         if chunk or chunk_weeks:
-            payload = {
-                "source": source,
-                "kind": "shopspend",
-                "rows": chunk,
-                "extracted_at": extracted_at,
-                "weeks_complete": chunk_weeks,
-            }
-            if weeks_verified_empty:
-                payload["weeks_verified_empty"] = weeks_verified_empty
-            _send(url, payload)
+            _send_declared(chunk, chunk_weeks)
 
-        for week in sorted(split_weeks):
+        for week in sorted(split_weeks) + undeclared_weeks:
             week_rows = rows_by_week[week]
             for offset in range(0, len(week_rows), chunk_size):
                 chunk_data = week_rows[offset : offset + chunk_size]
