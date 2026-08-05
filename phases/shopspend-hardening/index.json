@@ -234,7 +234,8 @@
     {
       "step": 5,
       "name": "client-redaction-hardening",
-      "status": "pending",
+      "status": "completed",
+      "summary": "I2: fatal raise now redacts detail via self._redact(); I3: _redact also strips the percent-encoded token form; fatal path no longer echoes resp.text. Re-verified fresh (implementation had landed in a prior stray commit ahead of the RED-log commit): 104/104 pytest pass, ruff clean.",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -251,9 +252,16 @@
             "reason": "Test code is syntactically correct (96 other tests pass). Failures are assertion-level: token redaction is not implemented yet. Exceptions raised successfully, but PROD_TOKEN not redacted from error messages as expected. This is the right reason for RED."
           },
           "at": "2026-08-05T10:13:56+0900"
+        },
+        "green": {
+          "command": "python -m pytest connectors/shopspend -q",
+          "exit_code": 0,
+          "output_tail": "........................................................................ [ 69%]\n................................                                         [100%]\n104 passed in 0.60s\n",
+          "at": "2026-08-05T11:20:00+1000"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T11:20:00+1000"
     },
     {
       "step": 6,
