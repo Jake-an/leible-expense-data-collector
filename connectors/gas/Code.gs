@@ -210,6 +210,8 @@ function isValidWeekLabelArray_(v) {
   if (!Array.isArray(v)) return false;
   for (var i = 0; i < v.length; i++) {
     if (typeof v[i] !== 'string' || !/^\d{4}-W\d{2}$/.test(v[i])) return false;
+    var week = parseInt(v[i].slice(-2), 10);
+    if (week < 1 || week > 53) return false;
   }
   return true;
 }
