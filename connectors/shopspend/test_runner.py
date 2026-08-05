@@ -381,3 +381,202 @@ def test_backfill_actually_calls_missing_weeks_for_backfill(monkeypatch):
     assert exit_code == 0
     assert len(calls) == 1
     assert calls[0][0] == ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
+
+
+# --------------------------------------------------------------------------- #
+# Completeness gate (step 2) — declaring a week complete authorises GAS to
+# tombstone it, so the gate must read response.meta.paging directly (never
+# pull['matched']/pull['truncated'], which _build_pull degrades to len(rows)/
+# False when paging is absent — runner.py:105-107) and decline (declare
+# nothing) whenever the fetch cannot be trusted to be whole. The declared
+# span always comes from pull['from_week']/pull['to_week'], never the rows.
+# --------------------------------------------------------------------------- #
+
+
+def _shop_row(week_label, shop_id="shop-1"):
+    return models.ShopSpendRow(
+        shopId=shop_id,
+        weekLabel=week_label,
+        weekStart="2026-07-27",
+        weekEnd="2026-08-02",
+        orderCount=1,
+        amendedCount=0,
+        totalExGst=100.0,
+        gst=10.0,
+        totalIncGst=110.0,
+    )
+
+
+def _gate_response(
+    rows, matched, truncated=False, total_orders_scanned=None, empty_range_invalid=False, paging=True
+):
+    if total_orders_scanned is None:
+        total_orders_scanned = len(rows)
+    meta = models.Meta(
+        environment="PROD",
+        timezone="Australia/Sydney",
+        gstTreatment="EXCLUSIVE_PRIMARY",
+        scope="Confirmed orders only",
+        paging=(
+            models.Paging(limit=100, offset=0, matched=matched, returned=len(rows), truncated=truncated)
+            if paging
+            else None
+        ),
+    )
+    diagnostics = models.Diagnostics(
+        totalOrdersScanned=total_orders_scanned, emptyRangeWithInvalidLabels=empty_range_invalid
+    )
+    return client.ShopSpendResponse(
+        rows=rows, meta=meta, summary=models.Summary(), diagnostics=diagnostics, schemaVersion=1
+    )
+
+
+def _mapped(rows):
+    return [runner.map_api_row(r, gst_treatment="EXCLUSIVE_PRIMARY", environment="PROD") for r in rows]
+
+
+def test_iso_week_span_single_week_returns_one_label():
+    assert runner.iso_week_span("2026-W31", "2026-W31") == ["2026-W31"]
+
+
+def test_iso_week_span_multi_week_range_is_ascending():
+    assert runner.iso_week_span("2026-W28", "2026-W31") == [
+        "2026-W28",
+        "2026-W29",
+        "2026-W30",
+        "2026-W31",
+    ]
+
+
+def test_gate_truncated_response_declares_zero_weeks():
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=True)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == []
+    assert weeks_verified_empty == []
+
+
+def test_gate_matched_greater_than_returned_rows_declares_zero_weeks():
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=5, truncated=False)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == []
+    assert weeks_verified_empty == []
+
+
+def test_gate_matched_zero_declares_zero_weeks_and_warns(capsys):
+    response = _gate_response([], matched=0, truncated=False, total_orders_scanned=10)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, [])
+
+    assert weeks_complete == []
+    assert weeks_verified_empty == []
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out + captured.err
+
+
+def test_gate_total_orders_scanned_zero_declares_zero_weeks():
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=False, total_orders_scanned=0)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == []
+    assert weeks_verified_empty == []
+
+
+def test_gate_empty_range_with_invalid_labels_declares_zero_weeks():
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(
+        rows, matched=1, truncated=False, total_orders_scanned=5, empty_range_invalid=True
+    )
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == []
+    assert weeks_verified_empty == []
+
+
+def test_gate_meta_paging_none_declares_zero_weeks_and_warns_reading_response_not_pull(capsys):
+    """Constructed so pull['matched'] == len(rows) — exactly what _build_pull
+    degrades to when paging is absent (runner.py:105). The test FAILS if the
+    gate reads pull['matched'] instead of response.meta.paging directly,
+    because pull['matched'] alone would make this look like a complete
+    fetch."""
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=False, paging=False)
+    pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+    assert pull["matched"] == len(rows)
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == []
+    assert weeks_verified_empty == []
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out + captured.err
+
+
+def test_gate_complete_fetch_with_zero_row_spanned_week_declares_both_complete_and_verified_empty():
+    rows = [_shop_row("2026-W31")]  # W30 is spanned but returned nothing
+    response = _gate_response(rows, matched=1, truncated=False)
+    pull = {"from_week": "2026-W30", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == ["2026-W30", "2026-W31"]
+    assert weeks_verified_empty == ["2026-W30"]
+
+
+def test_gate_declared_weeks_equal_pull_span_never_the_returned_rows():
+    rows = [_shop_row("2026-W31"), _shop_row("2026-W32")]  # W32 is outside the requested span
+    response = _gate_response(rows, matched=2, truncated=False)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    assert weeks_complete == ["2026-W31"]
+    assert "2026-W32" not in weeks_complete
+
+
+def test_gate_weeks_verified_empty_is_subset_of_zero_row_spanned_weeks():
+    # span W28..W31; W28 and W30 have rows, W29 and W31 do not
+    rows = [_shop_row("2026-W28"), _shop_row("2026-W30")]
+    response = _gate_response(rows, matched=2, truncated=False)
+    pull = {"from_week": "2026-W28", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, _mapped(rows))
+
+    zero_row_spanned_weeks = {"2026-W29", "2026-W31"}
+    assert set(weeks_verified_empty) <= zero_row_spanned_weeks
+    assert "2026-W28" not in weeks_verified_empty
+    assert "2026-W30" not in weeks_verified_empty
+
+
+def test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull(monkeypatch):
+    _set_shopspend_env(monkeypatch)
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=False)
+    monkeypatch.setattr(client.ShopSpendClient, "fetch", lambda self, **kw: response)
+
+    captured_kwargs = {}
+
+    def fake_post_pull(mapped_rows, pull, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"result": "ok"}
+
+    monkeypatch.setattr(ingest, "post_pull", fake_post_pull)
+
+    exit_code = runner.main(["--week", "2026-W31"])
+
+    assert exit_code == 0
+    assert captured_kwargs.get("weeks_complete") == ["2026-W31"]
+    assert captured_kwargs.get("weeks_verified_empty") == []

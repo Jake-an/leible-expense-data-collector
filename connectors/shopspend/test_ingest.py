@@ -17,6 +17,7 @@ Two hard rules under test (see step 5 spec, docs/ingest-contract.md):
 """
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -346,3 +347,186 @@ def test_missing_exec_url_raises_loud_and_never_posts(monkeypatch):
         ingest.post_pull([_row()], _pull())
 
     assert fake_post.call_count == 0
+
+
+# --------------------------------------------------------------------------- #
+# Packing by whole week (step 2) — pack complete weeks per request, up to
+# chunk_size, and declare exactly the weeks each request carries in full.
+# `weeks_complete`/`weeks_verified_empty` are new keyword-only params; None
+# means "declare nothing" so all 15 pre-existing call sites above stay valid
+# and fail safe (see step 2 task file, docs/schema.md tombstone semantics).
+# --------------------------------------------------------------------------- #
+
+
+def _week_rows(week_label, week_start, count, start_i=0):
+    return [_row(start_i + n, week_start=week_start, week_label=week_label) for n in range(count)]
+
+
+def _ok_resp_with_tombstones_skipped(entries, rows_added=1):
+    return _FakeResp(
+        {
+            "result": "ok",
+            "rowsAdded": rows_added,
+            "rowsUpdated": 0,
+            "duplicatesSkipped": 0,
+            "tombstonesWritten": 0,
+            "tombstonesSkipped": entries,
+        }
+    )
+
+
+def test_four_weeks_under_chunk_size_one_request_declares_all_four(monkeypatch):
+    weeks = ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
+    rows = []
+    for idx, week in enumerate(weeks):
+        rows += _week_rows(week, f"2026-07-{6 + idx:02d}", 2, start_i=idx * 2)
+    pull = _pull(from_week="2026-W28", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(rows_added=8), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(rows, pull, exec_url=PROD_URL, weeks_complete=weeks)
+
+    assert fake_post.call_count == 2  # one data request + the pulls marker
+    data_call = fake_post.calls[0]
+    assert len(data_call["json"]["rows"]) == 8
+    assert sorted(data_call["json"]["weeks_complete"]) == weeks
+    assert fake_post.calls[-1]["json"]["pull"] == pull
+
+
+def test_span_exceeding_chunk_size_packs_several_requests_each_declaring_carried_weeks(
+    monkeypatch,
+):
+    weeks = ["2026-W28", "2026-W29", "2026-W30", "2026-W31", "2026-W32"]
+    rows = []
+    for idx, week in enumerate(weeks):
+        rows += _week_rows(week, f"2026-07-{6 + idx:02d}", 4, start_i=idx * 4)
+    pull = _pull(from_week="2026-W28", to_week="2026-W32")
+    fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(rows, pull, exec_url=PROD_URL, chunk_size=10, weeks_complete=weeks)
+
+    assert fake_post.call_count == 4  # 3 data requests + the pulls marker
+    data_calls = fake_post.calls[:-1]
+    row_counts = [len(c["json"]["rows"]) for c in data_calls]
+    assert row_counts == [8, 8, 4]
+    declared = [set(c["json"].get("weeks_complete") or []) for c in data_calls]
+    assert declared == [
+        {"2026-W28", "2026-W29"},
+        {"2026-W30", "2026-W31"},
+        {"2026-W32"},
+    ]
+
+
+def test_single_week_over_chunk_size_splits_declared_in_no_request_and_warns(monkeypatch, capsys):
+    rows = _week_rows("2026-W31", "2026-07-27", 250)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(rows, pull, exec_url=PROD_URL, chunk_size=200, weeks_complete=["2026-W31"])
+
+    assert fake_post.call_count == 3  # 200 + 50 + the pulls marker
+    row_counts = [len(c["json"]["rows"]) for c in fake_post.calls[:-1]]
+    assert row_counts == [200, 50]
+    for call in fake_post.calls:
+        assert "2026-W31" not in (call["json"].get("weeks_complete") or [])
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "WARNING" in output
+    assert "2026-W31" in output
+    assert "250" in output
+
+
+def test_weeks_complete_none_declares_nothing_in_every_request(monkeypatch):
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+
+    assert all(not c["json"].get("weeks_complete") for c in fake_post.calls)
+    assert all(not c["json"].get("weeks_verified_empty") for c in fake_post.calls)
+
+
+def test_complete_fetch_with_zero_row_week_emits_rows_empty_request_declaring_both(monkeypatch):
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(rows_added=0), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(
+        [], pull, exec_url=PROD_URL, weeks_complete=["2026-W31"], weeks_verified_empty=["2026-W31"]
+    )
+
+    assert fake_post.call_count == 2
+    data_call = fake_post.calls[0]
+    assert data_call["json"]["rows"] == []
+    assert data_call["json"]["weeks_complete"] == ["2026-W31"]
+    assert data_call["json"]["weeks_verified_empty"] == ["2026-W31"]
+    assert fake_post.calls[-1]["json"]["pull"] == pull
+
+
+def test_tombstones_skipped_response_prints_warning_and_does_not_raise(monkeypatch, capsys):
+    fake_post = _FakePost(
+        [
+            _ok_resp_with_tombstones_skipped(
+                [{"week": "2026-W31", "wouldHaveWritten": 5, "present": 5}]
+            ),
+            _ok_resp(),
+        ]
+    )
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    result = ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+
+    assert result["result"] == "ok"
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "WARNING" in output
+    assert "2026-W31" in output
+    assert "5" in output
+
+
+def test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_counts(
+    monkeypatch,
+):
+    """Property, not just examples: for every declared week in every request,
+    the row count carried in THAT request equals the week's total mapped row
+    count — guards against the C1 bug class returning if a chunk boundary
+    ever lands mid-week while the week is still declared complete."""
+    scenarios = [
+        {"chunk_size": 5, "week_counts": [("2026-W01", 3), ("2026-W02", 2), ("2026-W03", 4)]},
+        {
+            "chunk_size": 10,
+            "week_counts": [("2026-W10", 7), ("2026-W11", 1), ("2026-W12", 1), ("2026-W13", 1)],
+        },
+        {"chunk_size": 3, "week_counts": [("2026-W20", 6)]},
+    ]
+
+    for scenario in scenarios:
+        full_counts = dict(scenario["week_counts"])
+        rows = []
+        start_i = 0
+        for week, count in scenario["week_counts"]:
+            rows += _week_rows(week, "2026-07-27", count, start_i=start_i)
+            start_i += count
+        weeks_complete_param = [week for week, _ in scenario["week_counts"]]
+        pull = _pull(from_week=weeks_complete_param[0], to_week=weeks_complete_param[-1])
+
+        fake_post = _FakePost([_ok_resp() for _ in range(20)])
+        monkeypatch.setattr(requests, "post", fake_post)
+
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            chunk_size=scenario["chunk_size"],
+            weeks_complete=weeks_complete_param,
+        )
+
+        data_calls = [c for c in fake_post.calls if not c["json"].get("pull")]
+        for call in data_calls:
+            declared = call["json"].get("weeks_complete") or []
+            request_counts = Counter(r["week_label"] for r in call["json"]["rows"])
+            for week in declared:
+                assert request_counts.get(week, 0) == full_counts[week]
