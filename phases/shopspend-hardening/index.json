@@ -282,7 +282,20 @@
       "covers": [
         "PRD-7"
       ],
-      "started_at": "2026-08-05T10:19:24+0900"
+      "started_at": "2026-08-05T10:19:24+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "python -m pytest connectors/shopspend -q",
+          "exit_code": 1,
+          "output_tail": ".................F...................................................... [ 67%]\n...................................                                      [100%]\n================================== FAILURES ===================================\n______ test_paging_zero_returned_before_matched_raises_no_progress_error ______\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021F8CCA6330>\n\n    def test_paging_zero_returned_before_matched_raises_no_progress_error(monkeypatch):\n        \"\"\"The regression itself: returned=0 with offset(0) < matched(10) must\n        raise, naming the stuck offset and the known matched count, instead of\n        re-requesting the same offset forever. Only one response is queued � a\n        client that still loops calls requests.get() a second time, and the\n        bounded fake transport raises IndexError immediately instead of hanging\n        the suite for the real 2-hour task limit.\"\"\"\n        page = _page_body([], matched=10, offset=0)\n        fake_get = _FakeGet([_FakeResponse(json_body=page)])\n        monkeypatch.setattr(requests, \"get\", fake_get)\n        conn = _client()\n    \n        with pytest.raises(client.ShopSpendError) as exc_info:\n>           conn.fetch()\n\nconnectors\\shopspend\\test_client.py:478: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\nconnectors\\shopspend\\client.py:116: in fetch\n    body = self._request(params)\n           ^^^^^^^^^^^^^^^^^^^^^\nconnectors\\shopspend\\client.py:163: in _request\n    resp = requests.get(\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n\nself = <shopspend.test_client._FakeGet object at 0x0000021F8CCA50D0>\nurl = 'https://script.google.com/macros/s/FAKE_DEPLOYMENT_ID/exec'\nparams = {'api': 'shopSpend', 'token': 'super-secret-token-xyz', 'include': 'rows,summary', 'offset': 0}\ntimeout = 30, allow_redirects = True\n\n    def __call__(self, url, params=None, timeout=None, allow_redirects=None):\n        self.calls.append(\n            {\"url\": url, \"params\": params, \"timeout\": timeout, \"allow_redirects\": allow_redirects}\n        )\n>       item = self._responses.pop(0)\n               ^^^^^^^^^^^^^^^^^^^^^^\nE       IndexError: pop from empty list\n\nconnectors\\shopspend\\test_client.py:184: IndexError\n=========================== short test summary info ===========================\nFAILED connectors/shopspend/test_client.py::test_paging_zero_returned_before_matched_raises_no_progress_error\n1 failed, 106 passed in 1.38s\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "Test correctly fails with IndexError when client re-requests instead of raising ShopSpendError on no-progress. Implementation is incomplete: fetch() does not yet detect when returned=0 but matched>0 and raise the required exception."
+          },
+          "at": "2026-08-05T10:22:03+0900"
+        }
+      },
+      "tdd_state": "red_done"
     }
   ],
   "created_at": "2026-08-05T08:32:12+0900"
