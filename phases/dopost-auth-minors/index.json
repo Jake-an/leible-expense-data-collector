@@ -39,7 +39,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-05T14:24:10+0900"
+      "completed_at": "2026-08-05T14:24:10+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/dopost-auth-minors/step0-review.json",
+        "checked_at": "2026-08-05T14:25:49+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 1,
@@ -48,7 +58,8 @@
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [],
-      "covers_reason": "approved-phase minors (week-label 01-53 bound + degraded-log wording) — hardening of already-built PRD-7/PRD-8 behavior, no new user-facing requirement"
+      "covers_reason": "approved-phase minors (week-label 01-53 bound + degraded-log wording) — hardening of already-built PRD-7/PRD-8 behavior, no new user-facing requirement",
+      "started_at": "2026-08-05T14:25:49+0900"
     },
     {
       "step": 2,
