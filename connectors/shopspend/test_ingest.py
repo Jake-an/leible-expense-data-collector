@@ -688,3 +688,159 @@ def test_declared_weeks_excludes_split_weeks():
     declared = ingest.declared_weeks(rows, ["2026-W28", "2026-W29"], chunk_size=3)
 
     assert declared == ["2026-W28"], "a split week is posted undeclared, so it is not declared"
+
+
+# --------------------------------------------------------------------------- #
+# Step 3 — poster-token-degradation. GAS rejects any weeks_verified_empty
+# payload without a valid token (step 0). The poster resolves GAS_READ_TOKEN
+# once via bc.get_credential, attaches it only alongside weeks_verified_empty,
+# and degrades non-destructively (drops verified_empty, warns, keeps posting)
+# when the token is unresolvable — it must never raise or strand a partial
+# pull the way client.py's read path does.
+# --------------------------------------------------------------------------- #
+
+
+def test_token_attached_only_to_chunks_carrying_verified_empty(monkeypatch):
+    rows = _week_rows("2026-W28", "2026-07-06", 3, start_i=0) + _week_rows(
+        "2026-W29", "2026-07-13", 3, start_i=100
+    )
+    pull = _pull(from_week="2026-W28", to_week="2026-W29")
+    fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(
+        bc, "get_credential", lambda name: "test-token" if name == "GAS_READ_TOKEN" else None
+    )
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        chunk_size=3,
+        weeks_complete=["2026-W28", "2026-W29"],
+        weeks_verified_empty=["2026-W29"],
+    )
+
+    data_calls = _data_requests(fake_post)
+    assert len(data_calls) == 2, "scenario must span more than one chunk to be meaningful"
+
+    with_field = [c for c in data_calls if c.get("weeks_verified_empty")]
+    without_field = [c for c in data_calls if not c.get("weeks_verified_empty")]
+    assert len(with_field) == 1
+    assert len(without_field) == 1
+    assert with_field[0]["token"] == "test-token"
+    assert "token" not in without_field[0]
+
+    # The pull-marker request never carries weeks_verified_empty, so it must
+    # never carry a token either.
+    assert "token" not in fake_post.calls[-1]["json"]
+
+
+def test_token_not_attached_when_no_verified_empty_weeks(monkeypatch):
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
+
+    ingest.post_pull([_row()], _pull(), exec_url=PROD_URL, weeks_complete=["2026-W31"])
+
+    assert all("token" not in c["json"] for c in fake_post.calls)
+
+
+def test_missing_token_drops_verified_empty_and_warns_once(monkeypatch, capsys):
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    assert fake_post.call_count == 2, "no exception, no partial send — every expected POST happens"
+    for call in fake_post.calls:
+        assert "weeks_verified_empty" not in call["json"]
+        assert "token" not in call["json"]
+    # weeks_complete itself is untouched — only the verified-empty declaration
+    # (and the tombstone bypass it authorises) is lost, never the data.
+    assert fake_post.calls[0]["json"]["weeks_complete"] == ["2026-W31"]
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert output.count("GAS_READ_TOKEN") == 1
+    assert "WARNING" in output
+
+
+def test_missing_token_with_no_verified_empty_weeks_does_not_warn(monkeypatch, capsys):
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "GAS_READ_TOKEN" not in output
+
+
+def test_degraded_pull_marker_records_warning_in_pull_dict(monkeypatch):
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    assert marker_pull["warnings_count"] == 1
+    assert "GAS_READ_TOKEN" in marker_pull["warnings"]
+
+
+def test_healthy_pull_marker_does_not_record_degradation_warning(monkeypatch):
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    assert marker_pull["warnings_count"] == 0
+    assert "GAS_READ_TOKEN" not in marker_pull["warnings"]
+
+
+def test_token_value_never_printed(monkeypatch, capsys):
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    captured = capsys.readouterr()
+    assert "test-token" not in captured.out
+    assert "test-token" not in captured.err

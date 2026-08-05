@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All three failures are assertion failures in the implementation, not test code errors. Test 1 expects token field in payload (KeyError—field missing). Test 2 expects weeks_verified_empty to be dropped when token is None (AssertionError—it's present). Test 3 expects warnings_count=1 when token missing (AssertionError—it's 0). These are genuine unimplemented behaviors: token attachment logic, conditional field dropping based on auth state, and warning recording on degraded pull. 130/133 passing confirms test infrastructure is sound."
+}

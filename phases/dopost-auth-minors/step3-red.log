@@ -1,0 +1,94 @@
+........................................................................ [ 54%]
+.........F.F.F...............................................            [100%]
+================================== FAILURES ===================================
+_________ test_token_attached_only_to_chunks_carrying_verified_empty __________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000173BCA989B0>
+
+    def test_token_attached_only_to_chunks_carrying_verified_empty(monkeypatch):
+        rows = _week_rows("2026-W28", "2026-07-06", 3, start_i=0) + _week_rows(
+            "2026-W29", "2026-07-13", 3, start_i=100
+        )
+        pull = _pull(from_week="2026-W28", to_week="2026-W29")
+        fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+        monkeypatch.setattr(
+            bc, "get_credential", lambda name: "test-token" if name == "GAS_READ_TOKEN" else None
+        )
+    
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            chunk_size=3,
+            weeks_complete=["2026-W28", "2026-W29"],
+            weeks_verified_empty=["2026-W29"],
+        )
+    
+        data_calls = _data_requests(fake_post)
+        assert len(data_calls) == 2, "scenario must span more than one chunk to be meaningful"
+    
+        with_field = [c for c in data_calls if c.get("weeks_verified_empty")]
+        without_field = [c for c in data_calls if not c.get("weeks_verified_empty")]
+        assert len(with_field) == 1
+        assert len(without_field) == 1
+>       assert with_field[0]["token"] == "test-token"
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'token'
+
+connectors\shopspend\test_ingest.py:730: KeyError
+___________ test_missing_token_drops_verified_empty_and_warns_once ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000173BCAFEED0>
+capsys = <_pytest.capture.CaptureFixture object at 0x00000173BCAFFC50>
+
+    def test_missing_token_drops_verified_empty_and_warns_once(monkeypatch, capsys):
+        rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+        pull = _pull(from_week="2026-W31", to_week="2026-W31")
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+        monkeypatch.setattr(bc, "get_credential", lambda name: None)
+    
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            weeks_complete=["2026-W31"],
+            weeks_verified_empty=["2026-W31"],
+        )
+    
+        assert fake_post.call_count == 2, "no exception, no partial send � every expected POST happens"
+        for call in fake_post.calls:
+>           assert "weeks_verified_empty" not in call["json"]
+E           AssertionError: assert 'weeks_verified_empty' not in {'source': 'shopspend', 'kind': 'shopspend', 'rows': [{'shop_id': 'shop-0', 'week_label': '2026-W31', 'week_start': '2...26-W31', 'week_start': '2026-07-27', 'week_end': '2026-08-02', ...}], 'extracted_at': '2026-08-05T15:44:44+10:00', ...}
+
+connectors\shopspend\test_ingest.py:765: AssertionError
+___________ test_degraded_pull_marker_records_warning_in_pull_dict ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000173BCAFEE10>
+
+    def test_degraded_pull_marker_records_warning_in_pull_dict(monkeypatch):
+        rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+        pull = _pull(from_week="2026-W31", to_week="2026-W31")
+        fake_post = _FakePost([_ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+        monkeypatch.setattr(bc, "get_credential", lambda name: None)
+    
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            weeks_complete=["2026-W31"],
+            weeks_verified_empty=["2026-W31"],
+        )
+    
+        marker_pull = fake_post.calls[-1]["json"]["pull"]
+>       assert marker_pull["warnings_count"] == 1
+E       assert 0 == 1
+
+connectors\shopspend\test_ingest.py:805: AssertionError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_ingest.py::test_token_attached_only_to_chunks_carrying_verified_empty
+FAILED connectors/shopspend/test_ingest.py::test_missing_token_drops_verified_empty_and_warns_once
+FAILED connectors/shopspend/test_ingest.py::test_degraded_pull_marker_records_warning_in_pull_dict
+3 failed, 130 passed in 1.92s
