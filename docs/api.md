@@ -137,6 +137,17 @@ shop-weeks (below the floor, a small ordinary closure — e.g. 2 of 3 shops —
 always writes). A week named in `weeks_verified_empty` is exempt from the
 breaker (see `docs/schema.md`).
 
+**Write-side auth.** Any `doPost` payload carrying `weeks_verified_empty` must include `token`
+(in the JSON body, not the query string) matching the `API_READ_TOKEN` Script Property — the
+same secret the `doGet` side checks above. Missing or wrong token →
+`{ "result": "error", "message": "unauthorized" }`. Every other `doPost` payload (suppliers,
+revenue, Square, or a shopspend chunk that carries no `weeks_verified_empty`) stays tokenless.
+This gate covers the anonymous network surface only — the Apps Script editor path called out
+below still bypasses it. When the Python poster (`connectors/shopspend/ingest.py`) cannot
+resolve `GAS_READ_TOKEN`, it drops `weeks_verified_empty` from the request (tombstone bypass
+skipped, a warning printed to stderr and recorded on the pull marker) rather than failing the
+pull.
+
 **What backs that exemption — read this before trusting it.** The connector
 does *not* positively confirm a week is empty upstream. It derives
 `weeks_verified_empty` as `spanned weeks − weeks that returned rows`, and only
@@ -166,8 +177,12 @@ curl -sL "$GAS_EXEC_URL" \
   -d '{"source":"shopspend","kind":"shopspend","rows":[],
        "extracted_at":"2026-08-05T09:00:00+10:00",
        "weeks_complete":["2026-W31"],
-       "weeks_verified_empty":["2026-W31"]}'
+       "weeks_verified_empty":["2026-W31"],
+       "token":"'"$GAS_READ_TOKEN"'"}'
 ```
+
+(Still a bare `curl -sL -d` — do not add `-X POST` or a `Content-Type` header; either one
+mis-probes the endpoint and produces a misleading 411/Drive-404 on an otherwise healthy `/exec`.)
 
 This is the same exemption path a genuinely empty week uses, applied by Jake's
 deliberate confirmation rather than the client's word alone.

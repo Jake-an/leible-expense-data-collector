@@ -20,48 +20,16 @@
 
 ### shopspend-hardening — 4 minors carried out of the approved phase (2026-08-05)
 Phase-end gate returned **approve**; these were noted, not blocking. None is a correctness bug.
+All four closed by phase `dopost-auth-minors` (2026-08-05):
 
-- [ ] `runner.py` `compute_weeks_complete`: the `paging.truncated` branch is the only zero-declare
-      path that returns without printing a `WARNING`. Its five siblings all warn. A truncated
-      response therefore disables tombstoning silently.
-- [ ] `connectors/gas/shopspend.gs:85`: the degraded-mode log says "tombstoning skipped entirely
-      for this pull", but `ingestShopSpendRows` is per-**request**. Split weeks and undeclared
-      weeks are deliberately posted in requests carrying no `weeks_complete`, so this fires on
-      every such chunk of a normal pull and reads far more alarming than it is. Reword to "for
-      this request".
-- [ ] `connectors/gas/Code.gs:208` `isValidWeekLabelArray_` accepts `2026-W00` / `2026-W54..W99`.
-      The Python CLI now bounds the week number to 01-53; **GAS is the destructive side**, so the
-      stricter check belongs there too. Cheap one-line regex fix — deliberately not made after the
-      phase closed, so the committed diff still matches what was reviewed.
-- [ ] `docs/api.md:165` — the documented remediation curl is a breaker-bypass primitive reachable
-      by any unauthenticated caller who knows the `/exec` URL. Resolved by the decision below.
-
-### 🔒 DECISION NEEDED — `doPost` is unauthenticated and now carries a destructive field
-Raised by the `shopspend-hardening` phase-end review (round 3), **not fixed in that phase** —
-it changes the ingest contract for every connector, so it is Jake's call.
-
-`appsscript.json` is `access: ANYONE_ANONYMOUS` / `executeAs: USER_DEPLOYING`. `doGet` is
-token-gated (`checkReadToken_`, `Code.gs:1471`); **`doPost` has no equivalent check.** Before this
-phase the worst an anonymous POST could do was append rows — self-correcting on the next pull.
-The phase added `weeks_verified_empty`, whose entire purpose is to *bypass* the blast-radius
-breaker, so a single anonymous POST now zeroes every present shop-week in a named week:
-
-```
-{"kind":"shopspend","rows":[],"weeks_complete":["2026-W31"],"weeks_verified_empty":["2026-W31"]}
-```
-
-`docs/api.md` publishes that exact curl as the mass-absence remediation procedure.
-
-Options, cheapest first:
-- **(a) Gate only `weeks_verified_empty` on a shared token.** Closes the new destructive surface;
-  no existing connector changes, since none sends the field. Needs one GAS script property + the
-  same secret in `.env`. ← recommended
-- **(b) Gate all of `doPost` on a token.** Closes the whole hole, but every connector
-  (suppliers, revenue, Square, shopSpend) must send it in lockstep or ingest breaks.
-- **(c) Accept the risk** — the `/exec` URL is unpublished and the blast radius self-heals on the
-  next good pull. Record the decision here so it is deliberate rather than forgotten.
-
-Blocks nothing except the phase-end gate's `approve`.
+- [x] `runner.py` `compute_weeks_complete`: the `paging.truncated` branch now prints the same
+      `WARNING` its five siblings do (step 2).
+- [x] `connectors/gas/shopspend.gs:85`: degraded-mode log reworded to "for this request" (step 1).
+- [x] `connectors/gas/Code.gs:208` `isValidWeekLabelArray_` now bounds the week number to 01-53
+      (step 1).
+- [x] `docs/api.md` — remediation curl gated on `token`; write-side auth documented (step 4).
+- [x] doPost auth decision: option (a) — `weeks_verified_empty` token-gated on `API_READ_TOKEN`
+      (phase `dopost-auth-minors`, 2026-08-05).
 
 
 ### Roastery department — ✅ MIGRATED + DEPLOYED 2026-08-03 (version 23)

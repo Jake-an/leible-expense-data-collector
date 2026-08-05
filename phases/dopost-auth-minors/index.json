@@ -171,7 +171,8 @@
     {
       "step": 4,
       "name": "docs-closeout",
-      "status": "pending",
+      "status": "completed",
+      "summary": "docs/api.md documents the doPost write-side token gate + poster degradation and adds $GAS_READ_TOKEN to the remediation curl; TODO.md's DECISION NEEDED block and 4 minors closed; 827/827 GAS + 133/133 pytest unchanged.",
       "tdd": false,
       "tdd_reason": "docs/api.md + TODO.md bookkeeping only, no executable logic",
       "covers": [],
@@ -179,7 +180,8 @@
       "docs": [
         "api.md"
       ],
-      "started_at": "2026-08-05T14:51:36+0900"
+      "started_at": "2026-08-05T14:51:36+0900",
+      "completed_at": "2026-08-05T16:00:00+0900"
     }
   ],
   "created_at": "2026-08-05T14:20:17+0900"
