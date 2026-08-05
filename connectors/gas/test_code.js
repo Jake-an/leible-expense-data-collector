@@ -4409,6 +4409,142 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     unknownFnBadToken.message, 'unauthorized');
 })();
 
+/* ------------------------------------------------------------------ *
+ * doPost — weeks_verified_empty token gate (step 0: dopost-token-gate)
+ * ------------------------------------------------------------------ */
+
+(function testDoPostWeeksVerifiedEmptyTokenGate() {
+  console.log('\ndoPost — weeks_verified_empty token gate (step 0):');
+
+  function tokenGateRow(overrides) {
+    return Object.assign({
+      date: '2026-07-27', shop_id: 'shop_1', week_label: '2026-W31',
+      week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1, total_ex_gst: 500, gst: 0, total_inc_gst: 500
+    }, overrides);
+  }
+
+  var savedProps;
+
+  // --- weeks_verified_empty present, no token field → unauthorized --------
+  savedProps = scriptProps;
+  scriptProps = { API_READ_TOKEN: 'test-token' };
+  freshSheets();
+  var noToken = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31']
+  });
+  eq('no token field: result error', noToken.result, 'error');
+  eq('no token field: message unauthorized', noToken.message, 'unauthorized');
+  scriptProps = savedProps;
+
+  // --- weeks_verified_empty present, wrong token → unauthorized -----------
+  savedProps = scriptProps;
+  scriptProps = { API_READ_TOKEN: 'test-token' };
+  freshSheets();
+  var wrongToken = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31'],
+    token: 'wrong-token'
+  });
+  eq('wrong token: result error', wrongToken.result, 'error');
+  eq('wrong token: message unauthorized', wrongToken.message, 'unauthorized');
+  scriptProps = savedProps;
+
+  // --- weeks_verified_empty present, correct token → processing proceeds --
+  savedProps = scriptProps;
+  scriptProps = { API_READ_TOKEN: 'test-token' };
+  freshSheets();
+  var correctToken = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31'],
+    token: 'test-token'
+  });
+  eq('correct token: result ok', correctToken.result, 'ok');
+  check('correct token: tombstonesWritten present', 'tombstonesWritten' in correctToken);
+  check('correct token: tombstonesSkipped present', 'tombstonesSkipped' in correctToken);
+  scriptProps = savedProps;
+
+  // --- weeks_verified_empty: [] present but empty, no token → unauthorized
+  //     (presence-gated, not content-gated) ---------------------------------
+  savedProps = scriptProps;
+  scriptProps = { API_READ_TOKEN: 'test-token' };
+  freshSheets();
+  var emptyArrayNoToken = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: [], weeks_verified_empty: []
+  });
+  eq('empty weeks_verified_empty array, no token: result error', emptyArrayNoToken.result, 'error');
+  eq('empty weeks_verified_empty array, no token: still unauthorized',
+    emptyArrayNoToken.message, 'unauthorized');
+  scriptProps = savedProps;
+
+  // --- field absent, no token, shopspend rows + weeks_complete → unaffected
+  savedProps = scriptProps;
+  scriptProps = {};
+  freshSheets();
+  var absentShopspend = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS',
+    rows: [tokenGateRow()], weeks_complete: ['2026-W31']
+  });
+  eq('field absent, shopspend payload: result ok', absentShopspend.result, 'ok');
+  scriptProps = savedProps;
+
+  // --- field absent, no token, kind suppliers → unaffected -----------------
+  savedProps = scriptProps;
+  scriptProps = {};
+  freshSheets();
+  var absentSuppliers = doPostJson({
+    source: 'food_dairy_co', kind: 'suppliers', extracted_at: 'TS',
+    rows: [{ date: '2026-07-27', total: 10, invoice_ref: 'GATE-1' }]
+  });
+  eq('field absent, suppliers payload: result ok', absentSuppliers.result, 'ok');
+  scriptProps = savedProps;
+
+  // --- API_READ_TOKEN unset, field present, any token → unauthorized
+  //     (fail-closed) -------------------------------------------------------
+  savedProps = scriptProps;
+  scriptProps = {};
+  freshSheets();
+  var unsetProp = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31'],
+    token: 'any-token-at-all'
+  });
+  eq('property unset: result error', unsetProp.result, 'error');
+  eq('property unset: message unauthorized (fail-closed)', unsetProp.message, 'unauthorized');
+  scriptProps = savedProps;
+
+  // --- auth precedes validation: malformed weeks_verified_empty, no token
+  //     → unauthorized, NOT the validation message ---------------------------
+  savedProps = scriptProps;
+  scriptProps = { API_READ_TOKEN: 'test-token' };
+  freshSheets();
+  var malformedNoToken = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W31'], weeks_verified_empty: 'not-an-array'
+  });
+  eq('malformed weeks_verified_empty, no token: result error', malformedNoToken.result, 'error');
+  eq('malformed weeks_verified_empty, no token: unauthorized (not validation error)',
+    malformedNoToken.message, 'unauthorized');
+  scriptProps = savedProps;
+
+  // --- same malformed payload WITH the correct token → gate passes through,
+  //     validation error surfaces -------------------------------------------
+  savedProps = scriptProps;
+  scriptProps = { API_READ_TOKEN: 'test-token' };
+  freshSheets();
+  var malformedWithToken = doPostJson({
+    source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W31'], weeks_verified_empty: 'not-an-array',
+    token: 'test-token'
+  });
+  eq('malformed weeks_verified_empty, correct token: result error', malformedWithToken.result, 'error');
+  eq('malformed weeks_verified_empty, correct token: validation error surfaces',
+    malformedWithToken.message, 'invalid weeks_verified_empty');
+  scriptProps = savedProps;
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

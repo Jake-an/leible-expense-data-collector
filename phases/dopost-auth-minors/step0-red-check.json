@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "9 assertion failures in the token gate tests (no token, wrong token, property unset, malformed input without token) — all testing that doPost should reject unauthenticated requests. The test code is sound (811/820 tests pass); the failures are legitimate: the token validation logic is not yet implemented."}
