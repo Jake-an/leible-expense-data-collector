@@ -100,7 +100,20 @@
       "test_cmd": "pytest connectors/shopspend -q",
       "covers": [],
       "covers_reason": "approved-phase minor — stderr WARNING parity on an existing zero-declare branch, no new user-facing requirement",
-      "started_at": "2026-08-05T14:35:12+0900"
+      "started_at": "2026-08-05T14:35:12+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "pytest connectors/shopspend -q",
+          "exit_code": 1,
+          "output_tail": "........................................................................ [ 57%]\n...........................F..........................                   [100%]\n================================== FAILURES ===================================\n_________ test_gate_truncated_response_declares_zero_weeks_and_warns __________\n\ncapsys = <_pytest.capture.CaptureFixture object at 0x000002A0BEA495E0>\n\n    def test_gate_truncated_response_declares_zero_weeks_and_warns(capsys):\n        rows = [_shop_row(\"2026-W31\")]\n        response = _gate_response(rows, matched=1, truncated=True)\n        pull = {\"from_week\": \"2026-W31\", \"to_week\": \"2026-W31\"}\n    \n        weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(\n            response, pull, _mapped(rows)\n        )\n    \n        assert weeks_complete == []\n        assert weeks_verified_empty == []\n        captured = capsys.readouterr()\n>       assert \"[shopspend] WARNING:\" in captured.err\nE       AssertionError: assert '[shopspend] WARNING:' in ''\nE        +  where '' = CaptureResult(out='', err='').err\n\nconnectors\\shopspend\\test_runner.py:474: AssertionError\n=========================== short test summary info ===========================\nFAILED connectors/shopspend/test_runner.py::test_gate_truncated_response_declares_zero_weeks_and_warns\n1 failed, 125 passed in 1.95s\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "Test correctly detects missing warning emission. When response.truncated=True, compute_weeks_complete should print a warning to stderr, but currently does not. Implementation incomplete — test is well-formed and 125 others pass."
+          },
+          "at": "2026-08-05T14:36:53+0900"
+        }
+      },
+      "tdd_state": "red_done"
     },
     {
       "step": 3,
