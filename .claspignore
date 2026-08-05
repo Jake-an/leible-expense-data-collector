@@ -2,3 +2,10 @@
 # process and is never run inside GAS). Patterns are relative to rootDir.
 **/test_code.js
 **/*.test.js
+
+# Harness artifacts must never reach the Apps Script project. .clasp.json sets
+# skipSubdirectories:false and jsonExtensions:[".json"], so a step*-red-check.json
+# written with the wrong cwd under rootDir would otherwise be pushed live.
+**/phases/**
+**/*.log
+**/*.md
