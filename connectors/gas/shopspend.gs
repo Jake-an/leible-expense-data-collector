@@ -82,7 +82,7 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull,
   }
 
   if (!Array.isArray(weeksComplete) && normalizedRows.length > 0) {
-    Logger.log('ingestShopSpendRows: weeks_complete absent — tombstoning skipped entirely for this pull (source=' + source + ')');
+    Logger.log('ingestShopSpendRows: weeks_complete absent — tombstoning skipped entirely for this request (source=' + source + ')');
   }
 
   // 1. Build latest-snapshot index: for each (shop_id, week_label) key,

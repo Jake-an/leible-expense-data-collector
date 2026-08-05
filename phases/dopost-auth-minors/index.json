@@ -54,7 +54,8 @@
     {
       "step": 1,
       "name": "gas-minors",
-      "status": "pending",
+      "status": "completed",
+      "summary": "isValidWeekLabelArray_ bounds week to 01-53 (parseInt check, already in tree from a prior session — verified non-vacuous by revert/re-test); shopspend.gs:85 wording now 'for this request'; 827/827 tests pass.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [],
@@ -70,9 +71,17 @@
             "reason": "isValidWeekLabelArray_ does not validate week range (01-53 ISO). Currently accepts W00/W54/W99 when regex only checks 2-digit format. Missing validation causes validateIngest_ to accept invalid weeks_complete/weeks_verified_empty payloads when they should be rejected with 'invalid weeks_complete'/'invalid weeks_verified_empty' messages. Failure is in implementation logic, not test code or config."
           },
           "at": "2026-08-05T14:30:03+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "827 passed, 0 failed",
+          "note": "Week-bound fix was already present in the tree ahead of this step's RED commit (prior-session artifact, commit 529207d). Non-vacuity of RED confirmed by temporarily reverting the parseInt-bound hunk in Code.gs, re-running (823 passed, 4 failed — the exact 4 target cases), then restoring it.",
+          "at": "2026-08-05T15:40:00+1000"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T15:40:00+1000"
     },
     {
       "step": 2,
