@@ -544,6 +544,244 @@ def test_log_output_never_contains_token_or_full_url(monkeypatch, capsys):
 
 
 # --------------------------------------------------------------------------- #
+# Step 5 — fatal-path redaction hardening (defects I2 + I3)
+#
+# I2: client.py:195's fatal raise (`raise ShopSpendError(code=error_code,
+# detail=detail)`) is the one raising branch that skips `self._redact(...)`,
+# unlike its siblings at 166, 172 and 191.
+#
+# I3: `_redact` (lines 51-54) is a plain `text.replace(token, "***")` — but
+# `resp.url` carries the token percent-encoded, so a token containing `+`,
+# `/` or `=` changes form under quoting and survives raw-substring redaction
+# untouched.
+# --------------------------------------------------------------------------- #
+
+
+def test_fatal_unauthorized_detail_echoing_token_is_redacted(monkeypatch, fake_sleep):
+    """I2 — the fatal branch must redact `detail` exactly like every sibling
+    error path already does."""
+    fake_get = _FakeGet(
+        [
+            _FakeResponse(
+                json_body={
+                    "ok": False,
+                    "error": "UNAUTHORIZED",
+                    "detail": f"token {PROD_TOKEN} rejected",
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    with pytest.raises(client.ShopSpendError) as exc_info:
+        conn.fetch()
+
+    assert PROD_TOKEN not in str(exc_info.value)
+    assert PROD_TOKEN not in (exc_info.value.detail or "")
+    assert "***" in str(exc_info.value)
+
+
+def test_percent_encoded_token_is_redacted_from_url():
+    """I3 — a token containing +, / and = appears percent-encoded in
+    resp.url; _redact must strip that encoded form too, not just the raw
+    token. Expected URL is built via requests' own prepare(), never a
+    hand-rolled quote() (a different safe set would prove nothing)."""
+    tricky_token = "ab+cd/ef=gh"
+    prepared_url = (
+        requests.Request("GET", PROD_URL, params={"api": "shopSpend", "token": tricky_token})
+        .prepare()
+        .url
+    )
+    assert tricky_token not in prepared_url  # sanity: prepare() really did encode it
+
+    redacted = client._redact(prepared_url, tricky_token)
+
+    assert "***" in redacted
+    assert tricky_token not in redacted
+    # every percent-encoded fragment produced by prepare() must be gone too
+    assert "%2B" not in redacted
+    assert "%2F" not in redacted
+    assert "%3D" not in redacted
+
+
+def test_client_redacts_percent_encoded_token_from_response_url(monkeypatch, fake_sleep):
+    """Same defect as above, exercised end-to-end through the client's
+    non-JSON retry path (client.py:172-174), which embeds resp.url verbatim
+    into the redacted error message."""
+    tricky_token = "ab+cd/ef=gh"
+    prepared_url = requests.Request("GET", PROD_URL, params={"token": tricky_token}).prepare().url
+    fake_get = _FakeGet(
+        [
+            _FakeResponse(json_raises=True, text="<html>Page not found</html>", url=prepared_url)
+            for _ in range(6)
+        ]
+    )
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client(token=tricky_token)
+
+    with pytest.raises(client.ShopSpendTransientError) as exc_info:
+        conn.fetch()
+
+    rendered = str(exc_info.value)
+    assert tricky_token not in rendered
+    assert "%2B" not in rendered
+    assert "%2F" not in rendered
+    assert "%3D" not in rendered
+    assert "***" in rendered
+
+
+def test_url_safe_token_still_redacted_no_regression():
+    """A token with no characters that need percent-encoding must still be
+    caught — the percent-encoded path is additive, not a replacement for
+    the raw-substring path."""
+    safe_token = PROD_TOKEN
+    prepared_url = (
+        requests.Request("GET", PROD_URL, params={"api": "shopSpend", "token": safe_token})
+        .prepare()
+        .url
+    )
+
+    redacted = client._redact(prepared_url, safe_token)
+
+    assert safe_token not in redacted
+    assert "***" in redacted
+
+
+def test_fatal_path_does_not_echo_raw_response_body(monkeypatch):
+    """The fatal branch must never fall back to resp.text — a `[:200]` slice
+    can bisect a token mid-string, and no redaction pass can catch a
+    fragment. Only the parsed JSON `detail` field may appear, and it must be
+    redacted (I2)."""
+    raw_html_with_token = f"<html>error token={PROD_TOKEN} rejected</html>"
+    fake_get = _FakeGet(
+        [
+            _FakeResponse(
+                json_body={
+                    "ok": False,
+                    "error": "UNAUTHORIZED",
+                    "detail": f"see body for {PROD_TOKEN}",
+                },
+                text=raw_html_with_token,
+                url=f"{PROD_URL}?api=shopSpend&token={PROD_TOKEN}",
+            )
+        ]
+    )
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    with pytest.raises(client.ShopSpendError) as exc_info:
+        conn.fetch()
+
+    rendered = str(exc_info.value)
+    assert PROD_TOKEN not in rendered
+    assert raw_html_with_token not in rendered
+    assert "<html>" not in rendered
+
+
+def _fatal_unauthorized_leak():
+    return (
+        [
+            _FakeResponse(
+                json_body={"ok": False, "error": "UNAUTHORIZED", "detail": f"tok {PROD_TOKEN}"}
+            )
+        ],
+        client.ShopSpendError,
+    )
+
+
+def _fatal_bad_request_leak():
+    return (
+        [
+            _FakeResponse(
+                json_body={"ok": False, "error": "BAD_REQUEST", "detail": f"tok {PROD_TOKEN}"}
+            )
+        ],
+        client.ShopSpendError,
+    )
+
+
+def _fatal_schema_leak():
+    return (
+        [_FakeResponse(json_body={"ok": False, "error": "SCHEMA", "detail": f"tok {PROD_TOKEN}"})],
+        client.ShopSpendError,
+    )
+
+
+def _fatal_unrecognized_code_leak():
+    return (
+        [
+            _FakeResponse(
+                json_body={"ok": False, "error": "SOME_FUTURE_CODE", "detail": f"tok {PROD_TOKEN}"}
+            )
+        ],
+        client.ShopSpendError,
+    )
+
+
+def _transport_exhausted_leak():
+    boom = requests.ConnectionError(f"conn failed {PROD_URL}?token={PROD_TOKEN}")
+    return ([boom] * 6, client.ShopSpendTransientError)
+
+
+def _non_json_exhausted_leak():
+    resp = _FakeResponse(
+        json_raises=True, text="<html>nf</html>", url=f"{PROD_URL}?api=shopSpend&token={PROD_TOKEN}"
+    )
+    return ([resp] * 6, client.ShopSpendTransientError)
+
+
+def _internal_exhausted_leak():
+    resp = _FakeResponse(
+        json_body={
+            "ok": False,
+            "error": "INTERNAL",
+            "detail": f"tok {PROD_TOKEN}",
+            "traceId": "trace-1",
+        }
+    )
+    return ([resp] * 6, client.ShopSpendTransientError)
+
+
+@pytest.mark.parametrize(
+    "make_responses",
+    [
+        _fatal_unauthorized_leak,
+        _fatal_bad_request_leak,
+        _fatal_schema_leak,
+        _fatal_unrecognized_code_leak,
+        _transport_exhausted_leak,
+        _non_json_exhausted_leak,
+        _internal_exhausted_leak,
+    ],
+    ids=[
+        "fatal-unauthorized",
+        "fatal-bad-request",
+        "fatal-schema",
+        "fatal-unrecognized-code",
+        "transport-exhausted",
+        "non-json-exhausted",
+        "internal-exhausted",
+    ],
+)
+def test_every_raising_branch_redacts_the_token(monkeypatch, fake_sleep, make_responses):
+    """Parametrized across every branch in `_request` that can ultimately
+    raise — fatal codes (including an unrecognized one, which the fatal
+    branch also catches) and each retryable branch once its backoff ladder
+    is exhausted — so a future branch that forgets to redact fails this
+    suite instead of shipping a leak silently."""
+    responses, expected_exc = make_responses()
+    fake_get = _FakeGet(responses)
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    with pytest.raises(expected_exc) as exc_info:
+        conn.fetch()
+
+    assert PROD_TOKEN not in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- #
 # Fail closed on environment mismatch
 # --------------------------------------------------------------------------- #
 

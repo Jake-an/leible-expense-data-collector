@@ -18,6 +18,7 @@ import random
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -51,7 +52,11 @@ class ShopSpendTransientError(Exception):
 def _redact(text: str, token: str) -> str:
     if not text or not token:
         return text
-    return text.replace(token, "***")
+    redacted = text.replace(token, "***")
+    encoded_token = quote(token, safe="")
+    if encoded_token != token:
+        redacted = redacted.replace(encoded_token, "***")
+    return redacted
 
 
 def parse_week_label(label: str) -> tuple[int, int]:
@@ -192,7 +197,7 @@ class ShopSpendClient:
                 continue
 
             # Fatal — including unrecognized codes, which we don't retry either.
-            raise ShopSpendError(code=error_code, detail=detail)
+            raise ShopSpendError(code=error_code, detail=self._redact(detail) if detail else None)
 
         raise ShopSpendTransientError(
             f"shopSpend request failed after {_MAX_ATTEMPTS} attempts: {last_error_message}"

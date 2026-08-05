@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test code is syntactically correct (96 other tests pass). Failures are assertion-level: token redaction is not implemented yet. Exceptions raised successfully, but PROD_TOKEN not redacted from error messages as expected. This is the right reason for RED."
+}
