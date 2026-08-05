@@ -318,45 +318,39 @@
   ],
   "created_at": "2026-08-05T08:32:12+0900",
   "review_result": {
-    "verdict": "revise",
-    "reviewed_range": "d63651d...HEAD",
-    "tests_run": {
-      "node connectors/gas/test_code.js": "803 passed, 0 failed",
-      "python -m pytest connectors/shopspend -q": "120 passed"
-    },
-    "tdd_audit": "All 7 steps are tdd:true, each with a test_cmd and both red+green tdd_evidence in phases/shopspend-hardening/index.json. No tdd:false scaffolding step exists, so no escape-hatch findings. Test coverage gap noted separately as issue 2 (backfill-gap -> span -> verified-empty interaction is untested).",
+    "verdict": "approve",
     "issues": [
       {
-        "severity": "important",
+        "severity": "minor",
+        "file": "connectors/shopspend/runner.py",
+        "summary": "compute_weeks_complete (line 92): the `paging.truncated` branch is the ONLY zero-declare path that returns [], [] without printing a warning. Every sibling degrade path (paging missing, rows < matched, matched == 0, totalOrdersScanned == 0, emptyRangeWithInvalidLabels) prints '[shopspend] WARNING: ... zero weeks declared'. On a truncated pull the operator sees only '[shopspend] posted N row(s)' and exit 0, with absence detection silently disabled for the whole pull. No test asserts a warning here either — test_gate_truncated_response_declares_zero_weeks checks the return value only, while every sibling has a matching *_warns test. Data integrity is unaffected (the safe outcome is correct and `truncated` still lands in the ShopSpendPulls row); this is a diagnostics/consistency gap in a phase whose stated purpose is making degraded modes loud."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/gas/shopspend.gs",
+        "summary": "Line 85: the degraded-mode log reads 'weeks_complete absent — tombstoning skipped entirely for this pull', but ingestShopSpendRows is per-REQUEST, not per-pull. In a normal chunked pull, post_pull deliberately posts split weeks and undeclared weeks in requests that carry no weeks_complete, so this line fires on every such chunk even though the pull's other chunks declared their weeks correctly. An operator reading the GAS execution log would conclude absence detection was off for the entire pull. Suggest 'for this request' and naming the row count."
+      },
+      {
+        "severity": "minor",
         "file": "connectors/gas/Code.gs",
-        "summary": "doPost is unauthenticated (appsscript.json access: ANYONE_ANONYMOUS, executeAs USER_DEPLOYING) and this diff adds `weeks_verified_empty` to it — a field whose entire purpose is to BYPASS the blast-radius breaker in shopspend.gs. A single anonymous POST of {kind:'shopspend', rows:[], weeks_complete:['2026-W31'], weeks_verified_empty:['2026-W31']} zeroes every present shop-week in that week, and docs/api.md:160-170 publishes that exact curl. doGet is token-gated via checkReadToken_ (Code.gs:1472-1475); doPost has no equivalent check. Before this phase the worst an anonymous POST could do was append rows (self-correcting) — the breaker-exempt path is new destructive surface on an open endpoint. Gate doPost on a shared ingest token (or at minimum gate weeks_verified_empty on one)."
-      },
-      {
-        "severity": "important",
-        "file": "connectors/shopspend/runner.py",
-        "summary": "--backfill narrows to MISSING weeks via missing_weeks_for_backfill (line 148), then collapses them to a contiguous span with `from_week, to_week = weeks[0], weeks[-1]` (line 314). compute_weeks_complete re-expands that to iso_week_span(from_week, to_week) and declares EVERY spanned week complete — undoing the narrowing on the destructive side. Failure scenario: covered = {W29, W30}, missing = [W28, W31] (machine off two non-adjacent Mondays) -> span W28..W31. If the API returns no rows for W29/W30 (retention/lookback window, partially-recovered upstream outage) while the aggregate gates still pass (matched>0 from W28/W31 rows, rows==matched, not truncated, totalOrdersScanned>0), then W29 and W30 are declared weeks_verified_empty and every present shop-week in them is tombstoned to zero — breaker-bypassed, because verified-empty is exempt. The connector asserts 'verified empty' about weeks it deliberately was not refreshing. UNTESTED: test_runner.py covers backfill narrowing and the gate separately, but no test exercises backfill-with-a-gap -> span -> verified-empty. Restrict weeks_complete/weeks_verified_empty to the weeks actually requested (`weeks`), not the contiguous span."
-      },
-      {
-        "severity": "minor",
-        "file": "connectors/shopspend/runner.py",
-        "summary": "_build_pull writes the gate's FULL weeks_complete list into diagnostics_json.harness, but ingest.post_pull then strips split weeks (>chunk_size rows) and undeclared weeks before posting, so those weeks are never actually declared to GAS. docs/schema.md:170 states the harness key exists so 'a regression that silently disables absence detection [is] visible in the Sheet' — in exactly that case the Sheet claims the week WAS declared. The only other signal is a stderr warning, which shopspend.gs:186-191's own comment says goes to a gitignored log nobody reads. Have post_pull return the weeks it actually declared and record those."
-      },
-      {
-        "severity": "minor",
-        "file": "connectors/shopspend/runner.py",
-        "summary": "compute_weeks_complete reads paging.truncated from response.meta, but client.fetch freezes response_meta to the FIRST page only (client.py:127-131, `if response_meta is None`). Step 3 fixed precisely this first-page problem for `returned` (switching _build_pull to len(response.rows)) but left `truncated` reading first-page state, so a pull the API flags as truncated only on a later page passes the completeness gate and is declared complete. Mitigated but not closed by the `len(response.rows) < paging.matched` gate and the new NO_PROGRESS guard. Track truncated as an OR across all pages."
+        "summary": "isValidWeekLabelArray_ (line 208) validates week labels with /^\\d{4}-W\\d{2}$/, which accepts 2026-W00, 2026-W54..2026-W99. The Python CLI's _week_label (runner.py) deliberately bounds the week number to 01-53 with the comment that unbounded labels 'survive argparse, flow into iso_week_span, and get declared complete'. GAS is the destructive side (it is what actually tombstones) and is the looser of the two validators. Impact today is nil — a phantom label matches no sheet row, so it produces no tombstone candidates — but the guard on the authoritative side is weaker than the guard on the advisory side."
       },
       {
         "severity": "minor",
         "file": "docs/api.md",
-        "summary": "docs/api.md:117 and :138 both point at docs/schema.md 'shopSpend tabs' for the definition of weeks_complete / weeks_verified_empty, but schema.md documents neither field — the doPost ingest payload contract there was not extended with the two new request fields (only the diagnostics_json row mentions them in passing). Dangling cross-reference on the two fields that gate a destructive write; CLAUDE.md names docs/schema.md as the contract of record."
-      },
-      {
-        "severity": "minor",
-        "file": "connectors/shopspend/runner.py",
-        "summary": "_week_label's regex \\d{4}-W\\d{2} accepts out-of-range week numbers such as 2026-W00 and 2026-W99. Those phantom labels survive argparse, flow into iso_week_span, and are declared complete (and, having no rows, verified-empty). Harmless in practice today — no sheet row carries such a label, and a range consisting only of phantom weeks trips the matched==0 gate — but the validator's stated purpose (its own docstring) is to reject malformed labels cleanly before the fetch. Bound the week number to 01-53."
+        "summary": "Line 165 documents a curl that mass-tombstones a week by naming it in both weeks_complete and weeks_verified_empty with rows: [], bypassing the blast-radius breaker. doPost has no write-side token check (unlike doGet's checkReadToken_), so this breaker-bypass primitive is reachable by any unauthenticated caller who knows the /exec URL. The pre-diff code was equally destructive (tombstoning was scoped to weeks seen in rows, with no breaker at all), so this is not a regression — the diff net-adds a defence plus a documented bypass — but the bypass is now a written-down, copy-pasteable procedure against an unauthenticated endpoint. Worth a follow-up to gate doPost on a shared write token."
       }
     ],
-    "checked_at": "2026-08-05T11:01:33+0900"
-  }
+    "checked_at": "2026-08-05T11:13:50+0900"
+  },
+  "uncovered_prd_ids": [
+    "PRD-1",
+    "PRD-2",
+    "PRD-3",
+    "PRD-4",
+    "PRD-5",
+    "PRD-6"
+  ],
+  "sticky_exemptions": [],
+  "completed_at": "2026-08-05T11:13:50+0900"
 }
