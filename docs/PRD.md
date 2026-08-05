@@ -22,6 +22,7 @@ Harness steps declare which IDs they implement via `steps[].covers` in
 | PRD-6 | Labour link — reference `LEIBLE_Payroll`'s labour-cost output (owned there, not recomputed here — see ADR-007) | planned |
 | PRD-7 | shopSpend ingest + snapshot store — typed Python client for the external `shopSpend` JSON API (per-shop, per-ISO-week order dollars), POSTing via `doPost` into append-only `ShopSpend` + `ShopSpendPulls` tabs, snapshotted so history stays reproducible | built |
 | PRD-8 | shopSpend reporting + data-quality surfacing — `ShopSpend Report` tab (per-shop weekly spend over time) with mandatory banners for `warnings[]`, `unpricedSkus`, `amendedCount`, `possibleDuplicateShopNames`, absent shop-weeks and `emptyRangeWithInvalidLabels` | built |
+| PRD-9 | weeks_verified_empty ingest is token-gated — a `doPost` payload carrying `weeks_verified_empty` (the breaker-bypass field) must present the shared `API_READ_TOKEN`; the shopSpend poster sends it from `GAS_READ_TOKEN` and degrades non-destructively (drops the field, warns, keeps pulling) when the token is unresolvable. Writes cannot bypass the blast-radius breaker anonymously | planned |
 
 `Status`: `planned` → `built` (flip it when the covering phase completes) → or `dropped`.
 

@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "dopost-auth-minors",
+  "review": {
+    "base": "55eaac0"
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "dopost-token-gate",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-9"
+      ],
+      "docs": [
+        "api.md"
+      ],
+      "started_at": "2026-08-05T14:20:17+0900"
+    },
+    {
+      "step": 1,
+      "name": "gas-minors",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [],
+      "covers_reason": "approved-phase minors (week-label 01-53 bound + degraded-log wording) — hardening of already-built PRD-7/PRD-8 behavior, no new user-facing requirement"
+    },
+    {
+      "step": 2,
+      "name": "truncated-warning",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "pytest connectors/shopspend -q",
+      "covers": [],
+      "covers_reason": "approved-phase minor — stderr WARNING parity on an existing zero-declare branch, no new user-facing requirement"
+    },
+    {
+      "step": 3,
+      "name": "poster-token-degradation",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "pytest connectors/shopspend -q",
+      "covers": [
+        "PRD-9"
+      ],
+      "docs": [
+        "api.md"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "docs-closeout",
+      "status": "pending",
+      "tdd": false,
+      "tdd_reason": "docs/api.md + TODO.md bookkeeping only, no executable logic",
+      "covers": [],
+      "covers_reason": "documents the PRD-9 contract implemented in steps 0 and 3; writes no code",
+      "docs": [
+        "api.md"
+      ]
+    }
+  ],
+  "created_at": "2026-08-05T14:20:17+0900"
+}
