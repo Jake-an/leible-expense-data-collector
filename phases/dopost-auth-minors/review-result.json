@@ -1,35 +1,32 @@
 {
-  "verdict": "revise",
+  "verdict": "approve",
   "issues": [
     {
-      "severity": "important",
+      "severity": "minor",
+      "file": "phases/index.json",
+      "summary": "The phase registry entry for `dopost-auth-minors` is `\"status\": \"error\"` with `failed_at: 2026-08-05T15:12:19` and no `completed_at`, while phases/dopost-auth-minors/index.json has all 5 steps `completed` and the two review-fix commits landed at 16:07/16:16. The registry is stale and misreports a completed phase as failed — a resume or the next session reading phases/index.json first would draw the wrong conclusion (this project has prior incidents of exactly that state-vs-reality drift). Update the entry to completed with a completed_at."
+    },
+    {
+      "severity": "minor",
       "file": "connectors/shopspend/ingest.py",
-      "summary": "Graceful degradation covers only an UNSET GAS_READ_TOKEN, not a stale/rejected one. post_pull (ingest.py:139-180) resolves the token and, if falsy, drops weeks_verified_empty and keeps pulling. If the token is present but no longer matches API_READ_TOKEN — the exact failure this project has already hit twice (see memory: gas-read-token-name-mismatch, token-mismatch-rotate-typed-not-debug-clipboard, and the rotation path in docs/api.md) — GAS answers {result:'error', message:'unauthorized'} with NO `code` field (Code.gs:145), so _send() cannot distinguish it from any other rejection and raises IngestFailed. runner.py:402 catches it and returns 1 AFTER earlier chunks have already been written to the ShopSpend tab, and the final pull-marker POST never runs — so the pull lands partial data with no ShopSpendPulls row, and the ShopSpend Report loses the banner/diagnostics for that pull. This contradicts what docs/api.md:143-147 and PRD-9 promise ('degrades non-destructively ... keeps pulling when the token is unresolvable'): an invalid token is at least as likely as an absent one and is the only new failure mode this phase introduces. Nothing in test_ingest.py exercises a token-rejected response (the 5 new degradation tests all monkeypatch get_credential to return None). Suggested fix: have GAS return code:'UNAUTHORIZED' on the doPost gate and have _send/post_pull treat that code on a weeks_verified_empty chunk as the same degradation — retry the chunk once without weeks_verified_empty + warn — instead of aborting the pull."
+      "summary": "_record_degradation (ingest.py:107-124) re-serializes diagnostics_json with json.dumps but never re-applies runner.truncate_diagnostics_json, so the blob can grow past the 50,000-char Sheets cell cap that truncation exists to enforce. Danger band: a blob already in [~49,860, 49,999] chars (valid JSON, so the ValueError early-return does not fire) plus the ~95-char warning string, the `warnings` list entry and the two new `harness` keys pushes it over 50,000; GAS then throws on the setValues for the pull-marker row, doPost returns result:'error' with no code, _send raises, and the marker is lost entirely. That is the exact combination the code is written for — a pull that went badly (largest blob) during a token outage. Fix: run the final json.dumps back through truncate_diagnostics_json."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/shopspend/ingest.py",
+      "summary": "On the UNAUTHORIZED path (_send_declared, ingest.py:236-252) _record_degradation unconditionally writes harness.weeks_verified_empty = [], which is only true if NO gated chunk succeeded. If the Script Property is rotated/unset mid-pull, chunk 1 can carry a bypass that GAS accepted before chunk 2 is rejected, and the marker then denies a tombstone bypass that actually happened — the inverse of the honesty guarantee the harness key exists to provide (docstring, ingest.py:90-97). Narrow (needs rotation between chunks of one pull), but cheap to make exact: track the weeks actually accepted and record those instead of []."
     },
     {
       "severity": "minor",
       "file": "docs/PRD.md",
-      "summary": "PRD-9 (line 25) is still status `planned` even though the phase covering it has completed all 5 steps. PRD.md's own rule directly under the table says to flip planned -> built when the covering phase completes, and step 4 was the docs-closeout step declaring covers:[PRD-9] — so the closeout step left its own PRD row stale."
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/shopspend/ingest.py",
-      "summary": "The degradation path leaves the pull marker internally inconsistent in one remaining place. It appends the warning to pull['warnings'] / pull['warnings_count'] and rewrites diagnostics_json.harness (weeks_verified_empty cleared + verified_empty_dropped flag), but diagnostics_json also carries its own top-level 'warnings' array (populated from diag.warnings at runner.py:218), which is left without the degradation message. The two warning lists in the same marker now disagree. The Sheet-facing banner reads the warnings column (shopspend.gs:322 -> pull[8]), so the user-visible surface is correct; this is a diagnostics-blob consistency wart, not a data-correctness bug."
-    },
-    {
-      "severity": "minor",
-      "file": "phases/index.json",
-      "summary": "The phase is registered as {\"dir\":\"dopost-auth-minors\",\"status\":\"error\",\"failed_at\":\"2026-08-05T15:00:37+0900\"} while phases/dopost-auth-minors/index.json shows all 5 steps `completed` (steps started 15:20+, i.e. after that failed_at stamp). Stale harness state from an aborted earlier run; leaves the phase index claiming a failure that the step records contradict."
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/gas/Code.gs",
-      "summary": "No privilege separation between read and write: the new doPost gate (Code.gs:143-146) reuses checkReadToken_/API_READ_TOKEN, so any holder of the read-only doGet credential is also authorized to POST weeks_verified_empty and bypass the blast-radius breaker (a destructive tombstone path). This is what PRD-9 specifies and it is strictly better than the previous unauthenticated write path, so it is not a regression — but a distinct API_WRITE_TOKEN would keep a leaked read credential from carrying destructive capability. Jake's call, worth a follow-up item rather than a rework."
+      "summary": "PRD-9 (line 25) is still `planned` at HEAD even though every step covering it is completed. PRD.md's own rule directly under the table says to flip planned -> built when the covering phase completes. This was raised in the round-1 review and is still open; TODO.md was updated to say the same work is closed, so the two docs now disagree."
     }
   ],
-  "notes": {
-    "tdd_audit": "Clean. Steps 0-3 are tdd:true and every one carries both red and green tdd_evidence in index.json with a real test_cmd; tdd_state is red_done on all four (the only value execute.py emits). Step 4 is the only tdd:false step and its commit (1460f69) touches TODO.md, docs/api.md and index.json only — zero lines of connectors/ or scripts/, so no logic used the scaffolding escape hatch. New behaviour is genuinely covered: 15 GAS assertions across no-token / wrong-token / correct-token / empty-array-present / field-absent-shopspend / field-absent-suppliers / property-unset fail-closed / auth-precedes-validation, plus the 01-53 bound on both the array and per-row week_label paths; and 11 pytest cases including token-attached-only-to-verified-empty-chunks, marker warning + diagnostics rewrite, truncated-diagnostics no-raise, raw-list warnings, and test_token_value_never_printed. Only the token-rejected path (issue 1) is untested.",
-    "boundary_audit": "token field: poster sends payload['token'] (ingest.py:227), GAS reads body.token (Code.gs:144) — names and casing agree, and docs/api.md correctly states body-not-query-string (doPost never reads e.parameter.token). GAS_READ_TOKEN (local .env) -> API_READ_TOKEN (Script Property) is the deliberate documented mismatch, not drift. bc.get_credential(name)->str|None matches the callsite. pull['warnings'] / ['warnings_count'] / ['diagnostics_json'] are all pre-existing keys built by runner._build_pull (runner.py:241-242) — no new marker field invented, so no ShopSpendPulls header migration is required (which matters given ensureSheet only writes headers when the tab is missing). No orphan endpoint or callsite. timingSafeEqual_ verified correct on all four branches (equal/unequal length, empty strings are unreachable behind the !stored / !params.token guards).",
-    "tests_run": "node connectors/gas/test_code.js -> 830 passed, 0 failed. python -m pytest connectors/shopspend -q -> 137 passed. Both run this session on HEAD 65f2de6."
-  }
+  "notes": [
+    "Verified green at HEAD, not taken from the step logs: `node connectors/gas/test_code.js` -> 833 passed, 0 failed; `python -m pytest connectors/shopspend -q` -> 140 passed. (index.json summaries say 827/133 — they predate the two review-fix commits, which added tests.)",
+    "TDD audit: all four tdd:true steps (0-3) carry both red and green tdd_evidence in index.json. Step 4 is tdd:false and is genuinely docs-only (TODO.md, docs/api.md, index.json) — no logic in the escape hatch. The two post-phase review-fix commits changed Code.gs and ingest.py outside the step runner, but each shipped tests in the same commit (test_code.js +21, test_ingest.py +206), including the UNAUTHORIZED degradation, the non-UNAUTHORIZED-still-raises case, and a 'stale token value never echoed to stderr' assertion.",
+    "Auth surface checked end to end: body.weeks_verified_empty is the single GAS entry point for the breaker bypass (Code.gs:143 gate, Code.gs:251 validation, shopspend.gs:73 consumption) and the gate runs before validateIngest_, so a malformed payload without a token gets 'unauthorized' rather than a validation oracle. checkReadToken_ fails closed when the property is unset. timingSafeEqual_ is correct: on a length mismatch it XORs the caller value against itself, so the loop length tracks the supplied token and never leaks the secret's length. token is never logged, never written to a Sheet column, and is stripped from the payload on the degradation resend.",
+    "Boundary check (poster <-> doPost): payload key `token` matches body.token; `code: 'UNAUTHORIZED'` matches err.code in _send/_send_declared; the retry is safe because GAS returns before any write, so the resend cannot double-write rows; the pull marker payload carries no weeks_verified_empty and stays tokenless; `token` is only ever attached when chunk_verified is non-empty, which is unreachable when the credential was falsy (weeks_verified_empty is emptied first), so payload['token'] = None cannot happen. Other connectors (BaseConnector.post) never send the field and are unaffected.",
+    "Not a defect, but operational: Code.gs and shopspend.gs changed and the live deployment has not been redeployed in this phase — `bash scripts/deploy.sh` still owes. No ordering hazard either way (an undeployed gate simply leaves the field ungated; a deployed gate with GAS_READ_TOKEN unset locally degrades loudly by design)."
+  ]
 }
