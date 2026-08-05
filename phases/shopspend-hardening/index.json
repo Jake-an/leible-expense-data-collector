@@ -99,7 +99,7 @@
       "step": 2,
       "name": "chunk-by-week-poster",
       "status": "completed",
-      "summary": "Re-verified GREEN fresh (not trusting recorded RED evidence per project history): 87/87 pytest pass, ruff clean; post_pull packs whole weeks per request from pull span, gate reads response.meta.paging directly (adversarial paging-None test proves it), split weeks declare in no request and warn, tombstonesSkipped prints WARNING without raising.",
+      "summary": "Re-verified GREEN fresh (not trusting recorded RED evidence per project history): 87/87 pytest pass, ruff clean; post_pull packs whole weeks per request from pull span, gate reads response.meta.paging directly (adversarial paging-None test proves it), split weeks declare in no…",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -124,12 +124,12 @@
         "green": {
           "command": "python -m pytest connectors/shopspend -q",
           "exit_code": 0,
-          "output_tail": "........................................................................ [ 82%]\n...............                                                          [100%]\n87 passed in 0.59s\n",
-          "at": "2026-08-05T10:45:00+0900"
+          "output_tail": "........................................................................ [ 82%]\n...............                                                          [100%]\n87 passed in 0.68s\n",
+          "at": "2026-08-05T09:33:13+0900"
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-05T10:45:00+0900"
+      "completed_at": "2026-08-05T09:33:11+0900"
     },
     {
       "step": 3,
