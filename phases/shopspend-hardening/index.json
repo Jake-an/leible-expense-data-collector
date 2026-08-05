@@ -144,7 +144,8 @@
     {
       "step": 3,
       "name": "pull-diagnostics-honest-values",
-      "status": "pending",
+      "status": "completed",
+      "summary": "_build_pull now emits \"\" (not False/True/\"[]\") for diverges_from_live_pricing, matches_live_pricing, absent_shop_ids, and embeds a harness{weeks_complete,weeks_verified_empty} key in diagnostics_json; docs/schema.md documents the not-assessed semantics; 92/92 pytest pass, ruff clean.",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -164,9 +165,16 @@
             "reason": "Tests fail for the RIGHT reason: incomplete implementation. (1) _build_pull returns boolean False/True instead of empty strings for diverges_from_live_pricing/matches_live_pricing; (2) function signature missing weeks_complete/weeks_verified_empty parameters; (3) schema.md missing 'not assessed' semantics documentation. No syntax/import errors in test code itself — these are legitimate unimplemented features."
           },
           "at": "2026-08-05T09:47:24+0900"
+        },
+        "green": {
+          "command": "python -m pytest connectors/shopspend -q",
+          "exit_code": 0,
+          "output_tail": "........................................................................ [ 78%]\n....................                                                     [100%]\n92 passed in 1.35s\n",
+          "at": "2026-08-05T10:55:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T10:55:00+0900"
     },
     {
       "step": 4,

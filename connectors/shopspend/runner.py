@@ -141,7 +141,14 @@ def truncate_diagnostics_json(blob: str) -> str:
     return blob[:keep] + marker
 
 
-def _build_pull(response, from_week: str, to_week: str, environment: str) -> dict:
+def _build_pull(
+    response,
+    from_week: str,
+    to_week: str,
+    environment: str,
+    weeks_complete: list[str] | None = None,
+    weeks_verified_empty: list[str] | None = None,
+) -> dict:
     meta = response.meta or models.Meta()
     diag = response.diagnostics or models.Diagnostics()
     summary = response.summary or models.Summary()
@@ -154,6 +161,10 @@ def _build_pull(response, from_week: str, to_week: str, environment: str) -> dic
                 "unpricedSkus": diag.unpricedSkus,
                 "possibleDuplicateShopNames": diag.possibleDuplicateShopNames,
                 "invalidWeekLabelSamples": diag.invalidWeekLabelSamples,
+                "harness": {
+                    "weeks_complete": weeks_complete or [],
+                    "weeks_verified_empty": weeks_verified_empty or [],
+                },
             }
         )
     )
@@ -175,10 +186,10 @@ def _build_pull(response, from_week: str, to_week: str, environment: str) -> dic
         "empty_range_with_invalid_labels": bool(diag.emptyRangeWithInvalidLabels),
         "invalid_week_labels": json.dumps(diag.invalidWeekLabelSamples),
         "gst_treatment": meta.gstTreatment,
-        "diverges_from_live_pricing": False,
-        "matches_live_pricing": True,
+        "diverges_from_live_pricing": "",
+        "matches_live_pricing": "",
         "total_orders_scanned": diag.totalOrdersScanned,
-        "absent_shop_ids": "[]",
+        "absent_shop_ids": "",
         "diagnostics_json": diagnostics_json,
     }
 
@@ -273,9 +284,18 @@ def main(argv: list[str] | None = None) -> int:
     ]
     mapped_rows.sort(key=lambda r: client.parse_week_label(r["week_label"]))
 
-    pull = _build_pull(response, from_week, to_week, environment)
+    weeks_complete, weeks_verified_empty = compute_weeks_complete(
+        response, {"from_week": from_week, "to_week": to_week}, mapped_rows
+    )
 
-    weeks_complete, weeks_verified_empty = compute_weeks_complete(response, pull, mapped_rows)
+    pull = _build_pull(
+        response,
+        from_week,
+        to_week,
+        environment,
+        weeks_complete=weeks_complete,
+        weeks_verified_empty=weeks_verified_empty,
+    )
 
     try:
         ingest.post_pull(

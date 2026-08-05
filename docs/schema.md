@@ -163,11 +163,11 @@ matching `shop_id + week_label` in sheet-row order, never by comparing
 | `empty_range_with_invalid_labels` | boolean | yes | Whether the requested range was empty AND carried invalid week labels |
 | `invalid_week_labels` | string (JSON array) | yes | Week labels the API rejected as malformed |
 | `gst_treatment` | string | yes | GST treatment tag for this pull (`EXCLUSIVE_PRIMARY`) |
-| `diverges_from_live_pricing` | boolean | yes | Whether returned totals diverge from the current live pricing sheet |
-| `matches_live_pricing` | boolean | yes | Whether returned totals match the current live pricing sheet |
+| `diverges_from_live_pricing` | boolean or `""` | yes | Whether returned totals diverge from the current live pricing sheet. `""` = **not assessed** — the API exposes no pricing-divergence signal to derive this from |
+| `matches_live_pricing` | boolean or `""` | yes | Whether returned totals match the current live pricing sheet. `""` = **not assessed**, same reason as above |
 | `total_orders_scanned` | number | yes | Total orders the API scanned to build this response |
-| `absent_shop_ids` | string (JSON array) | yes | Shop ids tombstoned as `absent` in this pull |
-| `diagnostics_json` | string (JSON object) | yes | Full raw diagnostics blob, for anything not broken out above |
+| `absent_shop_ids` | string (JSON array) or `""` | yes | Shop ids tombstoned as `absent` in this pull. `""` = **not assessed** — GAS computes tombstones after this pull row is built, so the connector cannot know them yet |
+| `diagnostics_json` | string (JSON object) | yes | Full raw diagnostics blob, for anything not broken out above. Includes a `harness` key: `{weeks_complete, weeks_verified_empty}`, the declared week list from the completeness gate — makes a regression that silently disables absence detection visible in the Sheet even though it isn't a dedicated column |
 
 **Always written**, even when zero `ShopSpend` rows changed — this is what makes
 history reproducible: the upstream API **recomputes totals live from a pricing
