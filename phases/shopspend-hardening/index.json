@@ -98,7 +98,7 @@
     {
       "step": 2,
       "name": "chunk-by-week-poster",
-      "status": "completed",
+      "status": "pending",
       "summary": "Implemented iso_week_span and compute_weeks_complete in runner.py; refactored post_pull to pack weeks into chunks, declare weeks_complete per request, detect split weeks and warn; added tombstonesSkipped warning in _send; 87/87 tests pass.",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
@@ -110,7 +110,20 @@
         "ingest-contract.md"
       ],
       "started_at": "2026-08-05T09:02:11+0900",
-      "completed_at": "2026-08-05T10:23:48+0900"
+      "completed_at": "2026-08-05T10:23:48+0900",
+      "tdd_evidence": {
+        "red": {
+          "command": "python -m pytest connectors/shopspend -q",
+          "exit_code": 1,
+          "output_tail": "= [_shop_row(\"2026-W28\"), _shop_row(\"2026-W30\")]\n        response = _gate_response(rows, matched=2, truncated=False)\n        pull = {\"from_week\": \"2026-W28\", \"to_week\": \"2026-W31\"}\n    \n>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(\n                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n            response, pull, _mapped(rows)\n        )\nE       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'\n\nconnectors\\shopspend\\test_runner.py:579: AttributeError\n_ test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull _\n\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFABB9BE0>\n\n    def test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull(monkeypatch):\n        _set_shopspend_env(monkeypatch)\n        rows = [_shop_row(\"2026-W31\")]\n        response = _gate_response(rows, matched=1, truncated=False)\n        monkeypatch.setattr(client.ShopSpendClient, \"fetch\", lambda self, **kw: response)\n    \n        captured_kwargs = {}\n    \n        def fake_post_pull(mapped_rows, pull, **kwargs):\n            captured_kwargs.update(kwargs)\n            return {\"result\": \"ok\"}\n    \n        monkeypatch.setattr(ingest, \"post_pull\", fake_post_pull)\n    \n        exit_code = runner.main([\"--week\", \"2026-W31\"])\n    \n        assert exit_code == 0\n>       assert captured_kwargs.get(\"weeks_complete\") == [\"2026-W31\"]\nE       AssertionError: assert None == ['2026-W31']\nE        +  where None = <built-in method get of dict object at 0x000001AFFAC82380>('weeks_complete')\nE        +    where <built-in method get of dict object at 0x000001AFFAC82380> = {}.get\n\nconnectors\\shopspend\\test_runner.py:606: AssertionError\n---------------------------- Captured stdout call -----------------------------\n[shopspend] posted 1 row(s) for 2026-W31..2026-W31\n=========================== short test summary info ===========================\nFAILED connectors/shopspend/test_ingest.py::test_four_weeks_under_chunk_size_one_request_declares_all_four\nFAILED connectors/shopspend/test_ingest.py::test_span_exceeding_chunk_size_packs_several_requests_each_declaring_carried_weeks\nFAILED connectors/shopspend/test_ingest.py::test_single_week_over_chunk_size_splits_declared_in_no_request_and_warns\nFAILED connectors/shopspend/test_ingest.py::test_complete_fetch_with_zero_row_week_emits_rows_empty_request_declaring_both\nFAILED connectors/shopspend/test_ingest.py::test_tombstones_skipped_response_prints_warning_and_does_not_raise\nFAILED connectors/shopspend/test_ingest.py::test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_counts\nFAILED connectors/shopspend/test_runner.py::test_iso_week_span_single_week_returns_one_label\nFAILED connectors/shopspend/test_runner.py::test_iso_week_span_multi_week_range_is_ascending\nFAILED connectors/shopspend/test_runner.py::test_gate_truncated_response_declares_zero_weeks\nFAILED connectors/shopspend/test_runner.py::test_gate_matched_greater_than_returned_rows_declares_zero_weeks\nFAILED connectors/shopspend/test_runner.py::test_gate_matched_zero_declares_zero_weeks_and_warns\nFAILED connectors/shopspend/test_runner.py::test_gate_total_orders_scanned_zero_declares_zero_weeks\nFAILED connectors/shopspend/test_runner.py::test_gate_empty_range_with_invalid_labels_declares_zero_weeks\nFAILED connectors/shopspend/test_runner.py::test_gate_meta_paging_none_declares_zero_weeks_and_warns_reading_response_not_pull\nFAILED connectors/shopspend/test_runner.py::test_gate_complete_fetch_with_zero_row_spanned_week_declares_both_complete_and_verified_empty\nFAILED connectors/shopspend/test_runner.py::test_gate_declared_weeks_equal_pull_span_never_the_returned_rows\nFAILED connectors/shopspend/test_runner.py::test_gate_weeks_verified_empty_is_subset_of_zero_row_spanned_weeks\nFAILED connectors/shopspend/test_runner.py::test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull\n18 failed, 69 passed in 0.94s\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "Tests fail because compute_weeks_complete() function is missing from shopspend.runner and main() isn't computing/passing weeks_complete and weeks_verified_empty to post_pull — pure missing implementation, no test code issues."
+          },
+          "at": "2026-08-05T09:30:39+0900"
+        }
+      },
+      "tdd_state": "red_done"
     },
     {
       "step": 3,
