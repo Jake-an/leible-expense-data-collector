@@ -9,7 +9,8 @@
     {
       "step": 0,
       "name": "dopost-token-gate",
-      "status": "pending",
+      "status": "completed",
+      "summary": "doPost gates weeks_verified_empty payloads behind checkReadToken_, auth-before-validation, presence-gated; 820/820 tests pass.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [

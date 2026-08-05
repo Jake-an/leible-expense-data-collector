@@ -140,6 +140,10 @@ function withScriptLock_(fn) {
 function doPost(e) {
   try {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    if (body && body.weeks_verified_empty !== undefined) {
+      var auth = checkReadToken_({ token: body.token });
+      if (!auth.ok) return jsonOut_({ result: 'error', message: 'unauthorized' });
+    }
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });
 
