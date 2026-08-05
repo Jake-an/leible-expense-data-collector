@@ -3726,7 +3726,9 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
       amended_count: 0, possible_duplicate_shop_names: '[]',
       empty_range_with_invalid_labels: false, invalid_week_labels: '[]',
       gst_treatment: 'EXCLUSIVE_PRIMARY',
-      diverges_from_live_pricing: false, matches_live_pricing: true,
+      // Step 3: the real connector now emits "" (not assessed) as the normal
+      // case — booleans are a legacy-row regression fixture, never the default.
+      diverges_from_live_pricing: '', matches_live_pricing: '',
       total_orders_scanned: 10, absent_shop_ids: '[]',
       diagnostics_json: '{}'
     }, overrides);
