@@ -459,7 +459,7 @@ def test_iso_week_span_multi_week_range_is_ascending():
     ]
 
 
-def test_gate_truncated_response_declares_zero_weeks():
+def test_gate_truncated_response_declares_zero_weeks_and_warns(capsys):
     rows = [_shop_row("2026-W31")]
     response = _gate_response(rows, matched=1, truncated=True)
     pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
@@ -470,6 +470,27 @@ def test_gate_truncated_response_declares_zero_weeks():
 
     assert weeks_complete == []
     assert weeks_verified_empty == []
+    captured = capsys.readouterr()
+    assert "[shopspend] WARNING:" in captured.err
+    assert "truncated" in captured.err
+    assert "zero weeks declared" in captured.err
+    assert "[shopspend] WARNING:" not in captured.out
+    assert "truncated" not in captured.out
+
+
+def test_gate_complete_fetch_declares_weeks_with_no_truncated_warning(capsys):
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=False)
+    pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+
+    weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+        response, pull, _mapped(rows)
+    )
+
+    assert weeks_complete == ["2026-W31"]
+    captured = capsys.readouterr()
+    assert "truncated" not in captured.err
+    assert "truncated" not in captured.out
 
 
 def test_gate_matched_greater_than_returned_rows_declares_zero_weeks():

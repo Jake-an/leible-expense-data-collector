@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "Test correctly detects missing warning emission. When response.truncated=True, compute_weeks_complete should print a warning to stderr, but currently does not. Implementation incomplete — test is well-formed and 125 others pass."}

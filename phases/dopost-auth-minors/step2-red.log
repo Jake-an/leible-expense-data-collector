@@ -1,0 +1,27 @@
+........................................................................ [ 57%]
+...........................F..........................                   [100%]
+================================== FAILURES ===================================
+_________ test_gate_truncated_response_declares_zero_weeks_and_warns __________
+
+capsys = <_pytest.capture.CaptureFixture object at 0x000002A0BEA495E0>
+
+    def test_gate_truncated_response_declares_zero_weeks_and_warns(capsys):
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=1, truncated=True)
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+        weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+            response, pull, _mapped(rows)
+        )
+    
+        assert weeks_complete == []
+        assert weeks_verified_empty == []
+        captured = capsys.readouterr()
+>       assert "[shopspend] WARNING:" in captured.err
+E       AssertionError: assert '[shopspend] WARNING:' in ''
+E        +  where '' = CaptureResult(out='', err='').err
+
+connectors\shopspend\test_runner.py:474: AssertionError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_runner.py::test_gate_truncated_response_declares_zero_weeks_and_warns
+1 failed, 125 passed in 1.95s
