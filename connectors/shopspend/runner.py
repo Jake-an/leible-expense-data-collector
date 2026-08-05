@@ -18,6 +18,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "playwright"))
+# connectors/ itself, so the absolute `import shopspend.client` below resolves no
+# matter how this module is entered. scripts/register_shopspend_task.ps1 runs
+# `python -m connectors.shopspend.runner --backfill` with cwd=repo root, which
+# puts the repo root — not connectors/ — on sys.path; without this the Monday
+# 05:00 task died with ModuleNotFoundError before doing anything at all.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import base_connector as bc
 
 import shopspend.client as client

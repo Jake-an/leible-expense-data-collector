@@ -850,3 +850,23 @@ def test_week_label_rejects_out_of_range_week_numbers():
             runner._week_label(bad)
     for good in ("2026-W01", "2026-W31", "2026-W53"):
         assert runner._week_label(good) == good
+
+
+def test_documented_module_invocation_works_from_repo_root():
+    """scripts/register_shopspend_task.ps1 registers
+    `python -m connectors.shopspend.runner --backfill` with cwd=repo root, and
+    its docs claim that form works. It did not: there is no connectors/__init__
+    and runner.py imports `shopspend.client` absolutely, so the Monday 05:00
+    task died with ModuleNotFoundError before doing anything."""
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+    proc = subprocess.run(
+        [sys.executable, "-m", "connectors.shopspend.runner", "--help"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "ModuleNotFoundError" not in proc.stderr, proc.stderr[-500:]
+    assert proc.returncode == 0, proc.stderr[-500:]
