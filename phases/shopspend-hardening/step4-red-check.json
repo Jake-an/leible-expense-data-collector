@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test infrastructure is healthy (798 passed). The 3 failures are implementation-level: shopSpend Report rendering for 'not assessed' status on unpriced pulls (default case, empty string, and undefined/legacy short row). Test file loads, imports work, framework executes normally — failures are expected incomplete implementation, not broken test code."
+}

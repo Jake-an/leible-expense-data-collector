@@ -3849,18 +3849,53 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     check('always: gst:0-is-normal note mentions GST-free SKUs', flat.indexOf('GST-free') !== -1);
     check('always: drift wording present, never "stale pricing"',
       flat.toLowerCase().indexOf('drift') !== -1 && flat.indexOf('stale pricing') === -1);
+    check('always: default (unassessed) pull renders "not assessed", never "matches" or "diverges"',
+      flat.indexOf('not assessed') !== -1 && flat.indexOf('matches') === -1 && flat.indexOf('diverges') === -1);
     check('always: confirmed-orders-only note excludes Shopify/online',
       flat.indexOf('Confirmed orders only') !== -1 && flat.indexOf('Shopify') !== -1);
     check('always: last fetched_at shown', flat.indexOf(fetchedAt) !== -1);
   })();
 
-  // --- Drift wording never says "stale pricing", even when it diverges --
+  // --- Unassessed ("" or undefined) renders "not assessed", never a verdict --
+  (function () {
+    var rows = [ssRow({ shop_id: 'shopUnassessed', week_label: '2026-W31' })];
+
+    var pullEmpty = pullRow({ diverges_from_live_pricing: '', matches_live_pricing: '' });
+    var flatEmpty = flattenBlock(shopSpendReportBlock_(rows, pullEmpty));
+    check('"" renders "not assessed", never "matches" and never "diverges"',
+      flatEmpty.indexOf('not assessed') !== -1 &&
+      flatEmpty.indexOf('matches') === -1 &&
+      flatEmpty.indexOf('diverges') === -1);
+    check('"" case never labelled "stale pricing"', flatEmpty.indexOf('stale pricing') === -1);
+
+    // A legacy or short row read back from the Sheet yields undefined, not
+    // '' — must render identically to the '' case, never as a verdict.
+    var pullUndefined = pullRow({ diverges_from_live_pricing: undefined, matches_live_pricing: undefined });
+    var flatUndefined = flattenBlock(shopSpendReportBlock_(rows, pullUndefined));
+    check('undefined renders "not assessed" too (legacy/short row from the Sheet)',
+      flatUndefined.indexOf('not assessed') !== -1 &&
+      flatUndefined.indexOf('matches') === -1 &&
+      flatUndefined.indexOf('diverges') === -1);
+  })();
+
+  // --- Legacy true/false still render drift/matches — no regression --------
   (function () {
     var rows = [ssRow({ shop_id: 'shopDrift', week_label: '2026-W31' })];
-    var pull = pullRow({ diverges_from_live_pricing: true, matches_live_pricing: false });
-    var flat = flattenBlock(shopSpendReportBlock_(rows, pull));
-    check('mentions drift', flat.toLowerCase().indexOf('drift') !== -1);
-    check('never labelled "stale pricing"', flat.indexOf('stale pricing') === -1);
+
+    var pullDiverges = pullRow({ diverges_from_live_pricing: true, matches_live_pricing: false });
+    var flatDiverges = flattenBlock(shopSpendReportBlock_(rows, pullDiverges));
+    check('legacy true renders "diverges", never "stale pricing" or "not assessed"',
+      flatDiverges.toLowerCase().indexOf('drift') !== -1 &&
+      flatDiverges.indexOf('diverges') !== -1 &&
+      flatDiverges.indexOf('stale pricing') === -1 &&
+      flatDiverges.indexOf('not assessed') === -1);
+
+    var pullMatches = pullRow({ diverges_from_live_pricing: false, matches_live_pricing: true });
+    var flatMatches = flattenBlock(shopSpendReportBlock_(rows, pullMatches));
+    check('legacy false renders "matches", never "not assessed" or "diverges"',
+      flatMatches.indexOf('matches') !== -1 &&
+      flatMatches.indexOf('not assessed') === -1 &&
+      flatMatches.indexOf('diverges') === -1);
   })();
 
   // --- Banner: warnings[] listed verbatim, never suppressed -------------
