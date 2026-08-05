@@ -1,0 +1,82 @@
+........................................................................ [ 78%]
+...............FFFF.                                                     [100%]
+================================== FAILURES ===================================
+_ test_build_pull_emits_empty_string_for_unassessed_pricing_and_absent_shop_ids _
+
+    def test_build_pull_emits_empty_string_for_unassessed_pricing_and_absent_shop_ids():
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=1, truncated=False)
+    
+        pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+    
+>       assert pull["diverges_from_live_pricing"] == ""
+E       AssertionError: assert False == ''
+
+connectors\shopspend\test_runner.py:628: AssertionError
+______ test_build_pull_populated_pricing_basis_still_yields_not_assessed ______
+
+    def test_build_pull_populated_pricing_basis_still_yields_not_assessed():
+        """A populated pricingBasis is not a divergence signal � we do not guess."""
+        meta = models.Meta(
+            environment="PROD",
+            gstTreatment="EXCLUSIVE_PRIMARY",
+            paging=models.Paging(matched=1, returned=1, truncated=False),
+        )
+        diagnostics = models.Diagnostics(
+            pricingBasis={"basis": "live", "asOf": "2026-08-01"},
+            totalOrdersScanned=1,
+        )
+        response = client.ShopSpendResponse(
+            rows=[_shop_row("2026-W31")],
+            meta=meta,
+            summary=models.Summary(),
+            diagnostics=diagnostics,
+            schemaVersion=1,
+        )
+    
+        pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+    
+>       assert pull["diverges_from_live_pricing"] == ""
+E       AssertionError: assert False == ''
+
+connectors\shopspend\test_runner.py:660: AssertionError
+_______ test_schema_md_documents_not_assessed_semantics_and_harness_key _______
+
+    def test_schema_md_documents_not_assessed_semantics_and_harness_key():
+        schema_path = Path(__file__).resolve().parents[2] / "docs" / "schema.md"
+        text = schema_path.read_text(encoding="utf-8")
+    
+        assert "`diverges_from_live_pricing`" in text
+        assert "`matches_live_pricing`" in text
+        assert "`absent_shop_ids`" in text
+>       assert "not assessed" in text.lower()
+E       AssertionError: assert 'not assessed' in '# sheet schema\n\nsuppliers, sales, labour, revenue and summary, one sheet. all sources normalize to\none of these be...es shown are passed through from `shopspend` as\npulled from the api � this report never recomputes week boundaries.\n'
+E        +  where '# sheet schema\n\nsuppliers, sales, labour, revenue and summary, one sheet. all sources normalize to\none of these be...es shown are passed through from `shopspend` as\npulled from the api � this report never recomputes week boundaries.\n' = <built-in method lower of str object at 0x000001A4A714D020>()
+E        +    where <built-in method lower of str object at 0x000001A4A714D020> = '# Sheet Schema\n\nSuppliers, Sales, Labour, Revenue and Summary, one Sheet. All sources normalize to\none of these be...es shown are passed through from `ShopSpend` as\npulled from the API � this report never recomputes week boundaries.\n'.lower
+
+connectors\shopspend\test_runner.py:671: AssertionError
+_ test_declared_week_list_round_trips_through_diagnostics_json_for_four_week_pull _
+
+    def test_declared_week_list_round_trips_through_diagnostics_json_for_four_week_pull():
+        weeks_complete = ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
+        weeks_verified_empty = ["2026-W29"]
+        rows = [_shop_row(w) for w in weeks_complete if w != "2026-W29"]
+        response = _gate_response(rows, matched=len(rows), truncated=False)
+    
+>       pull = runner._build_pull(
+            response,
+            "2026-W28",
+            "2026-W31",
+            "PROD",
+            weeks_complete=weeks_complete,
+            weeks_verified_empty=weeks_verified_empty,
+        )
+E       TypeError: _build_pull() got an unexpected keyword argument 'weeks_complete'
+
+connectors\shopspend\test_runner.py:682: TypeError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_runner.py::test_build_pull_emits_empty_string_for_unassessed_pricing_and_absent_shop_ids
+FAILED connectors/shopspend/test_runner.py::test_build_pull_populated_pricing_basis_still_yields_not_assessed
+FAILED connectors/shopspend/test_runner.py::test_schema_md_documents_not_assessed_semantics_and_harness_key
+FAILED connectors/shopspend/test_runner.py::test_declared_week_list_round_trips_through_diagnostics_json_for_four_week_pull
+4 failed, 88 passed in 1.24s

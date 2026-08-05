@@ -17,6 +17,8 @@ snake_case ShopSpend row shape, building a defensively-truncated pull
 diagnostics blob, and the --dry-run CLI path that must never POST.
 """
 
+import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -605,3 +607,102 @@ def test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pul
     assert exit_code == 0
     assert captured_kwargs.get("weeks_complete") == ["2026-W31"]
     assert captured_kwargs.get("weeks_verified_empty") == []
+
+
+# --------------------------------------------------------------------------- #
+# Step 3 — pull-diagnostics-honest-values. The API exposes no pricing-
+# divergence signal (Diagnostics has no such field, only an undocumented
+# `pricingBasis`) and absent_shop_ids is computed by GAS *after* the pull row
+# is built, so all three columns must emit "" (not assessed) rather than a
+# manufactured False/True/"[]". See docs/schema.md and I1 in the phase-end
+# review this step fixes.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_pull_emits_empty_string_for_unassessed_pricing_and_absent_shop_ids():
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=False)
+
+    pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+
+    assert pull["diverges_from_live_pricing"] == ""
+    assert pull["matches_live_pricing"] == ""
+    assert pull["absent_shop_ids"] == ""
+    for value in (
+        pull["diverges_from_live_pricing"],
+        pull["matches_live_pricing"],
+        pull["absent_shop_ids"],
+    ):
+        assert value not in (False, True, "[]")
+
+
+def test_build_pull_populated_pricing_basis_still_yields_not_assessed():
+    """A populated pricingBasis is not a divergence signal — we do not guess."""
+    meta = models.Meta(
+        environment="PROD",
+        gstTreatment="EXCLUSIVE_PRIMARY",
+        paging=models.Paging(matched=1, returned=1, truncated=False),
+    )
+    diagnostics = models.Diagnostics(
+        pricingBasis={"basis": "live", "asOf": "2026-08-01"},
+        totalOrdersScanned=1,
+    )
+    response = client.ShopSpendResponse(
+        rows=[_shop_row("2026-W31")],
+        meta=meta,
+        summary=models.Summary(),
+        diagnostics=diagnostics,
+        schemaVersion=1,
+    )
+
+    pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+
+    assert pull["diverges_from_live_pricing"] == ""
+    assert pull["matches_live_pricing"] == ""
+
+
+def test_schema_md_documents_not_assessed_semantics_and_harness_key():
+    schema_path = Path(__file__).resolve().parents[2] / "docs" / "schema.md"
+    text = schema_path.read_text(encoding="utf-8")
+
+    assert "`diverges_from_live_pricing`" in text
+    assert "`matches_live_pricing`" in text
+    assert "`absent_shop_ids`" in text
+    assert "not assessed" in text.lower()
+    assert "harness" in text.lower()
+    assert "diagnostics_json" in text
+
+
+def test_declared_week_list_round_trips_through_diagnostics_json_for_four_week_pull():
+    weeks_complete = ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
+    weeks_verified_empty = ["2026-W29"]
+    rows = [_shop_row(w) for w in weeks_complete if w != "2026-W29"]
+    response = _gate_response(rows, matched=len(rows), truncated=False)
+
+    pull = runner._build_pull(
+        response,
+        "2026-W28",
+        "2026-W31",
+        "PROD",
+        weeks_complete=weeks_complete,
+        weeks_verified_empty=weeks_verified_empty,
+    )
+
+    diagnostics = json.loads(pull["diagnostics_json"])
+    assert diagnostics["harness"]["weeks_complete"] == weeks_complete
+    assert diagnostics["harness"]["weeks_verified_empty"] == weeks_verified_empty
+
+
+def test_pull_row_matches_shopspend_pulls_headers_width_and_order():
+    code_gs_path = Path(__file__).resolve().parents[1] / "gas" / "Code.gs"
+    text = code_gs_path.read_text(encoding="utf-8")
+
+    match = re.search(r"var SHOPSPEND_PULLS_HEADERS = \[(.*?)\];", text, re.DOTALL)
+    assert match, "SHOPSPEND_PULLS_HEADERS not found in Code.gs"
+    headers = re.findall(r"'([^']+)'", match.group(1))
+
+    rows = [_shop_row("2026-W31")]
+    response = _gate_response(rows, matched=1, truncated=False)
+    pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+
+    assert list(pull.keys()) == headers

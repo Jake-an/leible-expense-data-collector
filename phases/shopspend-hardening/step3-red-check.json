@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Tests fail for the RIGHT reason: incomplete implementation. (1) _build_pull returns boolean False/True instead of empty strings for diverges_from_live_pricing/matches_live_pricing; (2) function signature missing weeks_complete/weeks_verified_empty parameters; (3) schema.md missing 'not assessed' semantics documentation. No syntax/import errors in test code itself — these are legitimate unimplemented features."
+}
