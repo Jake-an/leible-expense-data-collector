@@ -261,7 +261,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-05T10:16:58+0900"
+      "completed_at": "2026-08-05T10:16:58+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/shopspend-hardening/step5-review.json",
+        "checked_at": "2026-08-05T10:19:24+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 6,
@@ -271,7 +281,8 @@
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
         "PRD-7"
-      ]
+      ],
+      "started_at": "2026-08-05T10:19:24+0900"
     }
   ],
   "created_at": "2026-08-05T08:32:12+0900"
