@@ -539,8 +539,11 @@ def test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_
 
 def _data_requests(fake_post):
     """Every shopspend data request (excludes the pulls commit marker)."""
-    return [c["json"] for c in fake_post.calls if c["json"].get("kind") == "shopspend"
-            and "pull" not in c["json"]]
+    return [
+        c["json"]
+        for c in fake_post.calls
+        if c["json"].get("kind") == "shopspend" and "pull" not in c["json"]
+    ]
 
 
 def test_weeks_verified_empty_is_scoped_to_the_chunk_that_declares_it(monkeypatch):
