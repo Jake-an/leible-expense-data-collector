@@ -145,7 +145,7 @@
       "step": 3,
       "name": "pull-diagnostics-honest-values",
       "status": "completed",
-      "summary": "_build_pull now emits \"\" (not False/True/\"[]\") for diverges_from_live_pricing, matches_live_pricing, absent_shop_ids, and embeds a harness{weeks_complete,weeks_verified_empty} key in diagnostics_json; docs/schema.md documents the not-assessed semantics; 92/92 pytest pass, ruff clean.",
+      "summary": "_build_pull now emits \"\" (not False/True/\"[]\") for diverges_from_live_pricing, matches_live_pricing, absent_shop_ids, and embeds a harness{weeks_complete,weeks_verified_empty} key in diagnostics_json; docs/schema.md documents the not-assessed semantics; 92/92 pytest pass, ruff…",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -169,12 +169,12 @@
         "green": {
           "command": "python -m pytest connectors/shopspend -q",
           "exit_code": 0,
-          "output_tail": "........................................................................ [ 78%]\n....................                                                     [100%]\n92 passed in 1.35s\n",
-          "at": "2026-08-05T10:55:00+0900"
+          "output_tail": "........................................................................ [ 78%]\n....................                                                     [100%]\n92 passed in 0.64s\n",
+          "at": "2026-08-05T09:49:43+0900"
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-05T10:55:00+0900"
+      "completed_at": "2026-08-05T09:49:42+0900"
     },
     {
       "step": 4,
