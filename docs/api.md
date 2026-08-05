@@ -140,13 +140,17 @@ breaker (see `docs/schema.md`).
 **Write-side auth.** Any `doPost` payload carrying `weeks_verified_empty` must include `token`
 (in the JSON body, not the query string) matching the `API_READ_TOKEN` Script Property — the
 same secret the `doGet` side checks above. Missing or wrong token →
-`{ "result": "error", "message": "unauthorized" }`. Every other `doPost` payload (suppliers,
+`{ "result": "error", "code": "UNAUTHORIZED", "message": "unauthorized" }` — the `code` is
+machine-readable on purpose (see below). Every other `doPost` payload (suppliers,
 revenue, Square, or a shopspend chunk that carries no `weeks_verified_empty`) stays tokenless.
 This gate covers the anonymous network surface only — the Apps Script editor path called out
-below still bypasses it. When the Python poster (`connectors/shopspend/ingest.py`) cannot
-resolve `GAS_READ_TOKEN`, it drops `weeks_verified_empty` from the request (tombstone bypass
-skipped, a warning printed to stderr and recorded on the pull marker) rather than failing the
-pull.
+below still bypasses it. The Python poster (`connectors/shopspend/ingest.py`) degrades
+non-destructively in BOTH token-failure modes rather than failing the pull: when it cannot
+resolve `GAS_READ_TOKEN`, it drops `weeks_verified_empty` from the request up front; when GAS
+answers `code: "UNAUTHORIZED"` (a stale/diverged token), it resends that chunk without the
+field and drops it from the rest of the pull. Either way the tombstone bypass is skipped, a
+warning is printed to stderr, and the drop is recorded on the pull marker (`warnings` +
+`diagnostics_json.harness.verified_empty_dropped`).
 
 **What backs that exemption — read this before trusting it.** The connector
 does *not* positively confirm a week is empty upstream. It derives

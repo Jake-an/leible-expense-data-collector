@@ -936,6 +936,102 @@ def test_degraded_warnings_as_raw_list_does_not_raise(monkeypatch):
     assert marker_pull["warnings_count"] == 2
 
 
+def _unauthorized_resp():
+    # The shape the doPost gate returns when the token is wrong or stale —
+    # code is machine-readable on purpose so the poster can degrade.
+    return _FakeResp({"result": "error", "code": "UNAUTHORIZED", "message": "unauthorized"})
+
+
+def test_rejected_token_degrades_like_missing_token(monkeypatch, capsys):
+    # Phase-end review round 2 (important): a REJECTED token (diverged
+    # rotation — two recorded incidents) must not abort the pull mid-stream.
+    # The gated chunk is resent without the field; everything else proceeds.
+    rows = _week_rows("2026-W28", "2026-07-06", 3, start_i=0) + _week_rows(
+        "2026-W29", "2026-07-13", 3, start_i=100
+    )
+    pull = _pull(
+        from_week="2026-W28",
+        to_week="2026-W29",
+        diagnostics_json=_diag_claiming_verified_empty("2026-W29"),
+    )
+    fake_post = _FakePost([_ok_resp(), _unauthorized_resp(), _ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: "stale-token")
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        chunk_size=3,
+        weeks_complete=["2026-W28", "2026-W29"],
+        weeks_verified_empty=["2026-W29"],
+    )
+
+    assert fake_post.call_count == 4, "rejected chunk resent, no partial send, marker posted"
+    # The resend of the rejected chunk carries neither the field nor the token.
+    resend = fake_post.calls[2]["json"]
+    assert resend["weeks_complete"] == ["2026-W29"]
+    assert "weeks_verified_empty" not in resend
+    assert "token" not in resend
+    # The pull marker still posts, and records the degradation honestly.
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    assert "UNAUTHORIZED" in marker_pull["warnings"]
+    harness = json.loads(marker_pull["diagnostics_json"])["harness"]
+    assert harness["weeks_verified_empty"] == []
+    assert harness["verified_empty_dropped"] == "unauthorized"
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert output.count("UNAUTHORIZED") == 1
+    assert "WARNING" in output
+    # The stale token value itself is never echoed.
+    assert "stale-token" not in output
+
+
+def test_non_unauthorized_error_on_gated_chunk_still_raises(monkeypatch):
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_error_resp("row 0 missing shop_id")])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
+
+    with pytest.raises(ingest.IngestFailed):
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            weeks_complete=["2026-W31"],
+            weeks_verified_empty=["2026-W31"],
+        )
+
+
+def test_degradation_keeps_diagnostics_blob_warnings_consistent(monkeypatch):
+    # Round-2 minor: diagnostics_json carries its own top-level warnings list;
+    # the degradation message must land there too, not only in the marker's
+    # warnings column, or the two lists in the same marker disagree.
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(
+        from_week="2026-W31",
+        to_week="2026-W31",
+        diagnostics_json=_diag_claiming_verified_empty(),
+    )
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(bc, "get_credential", lambda name: None)
+
+    ingest.post_pull(
+        rows,
+        pull,
+        exec_url=PROD_URL,
+        weeks_complete=["2026-W31"],
+        weeks_verified_empty=["2026-W31"],
+    )
+
+    marker_pull = fake_post.calls[-1]["json"]["pull"]
+    diagnostics = json.loads(marker_pull["diagnostics_json"])
+    assert any("GAS_READ_TOKEN" in w for w in diagnostics["warnings"])
+
+
 def test_token_value_never_printed(monkeypatch, capsys):
     rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
     pull = _pull(from_week="2026-W31", to_week="2026-W31")

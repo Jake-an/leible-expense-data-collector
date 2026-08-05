@@ -142,7 +142,10 @@ function doPost(e) {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     if (body && body.weeks_verified_empty !== undefined) {
       var auth = checkReadToken_({ token: body.token });
-      if (!auth.ok) return jsonOut_({ result: 'error', message: 'unauthorized' });
+      // code:'UNAUTHORIZED' is machine-readable on purpose: the poster
+      // degrades on it (drops weeks_verified_empty and resends) instead of
+      // aborting a pull mid-stream when the stored token has diverged.
+      if (!auth.ok) return jsonOut_({ result: 'error', code: 'UNAUTHORIZED', message: 'unauthorized' });
     }
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });

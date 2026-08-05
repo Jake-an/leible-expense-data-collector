@@ -29,7 +29,10 @@ All four closed by phase `dopost-auth-minors` (2026-08-05):
       (step 1).
 - [x] `docs/api.md` — remediation curl gated on `token`; write-side auth documented (step 4).
 - [x] doPost auth decision: option (a) — `weeks_verified_empty` token-gated on `API_READ_TOKEN`
-      (phase `dopost-auth-minors`, 2026-08-05).
+      (phase `dopost-auth-minors`, 2026-08-05). Reusing the READ token was Jake's explicit call
+      (over a separate write token) — a leaked read credential therefore also carries the
+      tombstone-bypass write capability. Optional future hardening: split out an
+      `API_WRITE_TOKEN` (poster + gate change only, no other connector touched).
 
 
 ### Roastery department — ✅ MIGRATED + DEPLOYED 2026-08-03 (version 23)

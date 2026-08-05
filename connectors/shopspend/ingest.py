@@ -86,6 +86,44 @@ def _send(url: str, payload: dict) -> dict:
     raise IngestFailed(f"shopspend ingest failed: {message}", code=code)
 
 
+def _record_degradation(pull: dict, message: str, reason: str) -> None:
+    """Make a dropped weeks_verified_empty machine-visible in the pull marker.
+
+    The Monday 05:00 Scheduled Task may not capture stderr, so a token outage
+    must not be invisible-but-successful in the Sheet. Two channels, kept
+    consistent: the marker's warnings column (the Sheet-facing banner), and
+    diagnostics_json — whose harness key runner._build_pull froze BEFORE the
+    drop, so left alone it would assert a tombstone bypass that was never
+    sent, the exact "claim the opposite" failure the key exists to prevent.
+    """
+    raw_warnings = pull.get("warnings")
+    warnings = (
+        list(raw_warnings) if isinstance(raw_warnings, list) else json.loads(raw_warnings or "[]")
+    )
+    warnings.append(message)
+    pull["warnings"] = json.dumps(warnings)
+    pull["warnings_count"] = len(warnings)
+
+    raw_diag = pull.get("diagnostics_json")
+    try:
+        diagnostics = dict(raw_diag) if isinstance(raw_diag, dict) else json.loads(raw_diag or "{}")
+    except ValueError:
+        # A truncated blob (runner.truncate_diagnostics_json) is already
+        # visibly unreliable ("...TRUNCATED"); warnings above carries the
+        # truth, so leave it as-is.
+        return
+    if not isinstance(diagnostics, dict):
+        return
+    diag_warnings = diagnostics.get("warnings")
+    if isinstance(diag_warnings, list):
+        diag_warnings.append(message)
+    harness = diagnostics.setdefault("harness", {})
+    if isinstance(harness, dict):
+        harness["weeks_verified_empty"] = []
+        harness["verified_empty_dropped"] = reason
+    pull["diagnostics_json"] = json.dumps(diagnostics)
+
+
 def declared_weeks(rows: list[dict], weeks_complete: list[str], chunk_size: int = 200) -> list[str]:
     """The weeks post_pull will ACTUALLY declare to GAS.
 
@@ -144,39 +182,7 @@ def post_pull(
             )
             print(f"[shopspend] WARNING: {degradation_message}", file=sys.stderr)
             weeks_verified_empty = []
-            # Machine-visible in the pull marker too — the Monday 05:00
-            # Scheduled Task may not capture stderr, so a token outage must
-            # not be invisible-but-successful in the Sheet.
-            raw_warnings = pull.get("warnings")
-            warnings = (
-                list(raw_warnings)
-                if isinstance(raw_warnings, list)
-                else json.loads(raw_warnings or "[]")
-            )
-            warnings.append(degradation_message)
-            pull["warnings"] = json.dumps(warnings)
-            pull["warnings_count"] = len(warnings)
-            # runner._build_pull froze harness.weeks_verified_empty into
-            # diagnostics_json BEFORE this drop, so the stored marker would
-            # otherwise assert a tombstone bypass that was never sent —
-            # the exact "claim the opposite" failure the harness key exists
-            # to prevent.
-            raw_diag = pull.get("diagnostics_json")
-            try:
-                diagnostics = (
-                    dict(raw_diag) if isinstance(raw_diag, dict) else json.loads(raw_diag or "{}")
-                )
-            except ValueError:
-                # A truncated blob (runner.truncate_diagnostics_json) is
-                # already visibly unreliable ("...TRUNCATED"); warnings[]
-                # above carries the truth, so leave it as-is.
-                diagnostics = None
-            if isinstance(diagnostics, dict):
-                harness = diagnostics.setdefault("harness", {})
-                if isinstance(harness, dict):
-                    harness["weeks_verified_empty"] = []
-                    harness["verified_empty_dropped"] = "no_token"
-                pull["diagnostics_json"] = json.dumps(diagnostics)
+            _record_degradation(pull, degradation_message, "no_token")
 
     from collections import defaultdict
 
@@ -225,7 +231,25 @@ def post_pull(
             if chunk_verified:
                 payload["weeks_verified_empty"] = chunk_verified
                 payload["token"] = token
-            _send(url, payload)
+            try:
+                _send(url, payload)
+            except IngestFailed as err:
+                # A REJECTED token (diverged rotation) must degrade exactly
+                # like a missing one — anything else aborts mid-stream with
+                # partial rows and no pull marker. Only the gated field is
+                # retried; every other failure still raises.
+                if err.code != "UNAUTHORIZED" or "weeks_verified_empty" not in payload:
+                    raise
+                rejected_message = (
+                    "GAS rejected the write token (UNAUTHORIZED) — "
+                    "weeks_verified_empty dropped, tombstone bypass skipped"
+                )
+                print(f"[shopspend] WARNING: {rejected_message}", file=sys.stderr)
+                _record_degradation(pull, rejected_message, "unauthorized")
+                verified_empty_set.clear()
+                del payload["weeks_verified_empty"]
+                del payload["token"]
+                _send(url, payload)
 
         chunk = []
         chunk_weeks = []

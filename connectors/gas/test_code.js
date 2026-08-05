@@ -4470,6 +4470,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31']
   });
   eq('no token field: result error', noToken.result, 'error');
+  eq('no token field: code UNAUTHORIZED (machine-readable for poster degradation)',
+    noToken.code, 'UNAUTHORIZED');
   eq('no token field: message unauthorized', noToken.message, 'unauthorized');
   scriptProps = savedProps;
 
@@ -4484,6 +4486,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   });
   eq('wrong token: result error', wrongToken.result, 'error');
   eq('wrong token: message unauthorized', wrongToken.message, 'unauthorized');
+  eq('wrong token: code UNAUTHORIZED', wrongToken.code, 'UNAUTHORIZED');
   scriptProps = savedProps;
 
   // --- weeks_verified_empty present, correct token → processing proceeds --
@@ -4548,6 +4551,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   });
   eq('property unset: result error', unsetProp.result, 'error');
   eq('property unset: message unauthorized (fail-closed)', unsetProp.message, 'unauthorized');
+  eq('property unset: code UNAUTHORIZED', unsetProp.code, 'UNAUTHORIZED');
   scriptProps = savedProps;
 
   // --- auth precedes validation: malformed weeks_verified_empty, no token
