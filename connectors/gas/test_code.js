@@ -3080,6 +3080,24 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
       rows: [], weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31']
     })).ok);
 
+  // --- isValidWeekLabelArray_ week-number bound 01-53 (step 1 minors) -----
+  check("isValidWeekLabelArray_(['2026-W00']) → false (week 00 out of range)",
+    !isValidWeekLabelArray_(['2026-W00']));
+  check("isValidWeekLabelArray_(['2026-W54']) → false (week 54 out of range)",
+    !isValidWeekLabelArray_(['2026-W54']));
+  check("isValidWeekLabelArray_(['2026-W99']) → false (week 99 out of range)",
+    !isValidWeekLabelArray_(['2026-W99']));
+  check("isValidWeekLabelArray_(['2026-W01']) → true (lower bound)",
+    isValidWeekLabelArray_(['2026-W01']));
+  check("isValidWeekLabelArray_(['2026-W53']) → true (upper bound — ISO years can have 53 weeks)",
+    isValidWeekLabelArray_(['2026-W53']));
+  check("isValidWeekLabelArray_(['2020-W01']) → true (the live-probe label)",
+    isValidWeekLabelArray_(['2020-W01']));
+
+  eq('weeks_complete with out-of-range week (2026-W00) → rejected with invalid weeks_complete message',
+    validateIngest_(Object.assign({}, base, { rows: [], weeks_complete: ['2026-W00'] })).message,
+    'invalid weeks_complete');
+
   // Existing kinds unregressed: still rejects, still succeeds and writes to
   // their own tab.
   check('suppliers row missing invoice_ref → still rejected',

@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "isValidWeekLabelArray_ does not validate week range (01-53 ISO). Currently accepts W00/W54/W99 when regex only checks 2-digit format. Missing validation causes validateIngest_ to accept invalid weeks_complete/weeks_verified_empty payloads when they should be rejected with 'invalid weeks_complete'/'invalid weeks_verified_empty' messages. Failure is in implementation logic, not test code or config."
+}
