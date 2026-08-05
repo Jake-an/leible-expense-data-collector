@@ -1,0 +1,343 @@
+....................................................FFF.FFF............. [ 82%]
+...FFFFFFFFFFFF                                                          [100%]
+================================== FAILURES ===================================
+_______ test_four_weeks_under_chunk_size_one_request_declares_all_four ________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFABB9F70>
+
+    def test_four_weeks_under_chunk_size_one_request_declares_all_four(monkeypatch):
+        weeks = ["2026-W28", "2026-W29", "2026-W30", "2026-W31"]
+        rows = []
+        for idx, week in enumerate(weeks):
+            rows += _week_rows(week, f"2026-07-{6 + idx:02d}", 2, start_i=idx * 2)
+        pull = _pull(from_week="2026-W28", to_week="2026-W31")
+        fake_post = _FakePost([_ok_resp(rows_added=8), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, pull, exec_url=PROD_URL, weeks_complete=weeks)
+E       TypeError: post_pull() got an unexpected keyword argument 'weeks_complete'
+
+connectors\shopspend\test_ingest.py:387: TypeError
+_ test_span_exceeding_chunk_size_packs_several_requests_each_declaring_carried_weeks _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFABB9520>
+
+    def test_span_exceeding_chunk_size_packs_several_requests_each_declaring_carried_weeks(
+        monkeypatch,
+    ):
+        weeks = ["2026-W28", "2026-W29", "2026-W30", "2026-W31", "2026-W32"]
+        rows = []
+        for idx, week in enumerate(weeks):
+            rows += _week_rows(week, f"2026-07-{6 + idx:02d}", 4, start_i=idx * 4)
+        pull = _pull(from_week="2026-W28", to_week="2026-W32")
+        fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, pull, exec_url=PROD_URL, chunk_size=10, weeks_complete=weeks)
+E       TypeError: post_pull() got an unexpected keyword argument 'weeks_complete'
+
+connectors\shopspend\test_ingest.py:407: TypeError
+__ test_single_week_over_chunk_size_splits_declared_in_no_request_and_warns ___
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFABB9880>
+capsys = <_pytest.capture.CaptureFixture object at 0x000001AFFABBA960>
+
+    def test_single_week_over_chunk_size_splits_declared_in_no_request_and_warns(monkeypatch, capsys):
+        rows = _week_rows("2026-W31", "2026-07-27", 250)
+        pull = _pull(from_week="2026-W31", to_week="2026-W31")
+        fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(rows, pull, exec_url=PROD_URL, chunk_size=200, weeks_complete=["2026-W31"])
+E       TypeError: post_pull() got an unexpected keyword argument 'weeks_complete'
+
+connectors\shopspend\test_ingest.py:427: TypeError
+_ test_complete_fetch_with_zero_row_week_emits_rows_empty_request_declaring_both _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFACA2A80>
+
+    def test_complete_fetch_with_zero_row_week_emits_rows_empty_request_declaring_both(monkeypatch):
+        pull = _pull(from_week="2026-W31", to_week="2026-W31")
+        fake_post = _FakePost([_ok_resp(rows_added=0), _ok_resp()])
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+>       ingest.post_pull(
+            [], pull, exec_url=PROD_URL, weeks_complete=["2026-W31"], weeks_verified_empty=["2026-W31"]
+        )
+E       TypeError: post_pull() got an unexpected keyword argument 'weeks_complete'
+
+connectors\shopspend\test_ingest.py:457: TypeError
+_____ test_tombstones_skipped_response_prints_warning_and_does_not_raise ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFACA1D60>
+capsys = <_pytest.capture.CaptureFixture object at 0x000001AFFACA3140>
+
+    def test_tombstones_skipped_response_prints_warning_and_does_not_raise(monkeypatch, capsys):
+        fake_post = _FakePost(
+            [
+                _ok_resp_with_tombstones_skipped(
+                    [{"week": "2026-W31", "wouldHaveWritten": 5, "present": 5}]
+                ),
+                _ok_resp(),
+            ]
+        )
+        monkeypatch.setattr(requests, "post", fake_post)
+    
+        result = ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+    
+        assert result["result"] == "ok"
+        captured = capsys.readouterr()
+        output = captured.out + captured.err
+>       assert "WARNING" in output
+E       AssertionError: assert 'WARNING' in ''
+
+connectors\shopspend\test_ingest.py:485: AssertionError
+_ test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_counts _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFACA3710>
+
+    def test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_counts(
+        monkeypatch,
+    ):
+        """Property, not just examples: for every declared week in every request,
+        the row count carried in THAT request equals the week's total mapped row
+        count � guards against the C1 bug class returning if a chunk boundary
+        ever lands mid-week while the week is still declared complete."""
+        scenarios = [
+            {"chunk_size": 5, "week_counts": [("2026-W01", 3), ("2026-W02", 2), ("2026-W03", 4)]},
+            {
+                "chunk_size": 10,
+                "week_counts": [("2026-W10", 7), ("2026-W11", 1), ("2026-W12", 1), ("2026-W13", 1)],
+            },
+            {"chunk_size": 3, "week_counts": [("2026-W20", 6)]},
+        ]
+    
+        for scenario in scenarios:
+            full_counts = dict(scenario["week_counts"])
+            rows = []
+            start_i = 0
+            for week, count in scenario["week_counts"]:
+                rows += _week_rows(week, "2026-07-27", count, start_i=start_i)
+                start_i += count
+            weeks_complete_param = [week for week, _ in scenario["week_counts"]]
+            pull = _pull(from_week=weeks_complete_param[0], to_week=weeks_complete_param[-1])
+    
+            fake_post = _FakePost([_ok_resp() for _ in range(20)])
+            monkeypatch.setattr(requests, "post", fake_post)
+    
+>           ingest.post_pull(
+                rows,
+                pull,
+                exec_url=PROD_URL,
+                chunk_size=scenario["chunk_size"],
+                weeks_complete=weeks_complete_param,
+            )
+E           TypeError: post_pull() got an unexpected keyword argument 'weeks_complete'
+
+connectors\shopspend\test_ingest.py:519: TypeError
+______________ test_iso_week_span_single_week_returns_one_label _______________
+
+    def test_iso_week_span_single_week_returns_one_label():
+>       assert runner.iso_week_span("2026-W31", "2026-W31") == ["2026-W31"]
+               ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'iso_week_span'
+
+connectors\shopspend\test_runner.py:448: AttributeError
+______________ test_iso_week_span_multi_week_range_is_ascending _______________
+
+    def test_iso_week_span_multi_week_range_is_ascending():
+>       assert runner.iso_week_span("2026-W28", "2026-W31") == [
+               ^^^^^^^^^^^^^^^^^^^^
+            "2026-W28",
+            "2026-W29",
+            "2026-W30",
+            "2026-W31",
+        ]
+E       AttributeError: module 'shopspend.runner' has no attribute 'iso_week_span'
+
+connectors\shopspend\test_runner.py:452: AttributeError
+______________ test_gate_truncated_response_declares_zero_weeks _______________
+
+    def test_gate_truncated_response_declares_zero_weeks():
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=1, truncated=True)
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:465: AttributeError
+______ test_gate_matched_greater_than_returned_rows_declares_zero_weeks _______
+
+    def test_gate_matched_greater_than_returned_rows_declares_zero_weeks():
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=5, truncated=False)
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:478: AttributeError
+____________ test_gate_matched_zero_declares_zero_weeks_and_warns _____________
+
+capsys = <_pytest.capture.CaptureFixture object at 0x000001AFFACA2D20>
+
+    def test_gate_matched_zero_declares_zero_weeks_and_warns(capsys):
+        response = _gate_response([], matched=0, truncated=False, total_orders_scanned=10)
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(response, pull, [])
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:490: AttributeError
+___________ test_gate_total_orders_scanned_zero_declares_zero_weeks ___________
+
+    def test_gate_total_orders_scanned_zero_declares_zero_weeks():
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=1, truncated=False, total_orders_scanned=0)
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:503: AttributeError
+________ test_gate_empty_range_with_invalid_labels_declares_zero_weeks ________
+
+    def test_gate_empty_range_with_invalid_labels_declares_zero_weeks():
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(
+            rows, matched=1, truncated=False, total_orders_scanned=5, empty_range_invalid=True
+        )
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:518: AttributeError
+_ test_gate_meta_paging_none_declares_zero_weeks_and_warns_reading_response_not_pull _
+
+capsys = <_pytest.capture.CaptureFixture object at 0x000001AFFAB58890>
+
+    def test_gate_meta_paging_none_declares_zero_weeks_and_warns_reading_response_not_pull(capsys):
+        """Constructed so pull['matched'] == len(rows) � exactly what _build_pull
+        degrades to when paging is absent (runner.py:105). The test FAILS if the
+        gate reads pull['matched'] instead of response.meta.paging directly,
+        because pull['matched'] alone would make this look like a complete
+        fetch."""
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=1, truncated=False, paging=False)
+        pull = runner._build_pull(response, "2026-W31", "2026-W31", "PROD")
+        assert pull["matched"] == len(rows)
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:537: AttributeError
+_ test_gate_complete_fetch_with_zero_row_spanned_week_declares_both_complete_and_verified_empty _
+
+    def test_gate_complete_fetch_with_zero_row_spanned_week_declares_both_complete_and_verified_empty():
+        rows = [_shop_row("2026-W31")]  # W30 is spanned but returned nothing
+        response = _gate_response(rows, matched=1, truncated=False)
+        pull = {"from_week": "2026-W30", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:552: AttributeError
+______ test_gate_declared_weeks_equal_pull_span_never_the_returned_rows _______
+
+    def test_gate_declared_weeks_equal_pull_span_never_the_returned_rows():
+        rows = [_shop_row("2026-W31"), _shop_row("2026-W32")]  # W32 is outside the requested span
+        response = _gate_response(rows, matched=2, truncated=False)
+        pull = {"from_week": "2026-W31", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:565: AttributeError
+_____ test_gate_weeks_verified_empty_is_subset_of_zero_row_spanned_weeks ______
+
+    def test_gate_weeks_verified_empty_is_subset_of_zero_row_spanned_weeks():
+        # span W28..W31; W28 and W30 have rows, W29 and W31 do not
+        rows = [_shop_row("2026-W28"), _shop_row("2026-W30")]
+        response = _gate_response(rows, matched=2, truncated=False)
+        pull = {"from_week": "2026-W28", "to_week": "2026-W31"}
+    
+>       weeks_complete, weeks_verified_empty = runner.compute_weeks_complete(
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            response, pull, _mapped(rows)
+        )
+E       AttributeError: module 'shopspend.runner' has no attribute 'compute_weeks_complete'
+
+connectors\shopspend\test_runner.py:579: AttributeError
+_ test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AFFABB9BE0>
+
+    def test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull(monkeypatch):
+        _set_shopspend_env(monkeypatch)
+        rows = [_shop_row("2026-W31")]
+        response = _gate_response(rows, matched=1, truncated=False)
+        monkeypatch.setattr(client.ShopSpendClient, "fetch", lambda self, **kw: response)
+    
+        captured_kwargs = {}
+    
+        def fake_post_pull(mapped_rows, pull, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {"result": "ok"}
+    
+        monkeypatch.setattr(ingest, "post_pull", fake_post_pull)
+    
+        exit_code = runner.main(["--week", "2026-W31"])
+    
+        assert exit_code == 0
+>       assert captured_kwargs.get("weeks_complete") == ["2026-W31"]
+E       AssertionError: assert None == ['2026-W31']
+E        +  where None = <built-in method get of dict object at 0x000001AFFAC82380>('weeks_complete')
+E        +    where <built-in method get of dict object at 0x000001AFFAC82380> = {}.get
+
+connectors\shopspend\test_runner.py:606: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[shopspend] posted 1 row(s) for 2026-W31..2026-W31
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_ingest.py::test_four_weeks_under_chunk_size_one_request_declares_all_four
+FAILED connectors/shopspend/test_ingest.py::test_span_exceeding_chunk_size_packs_several_requests_each_declaring_carried_weeks
+FAILED connectors/shopspend/test_ingest.py::test_single_week_over_chunk_size_splits_declared_in_no_request_and_warns
+FAILED connectors/shopspend/test_ingest.py::test_complete_fetch_with_zero_row_week_emits_rows_empty_request_declaring_both
+FAILED connectors/shopspend/test_ingest.py::test_tombstones_skipped_response_prints_warning_and_does_not_raise
+FAILED connectors/shopspend/test_ingest.py::test_packing_invariant_declared_weeks_are_always_fully_carried_with_correct_counts
+FAILED connectors/shopspend/test_runner.py::test_iso_week_span_single_week_returns_one_label
+FAILED connectors/shopspend/test_runner.py::test_iso_week_span_multi_week_range_is_ascending
+FAILED connectors/shopspend/test_runner.py::test_gate_truncated_response_declares_zero_weeks
+FAILED connectors/shopspend/test_runner.py::test_gate_matched_greater_than_returned_rows_declares_zero_weeks
+FAILED connectors/shopspend/test_runner.py::test_gate_matched_zero_declares_zero_weeks_and_warns
+FAILED connectors/shopspend/test_runner.py::test_gate_total_orders_scanned_zero_declares_zero_weeks
+FAILED connectors/shopspend/test_runner.py::test_gate_empty_range_with_invalid_labels_declares_zero_weeks
+FAILED connectors/shopspend/test_runner.py::test_gate_meta_paging_none_declares_zero_weeks_and_warns_reading_response_not_pull
+FAILED connectors/shopspend/test_runner.py::test_gate_complete_fetch_with_zero_row_spanned_week_declares_both_complete_and_verified_empty
+FAILED connectors/shopspend/test_runner.py::test_gate_declared_weeks_equal_pull_span_never_the_returned_rows
+FAILED connectors/shopspend/test_runner.py::test_gate_weeks_verified_empty_is_subset_of_zero_row_spanned_weeks
+FAILED connectors/shopspend/test_runner.py::test_main_passes_gate_computed_weeks_complete_and_verified_empty_to_post_pull
+18 failed, 69 passed in 0.94s
