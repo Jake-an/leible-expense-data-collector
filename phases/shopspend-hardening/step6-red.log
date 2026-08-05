@@ -1,0 +1,48 @@
+.................F...................................................... [ 67%]
+...................................                                      [100%]
+================================== FAILURES ===================================
+______ test_paging_zero_returned_before_matched_raises_no_progress_error ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021F8CCA6330>
+
+    def test_paging_zero_returned_before_matched_raises_no_progress_error(monkeypatch):
+        """The regression itself: returned=0 with offset(0) < matched(10) must
+        raise, naming the stuck offset and the known matched count, instead of
+        re-requesting the same offset forever. Only one response is queued � a
+        client that still loops calls requests.get() a second time, and the
+        bounded fake transport raises IndexError immediately instead of hanging
+        the suite for the real 2-hour task limit."""
+        page = _page_body([], matched=10, offset=0)
+        fake_get = _FakeGet([_FakeResponse(json_body=page)])
+        monkeypatch.setattr(requests, "get", fake_get)
+        conn = _client()
+    
+        with pytest.raises(client.ShopSpendError) as exc_info:
+>           conn.fetch()
+
+connectors\shopspend\test_client.py:478: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+connectors\shopspend\client.py:116: in fetch
+    body = self._request(params)
+           ^^^^^^^^^^^^^^^^^^^^^
+connectors\shopspend\client.py:163: in _request
+    resp = requests.get(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <shopspend.test_client._FakeGet object at 0x0000021F8CCA50D0>
+url = 'https://script.google.com/macros/s/FAKE_DEPLOYMENT_ID/exec'
+params = {'api': 'shopSpend', 'token': 'super-secret-token-xyz', 'include': 'rows,summary', 'offset': 0}
+timeout = 30, allow_redirects = True
+
+    def __call__(self, url, params=None, timeout=None, allow_redirects=None):
+        self.calls.append(
+            {"url": url, "params": params, "timeout": timeout, "allow_redirects": allow_redirects}
+        )
+>       item = self._responses.pop(0)
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       IndexError: pop from empty list
+
+connectors\shopspend\test_client.py:184: IndexError
+=========================== short test summary info ===========================
+FAILED connectors/shopspend/test_client.py::test_paging_zero_returned_before_matched_raises_no_progress_error
+1 failed, 106 passed in 1.38s

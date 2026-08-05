@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "Test correctly fails with IndexError when client re-requests instead of raising ShopSpendError on no-progress. Implementation is incomplete: fetch() does not yet detect when returned=0 but matched>0 and raise the required exception."}

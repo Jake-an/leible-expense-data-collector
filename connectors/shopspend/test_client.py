@@ -457,6 +457,66 @@ def test_single_page_response_issues_exactly_one_call(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Pagination progress guard — returned:0 while offset < matched must raise
+# instead of spinning forever at a stuck offset (step 6, defect I4).
+# --------------------------------------------------------------------------- #
+
+
+def test_paging_zero_returned_before_matched_raises_no_progress_error(monkeypatch):
+    """The regression itself: returned=0 with offset(0) < matched(10) must
+    raise, naming the stuck offset and the known matched count, instead of
+    re-requesting the same offset forever. Only one response is queued — a
+    client that still loops calls requests.get() a second time, and the
+    bounded fake transport raises IndexError immediately instead of hanging
+    the suite for the real 2-hour task limit."""
+    page = _page_body([], matched=10, offset=0)
+    fake_get = _FakeGet([_FakeResponse(json_body=page)])
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    with pytest.raises(client.ShopSpendError) as exc_info:
+        conn.fetch()
+
+    message = str(exc_info.value)
+    assert "offset" in message
+    assert "0" in message
+    assert "10" in message
+    assert fake_get.call_count == 1
+
+
+def test_final_page_zero_returned_at_or_past_matched_is_clean_finish(monkeypatch):
+    """`matched` can shrink between calls (e.g. concurrent edits on the API
+    side) — if a page's own offset already meets or exceeds that page's
+    matched count, returned=0 is a legitimate clean finish, not a stuck-
+    progress error, even though the raw offset never quite reached the
+    *earlier* page's higher matched figure."""
+    page1 = _page_body([_row()] * 10, matched=15, offset=0)
+    page2 = _page_body([], matched=10, offset=10)
+    fake_get = _FakeGet([_FakeResponse(json_body=page1), _FakeResponse(json_body=page2)])
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    result = conn.fetch()
+
+    assert len(result.rows) == 10
+    assert fake_get.call_count == 2
+
+
+def test_matched_zero_never_trips_progress_guard(monkeypatch):
+    """An empty result set (matched=0, returned=0, offset=0) is the ordinary
+    single-page-with-no-rows case, not a stuck-progress condition."""
+    page = _page_body([], matched=0, offset=0)
+    fake_get = _FakeGet([_FakeResponse(json_body=page)])
+    monkeypatch.setattr(requests, "get", fake_get)
+    conn = _client()
+
+    result = conn.fetch()
+
+    assert result.rows == []
+    assert fake_get.call_count == 1
+
+
+# --------------------------------------------------------------------------- #
 # parse_week_label — numeric sort, not lexicographic
 # --------------------------------------------------------------------------- #
 
