@@ -12,6 +12,7 @@ body's `result` field. A `LOCKED` body carries `code` but no `message`, so
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from datetime import datetime
@@ -130,6 +131,27 @@ def post_pull(
     if weeks_verified_empty is None:
         weeks_verified_empty = []
 
+    # GAS (step 0) rejects any weeks_verified_empty payload without a valid
+    # token. Resolved once, before the first POST, and only when there's
+    # something to protect — an unrelated pull with nothing verified-empty
+    # must never warn about a token it doesn't need.
+    token = None
+    if weeks_verified_empty:
+        token = bc.get_credential("GAS_READ_TOKEN")
+        if not token:
+            degradation_message = (
+                "GAS_READ_TOKEN not set — weeks_verified_empty dropped, tombstone bypass skipped"
+            )
+            print(f"[shopspend] WARNING: {degradation_message}", file=sys.stderr)
+            weeks_verified_empty = []
+            # Machine-visible in the pull marker too — the Monday 05:00
+            # Scheduled Task may not capture stderr, so a token outage must
+            # not be invisible-but-successful in the Sheet.
+            warnings = json.loads(pull.get("warnings") or "[]")
+            warnings.append(degradation_message)
+            pull["warnings"] = json.dumps(warnings)
+            pull["warnings_count"] = len(warnings)
+
     from collections import defaultdict
 
     rows_by_week = defaultdict(list)
@@ -176,6 +198,7 @@ def post_pull(
             chunk_verified = [w for w in chunk_weeks if w in verified_empty_set]
             if chunk_verified:
                 payload["weeks_verified_empty"] = chunk_verified
+                payload["token"] = token
             _send(url, payload)
 
         chunk = []

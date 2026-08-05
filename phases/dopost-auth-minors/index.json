@@ -136,7 +136,8 @@
     {
       "step": 3,
       "name": "poster-token-degradation",
-      "status": "pending",
+      "status": "completed",
+      "summary": "post_pull resolves GAS_READ_TOKEN once, attaches it only to chunks carrying weeks_verified_empty, and degrades non-destructively (drops verified_empty, warns once to stderr + pull.warnings) when the token is unresolvable; 133/133 tests pass.",
       "tdd": true,
       "test_cmd": "pytest connectors/shopspend -q",
       "covers": [
@@ -156,9 +157,16 @@
             "reason": "All three failures are assertion failures in the implementation, not test code errors. Test 1 expects token field in payload (KeyError—field missing). Test 2 expects weeks_verified_empty to be dropped when token is None (AssertionError—it's present). Test 3 expects warnings_count=1 when token missing (AssertionError—it's 0). These are genuine unimplemented behaviors: token attachment logic, conditional field dropping based on auth state, and warning recording on degraded pull. 130/133 passing confirms test infrastructure is sound."
           },
           "at": "2026-08-05T14:45:17+0900"
+        },
+        "green": {
+          "command": "pytest connectors/shopspend -q",
+          "exit_code": 0,
+          "output_tail": "........................................................................ [ 54%]\n.............................................................            [100%]\n133 passed in 1.66s\n",
+          "at": "2026-08-05T15:50:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-05T15:50:00+0900"
     },
     {
       "step": 4,
