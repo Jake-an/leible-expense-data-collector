@@ -18,6 +18,24 @@
 
 ## Active
 
+### shopspend-hardening — 4 minors carried out of the approved phase (2026-08-05)
+Phase-end gate returned **approve**; these were noted, not blocking. None is a correctness bug.
+
+- [ ] `runner.py` `compute_weeks_complete`: the `paging.truncated` branch is the only zero-declare
+      path that returns without printing a `WARNING`. Its five siblings all warn. A truncated
+      response therefore disables tombstoning silently.
+- [ ] `connectors/gas/shopspend.gs:85`: the degraded-mode log says "tombstoning skipped entirely
+      for this pull", but `ingestShopSpendRows` is per-**request**. Split weeks and undeclared
+      weeks are deliberately posted in requests carrying no `weeks_complete`, so this fires on
+      every such chunk of a normal pull and reads far more alarming than it is. Reword to "for
+      this request".
+- [ ] `connectors/gas/Code.gs:208` `isValidWeekLabelArray_` accepts `2026-W00` / `2026-W54..W99`.
+      The Python CLI now bounds the week number to 01-53; **GAS is the destructive side**, so the
+      stricter check belongs there too. Cheap one-line regex fix — deliberately not made after the
+      phase closed, so the committed diff still matches what was reviewed.
+- [ ] `docs/api.md:165` — the documented remediation curl is a breaker-bypass primitive reachable
+      by any unauthenticated caller who knows the `/exec` URL. Resolved by the decision below.
+
 ### 🔒 DECISION NEEDED — `doPost` is unauthenticated and now carries a destructive field
 Raised by the `shopspend-hardening` phase-end review (round 3), **not fixed in that phase** —
 it changes the ingest contract for every connector, so it is Jake's call.
