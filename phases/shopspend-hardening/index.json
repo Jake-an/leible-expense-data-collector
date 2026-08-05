@@ -98,7 +98,8 @@
     {
       "step": 2,
       "name": "chunk-by-week-poster",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Implemented iso_week_span and compute_weeks_complete in runner.py; refactored post_pull to pack weeks into chunks, declare weeks_complete per request, detect split weeks and warn; added tombstonesSkipped warning in _send; 87/87 tests pass.",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/shopspend -q",
       "covers": [
@@ -108,7 +109,8 @@
         "schema.md",
         "ingest-contract.md"
       ],
-      "started_at": "2026-08-05T09:02:11+0900"
+      "started_at": "2026-08-05T09:02:11+0900",
+      "completed_at": "2026-08-05T10:23:48+0900"
     },
     {
       "step": 3,

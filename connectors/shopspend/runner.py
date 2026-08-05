@@ -27,6 +27,64 @@ _MAX_DIAGNOSTICS_CHARS = 50000
 _BACKFILL_WEEKS = 4
 
 
+def iso_week_span(from_week: str, to_week: str) -> list[str]:
+    """All ISO weeks in ascending order from from_week to to_week (inclusive)."""
+    from_y, from_w = map(int, from_week.split("-W"))
+    to_y, to_w = map(int, to_week.split("-W"))
+
+    weeks = []
+    y, w = from_y, from_w
+    while (y, w) <= (to_y, to_w):
+        weeks.append(f"{y}-W{w:02d}")
+        w += 1
+        if w > 53:
+            y += 1
+            w = 1
+    return weeks
+
+
+def compute_weeks_complete(
+    response, pull: dict, mapped_rows: list[dict]
+) -> tuple[list[str], list[str]]:
+    """Completeness gate: which weeks passed the fetch trust check, and which spanned
+    weeks returned no rows. Returns (weeks_complete, weeks_verified_empty).
+
+    Reads response.meta.paging directly, never pull["matched"] or pull["truncated"],
+    because _build_pull degrades those when paging is absent.
+    """
+    span_weeks = set(iso_week_span(pull["from_week"], pull["to_week"]))
+    returned_weeks = {row["week_label"] for row in mapped_rows}
+
+    meta = response.meta
+    paging = meta.paging if meta else None
+    diag = response.diagnostics
+
+    if paging is None:
+        print("[shopspend] WARNING: response missing paging info — zero weeks declared", file=sys.stderr)
+        return [], []
+
+    if paging.truncated:
+        return [], []
+
+    if len(response.rows) < paging.matched:
+        return [], []
+
+    if paging.matched == 0:
+        print("[shopspend] WARNING: matched zero rows — zero weeks declared", file=sys.stderr)
+        return [], []
+
+    if diag and diag.totalOrdersScanned == 0:
+        return [], []
+
+    if diag and diag.emptyRangeWithInvalidLabels:
+        return [], []
+
+    weeks_complete = sorted(span_weeks)
+    weeks_verified_empty = sorted(span_weeks - returned_weeks)
+
+    return weeks_complete, weeks_verified_empty
+
+
 def default_week_label(today: date) -> str:
     """The ISO week that just closed (today - 7 days), never the current one."""
     closed = today - timedelta(days=7)
@@ -214,8 +272,12 @@ def main(argv: list[str] | None = None) -> int:
 
     pull = _build_pull(response, from_week, to_week, environment)
 
+    weeks_complete, weeks_verified_empty = compute_weeks_complete(response, pull, mapped_rows)
+
     try:
-        ingest.post_pull(mapped_rows, pull)
+        ingest.post_pull(
+            mapped_rows, pull, weeks_complete=weeks_complete, weeks_verified_empty=weeks_verified_empty
+        )
     except (ingest.IngestFailed, RuntimeError) as err:
         print(f"[shopspend] ingest failed: {err}", file=sys.stderr)
         return 1

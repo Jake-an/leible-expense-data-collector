@@ -47,6 +47,15 @@ def _send(url: str, payload: dict) -> dict:
     resp = requests.post(url, json=payload, timeout=300)
     body = _parse_response(resp)
     if body.get("result") == "ok":
+        if "tombstonesSkipped" in body:
+            for entry in body["tombstonesSkipped"]:
+                week = entry.get("week")
+                would_write = entry.get("wouldHaveWritten")
+                present = entry.get("present")
+                print(
+                    f"[shopspend] WARNING: tombstones skipped for week {week}: {would_write} would have been written, {present} present",
+                    file=sys.stderr,
+                )
         return body
 
     code = body.get("code")
@@ -55,6 +64,15 @@ def _send(url: str, payload: dict) -> dict:
         resp = requests.post(url, json=payload, timeout=300)
         body = _parse_response(resp)
         if body.get("result") == "ok":
+            if "tombstonesSkipped" in body:
+                for entry in body["tombstonesSkipped"]:
+                    week = entry.get("week")
+                    would_write = entry.get("wouldHaveWritten")
+                    present = entry.get("present")
+                    print(
+                        f"[shopspend] WARNING: tombstones skipped for week {week}: {would_write} would have been written, {present} present",
+                        file=sys.stderr,
+                    )
             return body
         code = body.get("code")
 
@@ -68,6 +86,8 @@ def post_pull(
     source: str = "shopspend",
     chunk_size: int = 200,
     exec_url: str | None = None,
+    weeks_complete: list[str] | None = None,
+    weeks_verified_empty: list[str] | None = None,
 ) -> dict:
     url = exec_url or bc.resolve_exec_url()
     if not url:
@@ -84,19 +104,86 @@ def post_pull(
         dated_row["date"] = dated_row["week_start"]
         dated_rows.append(dated_row)
 
-    for offset in range(0, len(dated_rows), chunk_size):
-        chunk = dated_rows[offset : offset + chunk_size]
-        payload = {
-            "source": source,
-            "kind": "shopspend",
-            "rows": chunk,
-            "extracted_at": extracted_at,
-        }
-        _send(url, payload)
+    if weeks_complete is None:
+        weeks_complete = []
 
-    # Pulls diagnostics row LAST, with an empty rows list — this is the commit
-    # marker (see docs/schema.md ShopSpendPulls): its absence after a partial
-    # write is how a resumed pull is detected as incomplete.
+    if weeks_verified_empty is None:
+        weeks_verified_empty = []
+
+    from collections import defaultdict
+
+    rows_by_week = defaultdict(list)
+    for row in dated_rows:
+        rows_by_week[row["week_label"]].append(row)
+
+    if weeks_complete:
+        split_weeks = {w for w in weeks_complete if len(rows_by_week[w]) > chunk_size}
+
+        for week in sorted(split_weeks):
+            print(
+                f"[shopspend] WARNING: week {week} has {len(rows_by_week[week])} row(s), exceeds chunk_size {chunk_size}, declared in no request",
+                file=sys.stderr,
+            )
+
+        complete_weeks_only = [w for w in weeks_complete if w not in split_weeks]
+
+        chunk = []
+        chunk_weeks = []
+        for week in sorted(complete_weeks_only):
+            week_rows = rows_by_week[week]
+
+            if len(chunk) + len(week_rows) <= chunk_size:
+                chunk.extend(week_rows)
+                chunk_weeks.append(week)
+            else:
+                if chunk:
+                    payload = {
+                        "source": source,
+                        "kind": "shopspend",
+                        "rows": chunk,
+                        "extracted_at": extracted_at,
+                        "weeks_complete": chunk_weeks,
+                    }
+                    if weeks_verified_empty:
+                        payload["weeks_verified_empty"] = weeks_verified_empty
+                    _send(url, payload)
+                chunk = week_rows
+                chunk_weeks = [week]
+
+        if chunk or chunk_weeks:
+            payload = {
+                "source": source,
+                "kind": "shopspend",
+                "rows": chunk,
+                "extracted_at": extracted_at,
+                "weeks_complete": chunk_weeks,
+            }
+            if weeks_verified_empty:
+                payload["weeks_verified_empty"] = weeks_verified_empty
+            _send(url, payload)
+
+        for week in sorted(split_weeks):
+            week_rows = rows_by_week[week]
+            for offset in range(0, len(week_rows), chunk_size):
+                chunk_data = week_rows[offset : offset + chunk_size]
+                payload = {
+                    "source": source,
+                    "kind": "shopspend",
+                    "rows": chunk_data,
+                    "extracted_at": extracted_at,
+                }
+                _send(url, payload)
+    else:
+        for offset in range(0, len(dated_rows), chunk_size):
+            chunk = dated_rows[offset : offset + chunk_size]
+            payload = {
+                "source": source,
+                "kind": "shopspend",
+                "rows": chunk,
+                "extracted_at": extracted_at,
+            }
+            _send(url, payload)
+
     final_payload = {
         "source": source,
         "kind": "shopspend",

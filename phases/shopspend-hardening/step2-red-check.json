@@ -1,4 +1,4 @@
 {
   "red_valid": true,
-  "reason": "Tests correctly identify missing implementation: `runner.compute_weeks_complete()` function does not exist, and `weeks_complete`/`weeks_verified_empty` parameters are not being computed or passed to `post_pull()`. This is proper RED-phase behavior — implementation work is required to make 18 failing tests pass while keeping 69 passing tests green."
+  "reason": "Tests fail because compute_weeks_complete() function is missing from shopspend.runner and main() isn't computing/passing weeks_complete and weeks_verified_empty to post_pull — pure missing implementation, no test code issues."
 }
