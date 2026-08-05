@@ -1,26 +1,4 @@
 {
-  "verdict": "revise",
-  "findings": [
-    {
-      "severity": "important",
-      "file": "connectors/shopspend/runner.py",
-      "line": 62,
-      "summary": "ruff format: long print statement must break into multiple lines",
-      "suggestion": "Reformat line 62 to break the print statement across lines 62-66:\n  print(\n      \"[shopspend] WARNING: response missing paging info — zero weeks declared\",\n      file=sys.stderr,\n  )"
-    },
-    {
-      "severity": "important",
-      "file": "connectors/shopspend/runner.py",
-      "line": 278,
-      "summary": "ruff format: ingest.post_pull() call must break each argument to its own line",
-      "suggestion": "Reformat lines 278-280 so each argument is on its own line with trailing comma:\n  ingest.post_pull(\n      mapped_rows,\n      pull,\n      weeks_complete=weeks_complete,\n      weeks_verified_empty=weeks_verified_empty,\n  )"
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/shopspend/ingest.py",
-      "line": 49,
-      "summary": "Code duplication: tombstonesSkipped handling appears twice in _send (lines 50-58 and 68-76)",
-      "suggestion": "Extract tombstonesSkipped printing to a helper function to reduce duplication, e.g., `def _warn_tombstones_skipped(body)` called after both successful responses"
-    }
-  ]
+  "verdict": "approve",
+  "findings": []
 }
