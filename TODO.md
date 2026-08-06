@@ -51,13 +51,16 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
    Monday 05:00 + greenBeanPull Tuesday 05:00 (Australia/Sydney) installed".
 7. **Probes** — all `curl -sL` **doGet** with query params, never bare `-d`/`-X POST` (either
    mis-probes `/exec` and gives a misleading 411/Drive-404 on a healthy endpoint):
-   - Order app: `?api=shopifySales&token=***&week=<last completed>` → `ok:true`; cross-check
-     `summary.grossSales` against the hub's `Summary` row for that week.
-   - Order app: `?api=greenBeanCost&token=***&from=<F>&to=<T>&status=ALL&include=summary` →
-     grand total cross-foots with the sum of the new `source='greenbean'` `Suppliers` rows.
-   - Hub: `?fn=summary&from=<ws>&to=<we>&department=Roastery&token=<API_READ_TOKEN>` → exactly
-     one `supplier:'shopify_orderapp', kind:'revenue', location:'online'` row per completed
-     week, plus the new greenbean spend rows.
+   - ✅ Order app shopifySales (2026-08-06): `week=2026-W31` (ISO label, NOT a date — a bare
+     date gets `BAD_REQUEST`) → `ok:true`, `grossSales=3089`, `meta.weekStart` echoes
+     `2026-07-27` — exact match with the hub Summary row.
+   - ✅ Order app greenBeanCost (2026-08-06): probed with the PULL'S OWN window
+     (`from=2026-06-01`, 1st of month−2) → `grandTotal=$14,219` (3 rows, 985kg, all Bennetts,
+     PENDING) — exact match with the hub's Bennetts wk-07-20 row. NB: a wider probe window
+     surfaces a May $840 RECEIVED row that is legitimately OUTSIDE the pull window (not lost).
+   - ✅ Hub (2026-08-06): exactly one `shopify_orderapp` online revenue row per completed week
+     (07-06/07-13/07-20/07-27), Roastery; greenbean spend present as the vendor-named
+     `Bennetts` Summary row.
    - ✅ Double-count sweep (2026-08-06): 8-week probe shows shopify_orderapp as the ONLY online
      revenue source; sole other Roastery row is the Bennetts greenbean spend.
    - ✅ Negative (2026-08-06): hub wrong-token → `result:'error'` ("unauthorized"); Order app
@@ -66,8 +69,12 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
      row count unchanged (101), same 4 online rows/totals, ALL `summarized_at` stamps still
      from the first run (15:44:58) → `rowsAdded=0, rowsUpdated=0` proven from the Sheet
      (counts are returned, never logged — see memory).
-8. **All probes green** → flip PRD-10 and PRD-11 to `built` in `docs/PRD.md`, commit message
-   citing which probes passed.
+8. ✅ **DONE 2026-08-06 — ALL PROBES GREEN, PRD-10 + PRD-11 flipped to `built`.**
+
+**→ RUNBOOK COMPLETE 2026-08-06.** Both pulls live-verified, triggers armed (Mon/Tue 05:00
+Sydney), idempotency + negative-auth + double-count + cross-foot all green. First unattended
+runs: shopifyWeeklyPull Mon 2026-08-10, greenBeanPull Tue 2026-08-11 — the staleness watchdog
+(168h) now covers both. Archive this section to TODO_ARCHIVE.md next hygiene pass.
 
 ### orderapp-pulls — 3 minors carried out of the approved phase (round 10, 2026-08-06)
 Phase-end gate returned **approve**; these were noted, not blocking. None is a live correctness bug.
