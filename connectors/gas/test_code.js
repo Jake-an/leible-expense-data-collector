@@ -4981,6 +4981,98 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
+/* ------------------------------------------------------------------ *
+ * orderapp-pulls step 3 — greenBeanInvoices_
+ * ------------------------------------------------------------------ */
+
+(function testGreenBeanInvoices() {
+  console.log('\norderapp: greenBeanInvoices_:');
+
+  // --- case: 3 lines, 1 invoice -> one row; total = sum; date = earliest dateLocal ---
+  const case1 = greenBeanInvoices_([
+    { dateLocal: '2026-06-15', supplierRaw: 'ACME Beans', supplierKey: 'acme_beans', invoiceNum: 'INV-1', totalCostIncGst: 100, status: 'RECEIVED' },
+    { dateLocal: '2026-06-14', supplierRaw: 'ACME Beans', supplierKey: 'acme_beans', invoiceNum: 'INV-1', totalCostIncGst: 50, status: 'RECEIVED' },
+    { dateLocal: '2026-06-16', supplierRaw: 'ACME Beans', supplierKey: 'acme_beans', invoiceNum: 'INV-1', totalCostIncGst: 25, status: 'RECEIVED' }
+  ]);
+  eq('3 lines/1 invoice: one summed row, date = earliest dateLocal', case1, [
+    { date: '2026-06-14', supplier: 'ACME Beans', total: 175, invoice_ref: 'acme_beans/INV-1', department: 'Roastery' }
+  ]);
+
+  // --- case: two suppliers both carrying invoiceNum:'INV-100' -> two rows,
+  //     distinct refs via the mandatory supplierKey prefix ---
+  const case2 = greenBeanInvoices_([
+    { dateLocal: '2026-06-10', supplierRaw: 'Bean Co', supplierKey: 'bean_co', invoiceNum: 'INV-100', totalCostIncGst: 200, status: 'RECEIVED' },
+    { dateLocal: '2026-06-11', supplierRaw: 'Coffee Ltd', supplierKey: 'coffee_ltd', invoiceNum: 'INV-100', totalCostIncGst: 300, status: 'RECEIVED' }
+  ]);
+  eq('two suppliers sharing invoiceNum INV-100: two rows with distinct refs', case2, [
+    { date: '2026-06-10', supplier: 'Bean Co', total: 200, invoice_ref: 'bean_co/INV-100', department: 'Roastery' },
+    { date: '2026-06-11', supplier: 'Coffee Ltd', total: 300, invoice_ref: 'coffee_ltd/INV-100', department: 'Roastery' }
+  ]);
+
+  // --- case: blank invoiceNum, same supplier, two different days -> two rows,
+  //     grouped per supplier per Sydney day (noinv-<date> ref) ---
+  const case3 = greenBeanInvoices_([
+    { dateLocal: '2026-06-01', supplierRaw: 'Roast Supply', supplierKey: 'roast_supply', invoiceNum: '', totalCostIncGst: 10, status: 'RECEIVED' },
+    { dateLocal: '2026-06-02', supplierRaw: 'Roast Supply', supplierKey: 'roast_supply', invoiceNum: '', totalCostIncGst: 20, status: 'RECEIVED' }
+  ]);
+  eq('blank invoiceNum, same supplier, two different days: two noinv- rows', case3, [
+    { date: '2026-06-01', supplier: 'Roast Supply', total: 10, invoice_ref: 'roast_supply/noinv-2026-06-01', department: 'Roastery' },
+    { date: '2026-06-02', supplier: 'Roast Supply', total: 20, invoice_ref: 'roast_supply/noinv-2026-06-02', department: 'Roastery' }
+  ]);
+
+  // --- case: blank/missing invoiceNum, same supplier, same day, two lines ->
+  //     one summed row (invoiceNum undefined counts as missing, same as '') ---
+  const case4 = greenBeanInvoices_([
+    { dateLocal: '2026-06-05', supplierRaw: 'Green Bean Traders', supplierKey: 'green_bean_traders', invoiceNum: '', totalCostIncGst: 15, status: 'RECEIVED' },
+    { dateLocal: '2026-06-05', supplierRaw: 'Green Bean Traders', supplierKey: 'green_bean_traders', invoiceNum: undefined, totalCostIncGst: 5, status: 'PENDING' }
+  ]);
+  eq('blank/missing invoiceNum, same supplier+day, two lines: one summed row', case4, [
+    { date: '2026-06-05', supplier: 'Green Bean Traders', total: 20, invoice_ref: 'green_bean_traders/noinv-2026-06-05', department: 'Roastery' }
+  ]);
+
+  // --- case: rounding happens ONCE at emit, not per-line ---
+  const case5 = greenBeanInvoices_([
+    { dateLocal: '2026-06-20', supplierRaw: 'Precise Coffee', supplierKey: 'precise_coffee', invoiceNum: 'INV-500', totalCostIncGst: 10.005, status: 'RECEIVED' },
+    { dateLocal: '2026-06-20', supplierRaw: 'Precise Coffee', supplierKey: 'precise_coffee', invoiceNum: 'INV-500', totalCostIncGst: 0.001, status: 'RECEIVED' }
+  ]);
+  eq('rounding: 10.005 + 0.001 -> total 10.01, rounded once at emit', case5, [
+    { date: '2026-06-20', supplier: 'Precise Coffee', total: 10.01, invoice_ref: 'precise_coffee/INV-500', department: 'Roastery' }
+  ]);
+
+  // --- case: empty input -> [] ---
+  eq('empty input -> []', greenBeanInvoices_([]), []);
+
+  // --- case: a flagged row with totalCostIncGst:0 still contributes a row,
+  //     never dropped ---
+  const case7 = greenBeanInvoices_([
+    { dateLocal: '2026-06-25', supplierRaw: 'Flagged Supplier', supplierKey: 'flagged_supplier', invoiceNum: 'INV-700', totalCostIncGst: 0, status: 'RECEIVED', flags: ['non_numeric_source'] }
+  ]);
+  eq('flagged row with totalCostIncGst:0 still contributes a row', case7, [
+    { date: '2026-06-25', supplier: 'Flagged Supplier', total: 0, invoice_ref: 'flagged_supplier/INV-700', department: 'Roastery' }
+  ]);
+
+  // --- case: mixed statuses (RECEIVED + PENDING) in one invoice -> single
+  //     summed row, both lines counted (no status filtering) ---
+  const case8 = greenBeanInvoices_([
+    { dateLocal: '2026-06-30', supplierRaw: 'Mixed Status Co', supplierKey: 'mixed_status_co', invoiceNum: 'INV-800', totalCostIncGst: 40, status: 'RECEIVED' },
+    { dateLocal: '2026-06-30', supplierRaw: 'Mixed Status Co', supplierKey: 'mixed_status_co', invoiceNum: 'INV-800', totalCostIncGst: 60, status: 'PENDING' }
+  ]);
+  eq('mixed statuses in one invoice: single summed row, both lines counted', case8, [
+    { date: '2026-06-30', supplier: 'Mixed Status Co', total: 100, invoice_ref: 'mixed_status_co/INV-800', department: 'Roastery' }
+  ]);
+
+  // --- case: output order is deterministic (sorted by invoice_ref), regardless
+  //     of input order ---
+  const case9 = greenBeanInvoices_([
+    { dateLocal: '2026-07-01', supplierRaw: 'Zzz Supplier', supplierKey: 'zzz_supplier', invoiceNum: 'INV-1', totalCostIncGst: 1, status: 'RECEIVED' },
+    { dateLocal: '2026-07-01', supplierRaw: 'Aaa Supplier', supplierKey: 'aaa_supplier', invoiceNum: 'INV-1', totalCostIncGst: 2, status: 'RECEIVED' },
+    { dateLocal: '2026-07-01', supplierRaw: 'Mmm Supplier', supplierKey: 'mmm_supplier', invoiceNum: 'INV-1', totalCostIncGst: 3, status: 'RECEIVED' }
+  ]);
+  eq('output order is deterministic: sorted by invoice_ref', case9.map((r) => r.invoice_ref), [
+    'aaa_supplier/INV-1', 'mmm_supplier/INV-1', 'zzz_supplier/INV-1'
+  ]);
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
