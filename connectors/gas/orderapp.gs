@@ -357,3 +357,208 @@ function greenBeanInvoices_(lines) {
 
   return result;
 }
+
+/* ------------------------------------------------------------------ *
+ * Green Bean committed spend — fetch, ingest, snapshot-diff resummarize
+ * ------------------------------------------------------------------ */
+
+var GREENBEAN_RESUM_CAP = 5;
+var GREENBEAN_RESUM_QUEUE_PROP = 'ORDERAPP_RESUM_QUEUE_greenbean'; // JSON array of 'yyyy-MM-dd' week starts
+
+/**
+ * Pure. {from, to} for the greenBeanCost window: from = 1st of (month−2)
+ * relative to todayStr, to = todayStr. String arithmetic only — no Date
+ * object, so there is nothing here for a UTC/local offset to corrupt.
+ */
+function greenBeanWindow_(todayStr) {
+  var parts = todayStr.split('-');
+  var year = Number(parts[0]);
+  var month = Number(parts[1]); // 1-based
+
+  var fromMonth = month - 2;
+  var fromYear = year;
+  if (fromMonth <= 0) {
+    fromMonth += 12;
+    fromYear -= 1;
+  }
+  var fromMonthStr = fromMonth < 10 ? '0' + fromMonth : String(fromMonth);
+
+  return { from: fromYear + '-' + fromMonthStr + '-01', to: todayStr };
+}
+
+/**
+ * Offset-paginates ?api=greenBeanCost across the full greenBeanWindow_.
+ * A response that reports truncated:true with rowsIncluded:false means the
+ * Order app's own size guard dropped the rows array for that page — the
+ * window can only ever be ingested whole, so this aborts rather than
+ * silently ingest a partial slice.
+ * @returns {Array|null} concatenated raw rows, or null on abort/fetch failure.
+ */
+function greenBeanFetchAllRows_() {
+  var window = greenBeanWindow_(todayStr_());
+  var rows = [];
+  var offset = 0;
+
+  while (true) {
+    var res = orderAppFetch_({
+      api: 'greenBeanCost',
+      from: window.from,
+      to: window.to,
+      status: 'ALL',
+      include: 'rows',
+      limit: 5000,
+      offset: offset
+    });
+    if (!res.ok) {
+      Logger.log('greenBeanFetchAllRows_: fetch failed (' + res.reason + ') — aborting incomplete window');
+      return null;
+    }
+
+    var paging = res.body.meta.paging;
+    if (paging.truncated === true && paging.rowsIncluded === false) {
+      Logger.log('greenBeanFetchAllRows_: truncated response with rows omitted (size guard) — aborting rather than ingest an incomplete window');
+      return null;
+    }
+
+    rows = rows.concat(res.body.rows);
+
+    if (paging.truncated === true && paging.rowsIncluded === true) {
+      offset += paging.returned;
+      continue;
+    }
+    break;
+  }
+
+  return rows;
+}
+
+function greenBeanReadQueue_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(GREENBEAN_RESUM_QUEUE_PROP);
+  if (!raw) return [];
+  try {
+    var parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function greenBeanWriteQueue_(weekStarts) {
+  PropertiesService.getScriptProperties().setProperty(GREENBEAN_RESUM_QUEUE_PROP, JSON.stringify(weekStarts));
+}
+
+/**
+ * Entry point: orderAppRunStart_ runs BEFORE the lock so a lock-timeout skip
+ * still counts as a non-completion (same convention as shopifyWeeklyPull).
+ * @returns {Object} greenBeanPull_impl_'s result, or {locked:true}.
+ */
+function greenBeanPull() {
+  orderAppRunStart_('greenbean');
+  var res = withScriptLock_(function () { return greenBeanPull_impl_(); });
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('greenBeanPull: could not acquire script lock — skipped this run');
+    return { locked: true };
+  }
+  return res;
+}
+
+/**
+ * Fetches the full greenBeanCost window, ingests it into Suppliers, and
+ * snapshot-diffs the submitted invoices against the PRE-ingest state of the
+ * sheet to decide which completed weeks need re-summarizing. A changed
+ * invoice's affected week is the STORED date's week (upsertRows_ never
+ * rewrites the date column, so the row still lives there) — never the
+ * recomputed date from this run's (possibly earlier) grouped lines.
+ * @returns {{rowsFetched:number, invoices:Array, rowsAdded:number,
+ *   rowsUpdated:number, duplicatesSkipped:number, weeksResummarized:number,
+ *   weeksQueued:number, noToken?:boolean, apiFailed?:boolean}}
+ */
+function greenBeanPull_impl_() {
+  var token = getOrderAppToken_();
+  if (!token) {
+    return { noToken: true };
+  }
+
+  var rows = greenBeanFetchAllRows_();
+  if (rows === null) {
+    return { apiFailed: true };
+  }
+
+  var invoices = greenBeanInvoices_(rows);
+  var extractedAt = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+
+  var ss = getHubSpreadsheet_();
+  var suppSheet = ensureSheet(ss, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+
+  // Snapshot BEFORE ingest — only source='greenbean' rows — so an updated
+  // invoice's affected week can be derived from where it CURRENTLY lives.
+  var snapshot = {};
+  var existingValues = suppSheet.getDataRange().getValues();
+  for (var r = 1; r < existingValues.length; r++) {
+    var existingRow = existingValues[r];
+    if (String(existingRow[5]) !== 'greenbean') continue;
+    snapshot['greenbean||' + String(existingRow[3])] = {
+      storedDate: coerceDateStr_(existingRow[0]),
+      total: Number(existingRow[2])
+    };
+  }
+
+  var ingestResult = ingestSupplierRows('greenbean', invoices, extractedAt, suppSheet);
+
+  var currentWeekStart = weekStartForDate_(todayStr_());
+  var affectedSet = {};
+  var affected = [];
+  function addAffectedWeek(weekStart) {
+    if (weekStart >= currentWeekStart) return; // never resummarize/queue the current, incomplete week
+    if (affectedSet[weekStart]) return;
+    affectedSet[weekStart] = true;
+    affected.push(weekStart);
+  }
+
+  for (var i = 0; i < invoices.length; i++) {
+    var invoice = invoices[i];
+    var snap = snapshot['greenbean||' + invoice.invoice_ref];
+    if (!snap) {
+      addAffectedWeek(weekStartForDate_(invoice.date));
+      continue;
+    }
+    var newTotal = Math.round(Number(invoice.total) * 100) / 100;
+    var oldTotal = Math.round(Number(snap.total) * 100) / 100;
+    if (newTotal !== oldTotal) {
+      addAffectedWeek(weekStartForDate_(snap.storedDate));
+    }
+  }
+
+  // Merge queue-from-property (drain oldest-first) with this run's affected
+  // weeks, dedup, oldest-first — a plain string sort works since the labels
+  // are 'yyyy-MM-dd'.
+  var merged = greenBeanReadQueue_().concat(affected);
+  var mergedSet = {};
+  var mergedUnique = [];
+  for (var m = 0; m < merged.length; m++) {
+    if (mergedSet[merged[m]]) continue;
+    mergedSet[merged[m]] = true;
+    mergedUnique.push(merged[m]);
+  }
+  mergedUnique.sort();
+
+  var toSummarize = mergedUnique.slice(0, GREENBEAN_RESUM_CAP);
+  var remaining = mergedUnique.slice(GREENBEAN_RESUM_CAP);
+
+  for (var s = 0; s < toSummarize.length; s++) {
+    weeklySummarize(toSummarize[s]);
+  }
+  greenBeanWriteQueue_(remaining);
+
+  orderAppRunSuccess_('greenbean');
+
+  return {
+    rowsFetched: rows.length,
+    invoices: invoices,
+    rowsAdded: ingestResult.rowsAdded,
+    rowsUpdated: ingestResult.rowsUpdated,
+    duplicatesSkipped: ingestResult.duplicatesSkipped,
+    weeksResummarized: toSummarize.length,
+    weeksQueued: remaining.length
+  };
+}
