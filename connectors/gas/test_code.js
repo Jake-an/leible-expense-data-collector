@@ -289,7 +289,7 @@ global.ScriptApp = {
     const idx = scriptTriggers.indexOf(t);
     if (idx !== -1) scriptTriggers.splice(idx, 1);
   },
-  WeekDay: { MONDAY: 2 }
+  WeekDay: { MONDAY: 2, TUESDAY: 3 }
 };
 // LockService mock. __forceLockTimeout lets a test simulate a busy lock
 // (tryLock returns false) without any real timing — withScriptLock_ must
@@ -5229,6 +5229,59 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   global.UrlFetchApp = REAL_URL_FETCH;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+})();
+
+/*
+ * orderapp-pulls step 6 — installOrderAppTriggers
+ */
+(function testInstallOrderAppTriggers() {
+  console.log('\norderapp: installOrderAppTriggers (step 6):');
+
+  var hasInstallFn = typeof installOrderAppTriggers === 'function';
+  check('installOrderAppTriggers is defined', hasInstallFn);
+
+  if (!hasInstallFn) {
+    console.log('  (skipping installOrderAppTriggers cases — function not defined)');
+    return;
+  }
+
+  // Unrelated trigger present before install — the installer must only ever
+  // touch its own two handler names, never sweep the whole trigger list.
+  scriptTriggers = [];
+  ScriptApp.newTrigger('shopSpendWatchdog')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(14)
+    .inTimezone('Australia/Sydney').create();
+
+  installOrderAppTriggers();
+  installOrderAppTriggers();
+
+  var shopifyTriggers = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'shopifyWeeklyPull'; });
+  var greenBeanTriggers = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'greenBeanPull'; });
+  var watchdogTriggers = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'shopSpendWatchdog'; });
+
+  eq('installing twice leaves exactly one trigger for shopifyWeeklyPull', shopifyTriggers.length, 1);
+  eq('installing twice leaves exactly one trigger for greenBeanPull', greenBeanTriggers.length, 1);
+  check('installer does not delete the unrelated shopSpendWatchdog trigger',
+    watchdogTriggers.length === 1);
+
+  if (shopifyTriggers.length === 1) {
+    var shopifyCfg = shopifyTriggers[0]._cfg;
+    eq('shopify trigger is MONDAY', shopifyCfg.weekDay, ScriptApp.WeekDay.MONDAY);
+    eq('shopify trigger is hour 5', shopifyCfg.hour, 5);
+    eq('shopify trigger is Australia/Sydney', shopifyCfg.timezone, 'Australia/Sydney');
+  }
+
+  if (greenBeanTriggers.length === 1) {
+    var greenBeanCfg = greenBeanTriggers[0]._cfg;
+    eq('greenbean trigger is TUESDAY', greenBeanCfg.weekDay, ScriptApp.WeekDay.TUESDAY);
+    eq('greenbean trigger is hour 5', greenBeanCfg.hour, 5);
+    eq('greenbean trigger is Australia/Sydney', greenBeanCfg.timezone, 'Australia/Sydney');
+  }
+
+  scriptTriggers = [];
 })();
 
 /* ------------------------------------------------------------------ */

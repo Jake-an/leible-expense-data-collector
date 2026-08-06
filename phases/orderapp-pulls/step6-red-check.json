@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test correctly detects that installOrderAppTriggers() is not defined in the implementation. 995 other tests pass cleanly, no test-code errors. This is the expected RED state: assertion finds missing implementation, not broken test or misconfiguration."
+}
