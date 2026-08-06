@@ -29,8 +29,9 @@
     },
     {
       "dir": "orderapp-pulls",
-      "status": "error",
-      "failed_at": "2026-08-06T12:50:23+0900"
+      "status": "completed",
+      "failed_at": "2026-08-06T12:50:23+0900",
+      "completed_at": "2026-08-06T13:21:13+0900"
     }
   ]
 }
