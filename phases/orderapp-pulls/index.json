@@ -121,12 +121,7 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-06T09:45:00+0900",
-      "last_failure": {
-        "step_file_sha256": "bc61be7b28a3a00f32596493deb712b2f8e06d85d188b76068bf691c0b8c0abc",
-        "model": "sonnet",
-        "at": "2026-08-06T09:48:47+0900"
-      }
+      "completed_at": "2026-08-06T09:45:00+0900"
     },
     {
       "step": 3,
