@@ -1459,6 +1459,21 @@ freshSheets();
     .appendRow(['2026-06-20', 'Roastery', 'Online', '#1005', 15, 'ORD-5', 'shopify', 'TS']);
   var casing = cleanupOnlineRevenueSummaryRows();
   eq('mixed channel casing is detected', casing.weeks[0].channelCasings.length, 2);
+
+  // --- Pull-owned shopify_orderapp rows are OUTSIDE the blast radius: they are
+  // written directly by shopifyWeeklyPull (PRD-10), no Revenue rows back them,
+  // and deleting one is unrecoverable by re-summarize.
+  var guardSheet = seed();
+  currentSS.getSheetByName('Summary')
+    .appendRow(['2026-07-27', '2026-08-02', 'shopify_orderapp', 'online', 512.5, 'T2', 'Roastery', 'revenue']);
+  var guarded = cleanupOnlineRevenueSummaryRows();
+  eq('shopify_orderapp row is NOT matched by the dry run', guarded.found, 3);
+  var guardedApply = cleanupOnlineRevenueSummaryRows(false);
+  eq('apply deletes only the customer-keyed rows', guardedApply.deleted, 3);
+  var surviving = guardSheet.getDataRange().getValues().slice(1)
+    .filter((r) => String(r[2]) === 'shopify_orderapp');
+  eq('shopify_orderapp row survives the apply', surviving.length, 1);
+  eq('shopify_orderapp total intact', surviving[0][4], 512.5);
 })();
 
 /* ------------------------------------------------------------------ *
@@ -4574,6 +4589,20 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('crash after start: failcount remains 1', scriptProps['ORDERAPP_FAILCOUNT_' + SRC], '1');
   check('crash after start: heartbeat NOT stamped', !(('LAST_INGEST_' + SRC) in scriptProps));
 
+  // --- not-armed skip: token unset is NOT failure. A trigger installed before
+  //     the token is pasted fires start->skip forever; without the reset that
+  //     builds to a false "did not complete" alert on run 2 and every run after.
+  reset();
+  orderAppRunStart_(SRC);
+  orderAppRunSkipped_(SRC);
+  eq('skip resets the failcount to 0', scriptProps['ORDERAPP_FAILCOUNT_' + SRC], '0');
+  check('skip stamps NO heartbeat', !(('LAST_INGEST_' + SRC) in scriptProps));
+  orderAppRunStart_(SRC);
+  orderAppRunSkipped_(SRC);
+  orderAppRunStart_(SRC);
+  orderAppRunSkipped_(SRC);
+  eq('repeated start->skip cycles never alert', calendarEvents.length, 0);
+
   // --- a broken alert calendar must never throw out of orderAppRaiseAlert_ ---
   reset();
   calendarFailMode = 'all';
@@ -4844,13 +4873,46 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('case7: nothing was written to Summary', !currentSS.getSheetByName('Summary'));
   global.__forceLockTimeout = false;
 
-  /* --- case 8: token unset -> {noToken:true}, nothing written, no heartbeat --- */
+  /* --- case 8: token unset -> {noToken:true}, nothing written, no heartbeat,
+   *     and NO alert loop: a trigger armed before the token is pasted fires
+   *     start->skip every week — the skip resets the counter, so the second
+   *     (and every later) run never crosses the alert threshold. --- */
   reset();
   scriptProps = {};
   var res8 = shopifyWeeklyPull_impl_();
   eq('case8: no-token return shape', res8, { noToken: true });
   check('case8: nothing written to Summary', !currentSS.getSheetByName('Summary'));
   check('case8: no heartbeat stamped', !(('LAST_INGEST_' + SHOPIFY_SUPPLIER) in scriptProps));
+  eq('case8: failcount reset by the not-armed skip',
+    scriptProps['ORDERAPP_FAILCOUNT_' + SHOPIFY_SUPPLIER], '0');
+  shopifyWeeklyPull(); // full entry point: start -> skip
+  shopifyWeeklyPull(); // second scheduled run — the old bug alerted HERE
+  eq('case8: repeated not-armed scheduled runs raise no alert', calendarEvents.length, 0);
+
+  /* --- case 9: excluded buckets are surfaced, not discarded. The metric is
+   *     gross of PAID/PARTIALLY_PAID: a refunded order drops its FULL amount
+   *     into excluded — the buckets exist so that shrink can be reconciled. --- */
+  reset();
+  var weeks9 = lastCompletedWeeks_(todayStr_(), SHOPIFY_REPULL_WEEKS);
+  var bodies9 = {};
+  weeks9.forEach((w, i) => { bodies9[w.label] = weekBody(w, 200 + i, 3); });
+  var excl9 = bodies9[weeks9[1].label];
+  excl9.excluded = {
+    byStatusTotals: { orderCount: 1, gross: 400 },
+    cancelled: { count: 1, gross: 55.5 },
+    test: { count: 0 }
+  };
+  armShopifyFetch(bodies9);
+  var res9 = shopifyWeeklyPull_impl_();
+  eq('case9: excludedGross totals every held-out bucket', res9.excludedGross, 455.5);
+  check('case9: the held-out gross is logged with the week label',
+    lastLoggedMessages().some((m) => m.indexOf(weeks9[1].label) !== -1 && m.indexOf('455.50') !== -1));
+  var row9 = findSummaryRow(currentSS.getSheetByName('Summary').getDataRange().getValues(), weeks9[1].start);
+  eq('case9: the Summary figure itself stays the API grossSales (excluded is surfaced, never added back)',
+    row9[4], 201);
+  delete bodies9[weeks9[1].label].excluded; // normal weeks carry no excluded buckets
+  var res9b = shopifyWeeklyPull_impl_();
+  eq('case9: weeks without excluded buckets report excludedGross 0', res9b.excludedGross, 0);
 
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
@@ -5032,6 +5094,56 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   };
   const abortRows = greenBeanFetchAllRows_();
   check('size-guard: returns null, not [] or a partial array', abortRows === null);
+
+  /* --- case: offset paging is not snapshot-stable (the Order app re-slices
+   *     the live sheet per request), so a row inserted between pages can be
+   *     resent. rowNumber is stable per row — a resent line is dropped, not
+   *     double-summed into the invoice total. --- */
+  reset();
+  const dupePage1 = [
+    { rowNumber: 10, dateLocal: '2026-06-01', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 1, status: 'RECEIVED' },
+    { rowNumber: 11, dateLocal: '2026-06-02', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 2, status: 'RECEIVED' }
+  ];
+  const dupePage2 = [
+    { rowNumber: 11, dateLocal: '2026-06-02', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 2, status: 'RECEIVED' },
+    { rowNumber: 12, dateLocal: '2026-06-03', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 3, status: 'RECEIVED' }
+  ];
+  global.UrlFetchApp = {
+    fetch: (url) => {
+      const m = /[?&]offset=([^&]+)/.exec(String(url));
+      const offset = m ? Number(decodeURIComponent(m[1])) : 0;
+      const page = offset === 0 ? dupePage1 : dupePage2;
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: offset === 0, rowsIncluded: true, returned: page.length } }, rows: page })
+      };
+    },
+  };
+  const dedupedRows = greenBeanFetchAllRows_();
+  eq('page-shift dupe: resent rowNumber kept once', dedupedRows.length, 3);
+  eq('page-shift dupe: distinct rowNumbers survive in order',
+    dedupedRows.map((r) => r.rowNumber), [10, 11, 12]);
+  check('page-shift dupe: the skip is logged',
+    lastLoggedMessages().some((m) => /duplicate row/i.test(m)));
+
+  /* --- case: upstream diagnostics.warnings are logged verbatim — the API
+   *     coerces non-numeric cells to 0 and drops invalid-Timestamp rows,
+   *     reporting both ONLY here. --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 1 } },
+        diagnostics: { warnings: ['1 row(s) hidden by the from/to filter because their Timestamp cell is not a valid date.'] },
+        rows: [{ rowNumber: 5, dateLocal: '2026-06-01', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 1, status: 'RECEIVED' }]
+      })
+    }),
+  };
+  greenBeanFetchAllRows_();
+  check('upstream warnings are logged verbatim',
+    lastLoggedMessages().some((m) => m.indexOf('UPSTREAM WARNING') !== -1 && m.indexOf('Timestamp cell is not a valid date') !== -1));
 
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
@@ -5229,6 +5341,46 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   global.UrlFetchApp = REAL_URL_FETCH;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+})();
+
+/* ------------------------------------------------------------------ *
+ * orderapp: flagged intake rows are surfaced (phase-end review fix).
+ * Upstream coerces a non-numeric PriceKg/TotalKg to 0 and records it only in
+ * the row's flags[] — the line still ingests (locked decision: never dropped),
+ * but a $0 committed-spend line usually means an understated invoice, so the
+ * count must be loud.
+ * ------------------------------------------------------------------ */
+(function testGreenBeanFlaggedRowsSurfaced() {
+  console.log('\norderapp: greenBeanPull_impl_ — flagged rows surfaced:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  currentSS = makeSpreadsheet();
+  scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token' };
+  clearLoggedMessages();
+
+  // Both rows dated in the current (incomplete) week — no resummarize noise.
+  const today = todayStr_();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 2 } },
+        rows: [
+          { rowNumber: 2, dateLocal: today, supplierRaw: 'Flag Co', supplierKey: 'flag_co', invoiceNum: 'F-1', totalCostIncGst: 0, status: 'RECEIVED', flags: ['NON_NUMERIC_PRICE_KG'] },
+          { rowNumber: 3, dateLocal: today, supplierRaw: 'Fine Co', supplierKey: 'fine_co', invoiceNum: 'OK-1', totalCostIncGst: 42, status: 'RECEIVED' }
+        ]
+      })
+    }),
+  };
+
+  const res = greenBeanPull_impl_();
+  eq('flaggedRows counts rows carrying flags[]', res.flaggedRows, 1);
+  check('flagged count is logged with remediation pointer',
+    lastLoggedMessages().some((m) => m.indexOf('flagged intake row') !== -1 && m.indexOf('06_Stock_Intake') !== -1));
+  eq('the flagged $0 line still ingested (never dropped)', res.rowsAdded, 2);
+
+  global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
 /*

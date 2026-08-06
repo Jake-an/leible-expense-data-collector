@@ -122,6 +122,17 @@ function orderAppRunStart_(source) {
   }
 }
 
+/**
+ * Call when a run SKIPS because the feed is not armed (ORDER_APP_COST_TOKEN
+ * unset). Not-armed is not failure: resets the failcount WITHOUT stamping a
+ * heartbeat, so triggers installed before the token is pasted can never build
+ * up to a false "did not complete" alert.
+ */
+function orderAppRunSkipped_(source) {
+  PropertiesService.getScriptProperties().setProperty(ORDERAPP_FAILCOUNT_PREFIX + source, '0');
+  Logger.log('orderapp: ' + source + ' skipped (not armed) — failcount reset, no heartbeat');
+}
+
 /** Call ONLY on full success: resets the failcount and stamps the heartbeat. */
 function orderAppRunSuccess_(source) {
   var props = PropertiesService.getScriptProperties();
@@ -244,6 +255,7 @@ function shopifyWeeklyPull() {
 function shopifyWeeklyPull_impl_() {
   var token = getOrderAppToken_();
   if (!token) {
+    orderAppRunSkipped_(SHOPIFY_ORDERAPP_SOURCE);
     return { noToken: true };
   }
 
@@ -253,6 +265,7 @@ function shopifyWeeklyPull_impl_() {
   var normalizedRows = [];
   var weeksFetched = 0;
   var apiFailed = false;
+  var excludedGross = 0;
 
   for (var i = 0; i < weeks.length; i++) {
     var res = orderAppFetch_({ api: 'shopifySales', week: weeks[i].label });
@@ -269,6 +282,21 @@ function shopifyWeeklyPull_impl_() {
       weekStart, weekEnd, SHOPIFY_ORDERAPP_SOURCE, 'online',
       Number(body.summary.grossSales), pulledAt, 'Roastery', 'revenue'
     ]);
+
+    // The metric is gross of PAID/PARTIALLY_PAID orders; a refund of any size
+    // removes the WHOLE order from the week (Order-app contract — deliberate).
+    // The excluded buckets exist precisely so that shrink can be reconciled;
+    // surface them instead of discarding them.
+    var excluded = body.excluded || {};
+    var weekExcluded = 0;
+    if (excluded.byStatusTotals) weekExcluded += Number(excluded.byStatusTotals.gross) || 0;
+    if (excluded.cancelled) weekExcluded += Number(excluded.cancelled.gross) || 0;
+    if (weekExcluded > 0) {
+      excludedGross += weekExcluded;
+      Logger.log('shopifyWeeklyPull: ' + weeks[i].label + ' holds out $' + weekExcluded.toFixed(2) +
+        ' gross in excluded orders (PENDING/cancelled; a refunded order drops its FULL amount) — ' +
+        'reconcile via the Order-app excluded buckets if the weekly figure looks low');
+    }
   }
 
   var ss = getHubSpreadsheet_();
@@ -280,7 +308,8 @@ function shopifyWeeklyPull_impl_() {
     weeksFetched: weeksFetched,
     rowsAdded: upsertResult.rowsAdded,
     rowsUpdated: upsertResult.rowsUpdated,
-    duplicatesSkipped: upsertResult.duplicatesSkipped
+    duplicatesSkipped: upsertResult.duplicatesSkipped,
+    excludedGross: Math.round(excludedGross * 100) / 100
   };
 
   if (apiFailed) {
@@ -398,6 +427,8 @@ function greenBeanFetchAllRows_() {
   var window = greenBeanWindow_(todayStr_());
   var rows = [];
   var offset = 0;
+  var seenRowNumbers = {};
+  var duplicatesSkipped = 0;
 
   while (true) {
     var res = orderAppFetch_({
@@ -420,7 +451,28 @@ function greenBeanFetchAllRows_() {
       return null;
     }
 
-    rows = rows.concat(res.body.rows);
+    // Surface upstream data-quality signals verbatim — the API coerces a
+    // non-numeric price/kg cell to 0 and drops invalid-Timestamp rows,
+    // reporting both ONLY here. Discarding them turns a typo'd cell into a
+    // silently understated committed-spend figure.
+    var diagnostics = res.body.diagnostics || {};
+    var warnings = diagnostics.warnings || res.body.warnings || [];
+    for (var w = 0; w < warnings.length; w++) {
+      Logger.log('greenBeanFetchAllRows_: UPSTREAM WARNING — ' + warnings[w]);
+    }
+
+    // Offset paging is not snapshot-stable: the Order app re-slices the live
+    // sheet per request, so a row inserted between pages can shift the window
+    // and resend a line. rowNumber is stable per row — dedup on it.
+    var pageRows = res.body.rows || [];
+    for (var p = 0; p < pageRows.length; p++) {
+      var rn = pageRows[p].rowNumber;
+      if (rn !== undefined && rn !== null) {
+        if (seenRowNumbers[rn]) { duplicatesSkipped++; continue; }
+        seenRowNumbers[rn] = true;
+      }
+      rows.push(pageRows[p]);
+    }
 
     if (paging.truncated === true && paging.rowsIncluded === true) {
       offset += paging.returned;
@@ -429,6 +481,10 @@ function greenBeanFetchAllRows_() {
     break;
   }
 
+  if (duplicatesSkipped > 0) {
+    Logger.log('greenBeanFetchAllRows_: skipped ' + duplicatesSkipped +
+      ' duplicate row(s) across pages (live-sheet offset shift) — totals kept exact');
+  }
   return rows;
 }
 
@@ -476,12 +532,25 @@ function greenBeanPull() {
 function greenBeanPull_impl_() {
   var token = getOrderAppToken_();
   if (!token) {
+    orderAppRunSkipped_('greenbean');
     return { noToken: true };
   }
 
   var rows = greenBeanFetchAllRows_();
   if (rows === null) {
     return { apiFailed: true };
+  }
+
+  // Per-row flags mark values the API coerced (e.g. non-numeric PriceKg → $0
+  // line). The lines still ingest (locked decision: never dropped), but the
+  // count must be loud — a flagged line usually means an understated invoice.
+  var flaggedRows = 0;
+  for (var f = 0; f < rows.length; f++) {
+    if (rows[f].flags && rows[f].flags.length) flaggedRows++;
+  }
+  if (flaggedRows > 0) {
+    Logger.log('greenBeanPull: ' + flaggedRows + ' flagged intake row(s) (coerced values, likely $0 lines) — ' +
+      'greenbean totals may be understated; fix the 06_Stock_Intake cells in the Order app');
   }
 
   var invoices = greenBeanInvoices_(rows);
@@ -555,6 +624,7 @@ function greenBeanPull_impl_() {
   return {
     rowsFetched: rows.length,
     invoices: invoices,
+    flaggedRows: flaggedRows,
     rowsAdded: ingestResult.rowsAdded,
     rowsUpdated: ingestResult.rowsUpdated,
     duplicatesSkipped: ingestResult.duplicatesSkipped,

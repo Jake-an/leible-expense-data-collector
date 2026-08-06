@@ -28,7 +28,7 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 
 ## Architecture Rules
 - CRITICAL: **Two runtimes, one boundary.** GAS owns every Sheet write, Square API pull, Mayers PDF parse, and normalization. Playwright connectors ONLY log in, download raw data, and POST to the GAS `doPost` ingest endpoint — a connector never writes to the Sheet directly.
-- CRITICAL: **All ingest flows through `doPost` → `validateIngest_` → the two-tab contract** (`Suppliers` invoice-level + `Sales` Square daily). Never append to a tab outside that path. The dedup keys are the contract — `source`+`invoice_ref` for `Suppliers`, `date`+`location` for `Sales` — see `docs/schema.md`.
+- CRITICAL: **All EXTERNAL ingest flows through `doPost` → `validateIngest_` → the two-tab contract** (`Suppliers` invoice-level + `Sales` Square daily). A connector never appends to a tab outside that path. GAS-native pulls (`square.gs`, `mayers.gs`, labour, `orderapp.gs`) are the sanctioned exception: they write through the internal normalizers/upserts (`ingestSupplierRows`/`upsertRows_`), which enforce the same dedup keys. The dedup keys are the contract — `source`+`invoice_ref` for `Suppliers`, `date`+`location` for `Sales` — see `docs/schema.md`.
 - Connectors emit **raw** source rows; normalization is GAS's job (`normalizeSupplierRow`), not the connector's.
 
 ## Absolute Rules

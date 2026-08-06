@@ -1245,6 +1245,15 @@ function cleanupOnlineRevenueSummaryRows(dryRun) {
       var location = String(data[r][3]).trim().toLowerCase();
       if (kind !== 'revenue' || location !== 'online') continue;
 
+      // shopify_orderapp Summary rows are written directly by the orderapp pull
+      // (PRD-10), not derived from Revenue — this cleanup's subject is the v23
+      // customer-keyed grain-change rows, and deleting a pull-owned row would be
+      // unrecoverable by resummarize (no Revenue rows back it).
+      if (String(data[r][2]).trim().toLowerCase() === 'shopify_orderapp') {
+        Logger.log('cleanupOnlineRevenueSummaryRows: skipping pull-owned shopify_orderapp row ' + (r + 1));
+        continue;
+      }
+
       var weekStart = coerceDateStr_(data[r][0]);
       matches.push(r);
 

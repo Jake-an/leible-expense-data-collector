@@ -188,6 +188,29 @@ Playwright connectors POST to the GAS web-app URL with this shape (invoice-level
 - **`phases/` JSON files** track harness execution state (pending/completed/error/blocked)
 - **`sessions/`** holds browser auth state (gitignored — contains cookies)
 
+## Order-app GAS pulls (orderapp.gs, PRD-10/11 — 2026-08-06)
+
+A fourth flow, GAS-native (no Python, no doPost hop): `connectors/gas/orderapp.gs`
+pulls two token-gated read APIs of the LEIBLE_Order_app on Google time triggers
+and writes through the hub's internal upsert helpers — the sanctioned exception
+to the doPost boundary (same class as square.gs/mayers.gs/labour).
+
+```
+GAS trigger Mon 05:00 Sydney -> shopifyWeeklyPull()
+  -> Order app ?api=shopifySales (last 4 completed ISO weeks, live snapshot)
+  -> Summary rows direct via upsertRows_    (kind=revenue, supplier=shopify_orderapp,
+                                             location=online, department=Roastery)
+GAS trigger Tue 05:00 Sydney -> greenBeanPull()
+  -> Order app ?api=greenBeanCost (rolling 3 months, status=ALL, offset paging + rowNumber dedup)
+  -> line->invoice grouping -> Suppliers via ingestSupplierRows (source=greenbean)
+  -> snapshot-diff affected-week weeklySummarize (cap 5/run + persisted overflow queue)
+```
+
+Failure detection is a fail-open counter (`ORDERAPP_FAILCOUNT_*`): increment at
+run start, reset only on full success, orange Calendar alert at 2 consecutive
+incomplete runs. Not-armed (token unset) resets without heartbeat. The retired
+direct puller `shopify.gs` was deleted in the same phase (never activated).
+
 ## shopSpend flow (separate silo)
 
 A third data flow, independent of the `Suppliers`/`Sales`/`Revenue` two-tab

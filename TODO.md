@@ -122,8 +122,11 @@ live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unc
       is in `docs/ingest-contract.md`: where order data lives, stable order ids?, do uploaded
       invoices carry structured date/vendor/amount or are they file-only, can the app POST out.
       **Waiting on the coffee-order-app API key (Jake, 2026-08-03) — parked until that arrives.**
-- [ ] **(Jake) Script Properties** — see the "Shopify bring-up" section below for the Shopify
-      pair and their ordering; `RECUR_RENT_ROASTERY` / `RECUR_SHOPIFY` are listed there too.
+- [ ] **(Jake) Script Properties** — `RECUR_RENT_ROASTERY` / `RECUR_SHOPIFY` (recurring-costs
+      phase). The old Shopify pair (`SHOPIFY_SHOP_DOMAIN`/`SHOPIFY_ACCESS_TOKEN`) is obsolete:
+      shopify.gs was deleted (superseded by the Order-app pull, PRD-10) — those properties must
+      stay ABSENT; the only new property is `ORDER_APP_COST_TOKEN` (see the orderapp-pulls
+      live bring-up runbook).
 - [ ] **(Jake) Gmail label `roastery/invoices`** + filter, then install the roastery trigger.
 - [ ] `recurring` is unwatched by the staleness watchdog — monthly cadence vs the 96h threshold
       would cry wolf ~26 days a month. Needs per-source thresholds in `staleness.gs`.
@@ -185,33 +188,13 @@ Australia/Sydney), so:
       `docs/api.md` and `docs/ingest-contract.md`. A real fix would normalize channel casing on
       write, which changes wholesale dedup keys — deliberately not done here.
 
-### Shopify bring-up — teed up for next session
-Code is deployed (v23) but **inert**: `shopifyDailyPull` reads its Script Properties, finds them
-unset, logs `missing SHOPIFY_SHOP_DOMAIN/SHOPIFY_ACCESS_TOKEN — skipping` and returns without
-stamping a heartbeat (`shopify.gs:61-64`). Nothing is written and the staleness watchdog will
-not cry wolf. No trigger exists for it yet.
-
-Order for next session:
-
-- [ ] **⚠️ FIRST — check `SHOPIFY_API_VERSION`.** `shopify.gs:24` pins **`'2024-10'`**, which is
-      almost certainly out of support as of 2026-08. Shopify retires versions after ~12 months.
-      The plan (line 529) explicitly said to confirm the current stable version against Shopify's
-      docs at build time. **Verify against the live docs before pulling anything** — a retired
-      version fails or silently changes shape. Do not bump it from memory.
-- [ ] **(Jake) Create the custom app + token.** Shopify admin → Apps → develop apps → custom app.
-      Minimum scope **`read_orders`**. (`read_all_orders` is only needed for orders >60 days old
-      and requires Shopify approval — irrelevant with no historical backfill.)
-- [ ] **(Jake) Set Script Properties:** `SHOPIFY_SHOP_DOMAIN`, `SHOPIFY_ACCESS_TOKEN`.
-      Never in the repo, never in chat.
-- [ ] **Smoke test before arming the trigger:** from the editor run `shopifyDailyPull` with no
-      argument — it defaults to yesterday (`shopify.gs:53`), so it is safe to Run directly and
-      needs no wrapper. Confirm rows land in `Revenue` with `department='Roastery'`,
-      `channel='online'`.
-- [ ] **Reconcile** that day's `Revenue` total against Shopify's admin sales report (plan line 702).
-- [ ] **Only then** run `installShopifyTrigger()` (`shopify.gs:114`) — daily 03:00 Sydney,
-      re-pulls the last 2 days.
-- [ ] Remaining Script Properties for the recurring-costs phase: `RECUR_RENT_ROASTERY`,
-      `RECUR_SHOPIFY`.
+### Shopify bring-up — ❌ SUPERSEDED (2026-08-06, orderapp-pulls phase)
+The direct Shopify puller (`shopify.gs`) was deleted without ever being activated — its Script
+Properties were never set and no trigger ever existed. Shopify online revenue now arrives via
+the Order app's `?api=shopifySales` read API (`shopifyWeeklyPull` in `connectors/gas/orderapp.gs`,
+PRD-10, `supplier='shopify_orderapp'` Summary rows). Do NOT set `SHOPIFY_SHOP_DOMAIN`/
+`SHOPIFY_ACCESS_TOKEN` and do NOT look for `installShopifyTrigger` — both are gone. The live
+bring-up steps live in the "Order-app pulls — live bring-up" runbook above.
 
 ### Phase 0 — Foundation — ✅ DONE
 - [x] Sheet "LEIBLE Expense Hub" created with `Suppliers` / `Sales` / `_staging` tabs + headers
