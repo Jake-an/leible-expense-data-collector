@@ -204,8 +204,9 @@ one sitting:
 6. **What triggers a POST?** Per-order in near-real-time, or a batch/daily
    sync? This affects whether `extracted_at` should be "now" per row or a
    shared batch timestamp, and interacts with the staleness threshold
-   (currently 96h) — a daily-batch app that runs once nightly still needs to
-   land comfortably inside that window.
+   (96h default; `STALENESS_THRESHOLD_OVERRIDES` in staleness.gs carries
+   per-source values for slower cadences) — a daily-batch app that runs once
+   nightly still lands comfortably inside the default window.
 
 Once these are answered, write the findings into the plan (per the plan's
 own Step 4.0 instruction) before any app-side or further hub-side work

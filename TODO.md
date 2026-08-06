@@ -48,6 +48,10 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
 3. `bash scripts/deploy.sh` — note the printed rollback anchor (deployment id + prior version).
 4. Editor-run `shopifyWeeklyPull` then `greenBeanPull`; check the Logger counts for each
    (rows fetched/added/updated, `weeksResummarized`/`weeksQueued` for greenbean).
+   Do this the SAME DAY as step 3: both sources are now staleness-watched (round 9), and
+   until their first successful run each shows as "never seen" — the daily 11:00 check
+   would raise an orange event per source per day. That alert firing before bring-up is
+   the watchdog working as designed, not a fault.
 5. **After the first greenbean pull:** editor-run `weeklySummarize('<week>')` across the whole
    seeded 3-month window, one call per week — don't wait for the overflow queue
    (`GREENBEAN_RESUM_CAP=5` per run) to drain naturally over weeks.
@@ -130,13 +134,11 @@ live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unc
       stay ABSENT; the only new property is `ORDER_APP_COST_TOKEN` (see the orderapp-pulls
       live bring-up runbook).
 - [ ] **(Jake) Gmail label `roastery/invoices`** + filter, then install the roastery trigger.
-- [ ] **Per-source staleness thresholds** — three sources are now unwatched because their cadence
-      exceeds the global 96h threshold: `recurring` (monthly; would cry wolf ~26 days/month),
-      `shopify_orderapp` (weekly, Mon 05:00) and `greenbean` (weekly, Tue 05:00). The orderapp
-      fail-open counter alerts on runs that START and die, but a **deleted or never-installed
-      trigger fires no run at all and is therefore invisible** — heartbeats are stamped
-      (`LAST_INGEST_*`) but nothing reads them. A 168h-aware per-source threshold in
-      `staleness.gs` closes all three at once.
+- [x] **Per-source staleness thresholds — DONE (orderapp-pulls phase-end round 9).**
+      `STALENESS_THRESHOLD_OVERRIDES` in `staleness.gs` (168h for `shopify_orderapp` +
+      `greenbean`, 744h/31d for `recurring`); all three re-added to `STALENESS_SOURCES`, so a
+      deleted or never-installed trigger now alerts at the first daily check after its missed
+      run. `shopspend` stays exempt — its own `shopSpendWatchdog` trigger covers it.
 - [ ] `mayers.gs` entry point (`mayersPull`) was never wrapped in `withScriptLock_` — it fell
       outside every phase's declared `Files:` list. Every other entry point is wrapped.
 - [ ] Decide: `validateIngest_` accepts a numeric-string `amount` (`"340.00"`) via

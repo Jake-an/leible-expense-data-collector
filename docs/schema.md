@@ -48,26 +48,36 @@ treatment is NOT asserted for any other `Suppliers` source (Food and Dairy
 Co, Fresh and Chill, Kent Paper, Mayers, Ordermentum) — nobody has verified
 those, so don't assume consistency.
 
-**Stale-row limitation and runbook:** if a stock-intake row is deleted from
-the Order app's `06_Stock_Intake` sheet after the hub already ingested it,
-the hub has no delete signal — the API only ever returns what currently
-exists, so a vanished invoice simply stops appearing in future pulls, and
-the already-ingested `Suppliers` row (and its already-summarized `Summary`
-contribution) goes stale silently. To correct it: manually edit the stale
-`Suppliers` row (zero out `total`, or delete the row entirely), then run
-`weeklySummarize('<week_start>')` for the affected week to re-derive
-`Summary` from the corrected `Suppliers` data.
+**Stale-row detection (orphans) and runbook:** the hub gets no delete or
+rename signal from the Order app — the API only ever returns what currently
+exists. `greenBeanPull` closes that gap with **orphan detection**: every pull
+re-fetches the entire ~3-month window, so any `Suppliers` greenbean row whose
+stored date is inside the window but whose `invoice_ref` was NOT re-submitted
+by the pull has lost its upstream counterpart — the intake row was renamed
+(supplier edit), re-keyed (invoice-number edit), re-dated (see below), or
+deleted. It raises a `greenbean_orphan` data-quality alert naming each stale
+ref; the stale row's money double-counts against its replacement (or
+over-counts a deletion) until fixed. Rows OLDER than the pull window are
+legitimately absent from the pull and are never flagged — a deletion that old
+still goes stale silently. Remediation is manual by design (the alert, not
+the code, decides what the truth was): zero out the stale row's `total`, then
+run `weeklySummarize('<week_start>')` for its week. A zeroed row drops out of
+the orphan set, so completing the runbook clears the alert.
 
-The same runbook applies to a **supplier rename** in `06_Stock_Intake`: the
-edited cell changes `supplierKey`, so the invoice re-ingests under a NEW
-`invoice_ref` while the old row stays behind (double-count until corrected).
-`greenBeanPull` detects the pattern — including PARTIAL renames where other
-invoices still carry the old spelling — and raises a `greenbean_rename`
-data-quality alert naming the old and new refs.
+A **supplier rename** in `06_Stock_Intake` is the same pattern — the edited
+cell changes `supplierKey`, so the invoice re-ingests under a NEW
+`invoice_ref` while the old row stays behind. The orphan alert covers it,
+including PARTIAL renames where other invoices still carry the old spelling,
+and adds a "possibly renamed to <new ref>" hint when a new ref in the same
+pull carries the same bare invoice number.
 
-A **date correction** upstream (same invoice, same total, moved date)
-self-heals: `greenBeanPull` updates the Suppliers row's date in place and
-resummarizes BOTH the old and new weeks — no manual step needed.
+A **date correction** upstream (same invoice ref, moved date) self-heals:
+`greenBeanPull` updates the Suppliers row's `date` and `extracted_at` in
+place and resummarizes BOTH the old and new weeks — no manual step needed.
+The exception is a **blank-invoice line**: its `noinv-<date>` ref embeds the
+date, so a date edit mints a NEW identity instead of matching the stored row
+— the stale old row then surfaces through the orphan alert above rather than
+self-healing.
 
 ## Tab `Sales` (Square, daily gross per location — always Cafe)
 

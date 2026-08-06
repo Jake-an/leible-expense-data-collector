@@ -817,58 +817,26 @@ function greenBeanPull_impl_() {
     affected.push(weekStart);
   }
 
-  // Rename detection: editing the free-text supplier cell of an ingested
-  // invoice changes supplierKey and therefore invoice_ref, so the upsert
-  // APPENDS a fresh row while the old one stays — a silent double-count.
-  // Heuristic: an incoming invoice whose full ref is new, but whose bare
-  // invoiceNum exists in the snapshot under a ref that is NOT re-submitted by
-  // this pull, is almost certainly a rename. Keyed on the absent REF, not an
-  // absent supplierKey: a PARTIAL rename (one invoice moves to the new
-  // spelling while other invoices keep the old key) leaves the old KEY
-  // present but the old REF unsubmitted — the exact double-count this
-  // detector exists for. Legit cross-supplier shared invoice numbers keep
-  // BOTH refs re-submitted every pull, so they never trip it. Detected, not
-  // auto-fixed: the new row is current truth; the alert points at the stale
-  // old row and the schema.md runbook (zero it, resummarize its week).
+  // This pull's full ref set, normalized exactly like the snapshot keys —
+  // consulted by both the update-classification loop below and the orphan
+  // sweep after it.
   var pullRefs = {};
   for (var pk = 0; pk < invoices.length; pk++) {
     pullRefs[String(invoices[pk].invoice_ref).trim().toLowerCase()] = true;
   }
-  // Candidates are BOUNDED to rows whose storedDate falls inside this pull's
-  // window. The Suppliers tab retains ~6 months (ARCHIVE_RETENTION_DAYS=183)
-  // but the pull spans ~3 — a supplier legitimately quiet this quarter would
-  // otherwise satisfy "prior holder absent from pull" and an invoice-number
-  // collision with their old rows would false-positive a rename whose runbook
-  // zeroes REAL historical spend. Same-window rows can't be quiet-supplier
-  // artifacts: if the row's date is in the window, the pull re-fetches it.
-  var renameWindow = greenBeanWindow_(todayStr_());
-  var snapshotByInvNum = {};
-  for (var snapKey in snapshot) {
-    if (!Object.prototype.hasOwnProperty.call(snapshot, snapKey)) continue;
-    var snapEntry = snapshot[snapKey];
-    if (snapEntry.storedDate < renameWindow.from || snapEntry.storedDate > renameWindow.to) continue;
-    var refParts = snapKey.replace(GREENBEAN_SOURCE + '||', '').split('/');
-    if (refParts.length < 2) continue;
-    var bare = refParts.slice(1).join('/');
-    if (!snapshotByInvNum[bare]) snapshotByInvNum[bare] = [];
-    snapshotByInvNum[bare].push({ supplierKey: refParts[0], ref: refParts.join('/'), total: snapEntry.total });
-  }
-  var suspectedRenames = [];
+  // Bare invoice-number part of every ref NEW to this pull. Purely a display
+  // hint so an orphan alert can say where the money probably went after a
+  // supplier rename — it plays NO part in deciding what is an orphan.
+  var newRefsByBare = {};
 
   for (var i = 0; i < invoices.length; i++) {
     var invoice = invoices[i];
     var snap = snapshot[GREENBEAN_SOURCE + '||' + String(invoice.invoice_ref).trim().toLowerCase()];
     if (!snap) {
       addAffectedWeek(weekStartForDate_(invoice.date));
-      // Probe with the same trim/lowercase normalization the snapshot keys use.
       var newParts = String(invoice.invoice_ref).trim().toLowerCase().split('/');
-      var priorHolders = snapshotByInvNum[newParts.slice(1).join('/')] || [];
-      for (var ph = 0; ph < priorHolders.length; ph++) {
-        if (priorHolders[ph].supplierKey !== newParts[0] && !pullRefs[priorHolders[ph].ref]) {
-          suspectedRenames.push(priorHolders[ph].ref + ' -> ' + invoice.invoice_ref +
-            ' (old row total $' + priorHolders[ph].total + ')');
-        }
-      }
+      var newBare = newParts.slice(1).join('/');
+      if (newBare) newRefsByBare[newBare] = invoice.invoice_ref;
       continue;
     }
     // Date-move self-heal: upsertRows_ never rewrites the date column, so an
@@ -879,6 +847,10 @@ function greenBeanPull_impl_() {
     var dateMoved = invoice.date !== snap.storedDate;
     if (dateMoved) {
       suppSheet.getRange(snap.rowIndex, 1).setValue(invoice.date);
+      // Value+stamp convention (upsertRows_, appendSalesRow_): every in-place
+      // correction refreshes extracted_at too, so the row answers "when was
+      // this last touched?" truthfully.
+      suppSheet.getRange(snap.rowIndex, 7).setValue(extractedAt);
       addAffectedWeek(weekStartForDate_(snap.storedDate)); // old week loses the invoice
       addAffectedWeek(weekStartForDate_(invoice.date));    // new week gains it
       Logger.log('greenBeanPull: ' + invoice.invoice_ref + ' date moved ' + snap.storedDate +
@@ -892,17 +864,56 @@ function greenBeanPull_impl_() {
     }
   }
 
-  if (suspectedRenames.length > 0) {
-    Logger.log('greenBeanPull: ' + suspectedRenames.length + ' suspected supplier rename(s): ' +
-      suspectedRenames.join('; '));
-    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_rename',
-      'Suspected supplier rename in 06_Stock_Intake — an invoice re-ingested under a NEW ref while ' +
-      'its old Suppliers row remains, so that week DOUBLE-COUNTS until fixed:\n- ' +
-      suspectedRenames.join('\n- ') +
+  // Orphan detection: the pull re-fetches the ENTIRE window every run, so a
+  // snapshot row whose storedDate lies inside this pull's window but whose
+  // ref was NOT re-submitted has lost its upstream counterpart — the invoice
+  // was renamed (supplier edit), re-keyed (invoiceNum edit), re-dated (a date
+  // edit on a blank-invoice line mints a brand-new noinv-<date> ref, so the
+  // ref-equality self-heal above can never fire for it), or deleted from
+  // 06_Stock_Intake. In every case the sheet row is stale money: left alone
+  // it double-counts against its freshly-appended replacement, or over-counts
+  // a deletion, and nothing else can notice. Detected, not auto-fixed (same
+  // decision as the rename detector this generalizes): any replacement row is
+  // current truth; the alert points at the stale old row and the schema.md
+  // runbook (zero it, resummarize its week).
+  //
+  // Candidates are BOUNDED to the pull window: the tab retains ~6 months
+  // (ARCHIVE_RETENTION_DAYS=183) but the pull spans ~3, so an OLDER row's
+  // absence from the pull is expected — flagging it would send the runbook
+  // after real historical spend. In-window rows can't be that artifact: if
+  // the date is in the window, the pull re-fetched it by definition.
+  var pullWindow = greenBeanWindow_(todayStr_());
+  var orphans = [];
+  for (var oKey in snapshot) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, oKey)) continue;
+    var oEntry = snapshot[oKey];
+    if (oEntry.storedDate < pullWindow.from || oEntry.storedDate > pullWindow.to) continue;
+    var oRef = oKey.substring((GREENBEAN_SOURCE + '||').length);
+    if (pullRefs[oRef]) continue;
+    // A zeroed row is the runbook's own end state (money already
+    // neutralized), so skipping it lets remediation clear this alert instead
+    // of re-flagging the same row forever. A NaN total carries no summable
+    // money either.
+    if (!(Math.round(Number(oEntry.total) * 100))) continue;
+    var oBare = oRef.split('/').slice(1).join('/');
+    var hint = (oBare && newRefsByBare[oBare])
+      ? ' — possibly renamed to ' + newRefsByBare[oBare]
+      : '';
+    orphans.push(oRef + ' (stored date ' + oEntry.storedDate + ', $' + oEntry.total + hint + ')');
+  }
+  orphans.sort();
+  if (orphans.length > 0) {
+    Logger.log('greenBeanPull: ' + orphans.length + ' orphaned Suppliers row(s) — in-window rows this pull ' +
+      'did not re-submit: ' + orphans.join('; '));
+    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_orphan',
+      'Orphaned greenbean Suppliers row(s): the stored date is inside the pull window but the invoice was ' +
+      'NOT in this pull — it was renamed, re-dated (blank-invoice lines re-key as noinv-<date>), or deleted ' +
+      'in 06_Stock_Intake. The stale row DOUBLE-COUNTS against its replacement (or over-counts a deletion) ' +
+      'until fixed:\n- ' + orphans.join('\n- ') +
       '\n\nRunbook (docs/schema.md): zero the OLD Suppliers row, then run weeklySummarize(\'<week>\').',
-      'rename:' + orderAppSignatureHash_(suspectedRenames.slice().sort().join('|')));
+      'orphan:' + orderAppSignatureHash_(orphans.join('|')));
   } else {
-    orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_rename');
+    orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_orphan');
   }
 
   // Merge queue-from-property (drain oldest-first) with this run's affected

@@ -20,23 +20,39 @@
  * never take /exec down with un-consented code — /exec is the sole ingest path.
  */
 
-var STALENESS_THRESHOLD_HOURS = 96;              // silent through a normal Fri→Mon (80h)
+var STALENESS_THRESHOLD_HOURS = 96;              // default: silent through a normal Fri→Mon (80h)
 var STALENESS_CALENDAR_ID = 'mio.jake@gmail.com';
-// Every source that stamps a heartbeat should be watched, EXCEPT where its run
-// cadence is longer than STALENESS_THRESHOLD_HOURS. Deliberately excluded:
-//   'recurring' — runs MONTHLY (recurring.gs). At a 96h threshold it would sit
-//   stale ~26 days of every month and cry wolf continuously. Watching it needs
-//   per-source thresholds, which this file does not have. See TODO.md.
-//   'shopify_orderapp' (weekly, Mon 05:00) and 'greenbean' (weekly, Tue 05:00)
-//   are deliberately NOT in the 96h watchdog — their cadence is 168h and their
-//   failure detection is the orderapp fail-open counter/alert (orderapp.gs).
+// Per-source thresholds for sources whose run cadence exceeds the 96h default.
+// These exist because the orderapp fail-open counter can only fire INSIDE a
+// running handler — a trigger that is deleted, disabled, or de-authorized
+// fires no run at all, the heartbeat simply stops advancing, and only THIS
+// file reads it. The daily 11:00 check gives clean margins on both sides:
+//   shopify_orderapp — weekly, Mon 05:00. Healthy worst case is the following
+//     Sun 11:00 check at ~150h < 168; a MISSED Monday run is caught the same
+//     Mon 11:00 at ~174h > 168.
+//   greenbean — weekly, Tue 05:00: same arithmetic, one day shifted.
+//   recurring — monthly, 1st 05:00. 744h = 31 days: a 31-day month's last
+//     healthy check (month-end 11:00, ~726h) stays silent; a missed run
+//     alerts at ~750h — same day for 31-day months, 1–3 days later for
+//     shorter ones (fine for rent-cadence money).
+var STALENESS_THRESHOLD_OVERRIDES = {
+  shopify_orderapp: 168,
+  greenbean: 168,
+  recurring: 744
+};
+// Every source that stamps a heartbeat is watched — at the 96h default or a
+// per-source override above. Deliberately excluded:
+//   'shopspend' — has its OWN dedicated weekly watchdog (shopSpendWatchdog,
+//   Mon 14:00 Sydney, shopspend.gs) reading the ShopSpendPulls coverage tab;
+//   watching its heartbeat here too would double-alert every incident.
 //   'coffee_order_app' — NO LIVE WRITER today, so watching it would false-alarm
 //   daily as a never-seen source. Its suppliers-kind path is mechanically
 //   rejected (validateIngest_), but its wholesale-REVENUE path is still
 //   sanctioned in docs/ingest-contract.md and doPost stamps body.source
 //   generically — so the moment that writer ships, RE-ADD 'coffee_order_app'
 //   here (and to STAMPS_HEARTBEAT in test_code.js) or it runs unwatched.
-var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'roastery'];
+var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'roastery',
+  'shopify_orderapp', 'greenbean', 'recurring'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *
@@ -61,7 +77,8 @@ function checkIngestStaleness() {
  */
 function stalenessRun_(nowMs) {
   var lastSeen = stalenessCollectLastSeen_();
-  var report = stalenessEvaluate_(lastSeen, STALENESS_SOURCES, nowMs, STALENESS_THRESHOLD_HOURS);
+  var report = stalenessEvaluate_(lastSeen, STALENESS_SOURCES, nowMs, STALENESS_THRESHOLD_HOURS,
+    STALENESS_THRESHOLD_OVERRIDES);
 
   var stale = [];
   for (var i = 0; i < report.length; i++) {
@@ -196,26 +213,33 @@ function stalenessMergeLastSeen_(maps) {
 }
 
 /**
- * @returns {Array.<{source:string, ageHours:(number|null), stale:boolean, lastSeenMs:(number|null)}>}
+ * @param {Object.<string, number>} [overrides] — per-source threshold hours;
+ *   a source absent from the map uses thresholdHours. Each report entry
+ *   carries the threshold it was judged against (thresholdHours field) so the
+ *   alert body can name the right number.
+ * @returns {Array.<{source:string, ageHours:(number|null), stale:boolean, lastSeenMs:(number|null), thresholdHours:number}>}
  * Exactly at the threshold is FRESH (strictly greater is stale), so a 96h
  * threshold stays silent on an exactly-96h gap. Never-seen is always stale.
  */
-function stalenessEvaluate_(lastSeen, sources, nowMs, thresholdHours) {
+function stalenessEvaluate_(lastSeen, sources, nowMs, thresholdHours, overrides) {
   var out = [];
   for (var i = 0; i < sources.length; i++) {
     var src = sources[i];
+    var srcThreshold = (overrides && Object.prototype.hasOwnProperty.call(overrides, src))
+      ? overrides[src] : thresholdHours;
     var seen = (src in lastSeen) ? lastSeen[src] : null;
 
     if (seen === null) {
-      out.push({ source: src, ageHours: null, stale: true, lastSeenMs: null });
+      out.push({ source: src, ageHours: null, stale: true, lastSeenMs: null, thresholdHours: srcThreshold });
       continue;
     }
     var ageHours = (nowMs - seen) / 3600000;
     out.push({
       source: src,
       ageHours: Math.round(ageHours * 10) / 10,
-      stale: ageHours > thresholdHours,
-      lastSeenMs: seen
+      stale: ageHours > srcThreshold,
+      lastSeenMs: seen,
+      thresholdHours: srcThreshold
     });
   }
   return out;
@@ -240,6 +264,8 @@ function stalenessEventBody_(entry, thresholdHours) {
     '  - Windows Task Scheduler → LastTaskResult for the connector task',
     '  - logs\\' + entry.source + '.log in the repo',
     '  - Apps Script → Executions (for square / mayers)',
+    '  - Apps Script → Triggers (for shopify_orderapp / greenbean / recurring:',
+    '    check the time trigger still exists and is not disabled)',
     '',
     'If the portal session expired, re-auth with: --attended'
   ].join('\n');
@@ -292,7 +318,8 @@ function stalenessRaiseAlerts_(staleEntries, nowMs) {
     try {
       var ev = cal.createAllDayEvent(title, now);
       ev.setColor(CalendarApp.EventColor.ORANGE);
-      ev.setDescription(stalenessEventBody_(staleEntries[s], STALENESS_THRESHOLD_HOURS));
+      ev.setDescription(stalenessEventBody_(staleEntries[s],
+        staleEntries[s].thresholdHours || STALENESS_THRESHOLD_HOURS));
       created++;
     } catch (err2) {
       Logger.log('stalenessRaiseAlerts_: could not create event for ' +

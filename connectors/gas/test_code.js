@@ -1937,6 +1937,71 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
 })();
 
 /* ------------------------------------------------------------------ *
+ * Per-source staleness thresholds (phase-end review round 9): the orderapp
+ * fail-open counter only fires INSIDE a running handler, so a deleted /
+ * disabled / never-installed trigger was invisible — heartbeats stamped but
+ * unread. The weekly and monthly sources are now watched at cadence-fit
+ * thresholds instead of being exempt from the 96h default.
+ * ------------------------------------------------------------------ */
+(function testStalenessPerSourceThresholds() {
+  console.log('\nstaleness per-source thresholds:');
+
+  const HOUR = 3600000;
+  const OV = { shopify_orderapp: 168, greenbean: 168, recurring: 744 };
+
+  // Weekly cadence, healthy week: last success Mon 05:00, checked the
+  // following Sun 11:00 → ~150h. The 96h default would cry wolf here; the
+  // 168h override stays silent.
+  const mon5 = new Date('2026-07-27T05:00:00+10:00').getTime();      // Mon 05:00 Sydney
+  const sun11 = new Date('2026-08-02T11:00:00+10:00').getTime();     // following Sun 11:00
+  const nextMon11 = new Date('2026-08-03T11:00:00+10:00').getTime(); // following Mon 11:00
+  eq('healthy-week worst case is ~150h', Math.round((sun11 - mon5) / HOUR), 150);
+  const healthy = stalenessEvaluate_({ shopify_orderapp: mon5 }, ['shopify_orderapp'], sun11, 96, OV)[0];
+  eq('weekly source at 150h is FRESH under its 168h override', healthy.stale, false);
+  eq('the report entry carries its own threshold', healthy.thresholdHours, 168);
+
+  // The review finding's scenario: the Monday trigger stops firing → the
+  // same Monday's 11:00 check sees ~174h and alerts THAT day.
+  eq('a missed weekly run reads ~174h at the next check', Math.round((nextMon11 - mon5) / HOUR), 174);
+  eq('a weekly trigger that stopped firing alerts the day its run was missed',
+    stalenessEvaluate_({ shopify_orderapp: mon5 }, ['shopify_orderapp'], nextMon11, 96, OV)[0].stale, true);
+
+  // Un-overridden sources keep the default, and the 4-arg pure form
+  // (no overrides) is unchanged.
+  const plain = stalenessEvaluate_({ square: mon5 }, ['square'], nextMon11, 96, OV)[0];
+  eq('un-overridden source still judged at the 96h default', plain.stale, true);
+  eq('un-overridden entry carries the default threshold', plain.thresholdHours, 96);
+  eq('overrides omitted → default applies to every source',
+    stalenessEvaluate_({ shopify_orderapp: mon5 }, ['shopify_orderapp'], nextMon11, 96)[0].stale, true);
+
+  // recurring (monthly, 1st 05:00, 744h = 31 days): a 31-day month's last
+  // healthy check (~726h) is silent; a missed 1st-of-month run (~750h) alerts.
+  const jul1 = new Date('2026-07-01T05:00:00+10:00').getTime();
+  const jul31Check = new Date('2026-07-31T11:00:00+10:00').getTime();
+  const aug1Check = new Date('2026-08-01T11:00:00+10:00').getTime();
+  eq('31-day month-end check is ~726h', Math.round((jul31Check - jul1) / HOUR), 726);
+  eq('recurring at ~726h is FRESH under 744', stalenessEvaluate_({ recurring: jul1 }, ['recurring'], jul31Check, 96, OV)[0].stale, false);
+  eq('recurring missed-run at ~750h is STALE', stalenessEvaluate_({ recurring: jul1 }, ['recurring'], aug1Check, 96, OV)[0].stale, true);
+
+  // End to end through stalenessRun_: heartbeats exist for every source (the
+  // triggers RAN once), then the greenbean trigger dies. Only greenbean goes
+  // stale, and its event body names the 168h override, not the 96h default.
+  calendarEvents = [];
+  calendarFailMode = null;
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  for (const s of STALENESS_SOURCES) {
+    scriptProps['LAST_INGEST_' + s] = new Date(nextMon11 - 1 * HOUR).toISOString();
+  }
+  scriptProps['LAST_INGEST_greenbean'] = new Date(nextMon11 - 200 * HOUR).toISOString();
+  const res = stalenessRun_(nextMon11);
+  eq('only the dead weekly source is stale', res.stale.map((e) => e.source), ['greenbean']);
+  eq('one orange event raised for it', res.eventsCreated, 1);
+  check('event body names the 168h threshold, not the 96h default',
+    calendarEvents[0]._description.indexOf('threshold 168h') !== -1);
+})();
+
+/* ------------------------------------------------------------------ *
  * fix-silent-ingest-failures step 2 — Sales dedup key coercion
  *
  * SALES_KEY_COLS keys on the date column, but rowKey_ stringified it with a
@@ -2633,19 +2698,19 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
  * one of them shipped unwatched — a connector could die silently and nothing
  * would alert. This asserts the wiring so the gap cannot reopen quietly.
  *
- * 'recurring' is the deliberate exemption: it runs MONTHLY, and at a 96h
- * threshold watching it would cry wolf ~26 days a month. Fixing that properly
- * needs per-source thresholds (TODO.md).
+ * Round 9 closed the cadence loophole: 'recurring', 'shopify_orderapp' and
+ * 'greenbean' were exempt because the 96h default would cry wolf on their
+ * weekly/monthly cadence — which left a deleted or never-installed trigger
+ * invisible (the fail-open counter only fires inside a running handler).
+ * They are now watched at per-source thresholds. The one remaining exemption
+ * must name a REAL alternative watchdog, not just a cadence excuse.
  */
 (function testEveryHeartbeatSourceIsWatched() {
   console.log('\nstaleness — every heartbeat source is watched:');
 
   var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean'];
   var EXEMPT = {
-    recurring: 'monthly cadence exceeds STALENESS_THRESHOLD_HOURS',
-    shopspend: 'weekly cadence exceeds STALENESS_THRESHOLD_HOURS',
-    shopify_orderapp: 'weekly (168h) cadence exceeds STALENESS_THRESHOLD_HOURS; failure detection is the orderapp fail-open counter/alert',
-    greenbean: 'weekly (168h) cadence exceeds STALENESS_THRESHOLD_HOURS; failure detection is the orderapp fail-open counter/alert'
+    shopspend: 'has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls'
   };
 
   for (var i = 0; i < STAMPS_HEARTBEAT.length; i++) {
@@ -2657,6 +2722,18 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
       check(src + ' stamps a heartbeat and is watched', watched);
     }
   }
+
+  // --- Per-source thresholds: a watched source whose cadence exceeds the
+  // 96h default MUST carry an override, or re-adding it just trades
+  // "unwatched" for "cries wolf daily"; and an override for an unwatched
+  // source is dead config. ---
+  eq("shopify_orderapp override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.shopify_orderapp, 168);
+  eq("greenbean override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.greenbean, 168);
+  eq("recurring override = 31 days (744h)", STALENESS_THRESHOLD_OVERRIDES.recurring, 744);
+  check('every override belongs to a watched source (no dead config)',
+    Object.keys(STALENESS_THRESHOLD_OVERRIDES).every(function (s) {
+      return STALENESS_SOURCES.indexOf(s) !== -1;
+    }));
 
   // --- Registration guards: retired/never-watched sources must never be
   // re-added to STALENESS_SOURCES (mirrors the shopspend guard above) ---
@@ -4039,7 +4116,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('installShopSpendWatchdogTrigger is defined', hasInstallFn);
 
   // --- Registration guard: watched-but-exempt, never in STALENESS_SOURCES ---
-  check('shopspend is NOT in STALENESS_SOURCES (global 96h threshold would false-alarm a 168h cadence)',
+  check('shopspend is NOT in STALENESS_SOURCES (its own shopSpendWatchdog trigger covers it; both would double-alert)',
     STALENESS_SOURCES.indexOf('shopspend') === -1);
 
   if (!hasCoveredFn) {
@@ -5607,10 +5684,14 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
       getResponseCode: () => 200,
       getContentText: () => JSON.stringify({
         ok: true,
-        meta: { paging: { truncated: false, rowsIncluded: true, returned: 2 } },
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 3 } },
         rows: [
           { rowNumber: 5, dateLocal: today, supplierRaw: '', supplierKey: 'unknown', invoiceNum: 'B-1', totalCostIncGst: 30, status: 'RECEIVED', flags: ['BLANK_SUPPLIER'] },
-          { rowNumber: 6, dateLocal: today, supplierRaw: 'Flag Co', supplierKey: 'flag_co', invoiceNum: 'F-3', totalCostIncGst: 0, status: 'RECEIVED', flags: ['NON_NUMERIC_PRICE_KG'] }
+          { rowNumber: 6, dateLocal: today, supplierRaw: 'Flag Co', supplierKey: 'flag_co', invoiceNum: 'F-3', totalCostIncGst: 0, status: 'RECEIVED', flags: ['NON_NUMERIC_PRICE_KG'] },
+          // OK-1 stays in the feed: dropping a previously-ingested in-window
+          // row would (correctly) trip the round-9 orphan alert and shadow
+          // the flags alert this test asserts on.
+          { rowNumber: 3, dateLocal: today, supplierRaw: 'Fine Co', supplierKey: 'fine_co', invoiceNum: 'OK-1', totalCostIncGst: 42, status: 'RECEIVED' }
         ]
       })
     }),
@@ -5719,11 +5800,12 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     trimCalls, [weeks[0].start, weeks[5].start]);
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
 
-  /* --- supplier rename detection: an invoice re-ingested under a NEW
-   *     supplierKey while the old key vanished from the pull raises a
-   *     data-quality alert naming both refs (the old row now double-counts);
-   *     two suppliers legitimately sharing an invoiceNum in the SAME pull
-   *     must NOT trip it. --- */
+  /* --- supplier rename surfaces as an ORPHAN (round 9 generalized the
+   *     rename detector): the old ref is in-window but not re-submitted, so
+   *     it alerts naming the stale ref, the rename hint names the new ref
+   *     (same bare invoiceNum among this pull's NEW refs), and the runbook is
+   *     attached; two suppliers legitimately sharing an invoiceNum in the
+   *     SAME pull must NOT trip it. --- */
   reset();
   armFetch([{ rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Old Co', supplierKey: 'old_co', invoiceNum: 'R-9', totalCostIncGst: 100, status: 'RECEIVED' }]);
   greenBeanPull_impl_(); // seeds old_co/R-9
@@ -5731,7 +5813,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   armFetch([{ rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Old Co.', supplierKey: 'old_co_2', invoiceNum: 'R-9', totalCostIncGst: 100, status: 'RECEIVED' }]);
   greenBeanPull_impl_();
   eq('rename: one data-quality alert raised', calendarEvents.length, 1);
-  check('rename alert names old and new refs + the runbook',
+  check('orphan alert names the stale old ref, hints the new ref, carries the runbook',
     calendarEvents[0]._description.indexOf('old_co/r-9') !== -1 &&
     calendarEvents[0]._description.indexOf('old_co_2/R-9') !== -1 &&
     calendarEvents[0]._description.indexOf('weeklySummarize') !== -1);
@@ -5749,7 +5831,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   /* --- PARTIAL rename: one invoice moves to the new spelling while another
    *     still carries the old key. The old KEY stays in the pull but the old
    *     REF is unsubmitted — this must alert (round-8 CRITICAL: it silently
-   *     double-counted). --- */
+   *     double-counted; the round-9 orphan sweep keys on the absent REF, so
+   *     it covers this case by construction). --- */
   reset();
   armFetch([
     { rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Acme', supplierKey: 'acme', invoiceNum: 'INV-700', totalCostIncGst: 500, status: 'RECEIVED' },
@@ -5791,10 +5874,10 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('date move: the self-heal is logged',
     lastLoggedMessages().some((m) => m.indexOf('date moved') !== -1 && m.indexOf('move_co/M-1') !== -1));
 
-  /* --- rename detection is WINDOW-BOUNDED: a quiet supplier's OLD row
-   *     (storedDate before the 3-month window) colliding on a plain invoice
-   *     number must NOT false-positive — the runbook it points at would zero
-   *     real historical spend. --- */
+  /* --- orphan detection is WINDOW-BOUNDED: a quiet supplier's OLD row
+   *     (storedDate before the 3-month window) is legitimately absent from
+   *     the pull and must NOT false-positive — the runbook it points at
+   *     would zero real historical spend. --- */
   reset();
   {
     const supp = currentSS.insertSheet('Suppliers');
@@ -5903,6 +5986,123 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   global.UrlFetchApp = REAL_URL_FETCH;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+})();
+
+/* ------------------------------------------------------------------ *
+ * orderapp: phase-end review round 9 — orphan detection + extracted_at
+ * stamp on the date-move self-heal.
+ *
+ * The CRITICAL: blank-invoice lines mint invoice_ref = '<key>/noinv-<date>',
+ * so the date is part of the dedup identity — a date correction upstream
+ * mints a NEW ref. The ref-equality self-heal can never fire (no matching
+ * ref arrives) and the old bare-number rename probe compared 'noinv-<old>'
+ * vs 'noinv-<new>' and stayed silent too: the old row survived, the new row
+ * appended, and weeklySummarize actively rewrote Summary to DOUBLE the true
+ * spend with zero alerts. The orphan sweep keys on the only signal that
+ * survives every identity change: an in-window snapshot ref this pull did
+ * not re-submit.
+ * ------------------------------------------------------------------ */
+(function testGreenBeanRound9OrphanDetection() {
+  console.log('\norderapp: round-9 fixes — orphaned rows / noinv date-move / extracted_at stamp:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+
+  function armFetch(rows) {
+    global.UrlFetchApp = {
+      fetch: () => ({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: false, rowsIncluded: true, returned: rows.length } }, rows: rows })
+      }),
+    };
+  }
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token' };
+    calendarEvents = [];
+    clearLoggedMessages();
+  }
+  function plusDays(dateStr, n) {
+    const d = new Date(dateStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  const weeks = lastCompletedWeeks_(todayStr_(), 8);
+
+  /* --- noinv date-move (the round-9 CRITICAL, reviewer probe 3): a one-day
+   *     correction inside the SAME ISO week previously left BOTH
+   *     'noinv-<old>' and 'noinv-<new>' rows in Suppliers and doubled the
+   *     week in Summary with no alert. The old row must now surface as an
+   *     orphan. --- */
+  reset();
+  const day1 = weeks[1].start;            // a Monday, safely inside the pull window
+  const day2 = plusDays(day1, 1);         // corrected to the Tuesday, same ISO week
+  armFetch([{ rowNumber: 1, dateLocal: day1, supplierRaw: 'Slip Co', supplierKey: 'slip_co', invoiceNum: '', totalCostIncGst: 400, status: 'RECEIVED' }]);
+  greenBeanPull_impl_(); // seeds slip_co/noinv-<day1>
+  calendarEvents = [];
+  armFetch([{ rowNumber: 1, dateLocal: day2, supplierRaw: 'Slip Co', supplierKey: 'slip_co', invoiceNum: '', totalCostIncGst: 400, status: 'RECEIVED' }]);
+  greenBeanPull_impl_();
+  eq('noinv date-move: the stale old row raises an orphan alert (was a silent double-count)',
+    calendarEvents.length, 1);
+  check('orphan alert names the stale noinv ref and the runbook',
+    calendarEvents[0]._description.indexOf('slip_co/noinv-' + day1) !== -1 &&
+    calendarEvents[0]._description.indexOf('weeklySummarize') !== -1);
+  check('alert title carries the greenbean_orphan key',
+    calendarEvents[0]._title.indexOf('greenbean_orphan') !== -1);
+
+  /* --- upstream deletion inside the window: previously "goes stale
+   *     silently" (schema.md limitation) — the vanished invoice now orphans
+   *     and alerts, with NO rename hint (nothing new matches its number). --- */
+  reset();
+  armFetch([
+    { rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Del Co', supplierKey: 'del_co', invoiceNum: 'D-1', totalCostIncGst: 90, status: 'RECEIVED' },
+    { rowNumber: 2, dateLocal: weeks[0].start, supplierRaw: 'Keep Co', supplierKey: 'keep_co', invoiceNum: 'K-1', totalCostIncGst: 10, status: 'RECEIVED' }
+  ]);
+  greenBeanPull_impl_();
+  calendarEvents = [];
+  armFetch([{ rowNumber: 2, dateLocal: weeks[0].start, supplierRaw: 'Keep Co', supplierKey: 'keep_co', invoiceNum: 'K-1', totalCostIncGst: 10, status: 'RECEIVED' }]);
+  greenBeanPull_impl_();
+  eq('deleted upstream invoice: orphan alert fires', calendarEvents.length, 1);
+  check('deletion orphan names the ref and carries no rename hint',
+    calendarEvents[0]._description.indexOf('del_co/d-1') !== -1 &&
+    calendarEvents[0]._description.indexOf('possibly renamed') === -1);
+
+  /* --- the runbook's end state CLEARS the alert: zeroing the old row drops
+   *     it from the orphan set (no money at stake), and the signature clears
+   *     so the NEXT incident re-arms instead of being suppressed. --- */
+  const suppSheet = currentSS.getSheetByName('Suppliers');
+  const suppVals = suppSheet.getDataRange().getValues();
+  for (let r = 1; r < suppVals.length; r++) {
+    if (String(suppVals[r][3]) === 'del_co/D-1') suppSheet.getRange(r + 1, 3).setValue(0);
+  }
+  greenBeanPull_impl_();
+  eq('zeroed row: no further orphan alert', calendarEvents.length, 1);
+  check('zeroed row: orphan signature cleared (next incident re-arms)',
+    !('ORDERAPP_DQ_SIG_greenbean_orphan' in scriptProps));
+
+  /* --- extracted_at stamp on the date-move self-heal (round-9 minor):
+   *     value+stamp convention — an in-place date correction must refresh
+   *     extracted_at like every other in-place correction in the hub. --- */
+  reset();
+  armFetch([{ rowNumber: 1, dateLocal: weeks[5].start, supplierRaw: 'Stamp Co', supplierKey: 'stamp_co', invoiceNum: 'SM-1', totalCostIncGst: 250, status: 'RECEIVED' }]);
+  greenBeanPull_impl_(); // seeds at weeks[5]
+  {
+    const sheet = currentSS.getSheetByName('Suppliers');
+    const vals = sheet.getDataRange().getValues();
+    for (let r = 1; r < vals.length; r++) {
+      if (String(vals[r][3]) === 'stamp_co/SM-1') sheet.getRange(r + 1, 7).setValue('OLD-TS');
+    }
+  }
+  armFetch([{ rowNumber: 1, dateLocal: weeks[1].start, supplierRaw: 'Stamp Co', supplierKey: 'stamp_co', invoiceNum: 'SM-1', totalCostIncGst: 250, status: 'RECEIVED' }]);
+  greenBeanPull_impl_();
+  const healed = currentSS.getSheetByName('Suppliers').getDataRange().getValues()
+    .slice(1).filter((r) => String(r[3]) === 'stamp_co/SM-1')[0];
+  eq('date-move self-heal still updates the date cell', cellDate(healed[0]), weeks[1].start);
+  check('date-move self-heal re-stamps extracted_at alongside the date (value+stamp convention)',
+    String(healed[6]) !== 'OLD-TS' && String(healed[6]).indexOf('T') !== -1);
+  eq('same ref, same total: the date move itself is not an orphan', calendarEvents.length, 0);
+
+  global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
 /* ------------------------------------------------------------------ *

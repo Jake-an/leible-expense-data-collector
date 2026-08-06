@@ -206,10 +206,15 @@ GAS trigger Tue 05:00 Sydney -> greenBeanPull()
   -> snapshot-diff affected-week weeklySummarize (cap 5/run + persisted overflow queue)
 ```
 
-Failure detection is a fail-open counter (`ORDERAPP_FAILCOUNT_*`): increment at
-run start, reset only on full success, orange Calendar alert at 2 consecutive
-incomplete runs. Not-armed (token unset) resets without heartbeat. The retired
-direct puller `shopify.gs` was deleted in the same phase (never activated).
+Failure detection is two complementary layers. Runs that START and die: a
+fail-open counter (`ORDERAPP_FAILCOUNT_*`) — increment at run start, reset only
+on full success, orange Calendar alert at 2 consecutive incomplete runs;
+not-armed (token unset) resets without heartbeat. Runs that never start (trigger
+deleted/disabled/never installed — the counter can't see those): the staleness
+watchdog watches both sources' heartbeats at a 168h per-source threshold
+(`STALENESS_THRESHOLD_OVERRIDES`, staleness.gs), catching a missed weekly run at
+the first daily 11:00 check after it. The retired direct puller `shopify.gs` was
+deleted in the same phase (never activated).
 
 ## shopSpend flow (separate silo)
 
