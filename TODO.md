@@ -18,6 +18,57 @@
 
 ## Active
 
+### Order-app pulls — live bring-up (Jake + Claude, after phase merge)
+Code (branch `feat-orderapp-pulls`, phase `orderapp-pulls`) is merged and unit-tested
+(1005/1005 green in `connectors/gas/test_code.js`) but **not yet live**. `shopifyWeeklyPull`
+(Summary `kind=revenue`, `supplier=shopify_orderapp`, `location=online`, `department=Roastery`)
+and `greenBeanPull` (`Suppliers` `source=greenbean`, `department=Roastery`) pull from the
+LEIBLE_Order_app read API via `ORDER_APP_COST_TOKEN`. `installOrderAppTriggers()`
+(`connectors/gas/orderapp.gs`) is the idempotent trigger installer — delete-then-create,
+touches only its own two handler names (`shopifyWeeklyPull`/`greenBeanPull`), never sweeps
+unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned` in
+`docs/PRD.md` until step 7 below is all-green** — flip them only then, same rule PRD-9 followed.
+
+1. **Pre-phase gate (deadline Mon 2026-08-10 04:00 AEST, BLOCKING)** — see "Shopify weekly
+   Roastery figure" cleanup below. Run `runOnlineRevenueCleanupDryRun`; also inventory distinct
+   `source` values on `kind=revenue, location=online` rows (`Summary` + `Revenue`, last 8 weeks).
+   Decision tree: `found=0` → close that cleanup TODO as a no-op with evidence; `found>0` → run
+   the full v23-grain-change runbook below (resolve `resummarizable:false` / `channelCasings`
+   warnings first, apply, `runOnlineRevenueResummarize`, keep the `Summary_online_revenue_backup`
+   tab until the probes in step 7 pass). Miss-the-deadline fallback: delete the
+   `weeklySummarize` trigger to buy a week, then complete. **Reason this blocks:** the cleanup's
+   apply-scope (`kind=revenue AND location=online`, source-blind) would DELETE the new
+   `shopify_orderapp` Summary rows if it ran after they land.
+2. Jake pastes `ORDER_APP_COST_TOKEN` into the hub's Script Properties (Apps Script editor →
+   Project Settings). Confirm `SHOPIFY_SHOP_DOMAIN`/`SHOPIFY_ACCESS_TOKEN` are absent and no
+   `shopifyTriggerPull_`-era trigger exists (the old direct puller, `shopify.gs`, was deleted in
+   step 5 of this phase — never activated, never had Script Properties set).
+3. `bash scripts/deploy.sh` — note the printed rollback anchor (deployment id + prior version).
+4. Editor-run `shopifyWeeklyPull` then `greenBeanPull`; check the Logger counts for each
+   (rows fetched/added/updated, `weeksResummarized`/`weeksQueued` for greenbean).
+5. **After the first greenbean pull:** editor-run `weeklySummarize('<week>')` across the whole
+   seeded 3-month window, one call per week — don't wait for the overflow queue
+   (`GREENBEAN_RESUM_CAP=5` per run) to drain naturally over weeks.
+6. Run `installOrderAppTriggers()` once (from the editor). Confirm exactly one
+   `shopifyWeeklyPull` trigger (Monday 05:00) and one `greenBeanPull` trigger (Tuesday 05:00),
+   both `Australia/Sydney`.
+7. **Probes** — all `curl -sL` **doGet** with query params, never bare `-d`/`-X POST` (either
+   mis-probes `/exec` and gives a misleading 411/Drive-404 on a healthy endpoint):
+   - Order app: `?api=shopifySales&token=***&week=<last completed>` → `ok:true`; cross-check
+     `summary.grossSales` against the hub's `Summary` row for that week.
+   - Order app: `?api=greenBeanCost&token=***&from=<F>&to=<T>&status=ALL&include=summary` →
+     grand total cross-foots with the sum of the new `source='greenbean'` `Suppliers` rows.
+   - Hub: `?fn=summary&from=<ws>&to=<we>&department=Roastery&token=<API_READ_TOKEN>` → exactly
+     one `supplier:'shopify_orderapp', kind:'revenue', location:'online'` row per completed
+     week, plus the new greenbean spend rows.
+   - Double-count sweep: no other `location='online'` revenue row for those weeks from another
+     source; no same-date/same-total Roastery `Suppliers` rows under differing sources.
+   - Negative: wrong tokens → hub `result:'error'`; Order app `{ok:false,error:'UNAUTHORIZED'}`.
+   - Idempotency: editor re-run `shopifyWeeklyPull` → `rowsAdded=0` (a settling week may
+     legitimately show `rowsUpdated=1`).
+8. **All probes green** → flip PRD-10 and PRD-11 to `built` in `docs/PRD.md`, commit message
+   citing which probes passed.
+
 ### shopspend-hardening — 4 minors carried out of the approved phase (2026-08-05)
 Phase-end gate returned **approve**; these were noted, not blocking. None is a correctness bug.
 All four closed by phase `dopost-auth-minors` (2026-08-05):

@@ -562,3 +562,33 @@ function greenBeanPull_impl_() {
     weeksQueued: remaining.length
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Triggers
+ * ------------------------------------------------------------------ */
+
+/**
+ * shopifyWeeklyPull: Monday 05:00 Sydney — one hour after the 04:00
+ * weeklySummarize, so a lock collision is rare; if it happens it's
+ * loud-logged, counted, and self-heals next run via the 4-week repull
+ * window. greenBeanPull: Tuesday 05:00 Sydney. Idempotent: deletes only
+ * triggers for these two handler names before recreating them, mirroring
+ * installShopSpendWatchdogTrigger_ (shopspend.gs) — never sweeps unrelated
+ * triggers.
+ */
+function installOrderAppTriggers() {
+  var handlers = ['shopifyWeeklyPull', 'greenBeanPull'];
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (handlers.indexOf(triggers[i].getHandlerFunction()) !== -1) {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('shopifyWeeklyPull')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(5)
+    .inTimezone('Australia/Sydney').create();
+  ScriptApp.newTrigger('greenBeanPull')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.TUESDAY).atHour(5)
+    .inTimezone('Australia/Sydney').create();
+  Logger.log('installOrderAppTriggers: shopifyWeeklyPull Monday 05:00 + greenBeanPull Tuesday 05:00 (Australia/Sydney) installed');
+}

@@ -64,6 +64,11 @@ fork per kind):
   guest checkouts are named `#<order_number>`, unique per order, which would put
   one Summary row per order into the API. Per-order online detail lives on the
   `Revenue` tab in the Sheet, not on this endpoint.
+  - **Roastery weekly online revenue** appears as `supplier: 'shopify_orderapp'`
+    (never `'shopify'` — see `connectors/gas/orderapp.gs`'s `SHOPIFY_ORDERAPP_SOURCE`
+    comment), written directly to `Summary` by `shopifyWeeklyPull` rather than
+    derived from `Revenue`, the one exception to "Summary is always derived from
+    Suppliers/Revenue".
 - any other channel → `supplier` is the **customer** name, one row per customer
   per week. Wholesale accounts are real named customers and keep their own line.
 

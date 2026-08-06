@@ -273,7 +273,8 @@
     {
       "step": 6,
       "name": "triggers-and-live-runbook",
-      "status": "pending",
+      "status": "completed",
+      "summary": "orderapp.gs: installOrderAppTriggers() — idempotent shopifyWeeklyPull (Mon 05:00) + greenBeanPull (Tue 05:00) Sydney triggers, own-handler-only delete-then-create; TODO.md live bring-up runbook + docs/api.md shopify_orderapp note added; PRD-10/11 left planned; 1005/1005 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -284,6 +285,7 @@
         "api.md"
       ],
       "started_at": "2026-08-06T10:37:56+0900",
+      "completed_at": "2026-08-06T10:52:00+0900",
       "tdd_evidence": {
         "red": {
           "command": "node connectors/gas/test_code.js",
@@ -294,6 +296,12 @@
             "reason": "Test correctly detects that installOrderAppTriggers() is not defined in the implementation. 995 other tests pass cleanly, no test-code errors. This is the expected RED state: assertion finds missing implementation, not broken test or misconfiguration."
           },
           "at": "2026-08-06T10:40:17+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "eat NOT stamped on a partial failure\n  ok  - case3: the 3 successful weeks ARE written  (got 4)\n  ok  - no-token: return shape  (got {\"noToken\":true})\n  ok  - no-token: Suppliers untouched (header row only)  (got 1)\n  ok  - size-guard abort: apiFailed:true surfaced from the wrapper\n  ok  - size-guard abort: failcount incremented by orderAppRunStart_ (1 -> 2) and NEVER reset  (got \"2\")\n  ok  - size-guard abort: no heartbeat stamped\n  ok  - size-guard abort: Suppliers untouched (header row only)  (got 1)\n  ok  - size-guard abort: a loud log records the abort\n\norderapp: installOrderAppTriggers (step 6):\n  ok  - installOrderAppTriggers is defined\n  ok  - installing twice leaves exactly one trigger for shopifyWeeklyPull  (got 1)\n  ok  - installing twice leaves exactly one trigger for greenBeanPull  (got 1)\n  ok  - installer does not delete the unrelated shopSpendWatchdog trigger\n  ok  - shopify trigger is MONDAY  (got 2)\n  ok  - shopify trigger is hour 5  (got 5)\n  ok  - shopify trigger is Australia/Sydney  (got \"Australia/Sydney\")\n  ok  - greenbean trigger is TUESDAY  (got 3)\n  ok  - greenbean trigger is hour 5  (got 5)\n  ok  - greenbean trigger is Australia/Sydney  (got \"Australia/Sydney\")\n\n1005 passed, 0 failed\n",
+          "at": "2026-08-06T10:52:00+0900"
         }
       },
       "tdd_state": "red_done"
