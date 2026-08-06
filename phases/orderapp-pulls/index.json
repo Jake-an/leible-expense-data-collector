@@ -136,7 +136,7 @@
     {
       "step": 3,
       "name": "greenbean-invoice-grouping",
-      "status": "pending",
+      "status": "completed",
       "summary": "orderapp.gs: greenBeanInvoices_(apiRows) normalizer — group lines by (supplierKey, invoiceNum), sum totals, use earliest dateLocal; 948/948 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
