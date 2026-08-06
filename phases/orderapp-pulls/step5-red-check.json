@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "7 failures traced to missing implementation in staleness.gs/Code.gs (right reason), not broken test scaffolding or test infrastructure. 988 passing tests confirm test harness works correctly."
+}

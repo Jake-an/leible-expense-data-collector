@@ -46,13 +46,19 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 - "**lets stop here**" = **git push only** (`python scripts/pre_push_sync.py` → fetch → if behind, rebase --autostash → abort on conflict; never force-push). Nothing else.
 - **Deploy to GAS** happens **when GAS coding is finished** — its own step, not tied to the push phrase: `bash scripts/deploy.sh` (`clasp push` + redeploy the ONE deployment).
 
+## Harness (this is a harness-driven project)
+- Run / resume a phase: read `phases/index.json`, take the FIRST entry whose `"status"` is `"pending"`, then `python scripts/execute.py <that dir>`.
+- If an earlier entry is `error`/`blocked`/`needs_context` **and** no later entry is `completed`, resolve that first — do not skip it. If a later entry IS `completed`, the earlier one is historical bookkeeping; confirm against `git log` and carry on.
+- Trust `phases/{task}/index.json` + `git log` over recollection — a summary remembered from earlier in a long session may be stale.
+- Self-test: `python -m pytest scripts/test_execute.py -q` — **never** `python scripts/test_execute.py` (it is a pytest module with no `__main__` guard, so it exits 0 having run nothing).
+
 ## Development Process
 - CRITICAL: Steps marked `tdd: true` are test-first — follow the step file's "Test First" block exactly (red-green-refactor; the enumerated cases define "done"). The v2 harness enforces this mechanically: it confirms the test **fails** (RED) before implementation, requires it to **pass** (GREEN) after, and hard-errors a step where `tdd: true` has no `test_cmd`.
 - Commit messages follow conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
 
 ## Commands
 ```
-python scripts/execute.py <phase-dir>          # Run a connector phase
+python scripts/execute.py <phase-dir>          # Run a connector phase (resolve <phase-dir>: see "Harness" above)
 python scripts/pre_push_sync.py                # "lets stop here": teammate-safe git push only
 bash scripts/deploy.sh                          # Deploy GAS after finishing code (one deployment id, no git)
 ```

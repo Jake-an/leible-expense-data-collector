@@ -328,7 +328,6 @@ const SALES_HEADERS = globalThis.SALES_HEADERS;
 currentSS = makeSpreadsheet();
 
 load('square.gs');
-load('shopify.gs');
 load('orderapp.gs');
 load('mayers.gs');
 load('staleness.gs');
@@ -2517,152 +2516,6 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   })();
 })();
 
-/* ------------------------------------------------------------------ *
- * Phase 2 — shopify: pure row mapping, Link-header pagination, upsert
- * ------------------------------------------------------------------ */
-
-(function testShopifyOrdersToRows() {
-  console.log('\nshopify — shopifyOrdersToRows_ (pure):');
-
-  var namedOrder = {
-    id: 111, order_number: 1001, created_at: '2026-07-15T10:00:00+10:00',
-    current_total_price: '123.45', total_price: '150.00',
-    customer: { first_name: 'Jane', last_name: 'Doe' }
-  };
-  var guestOrder = {
-    id: 222, order_number: 1002, created_at: '2026-07-15T10:00:00+10:00',
-    current_total_price: '80.00', total_price: '80.00',
-    customer: null
-  };
-  // Sydney-midnight-boundary: UTC 14:30 on the 14th is already 00:30 on the
-  // 15th in Sydney (+10:00) — toISOString() would wrongly read this as the 14th.
-  var boundaryOrder = {
-    id: 333, order_number: 1003, created_at: '2026-07-14T14:30:00Z',
-    current_total_price: '10.00', total_price: '10.00', customer: null
-  };
-
-  var rows = shopifyOrdersToRows_([namedOrder, guestOrder, boundaryOrder]);
-
-  eq('gross extraction uses current_total_price, not total_price', rows[0].amount, 123.45);
-  eq('named customer -> "First Last"', rows[0].customer, 'Jane Doe');
-  eq('guest checkout -> "#<order_number>"', rows[1].customer, '#1002');
-  eq('Sydney-midnight-boundary order lands on the Sydney day, not the UTC day',
-    rows[2].date, '2026-07-15');
-  eq('every row is order-level revenue: channel=online, department=Roastery',
-    rows[0].channel + '|' + rows[0].department, 'online|Roastery');
-  eq('order_ref is the Shopify order id, stringified', rows[0].order_ref, '111');
-})();
-
-(function testShopifyParseLinkHeader() {
-  console.log('\nshopify — shopifyParseLinkHeader_ (pure, multi-page Link handling):');
-
-  var multi = '<https://x/orders.json?page_info=abc>; rel="previous", ' +
-    '<https://x/orders.json?page_info=def>; rel="next"';
-  eq('extracts rel="next" URL from a multi-link header',
-    shopifyParseLinkHeader_(multi), 'https://x/orders.json?page_info=def');
-
-  var lastPage = '<https://x/orders.json?page_info=abc>; rel="previous"';
-  eq('no rel="next" on the last page -> null', shopifyParseLinkHeader_(lastPage), null);
-
-  eq('no Link header at all -> null', shopifyParseLinkHeader_(undefined), null);
-})();
-
-(function testShopifyFetchAllOrdersPagination() {
-  console.log('\nshopify — shopifyFetchAllOrders_ (multi-page Link handling, integration):');
-
-  var calls = [];
-  var page2Url = 'https://shop.myshopify.com/admin/api/' + SHOPIFY_API_VERSION + '/orders.json?page_info=NEXT';
-  var realFetch = global.UrlFetchApp.fetch;
-  global.UrlFetchApp.fetch = function (url) {
-    calls.push(url);
-    if (calls.length === 1) {
-      return {
-        getResponseCode: () => 200,
-        getContentText: () => JSON.stringify({ orders: [{ id: 1 }, { id: 2 }] }),
-        getAllHeaders: () => ({ Link: '<' + page2Url + '>; rel="next"' }),
-      };
-    }
-    return {
-      getResponseCode: () => 200,
-      getContentText: () => JSON.stringify({ orders: [{ id: 3 }] }),
-      getAllHeaders: () => ({}),
-    };
-  };
-  try {
-    var orders = shopifyFetchAllOrders_('shop.myshopify.com', 'tok', '2026-07-15T00:00:00+10:00', '2026-07-15T23:59:59+10:00');
-    eq('a single-request implementation would truncate at page 1 (2 orders); pagination follows Link to get all 3',
-      orders.length, 3);
-    eq('the second request actually followed the parsed next URL', calls[1], page2Url);
-  } finally {
-    global.UrlFetchApp.fetch = realFetch;
-  }
-})();
-
-(function testShopifyIngestUpsertRefund() {
-  console.log('\nshopify — refund upserts a lower amount via the shared ingest (ingestRevenueRows/upsertRows_):');
-
-  freshSheets();
-  var sheet = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
-
-  var original = shopifyOrdersToRows_([{
-    id: 999, order_number: 2001, created_at: '2026-07-15T09:00:00+10:00',
-    current_total_price: '200.00', customer: { first_name: 'Sam', last_name: '' }
-  }]);
-  var firstRes = ingestRevenueRows('shopify', original, 'T1', sheet);
-  eq('first pull: rowsAdded 1', firstRes.rowsAdded, 1);
-
-  var refunded = shopifyOrdersToRows_([{
-    id: 999, order_number: 2001, created_at: '2026-07-15T09:00:00+10:00',
-    current_total_price: '150.00', customer: { first_name: 'Sam', last_name: '' }
-  }]);
-  var secondRes = ingestRevenueRows('shopify', refunded, 'T2', sheet);
-  eq('re-pull after a partial refund: rowsAdded 0', secondRes.rowsAdded, 0);
-  eq('re-pull after a partial refund: rowsUpdated 1 (same order_ref, changed amount)', secondRes.rowsUpdated, 1);
-
-  var revRow = sheet.getDataRange().getValues()[1];
-  eq('Revenue row now reflects the refunded (lower) amount', revRow[4], 150);
-})();
-
-(function testShopifyDailyPullEndToEnd() {
-  console.log('\nshopify — shopifyDailyPull_impl_ end-to-end (missing token + full pull):');
-
-  // Missing script properties -> skip cleanly, no heartbeat, no throw.
-  freshSheets();
-  scriptProps = {};
-  var noTokenRes = shopifyDailyPull('2026-07-15');
-  eq('missing SHOPIFY_SHOP_DOMAIN/SHOPIFY_ACCESS_TOKEN -> noToken, no rows written',
-    noTokenRes.noToken + '|' + noTokenRes.rowsAdded, 'true|0');
-
-  // Full pull with a token set: one page, one order, lands in Revenue via the
-  // shared ingest (not a bespoke Shopify-only write path).
-  freshSheets();
-  scriptProps = { SHOPIFY_SHOP_DOMAIN: 'shop.myshopify.com', SHOPIFY_ACCESS_TOKEN: 'tok' };
-  var realFetch2 = global.UrlFetchApp.fetch;
-  global.UrlFetchApp.fetch = function () {
-    return {
-      getResponseCode: () => 200,
-      getContentText: () => JSON.stringify({
-        orders: [{
-          id: 555, order_number: 3001, created_at: '2026-07-15T09:00:00+10:00',
-          current_total_price: '42.50', customer: null
-        }]
-      }),
-      getAllHeaders: () => ({}),
-    };
-  };
-  try {
-    var pullRes = shopifyDailyPull('2026-07-15');
-    eq('full pull: rowsAdded 1', pullRes.rowsAdded, 1);
-    var row = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
-    eq('row lands in Revenue via the shared ingest, in REVENUE_HEADERS order (date..source)',
-      [cellDate(row[0])].concat(row.slice(1, 7)),
-      ['2026-07-15', 'Roastery', 'online', '#3001', 42.5, '555', 'shopify']);
-    check('extracted_at stamp is a non-empty string', typeof row[7] === 'string' && row[7].length > 0);
-  } finally {
-    global.UrlFetchApp.fetch = realFetch2;
-  }
-})();
-
 /* ------------------------------------------------------------------
  * Phase 3 — recurring: deterministic slug/invoice_ref, idempotent re-runs,
  * amount-change upsert, a simulated year of monthly runs, missing-property
@@ -2792,10 +2645,12 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 (function testEveryHeartbeatSourceIsWatched() {
   console.log('\nstaleness — every heartbeat source is watched:');
 
-  var STAMPS_HEARTBEAT = ['square', 'mayers', 'shopify', 'roastery', 'recurring', 'shopspend'];
+  var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean'];
   var EXEMPT = {
     recurring: 'monthly cadence exceeds STALENESS_THRESHOLD_HOURS',
-    shopspend: 'weekly cadence exceeds STALENESS_THRESHOLD_HOURS'
+    shopspend: 'weekly cadence exceeds STALENESS_THRESHOLD_HOURS',
+    shopify_orderapp: 'weekly (168h) cadence exceeds STALENESS_THRESHOLD_HOURS; failure detection is the orderapp fail-open counter/alert',
+    greenbean: 'weekly (168h) cadence exceeds STALENESS_THRESHOLD_HOURS; failure detection is the orderapp fail-open counter/alert'
   };
 
   for (var i = 0; i < STAMPS_HEARTBEAT.length; i++) {
@@ -2807,13 +2662,20 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
       check(src + ' stamps a heartbeat and is watched', watched);
     }
   }
+
+  // --- Registration guards: retired/never-watched sources must never be
+  // re-added to STALENESS_SOURCES (mirrors the shopspend guard above) ---
+  check("'shopify' is NOT in STALENESS_SOURCES (shopify.gs deleted, superseded by shopify_orderapp)",
+    STALENESS_SOURCES.indexOf('shopify') === -1);
+  check("'coffee_order_app' is NOT in STALENESS_SOURCES (never stamps a heartbeat; exclusivity mechanically enforced)",
+    STALENESS_SOURCES.indexOf('coffee_order_app') === -1);
 })();
 
 (function testCoffeeOrderAppContract() {
   console.log('\ncoffee order app — ingest contract:');
 
-  check('coffee_order_app is a staleness watchdog source',
-    STALENESS_SOURCES.indexOf('coffee_order_app') !== -1);
+  check('coffee_order_app is NOT a staleness watchdog source (never stamps a heartbeat today)',
+    STALENESS_SOURCES.indexOf('coffee_order_app') === -1);
 
   // Wholesale revenue payload, verbatim shape from docs/ingest-contract.md /
   // the plan's Phase 4 example.
@@ -2832,25 +2694,37 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     [cellDate(revRow[0])].concat(revRow.slice(1)),
     ['2026-08-03', 'Roastery', 'wholesale', 'Cafe X', 340, 'ORD-1182', 'coffee_order_app', '2026-08-03T09:00:00+10:00']);
 
-  // Uploaded bean/packaging invoice payload — invoice_ref is the app's upload
-  // ID (never an OCR'd invoice number), and per-row `supplier` wins via
-  // canonicalSupplier_ with NO SUPPLIER_NAMES entry for coffee_order_app,
-  // exactly like Ordermentum.
-  freshSheets();
-  var suppRes = doPostJson({
-    kind: 'suppliers', source: 'coffee_order_app', extracted_at: '2026-08-03T09:00:00+10:00',
-    rows: [
-      { date: '2026-08-01', department: 'Roastery', supplier: 'Green Bean Co',
-        total: 1840.00, invoice_ref: 'coa-8823' }
-    ]
-  });
-  eq('uploaded invoice payload → ok', suppRes.result, 'ok');
-  eq('uploaded invoice payload → rowsAdded 1', suppRes.rowsAdded, 1);
-  var suppRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
-  eq('supplier row lands in SUPPLIERS_HEADERS order, supplier taken from the row not SUPPLIER_NAMES',
-    [cellDate(suppRow[0])].concat(suppRow.slice(1)),
-    ['2026-08-01', 'Green Bean Co', 1840, 'coa-8823', '', 'coffee_order_app', '2026-08-03T09:00:00+10:00', 'Roastery']);
-  check('coffee_order_app has no SUPPLIER_NAMES entry (per-row supplier is required)',
+  // Uploaded bean/packaging invoice payload — this shape is now SUPERSEDED:
+  // stock-intake invoices for Roastery arrive ONLY via the Order-app
+  // greenBeanCost pull (source='greenbean'). validateIngest_ must reject a
+  // coffee_order_app suppliers-kind payload rather than accept it, and the
+  // rejection message must name the greenbean exclusivity so the reason is
+  // legible in a doPost error response, not just a source-code comment.
+  (function () {
+    var suppBase = {
+      source: 'coffee_order_app', extracted_at: '2026-08-03T09:00:00+10:00',
+      rows: [
+        { date: '2026-08-01', department: 'Roastery', supplier: 'Green Bean Co',
+          total: 1840.00, invoice_ref: 'coa-8823' }
+      ]
+    };
+
+    var explicitKindRes = validateIngest_(Object.assign({ kind: 'suppliers' }, suppBase));
+    check('kind:"suppliers" + source:"coffee_order_app" → rejected', !explicitKindRes.ok);
+    check('rejection message names the greenbean exclusivity',
+      !!explicitKindRes.message && explicitKindRes.message.toLowerCase().indexOf('greenbean') !== -1);
+
+    var omittedKindRes = validateIngest_(suppBase); // kind omitted -> defaults to 'suppliers'
+    check('omitted kind (defaults to suppliers) + source:"coffee_order_app" → same rejection',
+      !omittedKindRes.ok);
+    check('omitted-kind rejection message also names greenbean',
+      !!omittedKindRes.message && omittedKindRes.message.toLowerCase().indexOf('greenbean') !== -1);
+
+    var greenbeanRes = validateIngest_(Object.assign({ kind: 'suppliers' }, suppBase, { source: 'greenbean' }));
+    check('kind:"suppliers" + source:"greenbean" (well-formed rows) → still accepted', greenbeanRes.ok);
+  })();
+
+  check('coffee_order_app has no SUPPLIER_NAMES entry (moot for suppliers-kind now that it is rejected, but still true)',
     !('coffee_order_app' in SUPPLIER_NAMES));
 
   // The three rejection cases the plan names.
