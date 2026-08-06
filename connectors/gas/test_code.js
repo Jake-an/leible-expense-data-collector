@@ -5141,9 +5141,13 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
       })
     }),
   };
+  calendarEvents = [];
   greenBeanFetchAllRows_();
   check('upstream warnings are logged verbatim',
     lastLoggedMessages().some((m) => m.indexOf('UPSTREAM WARNING') !== -1 && m.indexOf('Timestamp cell is not a valid date') !== -1));
+  eq('upstream warnings raise ONE data-quality calendar alert', calendarEvents.length, 1);
+  check('upstream-warning alert says the spend may be incomplete',
+    calendarEvents[0]._description.indexOf('incomplete') !== -1);
 
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
@@ -5374,13 +5378,133 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     }),
   };
 
+  calendarEvents = [];
   const res = greenBeanPull_impl_();
   eq('flaggedRows counts rows carrying flags[]', res.flaggedRows, 1);
   check('flagged count is logged with remediation pointer',
     lastLoggedMessages().some((m) => m.indexOf('flagged intake row') !== -1 && m.indexOf('06_Stock_Intake') !== -1));
   eq('the flagged $0 line still ingested (never dropped)', res.rowsAdded, 2);
+  eq('flagged rows raise ONE data-quality calendar alert', calendarEvents.length, 1);
+  check('data-quality alert names the source and understated risk',
+    calendarEvents[0]._title.indexOf('data quality: greenbean') !== -1 &&
+    calendarEvents[0]._description.indexOf('UNDERSTATED') !== -1);
 
   global.UrlFetchApp = REAL_URL_FETCH;
+})();
+
+/* ------------------------------------------------------------------ *
+ * orderapp: phase-end review round 2 — crash-safe queue, case-insensitive
+ * snapshot diff, upstream-warning alert, zero-row window, online-revenue
+ * ingest guard.
+ * ------------------------------------------------------------------ */
+(function testGreenBeanRound2Fixes() {
+  console.log('\norderapp: round-2 fixes — crash-safe queue / snapshot casing / zero-row window:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const REAL_WEEKLY_SUMMARIZE = global.weeklySummarize;
+
+  function armFetch(rows) {
+    global.UrlFetchApp = {
+      fetch: () => ({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: false, rowsIncluded: true, returned: rows.length } }, rows: rows })
+      }),
+    };
+  }
+  function queueProp() {
+    const raw = scriptProps.ORDERAPP_RESUM_QUEUE_greenbean;
+    return raw ? JSON.parse(raw) : [];
+  }
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token' };
+    calendarEvents = [];
+    clearLoggedMessages();
+  }
+
+  const weeks = lastCompletedWeeks_(todayStr_(), 8);
+
+  /* --- crash-safe queue: the FULL affected list is persisted BEFORE the
+   *     resummarize loop. Suppliers already holds the new totals at that
+   *     point, so a mid-loop death would otherwise lose the diff forever. --- */
+  reset();
+  const crashLines = [];
+  for (let i = 0; i < 7; i++) {
+    crashLines.push({ dateLocal: weeks[i].start, supplierRaw: 'S' + i, supplierKey: 's' + i, invoiceNum: 'C-' + i, totalCostIncGst: 10 + i, status: 'RECEIVED' });
+  }
+  armFetch(crashLines);
+  let summarizeCalls = 0;
+  global.weeklySummarize = function () {
+    summarizeCalls++;
+    if (summarizeCalls === 2) throw new Error('simulated 6-minute death');
+    return 'ok';
+  };
+  let crashThrew = false;
+  try { greenBeanPull_impl_(); } catch (err) { crashThrew = true; }
+  check('mid-loop death propagates (fail-open counting sees an incomplete run)', crashThrew);
+  eq('the queue property still holds ALL 7 affected weeks (persisted pre-loop)',
+    queueProp(), weeks.slice(0, 7).map((w) => w.start));
+  check('no heartbeat stamped on the dead run', !('LAST_INGEST_greenbean' in scriptProps));
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+
+  /* --- snapshot casing: a retyped invoiceNum ('c-0' -> 'C-0') matches the
+   *     same sheet row via upsertRows_'s case-insensitive key; the snapshot
+   *     lookup must therefore hit too — the invoice classifies as an UPDATE
+   *     whose affected week is the STORED week, never as a brand-new row. --- */
+  reset();
+  armFetch([{ dateLocal: weeks[0].start, supplierRaw: 'Case Co', supplierKey: 'case_co', invoiceNum: 'MIX-1', totalCostIncGst: 100, status: 'RECEIVED' }]);
+  greenBeanPull_impl_(); // seeds Suppliers with case_co/MIX-1
+  clearLoggedMessages();
+  // same invoice retyped lowercase, in a LATER week, with a changed total
+  armFetch([{ dateLocal: weeks[5].start, supplierRaw: 'Case Co', supplierKey: 'case_co', invoiceNum: 'mix-1', totalCostIncGst: 150, status: 'RECEIVED' }]);
+  let casingCalls = [];
+  global.weeklySummarize = function (w) { casingCalls.push(w); return REAL_WEEKLY_SUMMARIZE(w); };
+  const casingRes = greenBeanPull_impl_();
+  eq('retyped-casing invoice updates the existing row, adds nothing', casingRes.rowsAdded, 0);
+  eq('retyped-casing invoice counts as updated', casingRes.rowsUpdated, 1);
+  eq('affected week = the STORED row week, not the retyped line week',
+    casingCalls, [weeks[0].start]);
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+
+  /* --- zero-row full window: completes (no alert spam) but warns loudly --- */
+  reset();
+  armFetch([]);
+  const zeroRes = greenBeanPull_impl_();
+  eq('zero-row window: run completes', zeroRes.rowsFetched, 0);
+  eq('zero-row window: no failure alert', calendarEvents.length, 0);
+  check('zero-row window: loud WARNING logged',
+    lastLoggedMessages().some((m) => m.indexOf('0 intake rows across the entire 3-month window') !== -1));
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+})();
+
+/* ------------------------------------------------------------------ *
+ * validateIngest_ — online-revenue exclusivity guard (PRD-10, round 2):
+ * the other half of the coffee_order_app suppliers rejection. Online
+ * revenue's only sanctioned producer is the shopifyWeeklyPull Summary
+ * write; a POSTed online revenue row would double-count the week.
+ * ------------------------------------------------------------------ */
+(function testOnlineRevenueIngestGuard() {
+  console.log('\nvalidateIngest_ — online-channel revenue rejection (PRD-10):');
+
+  function revenueBody(channel, source) {
+    return {
+      source: source || 'coffee_order_app',
+      kind: 'revenue',
+      extracted_at: '2026-08-06T10:00:00+10:00',
+      rows: [{ date: '2026-08-01', department: 'Roastery', channel: channel, customer: 'X', amount: 10, order_ref: 'OR-1' }]
+    };
+  }
+
+  const rejected = validateIngest_(revenueBody('online'));
+  eq('channel=online revenue is rejected', rejected.ok, false);
+  check('rejection message names the shopify_orderapp exclusivity',
+    rejected.message.indexOf('shopify_orderapp') !== -1 && rejected.message.indexOf('PRD-10') !== -1);
+  eq('casing does not bypass the guard', validateIngest_(revenueBody(' Online ')).ok, false);
+  eq('wholesale revenue still accepted', validateIngest_(revenueBody('wholesale')).ok, true);
+  eq('any source is blocked, not just coffee_order_app',
+    validateIngest_(revenueBody('online', 'future_connector')).ok, false);
 })();
 
 /*

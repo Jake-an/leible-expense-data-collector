@@ -36,14 +36,17 @@ to `DEFAULT_DEPARTMENT` (`Cafe`); if present it must be exactly `Cafe` or
 `Roastery`.
 
 **`channel: "online"` is reserved for the `shopify_orderapp` feed
-(`orderapp.gs`, `shopifyWeeklyPull`, PRD-10) and is mutually exclusive with
-this connector.** The coffee order app must never POST online Shopify
-revenue itself — the Order-app read API is the sole source for that channel.
-This wholesale-revenue shape is unaffected: `channel: "wholesale"` (or any
-non-`"online"` channel) from `coffee_order_app` remains valid.
+(`orderapp.gs`, `shopifyWeeklyPull`, PRD-10) and is MECHANICALLY REJECTED at
+ingest.** `validateIngest_` refuses any `kind: "revenue"` payload containing a
+row with `channel: "online"` (case-insensitive), from any source — the
+Order-app read API is the sole producer for that channel, and a POSTed online
+row would flow through `weeklySummarize` into a second source-keyed Summary
+row and double-count the week. This wholesale-revenue shape is unaffected:
+`channel: "wholesale"` (or any non-`"online"` channel) from
+`coffee_order_app` remains valid.
 
-**`channel` is an open enum, and the weekly rollup treats one value specially.**
-`validateIngest_` only requires `channel` to be non-empty. In the weekly
+**`channel` is an open enum (aside from the `"online"` rejection above), and
+the weekly rollup treats one value specially.** In the weekly
 `Summary`, `channel: "online"` is collapsed to one row per source (guest
 checkouts carry synthetic per-order customer names); every other channel is
 grouped per customer. Two consequences for a new connector:

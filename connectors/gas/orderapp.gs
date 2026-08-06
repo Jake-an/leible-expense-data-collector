@@ -180,6 +180,29 @@ function orderAppRaiseAlert_(source, count) {
   }
 }
 
+/**
+ * Data-quality alert — the PRD-8 precedent says money-affecting warnings must
+ * reach Jake, not just the execution log nobody reads on a schedule. Raised
+ * for RARE, ACTIONABLE states (flagged $0-coerced intake rows, upstream
+ * dropped-row warnings) — NOT for routine ones like weekly excluded gross,
+ * which stays log+result. Never throws.
+ */
+function orderAppRaiseDataQualityAlert_(source, message) {
+  try {
+    var cal = stalenessCalendar_();
+    if (!cal) {
+      Logger.log('orderAppRaiseDataQualityAlert_: no calendar available for ' + source);
+      return;
+    }
+    var ev = cal.createAllDayEvent('LEIBLE expense orderapp data quality: ' + source, new Date());
+    ev.setColor(CalendarApp.EventColor.ORANGE);
+    ev.setDescription(message + '\n\nFix the underlying cells in the Order app (06_Stock_Intake); ' +
+      'the next scheduled pull re-ingests corrected figures automatically.');
+  } catch (err) {
+    Logger.log('orderAppRaiseDataQualityAlert_: failed for ' + source + ' — ' + err.message);
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * ISO week labels (pure, unit-tested)
  * ------------------------------------------------------------------ */
@@ -429,6 +452,7 @@ function greenBeanFetchAllRows_() {
   var offset = 0;
   var seenRowNumbers = {};
   var duplicatesSkipped = 0;
+  var upstreamAlertRaised = false; // one alert per pull, not per page
 
   while (true) {
     var res = orderAppFetch_({
@@ -459,6 +483,13 @@ function greenBeanFetchAllRows_() {
     var warnings = diagnostics.warnings || res.body.warnings || [];
     for (var w = 0; w < warnings.length; w++) {
       Logger.log('greenBeanFetchAllRows_: UPSTREAM WARNING — ' + warnings[w]);
+    }
+    if (warnings.length > 0 && !upstreamAlertRaised) {
+      upstreamAlertRaised = true;
+      orderAppRaiseDataQualityAlert_('greenbean',
+        'The greenBeanCost API reported ' + warnings.length + ' data-quality warning(s) this pull ' +
+        '(e.g. rows hidden by an invalid Timestamp) — the ingested spend may be incomplete:\n- ' +
+        warnings.join('\n- '));
     }
 
     // Offset paging is not snapshot-stable: the Order app re-slices the live
@@ -551,6 +582,9 @@ function greenBeanPull_impl_() {
   if (flaggedRows > 0) {
     Logger.log('greenBeanPull: ' + flaggedRows + ' flagged intake row(s) (coerced values, likely $0 lines) — ' +
       'greenbean totals may be understated; fix the 06_Stock_Intake cells in the Order app');
+    orderAppRaiseDataQualityAlert_('greenbean',
+      flaggedRows + ' stock-intake row(s) carry coerced values (non-numeric price/kg read as $0) — ' +
+      'the greenbean committed-spend figure is likely UNDERSTATED until the cells are fixed.');
   }
 
   var invoices = greenBeanInvoices_(rows);
@@ -561,12 +595,16 @@ function greenBeanPull_impl_() {
 
   // Snapshot BEFORE ingest — only source='greenbean' rows — so an updated
   // invoice's affected week can be derived from where it CURRENTLY lives.
+  // Keys are LOWERCASED to match upsertRows_'s case-insensitive rowKey_: a
+  // retyped 'inv-700' -> 'INV-700' updates the existing sheet row, so the
+  // snapshot lookup must hit the same row or the diff misclassifies it as new
+  // and resummarizes the wrong week.
   var snapshot = {};
   var existingValues = suppSheet.getDataRange().getValues();
   for (var r = 1; r < existingValues.length; r++) {
     var existingRow = existingValues[r];
     if (String(existingRow[5]) !== 'greenbean') continue;
-    snapshot['greenbean||' + String(existingRow[3])] = {
+    snapshot['greenbean||' + String(existingRow[3]).toLowerCase()] = {
       storedDate: coerceDateStr_(existingRow[0]),
       total: Number(existingRow[2])
     };
@@ -586,7 +624,7 @@ function greenBeanPull_impl_() {
 
   for (var i = 0; i < invoices.length; i++) {
     var invoice = invoices[i];
-    var snap = snapshot['greenbean||' + invoice.invoice_ref];
+    var snap = snapshot['greenbean||' + String(invoice.invoice_ref).toLowerCase()];
     if (!snap) {
       addAffectedWeek(weekStartForDate_(invoice.date));
       continue;
@@ -614,10 +652,27 @@ function greenBeanPull_impl_() {
   var toSummarize = mergedUnique.slice(0, GREENBEAN_RESUM_CAP);
   var remaining = mergedUnique.slice(GREENBEAN_RESUM_CAP);
 
+  // Crash safety: Suppliers already holds the new totals, so the snapshot
+  // diff above can never be re-derived. Persist the FULL affected list BEFORE
+  // the resummarize loop — if the run dies mid-loop (throw, 6-min limit), the
+  // next run drains every week from the property; an already-summarized week
+  // re-runs idempotently. Only after the loop finishes does the property
+  // shrink to the true remainder.
+  greenBeanWriteQueue_(mergedUnique);
   for (var s = 0; s < toSummarize.length; s++) {
     weeklySummarize(toSummarize[s]);
   }
   greenBeanWriteQueue_(remaining);
+
+  // A live roastery with ZERO intake rows across a rolling quarter almost
+  // certainly means a broken feed (renamed 06_Stock_Intake columns that still
+  // resolve, a from/to mismatch), not real zero spend — say so loudly. Still
+  // counted as a completed run (no alert spam if the quarter is genuinely
+  // quiet), but the log makes the probe-worthy state visible.
+  if (rows.length === 0) {
+    Logger.log('greenBeanPull: WARNING — 0 intake rows across the entire 3-month window; ' +
+      'verify 06_Stock_Intake in the Order app before trusting this as real zero spend');
+  }
 
   orderAppRunSuccess_('greenbean');
 

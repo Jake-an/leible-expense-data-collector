@@ -255,6 +255,24 @@ function validateIngest_(body) {
     };
   }
 
+  // The other half of the same exclusivity (PRD-10): online revenue's ONLY
+  // sanctioned producer is the Order-app shopifySales pull, which writes
+  // Summary directly. A connector POSTing kind='revenue' rows with
+  // channel='online' would flow through weeklySummarize into a second
+  // source-keyed online Summary row and double-count the week.
+  if (kind === 'revenue') {
+    for (var oc = 0; oc < body.rows.length; oc++) {
+      var rowChannel = body.rows[oc] && body.rows[oc].channel;
+      if (String(rowChannel).trim().toLowerCase() === 'online') {
+        return {
+          ok: false,
+          message: 'online-channel revenue rows are rejected: Shopify online revenue arrives ' +
+            'only via the Order-app shopifySales pull (supplier=\'shopify_orderapp\' Summary rows, PRD-10)'
+        };
+      }
+    }
+  }
+
   if (body.weeks_complete !== undefined && !isValidWeekLabelArray_(body.weeks_complete)) {
     return { ok: false, message: 'invalid weeks_complete' };
   }
