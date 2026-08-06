@@ -5015,6 +5015,14 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     { date: '2026-06-20', supplier: 'Str Co', total: 75.5, invoice_ref: 'str_co/S-1', department: 'Roastery' }
   ]);
 
+  // --- case: BLANK_SUPPLIER fallback — a blank supplierRaw gets one explicit
+  //     self-describing name, not the source token 'greenbean' in one column
+  //     and 'unknown/...' in another ---
+  const caseBlankSupplier = greenBeanInvoices_([
+    { dateLocal: '2026-06-20', supplierRaw: '', supplierKey: 'unknown', invoiceNum: 'B-9', totalCostIncGst: 30, status: 'RECEIVED', flags: ['BLANK_SUPPLIER'] }
+  ]);
+  eq('blank supplierRaw -> explicit fallback name', caseBlankSupplier[0].supplier, 'Green Bean (unnamed supplier)');
+
   // --- case: a flagged row with totalCostIncGst:0 still contributes a row,
   //     never dropped ---
   const case7 = greenBeanInvoices_([
@@ -5426,11 +5434,12 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     weeklySummarizeCalls, [weeksAll[6].start, weeksAll[7].start]);
   eq('run2: queue property is now empty', queueProp(), []);
 
-  /* --- Run 3: a changed invoice (gains an EARLIER line -> resummarize must
-   *     use the STORED date's week, not the recomputed min-date week), an
-   *     unchanged invoice (contributes nothing), a brand-new invoice (its
-   *     own computed week), and a CHANGED current-week invoice (ingested,
-   *     but never resummarized/queued). --- */
+  /* --- Run 3: a changed invoice that gains an EARLIER line — its computed
+   *     date genuinely moves, so the date-move self-heal updates the sheet
+   *     row's date and resummarizes BOTH the old (stored) and new (computed)
+   *     weeks; an unchanged invoice (contributes nothing), a brand-new
+   *     invoice (its own computed week), and a CHANGED current-week invoice
+   *     (ingested, but never resummarized/queued). --- */
   const run3Lines = [];
   for (let i = 1; i <= 7; i++) {
     run3Lines.push(line(weeksAll[i].start, 'plainw' + i, 'Plain Supplier ' + i, 'PLAIN-' + i, 100 + i)); // unchanged
@@ -5451,15 +5460,13 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('run3: rowsUpdated (CHANGED-1 + CUR-1)', res3.rowsUpdated, 2);
   eq('run3: duplicatesSkipped (7 plain + UNCHANGED-1)', res3.duplicatesSkipped, 8);
 
-  eq('run3: weeklySummarize called for exactly {NEW-1 week, CHANGED-1 STORED week}, oldest-first',
-    weeklySummarizeCalls, [weeksAll[3].start, weeksAll[7].start]);
-  check('run3: the recomputed min-date week (from CHANGED-1\'s new earlier line) was NEVER resummarized',
-    weeklySummarizeCalls.indexOf(weeksAll[2].start) === -1);
+  eq('run3: weeklySummarize called for {CHANGED-1 NEW week, NEW-1 week, CHANGED-1 OLD week}, oldest-first',
+    weeklySummarizeCalls, [weeksAll[2].start, weeksAll[3].start, weeksAll[7].start]);
   check('run3: the unchanged invoice\'s week was never resummarized',
     weeklySummarizeCalls.indexOf(weeksAll[6].start) === -1);
   check('run3: the current week was never resummarized even though CUR-1 changed',
     weeklySummarizeCalls.indexOf(currentWeekStart) === -1);
-  eq('run3: weeksResummarized', res3.weeksResummarized, 2);
+  eq('run3: weeksResummarized', res3.weeksResummarized, 3);
   eq('run3: weeksQueued (nothing overflowed)', res3.weeksQueued, 0);
   eq('run3: queue property stays empty', queueProp(), []);
   check('run3: the current week was never queued either', queueProp().indexOf(currentWeekStart) === -1);
@@ -5468,8 +5475,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('run3: CHANGED-1 row exists', !!changedRow3);
   if (changedRow3) {
     eq('run3: CHANGED-1 total updated in place to the new summed value', Number(changedRow3[2]), 150);
-    eq('run3: CHANGED-1 date column is untouched by the upsert (still the ORIGINAL stored date, not the new earlier one)',
-      cellDate(changedRow3[0]), weeksAll[7].start);
+    eq('run3: CHANGED-1 date column self-healed to the NEW computed date (the invoice moved weeks)',
+      cellDate(changedRow3[0]), weeksAll[2].start);
   }
   const curRow3 = findSupplierRow(suppliersRows(), 'curweek/CUR-1');
   check('run3: CUR-1 row exists', !!curRow3);
@@ -5689,8 +5696,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   const casingRes = greenBeanPull_impl_();
   eq('retyped-casing invoice updates the existing row, adds nothing', casingRes.rowsAdded, 0);
   eq('retyped-casing invoice counts as updated', casingRes.rowsUpdated, 1);
-  eq('affected week = the STORED row week, not the retyped line week',
-    casingCalls, [weeks[0].start]);
+  eq('date also moved -> BOTH weeks resummarized (self-heal), oldest first — the point is the snapshot HIT, not an append',
+    casingCalls, [weeks[0].start, weeks[5].start]);
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
 
   /* --- snapshot trim parity with rowKey_: a hand-edited Suppliers row whose
@@ -5708,7 +5715,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   global.weeklySummarize = function (w) { trimCalls.push(w); return REAL_WEEKLY_SUMMARIZE(w); };
   const trimRes = greenBeanPull_impl_();
   eq('padded stored ref: classifies as update, not new', trimRes.rowsUpdated, 1);
-  eq('padded stored ref: affected week = the STORED week', trimCalls, [weeks[0].start]);
+  eq('padded stored ref: date also moved -> BOTH weeks resummarized (snapshot HIT proven, no append)',
+    trimCalls, [weeks[0].start, weeks[5].start]);
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
 
   /* --- supplier rename detection: an invoice re-ingested under a NEW
@@ -5737,6 +5745,51 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   calendarEvents = [];
   greenBeanPull_impl_(); // re-pull, both suppliers still present
   eq('legit shared invoiceNum across suppliers: no rename alert', calendarEvents.length, 0);
+
+  /* --- PARTIAL rename: one invoice moves to the new spelling while another
+   *     still carries the old key. The old KEY stays in the pull but the old
+   *     REF is unsubmitted — this must alert (round-8 CRITICAL: it silently
+   *     double-counted). --- */
+  reset();
+  armFetch([
+    { rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Acme', supplierKey: 'acme', invoiceNum: 'INV-700', totalCostIncGst: 500, status: 'RECEIVED' },
+    { rowNumber: 2, dateLocal: weeks[0].start, supplierRaw: 'Acme', supplierKey: 'acme', invoiceNum: 'INV-701', totalCostIncGst: 100, status: 'RECEIVED' }
+  ]);
+  greenBeanPull_impl_(); // seeds acme/INV-700 + acme/INV-701
+  calendarEvents = [];
+  armFetch([
+    { rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Acme Coffee Co', supplierKey: 'acme coffee co', invoiceNum: 'INV-700', totalCostIncGst: 500, status: 'RECEIVED' },
+    { rowNumber: 2, dateLocal: weeks[0].start, supplierRaw: 'Acme', supplierKey: 'acme', invoiceNum: 'INV-701', totalCostIncGst: 100, status: 'RECEIVED' }
+  ]);
+  greenBeanPull_impl_();
+  eq('PARTIAL rename: alert fires even though the old key is still in the pull',
+    calendarEvents.length, 1);
+  check('partial-rename alert names the moved ref',
+    calendarEvents[0]._description.indexOf('acme/inv-700') !== -1 &&
+    calendarEvents[0]._description.indexOf('acme coffee co/INV-700') !== -1);
+
+  /* --- date-move self-heal: same ref, same total, moved date — the Suppliers
+   *     row's date cell is updated in place and BOTH weeks resummarize
+   *     (round-8 important: previously the money stayed in the wrong ISO week
+   *     forever with no signal). --- */
+  reset();
+  armFetch([{ rowNumber: 1, dateLocal: weeks[5].start, supplierRaw: 'Move Co', supplierKey: 'move_co', invoiceNum: 'M-1', totalCostIncGst: 250, status: 'RECEIVED' }]);
+  greenBeanPull_impl_(); // seeds at weeks[5]
+  clearLoggedMessages();
+  armFetch([{ rowNumber: 1, dateLocal: weeks[1].start, supplierRaw: 'Move Co', supplierKey: 'move_co', invoiceNum: 'M-1', totalCostIncGst: 250, status: 'RECEIVED' }]);
+  let moveCalls = [];
+  global.weeklySummarize = function (w) { moveCalls.push(w); return REAL_WEEKLY_SUMMARIZE(w); };
+  const moveRes = greenBeanPull_impl_();
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+  eq('date move: nothing added (same ref)', moveRes.rowsAdded, 0);
+  const movedRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()
+    .slice(1).filter((r) => String(r[3]) === 'move_co/M-1')[0];
+  eq('date move: the Suppliers date cell now carries the NEW date',
+    cellDate(movedRow[0]), weeks[1].start);
+  eq('date move: BOTH weeks resummarized, oldest first',
+    moveCalls, [weeks[1].start, weeks[5].start]);
+  check('date move: the self-heal is logged',
+    lastLoggedMessages().some((m) => m.indexOf('date moved') !== -1 && m.indexOf('move_co/M-1') !== -1));
 
   /* --- rename detection is WINDOW-BOUNDED: a quiet supplier's OLD row
    *     (storedDate before the 3-month window) colliding on a plain invoice

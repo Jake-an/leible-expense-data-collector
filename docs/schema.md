@@ -61,8 +61,13 @@ contribution) goes stale silently. To correct it: manually edit the stale
 The same runbook applies to a **supplier rename** in `06_Stock_Intake`: the
 edited cell changes `supplierKey`, so the invoice re-ingests under a NEW
 `invoice_ref` while the old row stays behind (double-count until corrected).
-`greenBeanPull` detects the pattern and raises a `greenbean_rename`
+`greenBeanPull` detects the pattern — including PARTIAL renames where other
+invoices still carry the old spelling — and raises a `greenbean_rename`
 data-quality alert naming the old and new refs.
+
+A **date correction** upstream (same invoice, same total, moved date)
+self-heals: `greenBeanPull` updates the Suppliers row's date in place and
+resummarizes BOTH the old and new weeks — no manual step needed.
 
 ## Tab `Sales` (Square, daily gross per location — always Cafe)
 

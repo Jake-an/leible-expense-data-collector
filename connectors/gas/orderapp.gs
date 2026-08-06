@@ -488,7 +488,12 @@ function greenBeanInvoices_(lines) {
     var group = groups[key];
     result.push({
       date: group.dateLocal,
-      supplier: group.supplierRaw,
+      // Explicit fallback for BLANK_SUPPLIER rows: a blank supplierRaw would
+      // fall through canonicalSupplier_ to the source token 'greenbean' in
+      // one column while the ref reads 'unknown/<num>' in another — two
+      // placeholder spellings for the same row. One self-describing name
+      // keeps the weekly report readable; the flags alert carries the fix.
+      supplier: group.supplierRaw || 'Green Bean (unnamed supplier)',
       total: Math.round(group.total * 100) / 100,
       invoice_ref: group.displayRef,
       department: 'Roastery'
@@ -724,7 +729,10 @@ function greenBeanPull_impl_() {
       orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_upstream',
         'greenBeanPull ABORTED mid-fetch; upstream warnings collected before the abort ' +
         '(these may explain it):\n- ' + GREENBEAN_UPSTREAM_WARNINGS_.join('\n- '),
-        'warnings:' + orderAppSignatureHash_(GREENBEAN_UPSTREAM_WARNINGS_.slice().sort().join('|')));
+        // 'abort:' prefix, not 'warnings:': the two conditions share a
+        // signature key, and the milder success-with-warnings sig must never
+        // suppress the more severe aborted-run alert for the same text.
+        'abort:' + orderAppSignatureHash_(GREENBEAN_UPSTREAM_WARNINGS_.slice().sort().join('|')));
     }
     return { apiFailed: true };
   }
@@ -792,7 +800,8 @@ function greenBeanPull_impl_() {
     if (String(existingRow[5]) !== GREENBEAN_SOURCE) continue;
     snapshot[GREENBEAN_SOURCE + '||' + String(existingRow[3]).trim().toLowerCase()] = {
       storedDate: coerceDateStr_(existingRow[0]),
-      total: Number(existingRow[2])
+      total: Number(existingRow[2]),
+      rowIndex: r + 1 // 1-based sheet row, for the date-move self-heal below
     };
   }
 
@@ -812,14 +821,18 @@ function greenBeanPull_impl_() {
   // invoice changes supplierKey and therefore invoice_ref, so the upsert
   // APPENDS a fresh row while the old one stays — a silent double-count.
   // Heuristic: an incoming invoice whose full ref is new, but whose bare
-  // invoiceNum exists in the snapshot under a supplierKey that is ABSENT from
-  // this pull, is almost certainly a rename (legit cross-supplier shared
-  // invoice numbers keep both suppliers present in the window). Detected, not
+  // invoiceNum exists in the snapshot under a ref that is NOT re-submitted by
+  // this pull, is almost certainly a rename. Keyed on the absent REF, not an
+  // absent supplierKey: a PARTIAL rename (one invoice moves to the new
+  // spelling while other invoices keep the old key) leaves the old KEY
+  // present but the old REF unsubmitted — the exact double-count this
+  // detector exists for. Legit cross-supplier shared invoice numbers keep
+  // BOTH refs re-submitted every pull, so they never trip it. Detected, not
   // auto-fixed: the new row is current truth; the alert points at the stale
   // old row and the schema.md runbook (zero it, resummarize its week).
-  var pullSupplierKeys = {};
+  var pullRefs = {};
   for (var pk = 0; pk < invoices.length; pk++) {
-    pullSupplierKeys[String(invoices[pk].invoice_ref).trim().toLowerCase().split('/')[0]] = true;
+    pullRefs[String(invoices[pk].invoice_ref).trim().toLowerCase()] = true;
   }
   // Candidates are BOUNDED to rows whose storedDate falls inside this pull's
   // window. The Suppliers tab retains ~6 months (ARCHIVE_RETENTION_DAYS=183)
@@ -851,17 +864,31 @@ function greenBeanPull_impl_() {
       var newParts = String(invoice.invoice_ref).trim().toLowerCase().split('/');
       var priorHolders = snapshotByInvNum[newParts.slice(1).join('/')] || [];
       for (var ph = 0; ph < priorHolders.length; ph++) {
-        if (priorHolders[ph].supplierKey !== newParts[0] && !pullSupplierKeys[priorHolders[ph].supplierKey]) {
+        if (priorHolders[ph].supplierKey !== newParts[0] && !pullRefs[priorHolders[ph].ref]) {
           suspectedRenames.push(priorHolders[ph].ref + ' -> ' + invoice.invoice_ref +
             ' (old row total $' + priorHolders[ph].total + ')');
         }
       }
       continue;
     }
+    // Date-move self-heal: upsertRows_ never rewrites the date column, so an
+    // upstream date correction (same ref, same total) would otherwise leave
+    // the money attributed to the wrong ISO week FOREVER — the true week
+    // understated, the stale week overstated, and nothing to distinguish
+    // either from correct data. Fix the cell here and resummarize BOTH weeks.
+    var dateMoved = invoice.date !== snap.storedDate;
+    if (dateMoved) {
+      suppSheet.getRange(snap.rowIndex, 1).setValue(invoice.date);
+      addAffectedWeek(weekStartForDate_(snap.storedDate)); // old week loses the invoice
+      addAffectedWeek(weekStartForDate_(invoice.date));    // new week gains it
+      Logger.log('greenBeanPull: ' + invoice.invoice_ref + ' date moved ' + snap.storedDate +
+        ' -> ' + invoice.date + ' upstream — Suppliers row updated, both weeks resummarized');
+    }
+
     var newTotal = Math.round(Number(invoice.total) * 100) / 100;
     var oldTotal = Math.round(Number(snap.total) * 100) / 100;
     if (newTotal !== oldTotal) {
-      addAffectedWeek(weekStartForDate_(snap.storedDate));
+      addAffectedWeek(weekStartForDate_(dateMoved ? invoice.date : snap.storedDate));
     }
   }
 
@@ -873,7 +900,7 @@ function greenBeanPull_impl_() {
       'its old Suppliers row remains, so that week DOUBLE-COUNTS until fixed:\n- ' +
       suspectedRenames.join('\n- ') +
       '\n\nRunbook (docs/schema.md): zero the OLD Suppliers row, then run weeklySummarize(\'<week>\').',
-      'rename:' + suspectedRenames.slice().sort().join('|'));
+      'rename:' + orderAppSignatureHash_(suspectedRenames.slice().sort().join('|')));
   } else {
     orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_rename');
   }
@@ -915,6 +942,13 @@ function greenBeanPull_impl_() {
   }
   var remainingQueue = mergedUnique.filter(function (w) { return !summarizedOk[w]; });
   greenBeanWriteQueue_(remainingQueue);
+  if (remainingQueue.length > 0) {
+    // A trigger-invoked run has no reader for the return value, so an
+    // undrained backlog must say so itself — Summary stays stale for these
+    // weeks until later runs (or a manual weeklySummarize sweep) drain them.
+    Logger.log('greenBeanPull: ' + remainingQueue.length + ' affected week(s) still queued beyond the ' +
+      GREENBEAN_RESUM_CAP + '/run cap (oldest: ' + remainingQueue[0] + ') — drained over coming runs');
+  }
 
   // A live roastery with ZERO intake rows across a rolling quarter almost
   // certainly means a broken feed (renamed 06_Stock_Intake columns that still
