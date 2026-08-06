@@ -9,7 +9,11 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-10", "PRD-11"]
+      "covers": [
+        "PRD-10",
+        "PRD-11"
+      ],
+      "started_at": "2026-08-06T09:10:50+0900"
     },
     {
       "step": 1,
@@ -17,7 +21,9 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-10"]
+      "covers": [
+        "PRD-10"
+      ]
     },
     {
       "step": 2,
@@ -25,8 +31,12 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-10"],
-      "docs": ["schema.md"]
+      "covers": [
+        "PRD-10"
+      ],
+      "docs": [
+        "schema.md"
+      ]
     },
     {
       "step": 3,
@@ -34,8 +44,12 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-11"],
-      "docs": ["schema.md"]
+      "covers": [
+        "PRD-11"
+      ],
+      "docs": [
+        "schema.md"
+      ]
     },
     {
       "step": 4,
@@ -43,8 +57,12 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-11"],
-      "docs": ["schema.md"]
+      "covers": [
+        "PRD-11"
+      ],
+      "docs": [
+        "schema.md"
+      ]
     },
     {
       "step": 5,
@@ -52,8 +70,14 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-10", "PRD-11"],
-      "docs": ["schema.md", "ingest-contract.md"]
+      "covers": [
+        "PRD-10",
+        "PRD-11"
+      ],
+      "docs": [
+        "schema.md",
+        "ingest-contract.md"
+      ]
     },
     {
       "step": 6,
@@ -61,8 +85,14 @@
       "status": "pending",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
-      "covers": ["PRD-10", "PRD-11"],
-      "docs": ["api.md"]
+      "covers": [
+        "PRD-10",
+        "PRD-11"
+      ],
+      "docs": [
+        "api.md"
+      ]
     }
-  ]
+  ],
+  "created_at": "2026-08-06T09:10:50+0900"
 }
