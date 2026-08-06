@@ -4712,6 +4712,53 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('a broken calendar does not throw out of orderAppRaiseAlert_', !alertThrew);
 })();
 
+/* ------------------------------------------------------------------ *
+ * orderapp-pulls step 1 — isoWeekLabel_ / lastCompletedWeeks_
+ * ------------------------------------------------------------------ */
+
+(function testIsoWeekLabelHelpers() {
+  console.log('\norderapp: isoWeekLabel_ / lastCompletedWeeks_:');
+
+  eq('2026-01-01 (Thursday) -> 2026-W01',
+    isoWeekLabel_('2026-01-01'), '2026-W01');
+
+  eq('2024-12-30 (Monday belonging to the next ISO year) -> 2025-W01',
+    isoWeekLabel_('2024-12-30'), '2025-W01');
+
+  eq('2021-01-01 (Friday belonging to the previous ISO year) -> 2020-W53',
+    isoWeekLabel_('2021-01-01'), '2020-W53');
+
+  eq('mid-year Monday and the Sunday of the same week share a label (Monday)',
+    isoWeekLabel_('2026-06-15'), '2026-W25');
+  eq('mid-year Monday and the Sunday of the same week share a label (Sunday)',
+    isoWeekLabel_('2026-06-21'), '2026-W25');
+
+  eq('zero-padding: a week-5 date yields W05',
+    isoWeekLabel_('2026-01-26'), '2026-W05');
+
+  const last4 = lastCompletedWeeks_('2026-08-06', 4);
+  eq('lastCompletedWeeks_(\'2026-08-06\', 4): 4 entries oldest-first',
+    last4.map((w) => w.label), ['2026-W28', '2026-W29', '2026-W30', '2026-W31']);
+  eq('lastCompletedWeeks_: full {label,start,end} shape',
+    last4,
+    [
+      { label: '2026-W28', start: '2026-07-06', end: '2026-07-12' },
+      { label: '2026-W29', start: '2026-07-13', end: '2026-07-19' },
+      { label: '2026-W30', start: '2026-07-20', end: '2026-07-26' },
+      { label: '2026-W31', start: '2026-07-27', end: '2026-08-02' }
+    ]);
+  check('lastCompletedWeeks_: every start is a Monday',
+    last4.every((w) => new Date(w.start + 'T12:00:00Z').getUTCDay() === 1));
+  check('lastCompletedWeeks_: every end is start+6 and < today',
+    last4.every((w) => addDaysStr_(w.start, 6) === w.end && w.end < '2026-08-06'));
+
+  // --- boundary: called on a Monday, the current week is never included ---
+  const mondayCase = lastCompletedWeeks_('2026-08-03', 1);
+  eq('called on a Monday: the newest entry is the week that ended yesterday',
+    mondayCase,
+    [{ label: '2026-W31', start: '2026-07-27', end: '2026-08-02' }]);
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
