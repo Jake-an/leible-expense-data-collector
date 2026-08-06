@@ -125,10 +125,11 @@ live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unc
         have reported success and changed nothing). Added four public zero-arg wrappers
         (`runDepartmentMigration{DryRun,Apply}`, `runBlankDepartmentSweep{DryRun,Apply}`) in
         `Code.gs`, commit `b9d3dc6`.
-- [ ] **(Jake) Test C — `doGet` department filter.** Not yet run; needs `API_READ_TOKEN`.
-      `<exec>?token=…&from=2026-06-15&to=2026-06-21&department=Roastery` → expect zero rows
-      (nothing Roastery has landed). Same URL without `&department=` → Cafe rows carrying
-      `department` + `kind`, and `total` (not `total_spend`).
+- [x] **Test C — `doGet` department filter — ✅ PASSED 2026-08-06.** Unblocked by the read-token
+      rotation (`.env` `GAS_READ_TOKEN` had never matched the live `API_READ_TOKEN`; fresh value
+      typed into both sides per the token-mismatch memory). `department=Roastery` → 0 rows;
+      unfiltered same week → 13 Cafe rows with `department` + `kind` + `total`. Rows also carry
+      `total_spend` — that's the deliberate one-release alias (`Code.gs:1481`), not a defect.
 - [ ] **`weeklySummarize` round-trip verification** (plan line 697) — deliberately deferred: it
       writes to `Summary`, which is exactly what the blocking cleanup below rebuilds. Run it as
       step 0 of that cleanup, not standalone.
