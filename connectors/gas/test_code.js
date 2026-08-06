@@ -329,6 +329,7 @@ currentSS = makeSpreadsheet();
 
 load('square.gs');
 load('shopify.gs');
+load('orderapp.gs');
 load('mayers.gs');
 load('staleness.gs');
 load('recurring.gs');
@@ -4582,6 +4583,133 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('malformed weeks_verified_empty, correct token: validation error surfaces',
     malformedWithToken.message, 'invalid weeks_verified_empty');
   scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ *
+ * orderapp-pulls step 0 — orderapp.gs shared fetch/auth/failure plumbing
+ * ------------------------------------------------------------------ */
+
+(function testOrderAppFetchAndClassify() {
+  console.log('\norderapp: orderAppFetch_ / orderAppClassifyResponse_ / orderAppBuildUrl_:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const savedProps = scriptProps;
+
+  // --- token property unset: skip-safe, zero fetches ---
+  scriptProps = {};
+  let fetchCalls = 0;
+  global.UrlFetchApp = {
+    fetch: () => {
+      fetchCalls++;
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ ok: true }) };
+    },
+  };
+  const noTokenRes = orderAppFetch_({ foo: 'bar' });
+  eq('no token: result shape', noTokenRes, { ok: false, reason: 'no-token' });
+  eq('no token: UrlFetchApp.fetch called zero times', fetchCalls, 0);
+  global.UrlFetchApp = REAL_URL_FETCH;
+  scriptProps = savedProps;
+
+  // --- orderAppClassifyResponse_ is pure: (httpCode, bodyText) -> {ok,...} ---
+  const okBody = { ok: true, weeks: [{ label: '2026-W31' }] };
+  eq('HTTP 200 + ok:true passes the parsed body through',
+    orderAppClassifyResponse_(200, JSON.stringify(okBody)),
+    { ok: true, body: okBody });
+
+  eq('HTTP 200 + ok:false api error -> api:<ERROR> reason',
+    orderAppClassifyResponse_(200, JSON.stringify({ ok: false, error: 'UNAUTHORIZED' })),
+    { ok: false, reason: 'api:UNAUTHORIZED' });
+
+  eq('HTTP 500 -> http-<code> reason',
+    orderAppClassifyResponse_(500, 'server error'),
+    { ok: false, reason: 'http-500' });
+
+  // An expired /exec deployment serves an HTML login page — must classify
+  // as a normal failure reason, never throw.
+  let htmlThrew = false;
+  let htmlRes;
+  try {
+    htmlRes = orderAppClassifyResponse_(200, '<html><body>please login</body></html>');
+  } catch (err) {
+    htmlThrew = true;
+  }
+  check('HTML login page does not throw', !htmlThrew);
+  eq('HTML login page -> parse reason', htmlRes, { ok: false, reason: 'parse' });
+
+  // --- orderAppBuildUrl_ is pure: percent-encode param values ---
+  const built = orderAppBuildUrl_('https://example.com/exec', { a: 'x&y', b: 'x y', c: 'x+y' });
+  check('orderAppBuildUrl_ starts with execUrl + "?"',
+    built.indexOf('https://example.com/exec?') === 0);
+  check('orderAppBuildUrl_ percent-encodes "&" in a value', built.indexOf('a=x%26y') !== -1);
+  check('orderAppBuildUrl_ percent-encodes space in a value', built.indexOf('b=x%20y') !== -1);
+  check('orderAppBuildUrl_ percent-encodes "+" in a value', built.indexOf('c=x%2By') !== -1);
+})();
+
+(function testOrderAppFailureAccounting() {
+  console.log('\norderapp: run start/success/alert failure accounting:');
+
+  const SRC = 'orderapp_test_source'; // no colons — see step 0 note
+
+  function reset() {
+    scriptProps = {};
+    calendarEvents = [];
+    calendarFailMode = null;
+    clearLoggedMessages();
+  }
+
+  // --- start x1 then success: counter resets to 0, heartbeat stamped once ---
+  reset();
+  orderAppRunStart_(SRC);
+  orderAppRunSuccess_(SRC);
+  eq('start x1 + success: failcount resets to 0',
+    scriptProps['ORDERAPP_FAILCOUNT_' + SRC], '0');
+  check('start x1 + success: heartbeat stamped', ('LAST_INGEST_' + SRC) in scriptProps);
+
+  // --- start x2 with no success between: exactly ONE alert, on the 2nd call only ---
+  reset();
+  orderAppRunStart_(SRC);
+  eq('first consecutive start: no alert yet', calendarEvents.length, 0);
+  orderAppRunStart_(SRC);
+  eq('second consecutive start (no success between): exactly one alert', calendarEvents.length, 1);
+
+  // --- fail-then-success: alert wording + recovery log + counter ends at 0 ---
+  reset();
+  orderAppRunStart_(SRC);
+  orderAppRunStart_(SRC); // -> raises the alert
+  eq('alert raised after the 2nd failed start', calendarEvents.length, 1);
+  const alertEvent = calendarEvents[0];
+  check('alert title names the source', alertEvent._title.indexOf(SRC) !== -1);
+  check('alert title says "did not complete"', alertEvent._title.indexOf('did not complete') !== -1);
+  check('alert body says "retrying"', alertEvent._description.indexOf('retrying') !== -1);
+  check('alert body names the GAS trigger', /trigger/i.test(alertEvent._description));
+  check('alert body names the ORDER_APP_COST_TOKEN property',
+    alertEvent._description.indexOf('ORDER_APP_COST_TOKEN') !== -1);
+  check('alert body names the /exec URL', alertEvent._description.indexOf('/exec') !== -1);
+  check('alert body does NOT mention Task Scheduler (wrong remediation class)',
+    alertEvent._description.indexOf('Task Scheduler') === -1);
+
+  orderAppRunSuccess_(SRC);
+  eq('after recovery: failcount back to 0', scriptProps['ORDERAPP_FAILCOUNT_' + SRC], '0');
+  check('after recovery: "recovered" was logged',
+    lastLoggedMessages().some((m) => m.indexOf(SRC) !== -1 && m.indexOf('recovered') !== -1));
+
+  // --- simulated crash: start called, then nothing (no success, no alert path
+  //     re-entered) — counter stays incremented, heartbeat never stamped ---
+  reset();
+  orderAppRunStart_(SRC);
+  eq('crash after start: failcount remains 1', scriptProps['ORDERAPP_FAILCOUNT_' + SRC], '1');
+  check('crash after start: heartbeat NOT stamped', !(('LAST_INGEST_' + SRC) in scriptProps));
+
+  // --- a broken alert calendar must never throw out of orderAppRaiseAlert_ ---
+  reset();
+  calendarFailMode = 'all';
+  let alertThrew = false;
+  try {
+    orderAppRaiseAlert_(SRC, 2);
+  } catch (err) {
+    alertThrew = true;
+  }
+  check('a broken calendar does not throw out of orderAppRaiseAlert_', !alertThrew);
 })();
 
 /* ------------------------------------------------------------------ */

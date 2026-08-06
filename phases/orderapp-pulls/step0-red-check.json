@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test suite ran 150+ assertions across doGet/doPost/coverage paths before hitting ReferenceError: orderAppFetch_ is not defined. This is a legitimate missing-implementation RED state — the three functions (orderAppFetch_, orderAppClassifyResponse_, orderAppBuildUrl_) do not yet exist in orderapp.gs and must be implemented to pass the test."
+}
