@@ -457,6 +457,11 @@ function greenBeanInvoices_(lines) {
 
 var GREENBEAN_RESUM_CAP = 5;
 var GREENBEAN_MAX_PAGES = 20; // 20 x 5000-row pages >> any real window; a loop that needs more is a paging bug
+// Single source of truth for the source string — it is simultaneously the
+// failcount/heartbeat key, the Suppliers row filter, the ingest source and the
+// alert label; a typo in ONE occurrence would silently split those keys while
+// every run still looked healthy (same rationale as SHOPIFY_ORDERAPP_SOURCE).
+var GREENBEAN_SOURCE = 'greenbean';
 var GREENBEAN_RESUM_QUEUE_PROP = 'ORDERAPP_RESUM_QUEUE_greenbean'; // JSON array of 'yyyy-MM-dd' week starts
 
 /**
@@ -521,6 +526,13 @@ function greenBeanFetchAllRows_() {
       return null;
     }
 
+    // Shape gate, same contract as shopifyValidWeekBody_: an {ok:true} body
+    // missing meta.paging must abort cleanly, not throw a TypeError out of
+    // the Tuesday trigger.
+    if (!res.body || !res.body.meta || !res.body.meta.paging || typeof res.body.meta.paging !== 'object') {
+      Logger.log('greenBeanFetchAllRows_: response missing meta.paging — aborting (shape validation)');
+      return null;
+    }
     var paging = res.body.meta.paging;
     if (paging.truncated === true && paging.rowsIncluded === false) {
       Logger.log('greenBeanFetchAllRows_: truncated response with rows omitted (size guard) — aborting rather than ingest an incomplete window');
@@ -538,7 +550,7 @@ function greenBeanFetchAllRows_() {
     }
     if (warnings.length > 0 && !upstreamAlertRaised) {
       upstreamAlertRaised = true;
-      orderAppRaiseDataQualityAlert_('greenbean',
+      orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE,
         'The greenBeanCost API reported ' + warnings.length + ' data-quality warning(s) this pull ' +
         '(e.g. rows hidden by an invalid Timestamp) — the ingested spend may be incomplete:\n- ' +
         warnings.join('\n- '));
@@ -598,7 +610,7 @@ function greenBeanWriteQueue_(weekStarts) {
  * @returns {Object} greenBeanPull_impl_'s result, or {locked:true}.
  */
 function greenBeanPull() {
-  orderAppRunStart_('greenbean');
+  orderAppRunStart_(GREENBEAN_SOURCE);
   var res = withScriptLock_(function () { return greenBeanPull_impl_(); });
   if (res === LOCK_TIMEOUT_) {
     Logger.log('greenBeanPull: could not acquire script lock — skipped this run');
@@ -621,7 +633,7 @@ function greenBeanPull() {
 function greenBeanPull_impl_() {
   var token = getOrderAppToken_();
   if (!token) {
-    orderAppRunSkipped_('greenbean');
+    orderAppRunSkipped_(GREENBEAN_SOURCE);
     return { noToken: true };
   }
 
@@ -640,7 +652,7 @@ function greenBeanPull_impl_() {
   if (flaggedRows > 0) {
     Logger.log('greenBeanPull: ' + flaggedRows + ' flagged intake row(s) (coerced values, likely $0 lines) — ' +
       'greenbean totals may be understated; fix the 06_Stock_Intake cells in the Order app');
-    orderAppRaiseDataQualityAlert_('greenbean',
+    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE,
       flaggedRows + ' stock-intake row(s) carry coerced values (non-numeric price/kg read as $0) — ' +
       'the greenbean committed-spend figure is likely UNDERSTATED until the cells are fixed.');
   }
@@ -661,14 +673,14 @@ function greenBeanPull_impl_() {
   var existingValues = suppSheet.getDataRange().getValues();
   for (var r = 1; r < existingValues.length; r++) {
     var existingRow = existingValues[r];
-    if (String(existingRow[5]) !== 'greenbean') continue;
-    snapshot['greenbean||' + String(existingRow[3]).toLowerCase()] = {
+    if (String(existingRow[5]) !== GREENBEAN_SOURCE) continue;
+    snapshot[GREENBEAN_SOURCE + '||' + String(existingRow[3]).trim().toLowerCase()] = {
       storedDate: coerceDateStr_(existingRow[0]),
       total: Number(existingRow[2])
     };
   }
 
-  var ingestResult = ingestSupplierRows('greenbean', invoices, extractedAt, suppSheet);
+  var ingestResult = ingestSupplierRows(GREENBEAN_SOURCE, invoices, extractedAt, suppSheet);
 
   var currentWeekStart = weekStartForDate_(todayStr_());
   var affectedSet = {};
@@ -682,7 +694,7 @@ function greenBeanPull_impl_() {
 
   for (var i = 0; i < invoices.length; i++) {
     var invoice = invoices[i];
-    var snap = snapshot['greenbean||' + String(invoice.invoice_ref).toLowerCase()];
+    var snap = snapshot[GREENBEAN_SOURCE + '||' + String(invoice.invoice_ref).trim().toLowerCase()];
     if (!snap) {
       addAffectedWeek(weekStartForDate_(invoice.date));
       continue;
@@ -742,7 +754,7 @@ function greenBeanPull_impl_() {
       'verify 06_Stock_Intake in the Order app before trusting this as real zero spend');
   }
 
-  orderAppRunSuccess_('greenbean');
+  orderAppRunSuccess_(GREENBEAN_SOURCE);
 
   return {
     rowsFetched: rows.length,

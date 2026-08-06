@@ -1,49 +1,50 @@
 {
   "verdict": "revise",
-  "reviewed_range": "b5d653a..HEAD (phase orderapp-pulls; main...HEAD spans 297 unrelated commits)",
-  "test_run": "node connectors/gas/test_code.js -> 1043 passed, 0 failed",
+  "reviewed_range": "f461608^..HEAD (phase orderapp-pulls). `main` is a 249-file/297-commit-stale root; the branch's real base is feat/two-tab-foundation, and the phase scope is the 41 commits from the scaffold commit f461608 onward.",
+  "test_run": "node connectors/gas/test_code.js -> 1061 passed, 0 failed (run this session)",
+  "tdd_audit": "All 7 steps are tdd:true, all carry test_cmd + red AND green tdd_evidence. No logic found smuggled into a tdd:false scaffolding step (there are none). Step 6 is done_with_concerns for a missing per-step review record only, not missing tests.",
   "issues": [
     {
       "severity": "important",
       "file": "connectors/gas/orderapp.gs",
-      "line": 457,
-      "summary": "greenBeanFetchAllRows_ has an unbounded `while (true)` paging loop with no page cap and no guard that the offset advances. If a response carries paging.truncated:true + rowsIncluded:true with paging.returned === 0 (or a renamed/absent `returned`, which makes `offset += paging.returned` NaN), the identical UrlFetch is re-issued forever until the GAS 6-minute limit kills the trigger — hundreds of wasted fetch-quota calls, zero ingest, every Tuesday. The shopify.gs puller deleted in this same phase carried exactly this guard (SHOPIFY_MAX_PAGES = 50); it was dropped and not replaced. Tests cover the happy path, the size-guard abort and rowNumber dedup, but never a non-advancing page."
+      "line": 524,
+      "summary": "greenBeanFetchAllRows_ dereferences `res.body.meta.paging` with no shape gate. orderAppClassifyResponse_ only asserts `parsed.ok === true`, so an {ok:true} body missing `meta` (or `meta.paging`) throws a TypeError that propagates out of greenBeanFetchAllRows_ -> greenBeanPull_impl_ -> withScriptLock_ -> the Tuesday 05:00 trigger, directly contradicting orderAppFetch_'s documented 'a thrown fetch ... never left to propagate into a scheduled trigger' contract. This is the identical failure class the round-3 fix hardened on the shopify side by adding shopifyValidWeekBody_ (orderapp.gs:284); the greenbean path received a page cap and a paging.returned NaN/zero guard but no shape gate, so the asymmetry is unintentional. Note the sibling reads on the SAME response are all defensively guarded -- `res.body.diagnostics || {}` (line 534) and `res.body.rows || []` (line 550) -- which makes the unguarded meta.paging read stand out as an oversight rather than a deliberate assumption. Untested: every greenbean paging mock in test_code.js (lines 5103, 5108, 5132, 5158, 5178, 5202, 5215, 5232, 5271, 5423, 5461, 5499) supplies meta.paging, so no test exercises a body without it. Fix: gate the body the way shopifyValidWeekBody_ does and return null (aborting the incomplete window, which the failcount then surfaces) instead of throwing."
     },
     {
       "severity": "important",
-      "file": "connectors/gas/orderapp.gs",
-      "line": 302,
-      "summary": "shopifyWeeklyPull_impl_ reads body.meta.weekStart and Number(body.summary.grossSales) with no shape validation — orderAppClassifyResponse_ only checks parsed.ok === true. Three failure modes, all money-affecting: (1) a 200 {ok:true} body missing `summary` throws a TypeError straight out of a scheduled trigger, contradicting orderAppFetch_'s documented 'never left to propagate' contract; (2) grossSales absent/null/non-numeric yields NaN or 0 written into the Summary `total` column while orderAppRunSuccess_ still stamps the heartbeat and raises no alert — and because NaN !== NaN, upsertRows_ then rewrites that row every single week while doGet serves the corrupt figure to the weekly report; (3) meta.weekStart is never checked against the requested weeks[i].label, so an API that ignores or clamps the `week` param writes one week four times (3 in-batch duplicatesSkipped) and still reports weeksFetched:4 with no apiFailed. Contrast greenBeanPull, which does surface upstream warnings/flags. No test covers a 200-ok body with an unexpected shape."
+      "file": "docs/schema.md",
+      "line": 98,
+      "summary": "docs/schema.md states \"`validateIngest_` places no special restriction on writing `channel='online'` directly into `Revenue`, but no connector does so today\" -- the exact inverse of the guard shipped in this same phase. Code.gs validateIngest_ now rejects every `kind:'revenue'` payload containing a row whose channel is 'online' (case-insensitive, any source), and docs/ingest-contract.md documents that rejection correctly and in bold. The schema.md line was written at step 5; the guard landed in the round-2 fix commit (5637d71) and schema.md was never updated, so the two canonical docs now contradict each other on a mechanically-enforced rule. This matters more than a typical doc nit because CLAUDE.md's docs index points connector authors at schema.md specifically ('Load when writing connectors or normalization'), so the wrong half is the half they read -- they would build an online-revenue POST path against an endpoint that rejects it. Fix: replace the sentence with a pointer to the PRD-10 exclusivity rejection."
     },
     {
       "severity": "minor",
       "file": "connectors/gas/orderapp.gs",
-      "line": 387,
-      "summary": "greenBeanInvoices_ accumulates `groups[k].total += line.totalCostIncGst` with no Number() coercion, unlike every other money read in the codebase (Number(body.summary.grossSales), Number(row.amount), Number(existingRow[2])). A string-typed totalCostIncGst makes the accumulator a string: 0 + '50' -> '050', then '050' + '25' -> '05025', and Math.round('05025' * 100) / 100 emits 5025 — a 100x overstated invoice, silently ingested into Suppliers and Summary with no flag and no alert. undefined yields a NaN total. The API's own `flags` mechanism exists precisely because 06_Stock_Intake cells can be non-numeric, so a numeric guarantee is not safe to assume here."
+      "line": 352,
+      "summary": "Ambiguous response shape on the excluded-gross reconciliation signal. `excluded.byStatusTotals.gross` and `excluded.cancelled.gross` are read as objects each carrying a scalar `.gross`; if the Order app actually returns byStatusTotals as a per-status map (e.g. {PENDING:{gross:N}, PARTIALLY_PAID:{...}}), `Number(undefined) || 0` silently yields 0 and excludedGross stays 0 forever. The round-1 fix added this precisely so a weekly shrink could be reconciled, and it would fail open and silent rather than loudly. No test asserts the real API shape, and there is no log for the 'bucket present but unparseable' case (truthy object, non-numeric .gross), which is the only state that would reveal the mismatch. Cheap fix: log once when `excluded` is non-empty but weekExcluded computes to 0."
     },
     {
       "severity": "minor",
       "file": "connectors/gas/orderapp.gs",
-      "line": 662,
-      "summary": "The resummarize loop discards weeklySummarize's return value and then unconditionally shrinks the queue to `remaining`, so a week that returned {refused:...} or an early `return;` is dropped from the queue as if it had been summarized, with nothing logged. Today every refusal path is excluded by construction (the incomplete-week guard in addAffectedWeek, ensureSheet having already created Suppliers, and withScriptLock_'s reentrancy depth), so this is latent rather than live — but the crash-safety design deliberately makes the queue the sole record of pending weeks, and this is the one path that can silently empty it."
+      "line": 643,
+      "summary": "orderAppRaiseDataQualityAlert_ has no threshold or suppression: greenBeanPull raises an all-day calendar event on EVERY run while any flagged intake row sits in the window. Because the window is a rolling 3 calendar months, a single un-fixed non-numeric 06_Stock_Intake cell produces roughly 13 consecutive weekly alerts. The function's own docstring reserves it for 'RARE, ACTIONABLE' states, and the run-failure alert next to it is deliberately threshold-gated (ORDERAPP_ALERT_THRESHOLD=2) -- this one is not, so it is the alert most likely to be tuned out. Same applies to the upstream-warnings alert at line 541 (deduped per pull, but not across pulls)."
     },
     {
       "severity": "minor",
-      "file": "connectors/gas/staleness.gs",
-      "line": 30,
-      "summary": "'coffee_order_app' was removed from STALENESS_SOURCES on the stated grounds that it 'never stamps a heartbeat', but doPost stamps stalenessStampHeartbeat_(body.source) on every successful ingest (Code.gs:184) and kind:'revenue' from coffee_order_app is still explicitly sanctioned (docs/ingest-contract.md, tested at test_code.js:2699). Only the suppliers-kind shape was rejected. So the moment the Order app's wholesale-revenue POSTer ships, it stamps LAST_INGEST_coffee_order_app and sits unwatched, and testEveryHeartbeatSourceIsWatched cannot catch it because STAMPS_HEARTBEAT is a hand-maintained literal. Either re-add it, or make the exclusion conditional on there being no revenue writer."
+      "file": "connectors/gas/orderapp.gs",
+      "line": 601,
+      "summary": "The greenbean source string is a bare 'greenbean' literal in six places (orderAppRunStart_ line 601, orderAppRunSkipped_ line 624, the two orderAppRaiseDataQualityAlert_ calls lines 541/643, ingestSupplierRows line 671, the snapshot filter line 664, orderAppRunSuccess_ line 745) plus embedded in GREENBEAN_RESUM_QUEUE_PROP, while the shopify half of the same file correctly routes everything through the SHOPIFY_ORDERAPP_SOURCE constant with a comment explaining why the value matters. A typo in one occurrence silently splits the failcount/heartbeat key from the row-filter key -- the run would look healthy while the snapshot diff matched nothing. Hoist a GREENBEAN_SOURCE constant for parity."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/orderapp.gs",
+      "line": 665,
+      "summary": "The pre-ingest snapshot key lowercases but does not trim (`'greenbean||' + String(existingRow[3]).toLowerCase()`, and the lookup at line 685 likewise), whereas upsertRows_'s rowKey_ (Code.gs:612) does `String(v).trim().toLowerCase()`. The lowercasing was added deliberately in the round-2 fix to match rowKey_; the trim half was missed. A stored invoice_ref carrying surrounding whitespace would therefore be UPDATED in place by ingestSupplierRows but MISSED by the snapshot lookup, so a changed invoice is misclassified as new and addAffectedWeek queues the recomputed date's week instead of the stored date's week -- the exact misclassification the snapshot was built to prevent. Low likelihood today (both sides derive from the same untrimmed greenBeanInvoices_ output), but the guard is one `.trim()` and the asymmetry is a latent trap for any hand-edited Suppliers row."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/orderapp-pulls/index.json",
+      "line": 1,
+      "summary": "Step 6 (triggers-and-live-runbook) is status 'done_with_concerns' because step6-review.json was never produced -- the runner was externally killed between the step's commit and its review dispatch, and a committed step cannot be re-reviewed (empty diff). Tests are NOT the gap: step 6 carries full red+green tdd_evidence and the installer is covered by 9 assertions (idempotent double-install, day/hour/timezone for both handlers, and a guard that the unrelated shopSpendWatchdog trigger survives). Recording it so the missing artifact is not later read as missing coverage; the phase-end rounds did re-run the suite over the full branch diff."
     }
-  ],
-  "verified_clean": [
-    "TDD discipline: all 7 steps are tdd:true with both red and green tdd_evidence in index.json — no tdd:false escape hatch, no logic smuggled into scaffolding. Suite re-run this review: 1043 passed, 0 failed.",
-    "Summary row shape matches SUMMARY_HEADERS/SUMMARY_KEY_COLS exactly (week_start|week_end|supplier|location|total|summarized_at|department|kind); snapshot column indices 0/2/3/5 match SUPPLIERS_HEADERS.",
-    "Key-disjointness of shopify_orderapp vs weeklySummarize-derived online rows is real and pinned by test case5; cleanupOnlineRevenueSummaryRows correctly skips pull-owned rows.",
-    "Nested withScriptLock_ (greenBeanPull -> weeklySummarize) is safe — SCRIPT_LOCK_DEPTH_ makes it reentrant with a single acquire/release.",
-    "isoWeekLabel_ implements the ISO Thursday rule correctly and is DST-safe (Math.round over local-midnight dates); greenBeanWindow_ is pure string arithmetic.",
-    "ARCHIVE_RETENTION_DAYS=183 exceeds the ~90-day greenBean window, so archiveAndPurge_ cannot purge rows the next pull would re-append as 'new'.",
-    "Secrets: ORDER_APP_COST_TOKEN is read from Script Properties only, never logged; the token-bearing URL is never logged; only response bodies and the non-secret /exec URL reach logs and Calendar descriptions.",
-    "No orphaned references to the deleted shopify.gs; per TODO.md it was never activated in production, so no live trigger is left pointing at a missing handler.",
-    "Deleted-invoice staleness is a documented limitation with a runbook (docs/schema.md), not an oversight.",
-    "Architecture: GAS-native pulls writing through ingestSupplierRows/upsertRows_ are the sanctioned exception per CLAUDE.md; docs/architecture.md, api.md, schema.md and ingest-contract.md were all updated to match the code."
   ]
 }

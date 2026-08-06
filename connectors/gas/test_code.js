@@ -5238,6 +5238,24 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('runaway paging: returns null at the page cap', greenBeanFetchAllRows_() === null);
   eq('runaway paging: fetch count capped at GREENBEAN_MAX_PAGES', cappedFetches, GREENBEAN_MAX_PAGES);
 
+  /* --- case: shape gate — an {ok:true} body missing meta/meta.paging must
+   *     abort cleanly (null), never TypeError out of the Tuesday trigger.
+   *     Same contract as shopifyValidWeekBody_ on the shopify side. --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: true, rows: [] }) // no meta at all
+    }),
+  };
+  let shapeThrew = false;
+  let shapeRes;
+  try { shapeRes = greenBeanFetchAllRows_(); } catch (err) { shapeThrew = true; }
+  check('missing meta.paging: does not throw', !shapeThrew);
+  check('missing meta.paging: returns null (abort, no ingest)', shapeRes === null);
+  check('missing meta.paging: the abort is logged as shape validation',
+    lastLoggedMessages().some((m) => m.indexOf('missing meta.paging') !== -1));
+
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
@@ -5553,6 +5571,24 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('retyped-casing invoice counts as updated', casingRes.rowsUpdated, 1);
   eq('affected week = the STORED row week, not the retyped line week',
     casingCalls, [weeks[0].start]);
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+
+  /* --- snapshot trim parity with rowKey_: a hand-edited Suppliers row whose
+   *     invoice_ref carries surrounding whitespace is still HIT by the
+   *     snapshot lookup (upsertRows_ trims too), so a changed invoice
+   *     classifies as an update of the stored week, never as new. --- */
+  reset();
+  {
+    const supp = currentSS.insertSheet('Suppliers');
+    supp.appendRow(SUPPLIERS_HEADERS);
+    supp.appendRow([weeks[0].start, 'Trim Co', 100, '  trim_co/T-1  ', '', 'greenbean', 'TS', 'Roastery']);
+  }
+  armFetch([{ rowNumber: 1, dateLocal: weeks[5].start, supplierRaw: 'Trim Co', supplierKey: 'trim_co', invoiceNum: 'T-1', totalCostIncGst: 150, status: 'RECEIVED' }]);
+  let trimCalls = [];
+  global.weeklySummarize = function (w) { trimCalls.push(w); return REAL_WEEKLY_SUMMARIZE(w); };
+  const trimRes = greenBeanPull_impl_();
+  eq('padded stored ref: classifies as update, not new', trimRes.rowsUpdated, 1);
+  eq('padded stored ref: affected week = the STORED week', trimCalls, [weeks[0].start]);
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
 
   /* --- zero-row full window: completes (no alert spam) but warns loudly --- */

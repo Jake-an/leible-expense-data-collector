@@ -94,9 +94,11 @@ direct Shopify Admin API access requiring `SHOPIFY_SHOP_DOMAIN` /
 `SHOPIFY_ACCESS_TOKEN` Script Properties) never ran in production and has been
 deleted (git history preserves it). Online Shopify revenue is now sourced
 exclusively via the Order-app read API — see `shopify_orderapp` under
-`Summary` below. `channel='online'` rows in this tab are historical only;
-`validateIngest_` places no special restriction on writing `channel='online'`
-directly into `Revenue`, but no connector does so today.
+`Summary` below. `channel='online'` rows in this tab are historical only —
+`validateIngest_` MECHANICALLY REJECTS any `kind='revenue'` payload containing
+a `channel='online'` row (case-insensitive, any source): online revenue's sole
+producer is the Order-app shopifySales pull (PRD-10 exclusivity; see
+`docs/ingest-contract.md`).
 
 ## Tab `Summary` (weekly rollup, spend AND revenue)
 
