@@ -136,7 +136,8 @@
     {
       "step": 3,
       "name": "greenbean-invoice-grouping",
-      "status": "pending",
+      "status": "completed",
+      "summary": "orderapp.gs: greenBeanInvoices_(apiRows) normalizer — group lines by (supplierKey, invoiceNum), sum totals, use earliest dateLocal; 948/948 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -145,7 +146,26 @@
       "docs": [
         "schema.md"
       ],
-      "started_at": "2026-08-06T09:54:59+0900"
+      "started_at": "2026-08-06T09:54:59+0900",
+      "completed_at": "2026-08-06T10:00:00+1000",
+      "tdd_evidence": {
+        "red": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 1,
+          "classifier": {
+            "red_valid": true,
+            "reason": "ReferenceError: greenBeanInvoices_ is not defined — implementation function missing, test code and infrastructure healthy"
+          },
+          "at": "2026-08-06T09:54:59+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "ok  - rounding: 10.005 + 0.001 -> total 10.01, rounded once at emit  (got [{\"date\":\"2026-06-20\",\"supplier\":\"Precise Coffee\",\"total\":10.01,\"invoice_ref\":\"precise_coffee/INV-500\",\"department\":\"Roastery\"}])\n  ok  - empty input -> []  (got [])\n  ok  - flagged row with totalCostIncGst:0 still contributes a row  (got [{\"date\":\"2026-06-25\",\"supplier\":\"Flagged Supplier\",\"total\":0,\"invoice_ref\":\"flagged_supplier/INV-700\",\"department\":\"Roastery\"}])\n  ok  - mixed statuses in one invoice: single summed row, both lines counted  (got [{\"date\":\"2026-06-30\",\"supplier\":\"Mixed Status Co\",\"total\":100,\"invoice_ref\":\"mixed_status_co/INV-800\",\"department\":\"Roastery\"}])\n  ok  - output order is deterministic: sorted by invoice_ref  (got [\"aaa_supplier/INV-1\",\"mmm_supplier/INV-1\",\"zzz_supplier/INV-1\"])\n\n948 passed, 0 failed\n",
+          "at": "2026-08-06T10:00:00+1000"
+        }
+      },
+      "tdd_state": "red_done"
     },
     {
       "step": 4,
