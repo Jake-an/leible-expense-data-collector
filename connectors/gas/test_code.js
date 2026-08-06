@@ -5251,6 +5251,53 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('missing meta.paging: the abort is logged as shape validation',
     lastLoggedMessages().some((m) => m.indexOf('missing meta.paging') !== -1));
 
+  /* --- case: row DELETED mid-pagination — the offset window slides forward
+   *     and a row is never returned; paging.matched exposes the shortfall,
+   *     which must abort rather than silently ingest a short window. --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: (url) => {
+      const m = /[?&]offset=([^&]+)/.exec(String(url));
+      const offset = m ? Number(decodeURIComponent(m[1])) : 0;
+      const page = offset === 0
+        ? [{ rowNumber: 1, dateLocal: '2026-06-01', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 1, status: 'RECEIVED' },
+           { rowNumber: 2, dateLocal: '2026-06-02', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 2, status: 'RECEIVED' }]
+        : [{ rowNumber: 4, dateLocal: '2026-06-04', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 4, status: 'RECEIVED' }];
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: offset === 0, rowsIncluded: true, returned: page.length, matched: 4 } }, rows: page })
+      };
+    },
+  };
+  check('deletion shortfall (3 collected vs matched=4): returns null', greenBeanFetchAllRows_() === null);
+  check('deletion shortfall: the abort is logged',
+    lastLoggedMessages().some((m) => m.indexOf('paging.matched') !== -1));
+
+  /* --- case: identical upstream warning repeated on every page is collected
+   *     ONCE (the producer recomputes it over the whole matched set) --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: (url) => {
+      const m = /[?&]offset=([^&]+)/.exec(String(url));
+      const offset = m ? Number(decodeURIComponent(m[1])) : 0;
+      const page = offset === 0
+        ? [{ rowNumber: 1, dateLocal: '2026-06-01', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 1, status: 'RECEIVED' }]
+        : [{ rowNumber: 2, dateLocal: '2026-06-02', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 2, status: 'RECEIVED' }];
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          ok: true,
+          meta: { paging: { truncated: offset === 0, rowsIncluded: true, returned: 1, matched: 2 } },
+          diagnostics: { warnings: ['same warning on every page'] },
+          rows: page
+        })
+      };
+    },
+  };
+  greenBeanFetchAllRows_();
+  eq('repeated per-page warning collected once (dedup keeps signature stable)',
+    lastLoggedMessages().filter((m) => m.indexOf('same warning on every page') !== -1).length, 1);
+
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
@@ -5626,6 +5673,33 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('padded stored ref: affected week = the STORED week', trimCalls, [weeks[0].start]);
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
 
+  /* --- supplier rename detection: an invoice re-ingested under a NEW
+   *     supplierKey while the old key vanished from the pull raises a
+   *     data-quality alert naming both refs (the old row now double-counts);
+   *     two suppliers legitimately sharing an invoiceNum in the SAME pull
+   *     must NOT trip it. --- */
+  reset();
+  armFetch([{ rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Old Co', supplierKey: 'old_co', invoiceNum: 'R-9', totalCostIncGst: 100, status: 'RECEIVED' }]);
+  greenBeanPull_impl_(); // seeds old_co/R-9
+  calendarEvents = [];
+  armFetch([{ rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Old Co.', supplierKey: 'old_co_2', invoiceNum: 'R-9', totalCostIncGst: 100, status: 'RECEIVED' }]);
+  greenBeanPull_impl_();
+  eq('rename: one data-quality alert raised', calendarEvents.length, 1);
+  check('rename alert names old and new refs + the runbook',
+    calendarEvents[0]._description.indexOf('old_co/r-9') !== -1 &&
+    calendarEvents[0]._description.indexOf('old_co_2/R-9') !== -1 &&
+    calendarEvents[0]._description.indexOf('weeklySummarize') !== -1);
+
+  reset();
+  armFetch([
+    { rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Share A', supplierKey: 'share_a', invoiceNum: 'INV-77', totalCostIncGst: 10, status: 'RECEIVED' },
+    { rowNumber: 2, dateLocal: weeks[0].start, supplierRaw: 'Share B', supplierKey: 'share_b', invoiceNum: 'INV-77', totalCostIncGst: 20, status: 'RECEIVED' }
+  ]);
+  greenBeanPull_impl_(); // both keys seeded together
+  calendarEvents = [];
+  greenBeanPull_impl_(); // re-pull, both suppliers still present
+  eq('legit shared invoiceNum across suppliers: no rename alert', calendarEvents.length, 0);
+
   /* --- upstream warnings: impl raises ONE signature-gated alert, suppresses
    *     while unchanged, clears on a clean pull --- */
   reset();
@@ -5706,6 +5780,17 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('wholesale revenue still accepted', validateIngest_(revenueBody('wholesale')).ok, true);
   eq('any source is blocked, not just coffee_order_app',
     validateIngest_(revenueBody('online', 'future_connector')).ok, false);
+
+  // The sibling suppliers gate must be equally casing/whitespace-proof.
+  function suppliersBody(source) {
+    return {
+      source: source, kind: 'suppliers', extracted_at: '2026-08-06T10:00:00+10:00',
+      rows: [{ date: '2026-08-01', supplier: 'X', total: 10, invoice_ref: 'X-1' }]
+    };
+  }
+  eq('suppliers gate: exact source rejected', validateIngest_(suppliersBody('coffee_order_app')).ok, false);
+  eq('suppliers gate: mixed casing rejected too', validateIngest_(suppliersBody('Coffee_Order_App')).ok, false);
+  eq('suppliers gate: padded source rejected too', validateIngest_(suppliersBody(' coffee_order_app ')).ok, false);
 })();
 
 /*

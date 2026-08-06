@@ -533,6 +533,7 @@ function greenBeanFetchAllRows_() {
   var seenRowNumbers = {};
   var duplicatesSkipped = 0;
   var pages = 0;
+  var lastPaging = null;
 
   while (true) {
     // Bounded loop — the deleted shopify.gs carried SHOPIFY_MAX_PAGES for the
@@ -566,6 +567,7 @@ function greenBeanFetchAllRows_() {
       return null;
     }
     var paging = res.body.meta.paging;
+    lastPaging = paging;
     // Anything truncated where rowsIncluded is not EXACTLY true aborts: ===false
     // is the documented size guard, but an absent/non-boolean value would
     // otherwise fall through BOTH branches, break the loop, and silently ingest
@@ -580,11 +582,18 @@ function greenBeanFetchAllRows_() {
     // non-numeric price/kg cell to 0 and drops invalid-Timestamp rows,
     // reporting both ONLY here. Discarding them turns a typo'd cell into a
     // silently understated committed-spend figure.
+    // The producer recomputes diagnostics.warnings over the WHOLE matched set
+    // on every page, so a multi-page pull would collect N identical copies —
+    // dedupe here so the alert body lists each warning once and the
+    // suppression signature stays stable across page counts.
     var diagnostics = res.body.diagnostics || {};
     var warnings = diagnostics.warnings || res.body.warnings || [];
     for (var w = 0; w < warnings.length; w++) {
-      Logger.log('greenBeanFetchAllRows_: UPSTREAM WARNING — ' + warnings[w]);
-      GREENBEAN_UPSTREAM_WARNINGS_.push(String(warnings[w]));
+      var warnText = String(warnings[w]);
+      if (GREENBEAN_UPSTREAM_WARNINGS_.indexOf(warnText) === -1) {
+        Logger.log('greenBeanFetchAllRows_: UPSTREAM WARNING — ' + warnText);
+        GREENBEAN_UPSTREAM_WARNINGS_.push(warnText);
+      }
     }
 
     // Offset paging is not snapshot-stable: the Order app re-slices the live
@@ -616,6 +625,18 @@ function greenBeanFetchAllRows_() {
   if (duplicatesSkipped > 0) {
     Logger.log('greenBeanFetchAllRows_: skipped ' + duplicatesSkipped +
       ' duplicate row(s) across pages (live-sheet offset shift) — totals kept exact');
+  }
+
+  // The inverse shift: a row DELETED mid-pagination slides the offset window
+  // forward and one row is never returned on any page — the window would
+  // ingest short with no signal. The final page's paging.matched counts the
+  // whole matched set, so a shortfall is detectable: abort, next run re-pulls
+  // a consistent snapshot.
+  var finalMatched = Number(lastPaging && lastPaging.matched);
+  if (isFinite(finalMatched) && finalMatched > 0 && rows.length < finalMatched) {
+    Logger.log('greenBeanFetchAllRows_: collected ' + rows.length + ' rows but paging.matched=' +
+      finalMatched + ' (row deleted mid-pagination?) — aborting rather than ingest a short window');
+    return null;
   }
   return rows;
 }
@@ -688,20 +709,28 @@ function greenBeanPull_impl_() {
     orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_upstream');
   }
 
-  // Per-row flags mark values the API coerced (e.g. non-numeric PriceKg → $0
-  // line). The lines still ingest (locked decision: never dropped), but the
-  // count must be loud — a flagged line usually means an understated invoice.
+  // Per-row flags mark data problems the API worked around (NON_NUMERIC_*
+  // coerced to $0, BLANK_SUPPLIER, INVALID_TIMESTAMP, …). The lines still
+  // ingest (locked decision: never dropped), but the count must be loud —
+  // and the alert names the DISTINCT flags present, because "fix the price
+  // cell" is wrong advice for a blank-supplier row.
   var flaggedRows = 0;
+  var flagNamesSeen = {};
   for (var f = 0; f < rows.length; f++) {
-    if (rows[f].flags && rows[f].flags.length) flaggedRows++;
+    if (rows[f].flags && rows[f].flags.length) {
+      flaggedRows++;
+      for (var fn = 0; fn < rows[f].flags.length; fn++) flagNamesSeen[String(rows[f].flags[fn])] = true;
+    }
   }
+  var flagNames = Object.keys(flagNamesSeen).sort();
   if (flaggedRows > 0) {
-    Logger.log('greenBeanPull: ' + flaggedRows + ' flagged intake row(s) (coerced values, likely $0 lines) — ' +
-      'greenbean totals may be understated; fix the 06_Stock_Intake cells in the Order app');
+    Logger.log('greenBeanPull: ' + flaggedRows + ' flagged intake row(s) [' + flagNames.join(', ') + '] — ' +
+      'greenbean figures may be off; fix the 06_Stock_Intake cells in the Order app');
     orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_flags',
-      flaggedRows + ' stock-intake row(s) carry coerced values (non-numeric price/kg read as $0) — ' +
-      'the greenbean committed-spend figure is likely UNDERSTATED until the cells are fixed.',
-      'flagged:' + flaggedRows);
+      flaggedRows + ' stock-intake row(s) carry data-quality flags: ' + flagNames.join(', ') + '. ' +
+      'NON_NUMERIC_* flags mean a value was read as $0 (committed spend likely UNDERSTATED); ' +
+      'other flags mean the row needs its named field fixed.',
+      'flagged:' + flaggedRows + ':' + flagNames.join(','));
   } else {
     orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_flags');
   }
@@ -741,11 +770,44 @@ function greenBeanPull_impl_() {
     affected.push(weekStart);
   }
 
+  // Rename detection: editing the free-text supplier cell of an ingested
+  // invoice changes supplierKey and therefore invoice_ref, so the upsert
+  // APPENDS a fresh row while the old one stays — a silent double-count.
+  // Heuristic: an incoming invoice whose full ref is new, but whose bare
+  // invoiceNum exists in the snapshot under a supplierKey that is ABSENT from
+  // this pull, is almost certainly a rename (legit cross-supplier shared
+  // invoice numbers keep both suppliers present in the window). Detected, not
+  // auto-fixed: the new row is current truth; the alert points at the stale
+  // old row and the schema.md runbook (zero it, resummarize its week).
+  var pullSupplierKeys = {};
+  for (var pk = 0; pk < invoices.length; pk++) {
+    pullSupplierKeys[String(invoices[pk].invoice_ref).trim().toLowerCase().split('/')[0]] = true;
+  }
+  var snapshotByInvNum = {};
+  for (var snapKey in snapshot) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, snapKey)) continue;
+    var refParts = snapKey.replace(GREENBEAN_SOURCE + '||', '').split('/');
+    if (refParts.length < 2) continue;
+    var bare = refParts.slice(1).join('/');
+    if (!snapshotByInvNum[bare]) snapshotByInvNum[bare] = [];
+    snapshotByInvNum[bare].push({ supplierKey: refParts[0], ref: refParts.join('/'), total: snapshot[snapKey].total });
+  }
+  var suspectedRenames = [];
+
   for (var i = 0; i < invoices.length; i++) {
     var invoice = invoices[i];
     var snap = snapshot[GREENBEAN_SOURCE + '||' + String(invoice.invoice_ref).trim().toLowerCase()];
     if (!snap) {
       addAffectedWeek(weekStartForDate_(invoice.date));
+      // Probe with the same trim/lowercase normalization the snapshot keys use.
+      var newParts = String(invoice.invoice_ref).trim().toLowerCase().split('/');
+      var priorHolders = snapshotByInvNum[newParts.slice(1).join('/')] || [];
+      for (var ph = 0; ph < priorHolders.length; ph++) {
+        if (priorHolders[ph].supplierKey !== newParts[0] && !pullSupplierKeys[priorHolders[ph].supplierKey]) {
+          suspectedRenames.push(priorHolders[ph].ref + ' -> ' + invoice.invoice_ref +
+            ' (old row total $' + priorHolders[ph].total + ')');
+        }
+      }
       continue;
     }
     var newTotal = Math.round(Number(invoice.total) * 100) / 100;
@@ -753,6 +815,19 @@ function greenBeanPull_impl_() {
     if (newTotal !== oldTotal) {
       addAffectedWeek(weekStartForDate_(snap.storedDate));
     }
+  }
+
+  if (suspectedRenames.length > 0) {
+    Logger.log('greenBeanPull: ' + suspectedRenames.length + ' suspected supplier rename(s): ' +
+      suspectedRenames.join('; '));
+    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_rename',
+      'Suspected supplier rename in 06_Stock_Intake — an invoice re-ingested under a NEW ref while ' +
+      'its old Suppliers row remains, so that week DOUBLE-COUNTS until fixed:\n- ' +
+      suspectedRenames.join('\n- ') +
+      '\n\nRunbook (docs/schema.md): zero the OLD Suppliers row, then run weeklySummarize(\'<week>\').',
+      'rename:' + suspectedRenames.slice().sort().join('|'));
+  } else {
+    orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_rename');
   }
 
   // Merge queue-from-property (drain oldest-first) with this run's affected

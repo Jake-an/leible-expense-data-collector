@@ -58,6 +58,12 @@ contribution) goes stale silently. To correct it: manually edit the stale
 `weeklySummarize('<week_start>')` for the affected week to re-derive
 `Summary` from the corrected `Suppliers` data.
 
+The same runbook applies to a **supplier rename** in `06_Stock_Intake`: the
+edited cell changes `supplierKey`, so the invoice re-ingests under a NEW
+`invoice_ref` while the old row stays behind (double-count until corrected).
+`greenBeanPull` detects the pattern and raises a `greenbean_rename`
+data-quality alert naming the old and new refs.
+
 ## Tab `Sales` (Square, daily gross per location — always Cafe)
 
 | Column | Type | Required | Description |

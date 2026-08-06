@@ -50,17 +50,20 @@ exists because a never-seen source false-alarms daily, not because the path
 is closed.
 
 **`channel` is an open enum (aside from the `"online"` rejection above), and
-the weekly rollup treats one value specially.** In the weekly
-`Summary`, `channel: "online"` is collapsed to one row per source (guest
-checkouts carry synthetic per-order customer names); every other channel is
-grouped per customer. Two consequences for a new connector:
+the weekly rollup treats one value specially.** `channel: "online"` rows are
+EXCLUDED from the weekly rollup entirely (`aggregateSupplierRows_` skips them,
+counted + logged) — the sole online figure is the pull-owned
+`supplier='shopify_orderapp'` Summary row written by `shopifyWeeklyPull`
+(PRD-10). Every other channel is grouped per customer. Two consequences for a
+new connector:
 
 - Use a **consistent casing** per channel. `Summary` dedup lowercases the
-  channel, so mixing `"Online"` and `"online"` in one week silently drops one
-  group's revenue from that week's figure.
+  channel, so mixing `"Wholesale"` and `"wholesale"` in one week silently
+  drops one group's revenue from that week's figure.
 - If you introduce a channel whose `customer` values are synthetic or unique
-  per order, add it to the collapse rule in `aggregateSupplierRows_`
-  (`connectors/gas/Code.gs`) — otherwise it writes one `Summary` row per order.
+  per order, it will write one `Summary` row per order — talk to the schema
+  first (the old online→source collapse rule was removed with PRD-10; there is
+  no per-source collapse to add to anymore).
 
 ### 2. Uploaded bean / packaging invoice — SUPERSEDED, mechanically rejected
 

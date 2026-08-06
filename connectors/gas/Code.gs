@@ -247,7 +247,7 @@ function validateIngest_(body) {
   // greenBeanCost pull (source='greenbean') — coffee_order_app never had a
   // production suppliers-kind writer, and the reserved payload shape in
   // docs/ingest-contract.md is now superseded/rejected, not just unused.
-  if (kind === 'suppliers' && body.source === 'coffee_order_app') {
+  if (kind === 'suppliers' && String(body.source).trim().toLowerCase() === 'coffee_order_app') {
     return {
       ok: false,
       message: 'coffee_order_app suppliers payloads are rejected: stock-intake invoices ' +

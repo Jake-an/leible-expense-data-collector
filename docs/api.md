@@ -59,27 +59,25 @@ consumers don't break — read `total` going forward. On a `kind:"revenue"` row
 field's meaning depends on it (dual meaning, kept so the JSON shape doesn't
 fork per kind):
 
-- `location: "online"` → `supplier` is the **source** (`shopify`, …), so online
-  revenue is **one row per source per week**. Online customers are not exposed:
-  guest checkouts are named `#<order_number>`, unique per order, which would put
-  one Summary row per order into the API. Per-order online detail lives on the
-  `Revenue` tab in the Sheet, not on this endpoint.
-  - **Roastery weekly online revenue** appears as `supplier: 'shopify_orderapp'`
-    (never `'shopify'` — see `connectors/gas/orderapp.gs`'s `SHOPIFY_ORDERAPP_SOURCE`
-    comment), written directly to `Summary` by `shopifyWeeklyPull` rather than
-    derived from `Revenue`, the one exception to "Summary is always derived from
-    Suppliers/Revenue".
+- `location: "online"` → exactly ONE row per week: `supplier: 'shopify_orderapp'`,
+  written directly to `Summary` by `shopifyWeeklyPull` (`connectors/gas/orderapp.gs`,
+  PRD-10) — never `'shopify'`, and never derived from `Revenue`
+  (`aggregateSupplierRows_` excludes `channel='online'` rows outright; residual
+  historical online Revenue rows are logged and skipped, their pre-pull figures
+  live in `Summary_online_revenue_backup`). This is the one exception to
+  "Summary is always derived from Suppliers/Revenue". Per-order online detail
+  is not on this endpoint.
 - any other channel → `supplier` is the **customer** name, one row per customer
   per week. Wholesale accounts are real named customers and keep their own line.
 
 Revenue and spend rows are never netted against each other — sum them
 separately per `kind` if you need a combined figure.
 
-> **Channel casing must be consistent.** `location` stores the raw channel
-> string, but Summary dedup lowercases it. If two rows in the same week carry
-> `"Online"` and `"online"`, they collapse to a single Summary row and the
-> later group is dropped as a duplicate — that week under-reports. Emit one
-> canonical casing per channel.
+> **Channel casing must be consistent (non-online channels).** `location`
+> stores the raw channel string, but Summary dedup lowercases it. If two rows
+> in the same week carry `"Wholesale"` and `"wholesale"`, they collapse to a
+> single Summary row and the later group is dropped as a duplicate — that week
+> under-reports. Emit one canonical casing per channel.
 
 ### Error responses
 
