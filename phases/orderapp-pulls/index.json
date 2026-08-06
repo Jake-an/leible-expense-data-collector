@@ -121,7 +121,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-06T09:51:52+0900"
+      "completed_at": "2026-08-06T09:51:52+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/orderapp-pulls/step2-review.json",
+        "checked_at": "2026-08-06T09:54:59+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 3,
@@ -134,7 +144,8 @@
       ],
       "docs": [
         "schema.md"
-      ]
+      ],
+      "started_at": "2026-08-06T09:54:59+0900"
     },
     {
       "step": 4,
