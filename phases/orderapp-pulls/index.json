@@ -91,7 +91,7 @@
     {
       "step": 2,
       "name": "shopify-weekly-pull",
-      "status": "pending",
+      "status": "completed",
       "summary": "orderapp.gs: shopifyWeeklyPull/_impl_ — pulls last 4 completed ISO weeks via ?api=shopifySales, upserts Summary kind=revenue rows keyed shopify_orderapp/online/Roastery; 939/939 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
