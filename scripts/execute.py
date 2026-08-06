@@ -460,7 +460,9 @@ class StepExecutor:
     NO_TESTS_PATTERNS = (
         r"no tests ran",
         r"collected 0 items",
-        r"0 total",
+        # \b-anchored: bare "0 total" false-matched week labels like "2026-W30 total"
+        # in assertion descriptions (step 2 of orderapp-pulls, 2026-08-06).
+        r"\b0 total\b",
         r"no tests found",
     )
 
