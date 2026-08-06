@@ -784,24 +784,26 @@ console.log('aggregateSupplierRows_');
   eq('empty rows → empty result', empty.length, 0);
 })();
 
-console.log('aggregateSupplierRows_ revenue grain — online collapses to source');
+console.log('aggregateSupplierRows_ revenue grain — online is pull-owned and EXCLUDED');
 (function () {
   // Revenue row order: [date, department, channel, customer, amount, order_ref, source, extracted_at]
 
-  // 1 + 2 + 8: online customers (incl. guest '#nnnn' names) collapse to one
-  // group keyed by source. This is the whole point of the change — grouping by
-  // customer wrote one Summary row per guest order.
+  // 1 + 2 + 8: online rows produce NO Summary group at all (orderapp-pulls
+  // phase, PRD-10): the pull-owned supplier='shopify_orderapp' row is the sole
+  // online figure; a derived per-source row would sit beside it under a
+  // different key and doGet would sum both. Exclusion is counted + logged.
+  clearLoggedMessages();
   var online = [
     ['2026-06-16', 'Roastery', 'online', '#1041', 62, 'O-1', 'shopify', 'TS'],
     ['2026-06-17', 'Roastery', 'online', '#1042', 48.5, 'O-2', 'shopify', 'TS'],
     ['2026-06-18', 'Roastery', 'online', 'Sarah Chen', 120, 'O-3', 'shopify', 'TS'],
   ];
   var r1 = aggregateSupplierRows_(online, '2026-06-15', '2026-06-21', 'revenue');
-  eq('online: three customers collapse into one group', r1.length, 1);
-  eq('online: total is the sum', r1[0].total, 230.5);
-  eq('online: supplier is the source, not the customer', r1[0].supplier, 'shopify');
-  eq('online: location is the channel', r1[0].location, 'online');
-  eq('online: department preserved', r1[0].department, 'Roastery');
+  eq('online: rows are excluded, no derived group', r1.length, 0);
+  check('online: the exclusion is logged with count + dollars',
+    lastLoggedMessages().some(function (m) {
+      return m.indexOf('excluded 3 historical channel=online') !== -1 && m.indexOf('$230.5') !== -1;
+    }));
 
   // 3 + 8: wholesale keeps per-customer grain — these are real named accounts
   // (docs/ingest-contract.md), and doGet serves Summary only, so collapsing
@@ -816,61 +818,38 @@ console.log('aggregateSupplierRows_ revenue grain — online collapses to source
   eq('wholesale: second customer intact', r2[1].supplier, 'Cafe X');
   eq('wholesale: totals not merged', r2[0].total + '|' + r2[1].total, '912|340');
 
-  // 4: both channels in one call — online collapsed, wholesale preserved.
+  // 4: both channels in one call — online excluded, wholesale preserved.
   var mixed = online.concat(wholesale);
   var r3 = aggregateSupplierRows_(mixed, '2026-06-15', '2026-06-21', 'revenue');
-  eq('mixed: 3 groups (1 online + 2 wholesale)', r3.length, 3);
-  eq('mixed: sorted keys → Bar Mero, Cafe X, shopify',
-    r3.map(function (g) { return g.supplier; }).join(','), 'Bar Mero,Cafe X,shopify');
+  eq('mixed: 2 groups (0 online + 2 wholesale)', r3.length, 2);
+  eq('mixed: sorted keys → Bar Mero, Cafe X',
+    r3.map(function (g) { return g.supplier; }).join(','), 'Bar Mero,Cafe X');
 
-  // 5: channel compare is case-insensitive, but location stores the raw string.
+  // 5: the exclusion is case-insensitive AND trims — a mixed-casing residual
+  // row must not sneak back in as a derived group.
   var capitalised = [
     ['2026-06-16', 'Roastery', 'Online', '#2001', 10, 'C-1', 'shopify', 'TS'],
-    ['2026-06-17', 'Roastery', 'Online', '#2002', 20, 'C-2', 'shopify', 'TS'],
+    ['2026-06-17', 'Roastery', ' ONLINE ', '#2002', 20, 'C-2', 'shopify', 'TS'],
   ];
   var r4 = aggregateSupplierRows_(capitalised, '2026-06-15', '2026-06-21', 'revenue');
-  eq('"Online" collapses too', r4.length, 1);
-  eq('"Online" groups by source', r4[0].supplier, 'shopify');
-  eq('location keeps the raw channel casing', r4[0].location, 'Online');
+  eq('"Online" / " ONLINE " are excluded too', r4.length, 0);
 
-  // 6: two sources on the same channel stay distinct.
-  var twoSources = [
-    ['2026-06-16', 'Roastery', 'online', '#3001', 50, 'S-1', 'shopify', 'TS'],
-    ['2026-06-17', 'Roastery', 'online', 'Cafe Y', 70, 'S-2', 'coffee_order_app', 'TS'],
-  ];
-  var r5 = aggregateSupplierRows_(twoSources, '2026-06-15', '2026-06-21', 'revenue');
-  eq('two online sources → two groups', r5.length, 2);
-  eq('...keyed by source', r5[0].supplier + ',' + r5[1].supplier, 'coffee_order_app,shopify');
-
-  // 7: department still splits.
+  // 7: department still splits (non-online).
   var twoDepts = [
-    ['2026-06-16', 'Roastery', 'online', '#4001', 50, 'D-1', 'shopify', 'TS'],
-    ['2026-06-17', 'Cafe', 'online', '#4002', 70, 'D-2', 'shopify', 'TS'],
+    ['2026-06-16', 'Roastery', 'wholesale', 'Cafe Z', 50, 'D-1', 'coffee_order_app', 'TS'],
+    ['2026-06-17', 'Cafe', 'wholesale', 'Cafe Z', 70, 'D-2', 'coffee_order_app', 'TS'],
   ];
   var r6 = aggregateSupplierRows_(twoDepts, '2026-06-15', '2026-06-21', 'revenue');
   eq('two departments → two groups', r6.length, 2);
   eq('...Cafe sorts first', r6[0].department + '|' + r6[0].total, 'Cafe|70');
   eq('...Roastery second', r6[1].department + '|' + r6[1].total, 'Roastery|50');
 
-  // 9: a blank/absent source must not silently become '' or 'undefined' as a
-  // doGet supplier value. normalizeRevenueRow writes source through verbatim
-  // and weeklySummarize reads the raw tab, so unvalidated rows do reach here.
-  var blankSource = [
-    ['2026-06-16', 'Roastery', 'online', '#5001', 11, 'B-1', '', 'TS'],
-    ['2026-06-17', 'Roastery', 'online', '#5002', 22, 'B-2', undefined, 'TS'],
-    ['2026-06-18', 'Roastery', 'online', '#5003', 33, 'B-3', 'shopify', 'TS'],
-  ];
-  var r7 = aggregateSupplierRows_(blankSource, '2026-06-15', '2026-06-21', 'revenue');
-  eq('blank + absent source group together as "unknown"', r7.length, 2);
-  eq('...unknown bucket totals 11+22', r7[1].supplier + '|' + r7[1].total, 'unknown|33');
-  eq('...and does NOT merge with the real source', r7[0].supplier + '|' + r7[0].total, 'shopify|33');
-
   // 10: Date-object date cells (the project's most-repeated trap) still filter
   // correctly — coerceDateStr_ is untouched, this guards against regressing it.
   var dateCells = [
-    [new Date(2026, 5, 16), 'Roastery', 'online', '#6001', 100, 'DT-1', 'shopify', 'TS'],
-    [new Date(2026, 5, 10), 'Roastery', 'online', '#6002', 999, 'DT-2', 'shopify', 'TS'], // before week
-    [new Date(2026, 5, 25), 'Roastery', 'online', '#6003', 888, 'DT-3', 'shopify', 'TS'], // after week
+    [new Date(2026, 5, 16), 'Roastery', 'wholesale', 'Cafe D', 100, 'DT-1', 'coffee_order_app', 'TS'],
+    [new Date(2026, 5, 10), 'Roastery', 'wholesale', 'Cafe D', 999, 'DT-2', 'coffee_order_app', 'TS'], // before week
+    [new Date(2026, 5, 25), 'Roastery', 'wholesale', 'Cafe D', 888, 'DT-3', 'coffee_order_app', 'TS'], // after week
   ];
   var r8 = aggregateSupplierRows_(dateCells, '2026-06-15', '2026-06-21', 'revenue');
   eq('Date-object revenue rows: only the in-week row counts', r8.length, 1);
@@ -1477,13 +1456,17 @@ freshSheets();
 })();
 
 /* ------------------------------------------------------------------ *
- * The cleanup round trip: purge → re-summarize. This is the assertion the
- * live runbook rests on — that what the purge removes actually comes back,
- * at the new grain, with the same money in it.
+ * The cleanup round trip: purge → re-summarize. SEMANTICS CHANGED by the
+ * orderapp-pulls phase (PRD-10): online revenue is pull-owned, so
+ * aggregateSupplierRows_ no longer derives ANY online Summary row from
+ * Revenue — a resummarize after the purge regenerates NOTHING online. The
+ * backup tab is the permanent record of purged figures; go-forward weeks
+ * come from shopifyWeeklyPull. This test pins the NEW contract so the live
+ * runbook can rely on it.
  * ------------------------------------------------------------------ */
 
 (function testOnlineRevenueCleanupRoundTrip() {
-  console.log('\nonline-revenue cleanup round trip (purge → resummarize):');
+  console.log('\nonline-revenue cleanup round trip (purge → resummarize, pull-owned semantics):');
 
   currentSS = makeSpreadsheet();
   scriptProps = {};
@@ -1514,26 +1497,25 @@ freshSheets();
   eq('oldest week first', weeks[0], '2026-06-08');
 
   var res = runOnlineRevenueResummarize();
-  eq('re-summarized both weeks', res.weeks, 2);
+  eq('re-summarize still walks both weeks', res.weeks, 2);
 
+  // NEW contract: nothing online comes back — the pull owns the channel and
+  // the backup tab is the record. Regenerating a per-source row here would
+  // recreate the exact double-count the phase closed.
   var out = s.getDataRange().getValues();
-  eq('one source-keyed row per week (+header)', out.length, 3);
-  var byWeek = {};
-  out.slice(1).forEach((r) => { byWeek[cellDate(r[0])] = r; });
-
-  eq('recent week collapsed to the source', byWeek['2026-06-15'][2], 'shopify');
-  eq('recent week keeps every dollar (100+50)', byWeek['2026-06-15'][4], 150);
-  eq('recent week stays online', byWeek['2026-06-15'][3], 'online');
-  eq('recent week keeps its department', byWeek['2026-06-15'][6], 'Roastery');
-  eq('recent week is still revenue', byWeek['2026-06-15'][7], 'revenue');
-  eq('older week rebuilt too — not left behind', byWeek['2026-06-08'][4], 30);
+  check('re-summarize regenerates NO online Summary row',
+    out.slice(1).every((r) => String(r[3]).trim().toLowerCase() !== 'online'));
+  var backupOut = currentSS.getSheetByName(ONLINE_REVENUE_BACKUP_TAB).getDataRange().getValues();
+  eq('the backup tab remains the permanent record of every purged figure (+header)',
+    backupOut.length, 4);
+  eq('backup keeps the recent-week dollars', backupOut.slice(1).reduce((a, r) => a + Number(r[4]), 0), 180);
 
   // Post-cleanup, the trigger's Monday run must be a no-op on these weeks
-  // rather than appending a second copy: same key, same total.
+  // rather than deriving anything online: Summary stays empty (header only).
   var rerun = weeklySummarize('2026-06-15');
   eq('re-running the week adds nothing', rerun.summariesAdded, 0);
   eq('re-running the week updates nothing', rerun.summariesUpdated, 0);
-  eq('Summary row count unchanged by the re-run', s.getDataRange().getValues().length, 3);
+  eq('Summary row count unchanged by the re-run (header only)', s.getDataRange().getValues().length, 1);
 
   // Guard: resummarize before an apply has nothing to go on and must say so
   // rather than silently summarizing "last week" instead.
@@ -2417,8 +2399,10 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     check('revenue never netted against spend (two distinct rows, not one combined)', rows.length === 2);
   })();
 
-  // 14: end-to-end — a week of online Revenue rows yields exactly ONE
-  // kind='revenue' Summary row, and doGet?department=Roastery serves it.
+  // 14: end-to-end — online is pull-owned (PRD-10): a week of residual online
+  // Revenue rows yields ZERO derived Summary rows, and doGet serves nothing
+  // for that week until the shopifyWeeklyPull row lands (which the shopify
+  // suite covers). Deriving a row here would double-count beside the pull row.
   (function () {
     currentSS = makeSpreadsheet();
     scriptProps = { API_READ_TOKEN: 'tok' };
@@ -2428,26 +2412,25 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     rev.appendRow(['2026-06-18', 'Roastery', 'online', 'Sarah Chen', 120, 'E-3', 'shopify', 'x']);
 
     var res = weeklySummarize('2026-06-15');
-    eq('a week of online orders → 1 Summary row, not 1 per order', res.summariesAdded, 1);
+    eq('a week of residual online orders → NO derived Summary row', res.summariesAdded, 0);
 
     var served = JSON.parse(doGet({ parameter: {
       token: 'tok', from: '2026-06-15', to: '2026-06-21', department: 'Roastery'
     } }).getContent());
-    eq('doGet returns the single weekly Roastery figure', served.count, 1);
-    eq('...supplier is the source', served.rows[0].supplier, 'shopify');
-    eq('...total is the week sum', served.rows[0].total, 230.5);
+    eq('doGet serves nothing for the week (pull row not yet landed)', served.count, 0);
   })();
 
-  // 12: idempotency — the new grouping key must be stable across runs, or a
-  // re-summarize would append a second row instead of upserting.
+  // 12: idempotency — the revenue grouping key must be stable across runs, or
+  // a re-summarize would append a second row instead of upserting. (Wholesale
+  // fixture: online no longer derives Summary rows at all.)
   (function () {
     currentSS = makeSpreadsheet();
     scriptProps = {};
     var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
-    rev.appendRow(['2026-06-16', 'Roastery', 'online', '#7001', 62, 'I-1', 'shopify', 'x']);
+    rev.appendRow(['2026-06-16', 'Roastery', 'wholesale', 'Idem Cafe', 62, 'I-1', 'coffee_order_app', 'x']);
 
     var first = weeklySummarize('2026-06-15');
-    eq('first summarize adds the online revenue row', first.summariesAdded, 1);
+    eq('first summarize adds the wholesale revenue row', first.summariesAdded, 1);
     var before = currentSS.getSheetByName('Summary').getDataRange().getValues();
 
     // Identical re-run: an unchanged amount is a duplicate-skip, not an update
@@ -2461,18 +2444,17 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     // skipped for some unrelated reason: it must update IN PLACE, not append.
     rev.getRange(2, 5).setValue(99);
     var third = weeklySummarize('2026-06-15');
-    eq('amended online revenue updates in place', third.summariesUpdated, 1);
+    eq('amended wholesale revenue updates in place', third.summariesUpdated, 1);
     eq('...and still appends nothing', third.summariesAdded, 0);
     var amended = currentSS.getSheetByName('Summary').getDataRange().getValues();
     eq('Summary row count still unchanged', amended.length, before.length);
     eq('Summary total reflects the amendment', amended[1][4], 99);
   })();
 
-  // 13: stale-key double-count — documents WHY the pre-deploy checklist exists.
-  // A Summary row written under the OLD customer-keyed scheme is not updated by
-  // the new source-keyed run; it is orphaned alongside it and doGet counts both.
-  // The expected value is pinned at 2 so a wrong result stays distinguishable
-  // from this intended (bad) behaviour.
+  // 13: legacy customer-keyed online Summary rows are ORPHANED, never updated
+  // and never re-derived — documents WHY the cleanup runbook (apply + backup)
+  // exists: only the cleanup removes them; a summarize run leaves the stale 62
+  // sitting there while deriving nothing new online.
   (function () {
     currentSS = makeSpreadsheet();
     scriptProps = {};
@@ -2485,26 +2467,24 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     weeklySummarize('2026-06-15');
     var rows = currentSS.getSheetByName('Summary').getDataRange().getValues().slice(1);
     var revenueRows = rows.filter(function (r) { return r[7] === 'revenue'; });
-    eq('legacy customer-keyed row is NOT updated — it is orphaned (2 rows)', revenueRows.length, 2);
-    check('the same 62.00 is now counted twice — hence the pre-deploy cleanup',
-      revenueRows[0][4] + revenueRows[1][4] === 124);
+    eq('legacy row is orphaned in place, nothing new derived (1 row)', revenueRows.length, 1);
+    eq('...the stale figure persists until the cleanup removes it', revenueRows[0][4], 62);
   })();
 
-  // Case-variant channels in ONE week SILENTLY LOSE REVENUE. The aggregator
-  // groups on the raw location string, so 'Online' and 'online' are two groups;
-  // but Summary dedup lowercases (rowKey_, Code.gs:421), so both produce the
-  // same Summary key and the later one is dropped as an in-batch duplicate
-  // (Code.gs:389). Whichever casing sorts first in the aggregator's key sort
-  // wins — 'Online' (O=79) before 'online' (o=111) — so here 100 + 25 reports
-  // as 25, not 125. PRE-EXISTING, not introduced by the source-grouping change;
-  // pinned here so the loss is visible if any connector emits mixed casing.
-  // Recorded in TODO.md.
+  // Case-variant channels in ONE week SILENTLY LOSE REVENUE (non-online). The
+  // aggregator groups on the raw location string, so 'Wholesale' and
+  // 'wholesale' are two groups; but Summary dedup lowercases (rowKey_), so
+  // both produce the same Summary key and the later one is dropped as an
+  // in-batch duplicate. Whichever casing sorts first wins — here 100 + 25
+  // reports as 25, not 125. PRE-EXISTING; pinned so the loss is visible if
+  // any connector emits mixed casing. Recorded in TODO.md. (Online variants
+  // are now excluded outright, so the trap only bites non-online channels.)
   (function () {
     currentSS = makeSpreadsheet();
     scriptProps = {};
     var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
-    rev.appendRow(['2026-06-16', 'Roastery', 'online', '#9001', 100, 'V-1', 'shopify', 'x']);
-    rev.appendRow(['2026-06-17', 'Roastery', 'Online', '#9002', 25, 'V-2', 'shopify', 'x']);
+    rev.appendRow(['2026-06-16', 'Roastery', 'wholesale', 'Case Cafe', 100, 'V-1', 'coffee_order_app', 'x']);
+    rev.appendRow(['2026-06-17', 'Roastery', 'Wholesale', 'Case Cafe', 25, 'V-2', 'coffee_order_app', 'x']);
 
     weeklySummarize('2026-06-15');
     var revRows = currentSS.getSheetByName('Summary').getDataRange().getValues()
@@ -4818,27 +4798,31 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
    *     real $0 row, not a skipped/omitted one. ---
    */
 
-  /* --- case 5: key-disjointness — weeklySummarize must NEVER produce a
-   *     Summary row keyed supplier='shopify_orderapp' from Revenue rows
-   *     carrying source='shopify' or source='coffee_order_app'; those two
-   *     writers (and this new one) must not be able to collide. ---
+  /* --- case 5: online is PULL-OWNED — weeklySummarize must derive NO online
+   *     Summary row at all from residual channel='online' Revenue rows (any
+   *     source). A derived per-source row would sit BESIDE the pull-owned
+   *     shopify_orderapp row (different key, both served by doGet) and the
+   *     week would double-count. Non-online channels are untouched. ---
    */
   reset();
   withMockNow('2026-08-06T00:00:00Z', function () {
     var revSheet = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
     revSheet.appendRow(['2026-07-28', 'Roastery', 'online', 'guest', 100, 'ord-1', 'shopify', 'TS']);
-    revSheet.appendRow(['2026-07-28', 'Roastery', 'online', 'guest', 100, 'ord-2', 'coffee_order_app', 'TS']);
+    revSheet.appendRow(['2026-07-28', 'Roastery', 'Online', 'guest', 100, 'ord-2', 'coffee_order_app', 'TS']);
+    revSheet.appendRow(['2026-07-28', 'Roastery', 'wholesale', 'Cafe X', 340, 'ord-3', 'coffee_order_app', 'TS']);
     currentSS._sheets['Revenue'] = revSheet;
+    clearLoggedMessages();
     weeklySummarize('2026-07-28');
   });
   var rows5 = summaryRows();
-  eq('case5: sanity — both revenue groups landed (test is not vacuous)', rows5.length, 3);
-  check('case5: the real "shopify" writer still gets its own Summary row',
-    rows5.slice(1).some((r) => r[2] === 'shopify'));
-  check('case5: the real "coffee_order_app" writer still gets its own Summary row',
-    rows5.slice(1).some((r) => r[2] === 'coffee_order_app'));
+  check('case5: NO online Summary row is derived from Revenue (any source, any casing)',
+    rows5.slice(1).every((r) => String(r[3]).trim().toLowerCase() !== 'online'));
+  check('case5: wholesale revenue still summarizes per customer',
+    rows5.slice(1).some((r) => r[2] === 'Cafe X' && r[4] === 340));
   check('case5: weeklySummarize NEVER writes a Summary row keyed supplier=shopify_orderapp',
     rows5.slice(1).every((r) => r[2] !== SHOPIFY_SUPPLIER));
+  check('case5: the exclusion is logged with count + dollars',
+    lastLoggedMessages().some((m) => m.indexOf('excluded 2 historical channel=online') !== -1 && m.indexOf('$200') !== -1));
 
   /* --- case 6: Sheet Date read-back — a re-read hands week_start back as a
    *     real Date object (mirroring live Sheets auto-coercion on write);
@@ -5135,6 +5119,19 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   const abortRows = greenBeanFetchAllRows_();
   check('size-guard: returns null, not [] or a partial array', abortRows === null);
 
+  /* --- case: AMBIGUOUS rowsIncluded — truncated:true with rowsIncluded
+   *     absent/non-boolean must abort too, not fall through both branches
+   *     and silently ingest a partial window as complete. --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: true, returned: 100 } }, rows: [] })
+    }),
+  };
+  check('ambiguous rowsIncluded (absent) on a truncated page: returns null',
+    greenBeanFetchAllRows_() === null);
+
   /* --- case: offset paging is not snapshot-stable (the Order app re-slices
    *     the live sheet per request), so a row inserted between pages can be
    *     resent. rowNumber is stable per row — a resent line is dropped, not
@@ -5185,9 +5182,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   greenBeanFetchAllRows_();
   check('upstream warnings are logged verbatim',
     lastLoggedMessages().some((m) => m.indexOf('UPSTREAM WARNING') !== -1 && m.indexOf('Timestamp cell is not a valid date') !== -1));
-  eq('upstream warnings raise ONE data-quality calendar alert', calendarEvents.length, 1);
-  check('upstream-warning alert says the spend may be incomplete',
-    calendarEvents[0]._description.indexOf('incomplete') !== -1);
+  eq('the fetch itself raises no alert (the impl owns the signature-gated alert)', calendarEvents.length, 0);
 
   /* --- case: non-advancing page — truncated:true with returned:0 (or a
    *     renamed/absent field) must abort, not re-issue the identical fetch
@@ -5493,8 +5488,48 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('the flagged $0 line still ingested (never dropped)', res.rowsAdded, 2);
   eq('flagged rows raise ONE data-quality calendar alert', calendarEvents.length, 1);
   check('data-quality alert names the source and understated risk',
-    calendarEvents[0]._title.indexOf('data quality: greenbean') !== -1 &&
+    calendarEvents[0]._title.indexOf('data quality: greenbean_flags') !== -1 &&
     calendarEvents[0]._description.indexOf('UNDERSTATED') !== -1);
+
+  /* --- signature suppression: the same unfixed cell sits in the rolling
+   *     window ~13 weekly runs; only the FIRST (and any CHANGED) condition
+   *     alerts, and a clean run re-arms the next occurrence. --- */
+  greenBeanPull_impl_(); // identical condition, second run
+  eq('unchanged condition: still exactly one alert', calendarEvents.length, 1);
+  check('the suppression is logged',
+    lastLoggedMessages().some((m) => m.indexOf('alert suppressed') !== -1));
+
+  global.UrlFetchApp = { // condition CHANGES: a second flagged row appears
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 3 } },
+        rows: [
+          { rowNumber: 2, dateLocal: today, supplierRaw: 'Flag Co', supplierKey: 'flag_co', invoiceNum: 'F-1', totalCostIncGst: 0, status: 'RECEIVED', flags: ['NON_NUMERIC_PRICE_KG'] },
+          { rowNumber: 4, dateLocal: today, supplierRaw: 'Flag Co', supplierKey: 'flag_co', invoiceNum: 'F-2', totalCostIncGst: 0, status: 'RECEIVED', flags: ['NON_NUMERIC_TOTAL_KG'] },
+          { rowNumber: 3, dateLocal: today, supplierRaw: 'Fine Co', supplierKey: 'fine_co', invoiceNum: 'OK-1', totalCostIncGst: 42, status: 'RECEIVED' }
+        ]
+      })
+    }),
+  };
+  greenBeanPull_impl_();
+  eq('changed condition (1 -> 2 flags): a second alert fires', calendarEvents.length, 2);
+
+  global.UrlFetchApp = { // clean run: flags fixed
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 1 } },
+        rows: [{ rowNumber: 3, dateLocal: today, supplierRaw: 'Fine Co', supplierKey: 'fine_co', invoiceNum: 'OK-1', totalCostIncGst: 42, status: 'RECEIVED' }]
+      })
+    }),
+  };
+  greenBeanPull_impl_();
+  eq('clean run: no new alert', calendarEvents.length, 2);
+  check('clean run: signature cleared, next occurrence re-arms',
+    !('ORDERAPP_DQ_SIG_greenbean_flags' in scriptProps));
 
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
@@ -5590,6 +5625,29 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('padded stored ref: classifies as update, not new', trimRes.rowsUpdated, 1);
   eq('padded stored ref: affected week = the STORED week', trimCalls, [weeks[0].start]);
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+
+  /* --- upstream warnings: impl raises ONE signature-gated alert, suppresses
+   *     while unchanged, clears on a clean pull --- */
+  reset();
+  const warnBody = (warnings) => ({
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({
+      ok: true,
+      meta: { paging: { truncated: false, rowsIncluded: true, returned: 0 } },
+      diagnostics: warnings.length ? { warnings: warnings } : {},
+      rows: []
+    })
+  });
+  global.UrlFetchApp = { fetch: () => warnBody(['1 row hidden: invalid Timestamp']) };
+  greenBeanPull_impl_();
+  eq('upstream warning: one alert from the impl', calendarEvents.length, 1);
+  check('upstream alert says spend may be incomplete', calendarEvents[0]._description.indexOf('incomplete') !== -1);
+  greenBeanPull_impl_();
+  eq('unchanged upstream warning: suppressed on the next pull', calendarEvents.length, 1);
+  global.UrlFetchApp = { fetch: () => warnBody([]) };
+  greenBeanPull_impl_();
+  check('clean pull clears the upstream signature',
+    !('ORDERAPP_DQ_SIG_greenbean_upstream' in scriptProps));
 
   /* --- zero-row full window: completes (no alert spam) but warns loudly --- */
   reset();

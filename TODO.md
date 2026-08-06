@@ -33,9 +33,11 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
    Roastery figure" cleanup below. Run `runOnlineRevenueCleanupDryRun`; also inventory distinct
    `source` values on `kind=revenue, location=online` rows (`Summary` + `Revenue`, last 8 weeks).
    Decision tree: `found=0` → close that cleanup TODO as a no-op with evidence; `found>0` → run
-   the full v23-grain-change runbook below (resolve `resummarizable:false` / `channelCasings`
-   warnings first, apply, `runOnlineRevenueResummarize`, keep the `Summary_online_revenue_backup`
-   tab until the probes in step 7 pass). Miss-the-deadline fallback: delete the
+   the apply (backup fires first) and KEEP the `Summary_online_revenue_backup` tab as the
+   PERMANENT record — do NOT run `runOnlineRevenueResummarize` for online figures: since this
+   phase, `aggregateSupplierRows_` derives no online Summary row from Revenue at all (online is
+   pull-owned, PRD-10), so a resummarize regenerates nothing online by design; go-forward weeks
+   come from `shopifyWeeklyPull`'s 4-week window. Miss-the-deadline fallback: delete the
    `weeklySummarize` trigger to buy a week, then complete. **Reason this blocks:** the cleanup's
    apply-scope (`kind=revenue AND location=online`, source-blind) would DELETE the new
    `shopify_orderapp` Summary rows if it ran after they land.
@@ -166,13 +168,16 @@ Australia/Sydney), so:
          Record the row count and the distinct `week_start` values here.
       2. `runOnlineRevenueCleanupApply` — copies every matched row to
          `Summary_online_revenue_backup` before a single delete fires, then deletes. Scope is
-         `kind='revenue'` AND `location='online'`, case-insensitive, and nothing else; wholesale
-         revenue keeps its per-customer key and is not touched. Idempotent.
-      3. `runOnlineRevenueResummarize` — reads its week list back from the backup tab and loops
-         `weeklySummarize` once per week, oldest first. One call writes ONE week, so a single
-         manual run would leave older weeks permanently missing and `doGet` would under-report.
-      4. Spot-check `doGet?from=&to=` returns one online revenue row per source with the right
-         total. Then drop the `Summary_online_revenue_backup` tab once the figures look right.
+         `kind='revenue'` AND `location='online'`, case-insensitive, and nothing else EXCEPT
+         pull-owned `supplier='shopify_orderapp'` rows, which are code-guarded and skipped;
+         wholesale revenue keeps its per-customer key and is not touched. Idempotent.
+      3. ~~`runOnlineRevenueResummarize`~~ **SUPERSEDED (orderapp-pulls phase, PRD-10):**
+         `aggregateSupplierRows_` no longer derives ANY online Summary row from `Revenue`
+         (online is pull-owned), so a resummarize regenerates nothing online by design.
+         **KEEP `Summary_online_revenue_backup` permanently** — it is the only record of
+         pre-pull online figures; go-forward weeks come from `shopifyWeeklyPull`.
+      4. Spot-check `doGet?from=&to=` — recent completed weeks show exactly one online revenue
+         row (`supplier='shopify_orderapp'`) once the pull is live; no other online rows return.
       Rollback: `clasp redeploy AKfycby...wnfM -V 23` for the code; the backup tab for the rows.
       Implementation `Code.gs:981`; tests `test_code.js` (`v23 grain cleanup` + `round trip`),
       mutation-checked both ways.

@@ -187,8 +187,22 @@ function orderAppRaiseAlert_(source, count) {
  * dropped-row warnings) — NOT for routine ones like weekly excluded gross,
  * which stays log+result. Never throws.
  */
-function orderAppRaiseDataQualityAlert_(source, message) {
+/**
+ * Signature-gated: `signature` is a short string describing the CONDITION
+ * (e.g. 'flagged:2'). The alert fires only when the signature differs from
+ * the last one alerted — a rolling 3-month window means one un-fixed cell
+ * would otherwise re-alert every weekly run for ~13 weeks straight, which is
+ * how an alert gets tuned out. A clean run must call
+ * orderAppClearDataQualitySignature_ so the NEXT occurrence re-alerts.
+ */
+function orderAppRaiseDataQualityAlert_(source, message, signature) {
   try {
+    var props = PropertiesService.getScriptProperties();
+    var sigKey = 'ORDERAPP_DQ_SIG_' + source;
+    if (signature && props.getProperty(sigKey) === signature) {
+      Logger.log('orderAppRaiseDataQualityAlert_: ' + source + ' condition unchanged (' + signature + ') — alert suppressed');
+      return;
+    }
     var cal = stalenessCalendar_();
     if (!cal) {
       Logger.log('orderAppRaiseDataQualityAlert_: no calendar available for ' + source);
@@ -198,8 +212,18 @@ function orderAppRaiseDataQualityAlert_(source, message) {
     ev.setColor(CalendarApp.EventColor.ORANGE);
     ev.setDescription(message + '\n\nFix the underlying cells in the Order app (06_Stock_Intake); ' +
       'the next scheduled pull re-ingests corrected figures automatically.');
+    if (signature) props.setProperty(sigKey, signature);
   } catch (err) {
     Logger.log('orderAppRaiseDataQualityAlert_: failed for ' + source + ' — ' + err.message);
+  }
+}
+
+/** Call on a clean run: the condition is gone, so its next occurrence re-alerts. */
+function orderAppClearDataQualitySignature_(source) {
+  try {
+    PropertiesService.getScriptProperties().deleteProperty('ORDERAPP_DQ_SIG_' + source);
+  } catch (err) {
+    Logger.log('orderAppClearDataQualitySignature_: failed for ' + source + ' — ' + err.message);
   }
 }
 
@@ -347,6 +371,10 @@ function shopifyWeeklyPull_impl_() {
     // removes the WHOLE order from the week (Order-app contract — deliberate).
     // The excluded buckets exist precisely so that shrink can be reconciled;
     // surface them instead of discarding them.
+    // Shape verified against the producer: byStatusTotals and cancelled are
+    // scalar-holding objects ({orderCount, gross} / {count, gross}) — the
+    // per-status MAP is the separate excluded.byStatus key, deliberately not
+    // read here (Order app Engine_ShopifySales.js:474).
     var excluded = body.excluded || {};
     var weekExcluded = 0;
     if (excluded.byStatusTotals) weekExcluded += Number(excluded.byStatusTotals.gross) || 0;
@@ -462,6 +490,10 @@ var GREENBEAN_MAX_PAGES = 20; // 20 x 5000-row pages >> any real window; a loop 
 // alert label; a typo in ONE occurrence would silently split those keys while
 // every run still looked healthy (same rationale as SHOPIFY_ORDERAPP_SOURCE).
 var GREENBEAN_SOURCE = 'greenbean';
+// File-scope, execution-lifetime: greenBeanFetchAllRows_ collects upstream
+// warnings here (its rows|null return contract can't carry them); the impl
+// reads it after the fetch to decide the signature-gated data-quality alert.
+var GREENBEAN_UPSTREAM_WARNINGS_ = [];
 var GREENBEAN_RESUM_QUEUE_PROP = 'ORDERAPP_RESUM_QUEUE_greenbean'; // JSON array of 'yyyy-MM-dd' week starts
 
 /**
@@ -495,11 +527,11 @@ function greenBeanWindow_(todayStr) {
  */
 function greenBeanFetchAllRows_() {
   var window = greenBeanWindow_(todayStr_());
+  GREENBEAN_UPSTREAM_WARNINGS_.length = 0; // fresh per pull; the impl reads it after the fetch
   var rows = [];
   var offset = 0;
   var seenRowNumbers = {};
   var duplicatesSkipped = 0;
-  var upstreamAlertRaised = false; // one alert per pull, not per page
   var pages = 0;
 
   while (true) {
@@ -534,8 +566,13 @@ function greenBeanFetchAllRows_() {
       return null;
     }
     var paging = res.body.meta.paging;
-    if (paging.truncated === true && paging.rowsIncluded === false) {
-      Logger.log('greenBeanFetchAllRows_: truncated response with rows omitted (size guard) — aborting rather than ingest an incomplete window');
+    // Anything truncated where rowsIncluded is not EXACTLY true aborts: ===false
+    // is the documented size guard, but an absent/non-boolean value would
+    // otherwise fall through BOTH branches, break the loop, and silently ingest
+    // a partial window as if it were complete.
+    if (paging.truncated === true && paging.rowsIncluded !== true) {
+      Logger.log('greenBeanFetchAllRows_: truncated response without rows (size guard or ambiguous rowsIncluded=' +
+        paging.rowsIncluded + ') — aborting rather than ingest an incomplete window');
       return null;
     }
 
@@ -547,13 +584,7 @@ function greenBeanFetchAllRows_() {
     var warnings = diagnostics.warnings || res.body.warnings || [];
     for (var w = 0; w < warnings.length; w++) {
       Logger.log('greenBeanFetchAllRows_: UPSTREAM WARNING — ' + warnings[w]);
-    }
-    if (warnings.length > 0 && !upstreamAlertRaised) {
-      upstreamAlertRaised = true;
-      orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE,
-        'The greenBeanCost API reported ' + warnings.length + ' data-quality warning(s) this pull ' +
-        '(e.g. rows hidden by an invalid Timestamp) — the ingested spend may be incomplete:\n- ' +
-        warnings.join('\n- '));
+      GREENBEAN_UPSTREAM_WARNINGS_.push(String(warnings[w]));
     }
 
     // Offset paging is not snapshot-stable: the Order app re-slices the live
@@ -642,6 +673,21 @@ function greenBeanPull_impl_() {
     return { apiFailed: true };
   }
 
+  // Upstream warnings persist across pulls (the same broken row sits in the
+  // rolling window for ~13 weekly runs), so the alert is signature-gated:
+  // it fires when the condition appears or CHANGES, stays silent while it is
+  // unchanged, and re-arms once a clean pull clears it.
+  var upstreamWarnings = GREENBEAN_UPSTREAM_WARNINGS_.slice();
+  if (upstreamWarnings.length > 0) {
+    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_upstream',
+      'The greenBeanCost API reported ' + upstreamWarnings.length + ' data-quality warning(s) this pull ' +
+      '(e.g. rows hidden by an invalid Timestamp) — the ingested spend may be incomplete:\n- ' +
+      upstreamWarnings.join('\n- '),
+      'warnings:' + upstreamWarnings.length);
+  } else {
+    orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_upstream');
+  }
+
   // Per-row flags mark values the API coerced (e.g. non-numeric PriceKg → $0
   // line). The lines still ingest (locked decision: never dropped), but the
   // count must be loud — a flagged line usually means an understated invoice.
@@ -652,9 +698,12 @@ function greenBeanPull_impl_() {
   if (flaggedRows > 0) {
     Logger.log('greenBeanPull: ' + flaggedRows + ' flagged intake row(s) (coerced values, likely $0 lines) — ' +
       'greenbean totals may be understated; fix the 06_Stock_Intake cells in the Order app');
-    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE,
+    orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_flags',
       flaggedRows + ' stock-intake row(s) carry coerced values (non-numeric price/kg read as $0) — ' +
-      'the greenbean committed-spend figure is likely UNDERSTATED until the cells are fixed.');
+      'the greenbean committed-spend figure is likely UNDERSTATED until the cells are fixed.',
+      'flagged:' + flaggedRows);
+  } else {
+    orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_flags');
   }
 
   var invoices = greenBeanInvoices_(rows);

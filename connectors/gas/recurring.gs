@@ -57,7 +57,7 @@ function recurringMonthlyRun_(periodStr) {
 }
 
 function recurringMonthlyRun_impl_(periodStr) {
-  // new Date(Date.now()), not bare new Date() — matches square.gs/shopify.gs
+  // new Date(Date.now()), not bare new Date() — matches square.gs/orderapp.gs
   // convention so tests can pin "now" via a Date.now() override; a bare
   // new Date() reads the real system clock regardless of that override.
   var period = periodStr || Utilities.formatDate(new Date(Date.now()), RECURRING_TZ, 'yyyy-MM');
@@ -108,8 +108,9 @@ function recurringMonthlyRun_impl_(periodStr) {
     : { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 0 };
 
   // Heartbeat only when at least one entry actually resolved — mirrors
-  // shopify.gs: an all-properties-missing run has produced nothing to trust,
-  // so it must not silently satisfy a staleness check.
+  // orderapp.gs's not-armed skip (orderAppRunSkipped_): an
+  // all-properties-missing run has produced nothing to trust, so it must not
+  // silently satisfy a staleness check.
   if (rawRows.length) {
     stalenessStampHeartbeat_('recurring');
   }
