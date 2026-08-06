@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "ReferenceError: GREENBEAN_RESUM_CAP is not defined — constant does not exist in implementation code. Test is correctly structured (line 5084); failure is due to missing implementation, which is the expected cause for TDD RED phase."
+}

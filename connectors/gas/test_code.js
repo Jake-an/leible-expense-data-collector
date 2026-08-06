@@ -5073,6 +5073,290 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   ]);
 })();
 
+/* ------------------------------------------------------------------ *
+ * orderapp-pulls step 4 — greenBeanWindow_ / greenBeanFetchAllRows_ /
+ * greenBeanPull / greenBeanPull_impl_
+ * ------------------------------------------------------------------ */
+
+(function testGreenBeanWindow() {
+  console.log('\norderapp: greenBeanWindow_:');
+
+  eq('GREENBEAN_RESUM_CAP is 5', GREENBEAN_RESUM_CAP, 5);
+  eq('GREENBEAN_RESUM_QUEUE_PROP name', GREENBEAN_RESUM_QUEUE_PROP, 'ORDERAPP_RESUM_QUEUE_greenbean');
+
+  eq('year boundary: 2026-01-15 -> from = 1st of Nov 2025', greenBeanWindow_('2026-01-15'),
+    { from: '2025-11-01', to: '2026-01-15' });
+  eq('mid-year: 2026-08-06 -> from = 1st of Jun 2026', greenBeanWindow_('2026-08-06'),
+    { from: '2026-06-01', to: '2026-08-06' });
+  eq('month-2 rolls back a year cleanly: 2026-03-10 -> from = 2026-01-01', greenBeanWindow_('2026-03-10'),
+    { from: '2026-01-01', to: '2026-03-10' });
+})();
+
+(function testGreenBeanFetchAllRowsPaging() {
+  console.log('\norderapp: greenBeanFetchAllRows_ paging:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token' };
+    clearLoggedMessages();
+  }
+
+  /* --- case: two pages -> rows concatenated, offsets 0 then page1's
+   *     returned count; the request carries the fixed greenBeanCost params
+   *     and the greenBeanWindow_-computed from/to. --- */
+  reset();
+  const page1Rows = [
+    { dateLocal: '2026-06-01', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 1, status: 'RECEIVED' },
+    { dateLocal: '2026-06-02', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 2, status: 'RECEIVED' },
+    { dateLocal: '2026-06-03', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 3, status: 'RECEIVED' }
+  ];
+  const page2Rows = [
+    { dateLocal: '2026-06-04', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 4, status: 'RECEIVED' },
+    { dateLocal: '2026-06-05', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 5, status: 'RECEIVED' }
+  ];
+  const requestedUrls = [];
+  global.UrlFetchApp = {
+    fetch: (url) => {
+      requestedUrls.push(String(url));
+      const m = /[?&]offset=([^&]+)/.exec(String(url));
+      const offset = m ? Number(decodeURIComponent(m[1])) : 0;
+      if (offset === 0) {
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: true, rowsIncluded: true, returned: page1Rows.length } }, rows: page1Rows })
+        };
+      }
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: false, rowsIncluded: true, returned: page2Rows.length } }, rows: page2Rows })
+      };
+    },
+  };
+  const allRows = greenBeanFetchAllRows_();
+  eq('paging: rows concatenated across both pages', allRows, page1Rows.concat(page2Rows));
+  eq('paging: exactly 2 requests made', requestedUrls.length, 2);
+  check('paging: first request carries offset=0', /[?&]offset=0(&|$)/.test(requestedUrls[0]));
+  check('paging: second request carries offset=' + page1Rows.length,
+    new RegExp('[?&]offset=' + page1Rows.length + '(&|$)').test(requestedUrls[1]));
+  check('paging: request carries api=greenBeanCost', requestedUrls[0].indexOf('api=greenBeanCost') !== -1);
+  check('paging: request carries status=ALL', requestedUrls[0].indexOf('status=ALL') !== -1);
+  check('paging: request carries include=rows', requestedUrls[0].indexOf('include=rows') !== -1);
+  check('paging: request carries limit=5000', requestedUrls[0].indexOf('limit=5000') !== -1);
+  const expectedWindow = greenBeanWindow_(todayStr_());
+  check('paging: request carries the computed from=', requestedUrls[0].indexOf('from=' + expectedWindow.from) !== -1);
+  check('paging: request carries the computed to=', requestedUrls[0].indexOf('to=' + expectedWindow.to) !== -1);
+
+  /* --- case: size-guard — truncated AND rows not included -> abort,
+   *     returns null (never [] and never a silently partial array) --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: true, rowsIncluded: false, returned: 5000 } }, rows: [] })
+    }),
+  };
+  const abortRows = greenBeanFetchAllRows_();
+  check('size-guard: returns null, not [] or a partial array', abortRows === null);
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+})();
+
+(function testGreenBeanPullIngestAndResummarize() {
+  console.log('\norderapp: greenBeanPull / greenBeanPull_impl_ — ingest + snapshot-diff resummarize:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const REAL_WEEKLY_SUMMARIZE = global.weeklySummarize;
+  let weeklySummarizeCalls;
+
+  // Spies on weeklySummarize while still running the REAL implementation —
+  // this run is lock-wrapped (SCRIPT_LOCK_DEPTH_ reentrancy, Code.gs:100-139),
+  // so nested weeklySummarize calls must actually succeed, not just be
+  // recorded as no-ops.
+  function armWeeklySummarizeSpy() {
+    weeklySummarizeCalls = [];
+    global.weeklySummarize = function (weekStartOverride) {
+      weeklySummarizeCalls.push(weekStartOverride);
+      return REAL_WEEKLY_SUMMARIZE(weekStartOverride);
+    };
+  }
+
+  function line(dateLocal, supplierKey, supplierRaw, invoiceNum, total) {
+    return { dateLocal: dateLocal, supplierRaw: supplierRaw, supplierKey: supplierKey, invoiceNum: invoiceNum, totalCostIncGst: total, status: 'RECEIVED' };
+  }
+
+  function armFetch(rows) {
+    global.UrlFetchApp = {
+      fetch: () => ({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: false, rowsIncluded: true, returned: rows.length } }, rows: rows })
+      }),
+    };
+  }
+
+  function suppliersRows() {
+    return currentSS.getSheetByName('Suppliers').getDataRange().getValues();
+  }
+  function findSupplierRow(rows, invoiceRef) {
+    for (let i = 1; i < rows.length; i++) {
+      if (String(rows[i][3]) === invoiceRef) return rows[i];
+    }
+    return null;
+  }
+  function queueProp() {
+    const raw = scriptProps[GREENBEAN_RESUM_QUEUE_PROP];
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  // 8 completed weeks (oldest..newest) + the current, not-yet-completed week.
+  // todayStr_()/lastCompletedWeeks_ read a bare `new Date()`, which
+  // withMockNow cannot pin (see the shopify suite's note above) — so these
+  // are genuinely "today" in whatever environment the suite runs in, same
+  // convention as the shopify tests' weeks4.
+  const weeksAll = lastCompletedWeeks_(todayStr_(), 8);
+  const currentWeekStart = weekStartForDate_(todayStr_());
+
+  currentSS = makeSpreadsheet();
+  scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token' };
+  clearLoggedMessages();
+
+  /* --- Run 1 (first-ever pull): 7 distinct completed weeks (weeksAll[1..7])
+   *     each carrying at least one NEW invoice, plus one invoice dated in
+   *     the CURRENT (incomplete) week -> exactly 5 of the 7 affected weeks
+   *     are resummarized (cap), the oldest 2 are queued; the current-week
+   *     invoice never counts as an affected week at all. --- */
+  const run1Lines = [];
+  for (let i = 1; i <= 7; i++) {
+    run1Lines.push(line(weeksAll[i].start, 'plainw' + i, 'Plain Supplier ' + i, 'PLAIN-' + i, 100 + i));
+  }
+  run1Lines.push(line(weeksAll[7].start, 'changeco', 'Change Co', 'CHANGED-1', 100));
+  run1Lines.push(line(weeksAll[6].start, 'staybase', 'Stay Base Co', 'UNCHANGED-1', 50));
+  run1Lines.push(line(todayStr_(), 'curweek', 'Current Week Co', 'CUR-1', 10));
+
+  armFetch(run1Lines);
+  armWeeklySummarizeSpy();
+  const res1 = greenBeanPull();
+
+  eq('run1: rowsFetched = raw API row count', res1.rowsFetched, run1Lines.length);
+  eq('run1: invoices = grouped invoice count (10 distinct supplierKey/invoiceNum pairs)', res1.invoices.length, 10);
+  eq('run1: rowsAdded (all new)', res1.rowsAdded, 10);
+  eq('run1: rowsUpdated', res1.rowsUpdated, 0);
+  eq('run1: duplicatesSkipped', res1.duplicatesSkipped, 0);
+  eq('run1: weeksResummarized capped at 5', res1.weeksResummarized, 5);
+  eq('run1: weeksQueued = the 2 overflow weeks', res1.weeksQueued, 2);
+  check('run1: no apiFailed flag on full success', !res1.apiFailed);
+
+  eq('run1: weeklySummarize called for exactly the 5 OLDEST affected weeks, oldest-first',
+    weeklySummarizeCalls, [weeksAll[1].start, weeksAll[2].start, weeksAll[3].start, weeksAll[4].start, weeksAll[5].start]);
+  check('run1: the current (incomplete) week was never resummarized',
+    weeklySummarizeCalls.indexOf(currentWeekStart) === -1);
+
+  eq('run1: the 2 overflow weeks are persisted to the queue property, oldest-first',
+    queueProp(), [weeksAll[6].start, weeksAll[7].start]);
+
+  eq('run1: Suppliers has header + 10 rows', suppliersRows().length, 11);
+  check('run1: heartbeat stamped on full success (a non-empty queue is not a failure)',
+    ('LAST_INGEST_greenbean' in scriptProps));
+
+  /* --- Run 2 (following run, IDENTICAL data -> empty diff): the 2 queued
+   *     weeks from run1 drain (get resummarized) even though nothing
+   *     changed this run; the queue property empties. --- */
+  armFetch(run1Lines);
+  armWeeklySummarizeSpy();
+  const res2 = greenBeanPull();
+
+  eq('run2: rowsAdded (nothing new)', res2.rowsAdded, 0);
+  eq('run2: rowsUpdated (nothing changed)', res2.rowsUpdated, 0);
+  eq('run2: duplicatesSkipped (all 10 settle)', res2.duplicatesSkipped, 10);
+  eq('run2: weeksResummarized = the 2 drained queue weeks', res2.weeksResummarized, 2);
+  eq('run2: weeksQueued after drain', res2.weeksQueued, 0);
+  eq('run2: weeklySummarize called for the 2 queued weeks, oldest-first',
+    weeklySummarizeCalls, [weeksAll[6].start, weeksAll[7].start]);
+  eq('run2: queue property is now empty', queueProp(), []);
+
+  /* --- Run 3: a changed invoice (gains an EARLIER line -> resummarize must
+   *     use the STORED date's week, not the recomputed min-date week), an
+   *     unchanged invoice (contributes nothing), a brand-new invoice (its
+   *     own computed week), and a CHANGED current-week invoice (ingested,
+   *     but never resummarized/queued). --- */
+  const run3Lines = [];
+  for (let i = 1; i <= 7; i++) {
+    run3Lines.push(line(weeksAll[i].start, 'plainw' + i, 'Plain Supplier ' + i, 'PLAIN-' + i, 100 + i)); // unchanged
+  }
+  run3Lines.push(line(weeksAll[7].start, 'changeco', 'Change Co', 'CHANGED-1', 100));    // original line, unchanged
+  run3Lines.push(line(weeksAll[2].start, 'changeco', 'Change Co', 'CHANGED-1', 50));     // NEW line, EARLIER week -> total now differs
+  run3Lines.push(line(weeksAll[6].start, 'staybase', 'Stay Base Co', 'UNCHANGED-1', 50)); // unchanged
+  run3Lines.push(line(todayStr_(), 'curweek', 'Current Week Co', 'CUR-1', 20));           // changed, still current week
+  run3Lines.push(line(weeksAll[3].start, 'newco', 'New Co', 'NEW-1', 77));                // brand new invoice
+
+  armFetch(run3Lines);
+  armWeeklySummarizeSpy();
+  const res3 = greenBeanPull();
+
+  eq('run3: rowsFetched = raw API row count (12; CHANGED-1 now carries 2 lines)', res3.rowsFetched, run3Lines.length);
+  eq('run3: invoices = grouped invoice count (11; CHANGED-1 collapses to 1)', res3.invoices.length, 11);
+  eq('run3: rowsAdded (NEW-1 only)', res3.rowsAdded, 1);
+  eq('run3: rowsUpdated (CHANGED-1 + CUR-1)', res3.rowsUpdated, 2);
+  eq('run3: duplicatesSkipped (7 plain + UNCHANGED-1)', res3.duplicatesSkipped, 8);
+
+  eq('run3: weeklySummarize called for exactly {NEW-1 week, CHANGED-1 STORED week}, oldest-first',
+    weeklySummarizeCalls, [weeksAll[3].start, weeksAll[7].start]);
+  check('run3: the recomputed min-date week (from CHANGED-1\'s new earlier line) was NEVER resummarized',
+    weeklySummarizeCalls.indexOf(weeksAll[2].start) === -1);
+  check('run3: the unchanged invoice\'s week was never resummarized',
+    weeklySummarizeCalls.indexOf(weeksAll[6].start) === -1);
+  check('run3: the current week was never resummarized even though CUR-1 changed',
+    weeklySummarizeCalls.indexOf(currentWeekStart) === -1);
+  eq('run3: weeksResummarized', res3.weeksResummarized, 2);
+  eq('run3: weeksQueued (nothing overflowed)', res3.weeksQueued, 0);
+  eq('run3: queue property stays empty', queueProp(), []);
+  check('run3: the current week was never queued either', queueProp().indexOf(currentWeekStart) === -1);
+
+  const changedRow3 = findSupplierRow(suppliersRows(), 'changeco/CHANGED-1');
+  check('run3: CHANGED-1 row exists', !!changedRow3);
+  if (changedRow3) {
+    eq('run3: CHANGED-1 total updated in place to the new summed value', Number(changedRow3[2]), 150);
+    eq('run3: CHANGED-1 date column is untouched by the upsert (still the ORIGINAL stored date, not the new earlier one)',
+      cellDate(changedRow3[0]), weeksAll[7].start);
+  }
+  const curRow3 = findSupplierRow(suppliersRows(), 'curweek/CUR-1');
+  check('run3: CUR-1 row exists', !!curRow3);
+  if (curRow3) {
+    eq('run3: CUR-1 total updated in place even though its week is never resummarized', Number(curRow3[2]), 20);
+  }
+
+  /* --- token unset: nothing fetched, nothing written --- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const res4 = greenBeanPull_impl_();
+  eq('no-token: return shape', res4, { noToken: true });
+  eq('no-token: Suppliers untouched (header row only)', suppliersRows().length, 1);
+
+  /* --- size-guard abort, exercised through the full accounting wrapper:
+   *     failcount increments (via orderAppRunStart_) but is NEVER reset, no
+   *     heartbeat, Suppliers untouched, a loud log records the abort. --- */
+  currentSS = makeSpreadsheet();
+  scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token', ORDERAPP_FAILCOUNT_greenbean: '1' };
+  clearLoggedMessages();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: true, rowsIncluded: false, returned: 5000 } }, rows: [] })
+    }),
+  };
+  const res5 = greenBeanPull();
+  check('size-guard abort: apiFailed:true surfaced from the wrapper', res5 && res5.apiFailed === true);
+  eq('size-guard abort: failcount incremented by orderAppRunStart_ (1 -> 2) and NEVER reset',
+    scriptProps.ORDERAPP_FAILCOUNT_greenbean, '2');
+  check('size-guard abort: no heartbeat stamped', !('LAST_INGEST_greenbean' in scriptProps));
+  eq('size-guard abort: Suppliers untouched (header row only)', suppliersRows().length, 1);
+  check('size-guard abort: a loud log records the abort',
+    lastLoggedMessages().some((m) => /truncat|abort|incomplete/i.test(m)));
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
