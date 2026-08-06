@@ -29,18 +29,10 @@ touches only its own two handler names (`shopifyWeeklyPull`/`greenBeanPull`), ne
 unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned` in
 `docs/PRD.md` until step 7 below is all-green** — flip them only then, same rule PRD-9 followed.
 
-1. **Pre-phase gate (deadline Mon 2026-08-10 04:00 AEST, BLOCKING)** — see "Shopify weekly
-   Roastery figure" cleanup below. Run `runOnlineRevenueCleanupDryRun`; also inventory distinct
-   `source` values on `kind=revenue, location=online` rows (`Summary` + `Revenue`, last 8 weeks).
-   Decision tree: `found=0` → close that cleanup TODO as a no-op with evidence; `found>0` → run
-   the apply (backup fires first) and KEEP the `Summary_online_revenue_backup` tab as the
-   PERMANENT record — do NOT run `runOnlineRevenueResummarize` for online figures: since this
-   phase, `aggregateSupplierRows_` derives no online Summary row from Revenue at all (online is
-   pull-owned, PRD-10), so a resummarize regenerates nothing online by design; go-forward weeks
-   come from `shopifyWeeklyPull`'s 4-week window. Miss-the-deadline fallback: delete the
-   `weeklySummarize` trigger to buy a week, then complete. **Reason this blocks:** the cleanup's
-   apply-scope (`kind=revenue AND location=online`, source-blind) would DELETE the new
-   `shopify_orderapp` Summary rows if it ran after they land.
+1. ~~Pre-phase gate~~ ✅ **CLEARED 2026-08-06** — `runOnlineRevenueCleanupDryRun` (editor, 14:44)
+   returned `found: 0, weeks: []` → closed as a no-op per the decision tree; no Apply, no backup
+   tab needed, deadline pressure gone (Monday's `weeklySummarize` has nothing to double-count).
+   Scan scope was `kind='revenue' AND location='online'`, case-insensitive, whole `Summary` tab.
 2. Jake pastes `ORDER_APP_COST_TOKEN` into the hub's Script Properties (Apps Script editor →
    Project Settings). Confirm `SHOPIFY_SHOP_DOMAIN`/`SHOPIFY_ACCESS_TOKEN` are absent and no
    `shopifyTriggerPull_`-era trigger exists (the old direct puller, `shopify.gs`, was deleted in
@@ -178,7 +170,10 @@ Australia/Sydney), so:
 > If the cleanup can't happen in time, delete the `weeklySummarize` trigger to buy a week
 > (`installWeeklySummarizeTrigger` in `Code.gs` restores it).
 
-- [ ] **(Jake) BLOCKING cleanup — see deadline above. Now scripted (v24).**
+- [x] **CLOSED AS NO-OP 2026-08-06** — `runOnlineRevenueCleanupDryRun` returned `found: 0`
+      (editor run 14:44; log: "DRY RUN — 0 online revenue row(s) across 0 week(s)"). No orphaned
+      customer-keyed online rows existed, so no Apply ran and no backup tab was created. The
+      deadline above is moot. Original runbook kept below for the record.
       The dedup key includes `supplier`, so any pre-existing customer-keyed `kind='revenue'`
       **online** Summary row is orphaned rather than updated → `doGet` double-counts that week.
       Run these three from the Apps Script editor **in order** (the Run dropdown keeps its last
