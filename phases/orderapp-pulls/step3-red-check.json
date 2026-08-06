@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Many test cases for weeklySummarize passed (55+ ok assertions), confirming the test file itself is syntactically valid and the test framework runs. The failure is a ReferenceError: greenBeanInvoices_ is not defined at test_code.js:4992 — the implementation function is missing, not implemented yet. This is the correct RED signal for TDD; the test code is properly written, the assertion suite is structured, but the function under test does not exist in the codebase."
+}
