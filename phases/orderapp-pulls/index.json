@@ -34,7 +34,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-06T09:19:39+0900"
+      "completed_at": "2026-08-06T09:19:39+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/orderapp-pulls/step0-review.json",
+        "checked_at": "2026-08-06T09:21:47+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 1,
@@ -44,7 +54,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-10"
-      ]
+      ],
+      "started_at": "2026-08-06T09:21:47+0900"
     },
     {
       "step": 2,
