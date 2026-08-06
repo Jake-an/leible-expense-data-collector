@@ -75,6 +75,22 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
 8. **All probes green** → flip PRD-10 and PRD-11 to `built` in `docs/PRD.md`, commit message
    citing which probes passed.
 
+### orderapp-pulls — 3 minors carried out of the approved phase (round 10, 2026-08-06)
+Phase-end gate returned **approve**; these were noted, not blocking. None is a live correctness bug.
+
+- [ ] `orderapp.gs`: no row-level shape gate on greenbean rows (asymmetric with the shopify
+      path) — a malformed/missing `dateLocal` would make `weekStartForDate_` throw AFTER
+      Suppliers ingested but BEFORE the resummarize queue persisted (affected weeks lost,
+      repeats every run behind the failcount alert). Currently unreachable: the producer drops
+      null-dateLocal rows on from/to queries. Add a pre-ingest gate when next in the file.
+- [ ] `orderapp.gs`: `orderAppRunSuccess_` stamps the heartbeat even when `remainingQueue > 0`
+      (backlog past `GREENBEAN_RESUM_CAP=5` is only a Logger line no trigger-run reader sees).
+      Self-draining at 5 weeks/run so bounded; consider a data-quality alert above a backlog
+      threshold.
+- [ ] Bookkeeping only: step 6 is `done_with_concerns` because the runner was killed between
+      commit and review dispatch (committed step → empty diff → cannot re-review). Its code was
+      covered by the phase-end rounds; do not mistake it for a completed per-step review.
+
 ### shopspend-hardening — 4 minors carried out of the approved phase (2026-08-05)
 Phase-end gate returned **approve**; these were noted, not blocking. None is a correctness bug.
 All four closed by phase `dopost-auth-minors` (2026-08-05):
