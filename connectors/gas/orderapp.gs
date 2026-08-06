@@ -11,6 +11,14 @@ var ORDER_APP_TOKEN_PROP = 'ORDER_APP_COST_TOKEN'; // Script Property; value = O
 var ORDERAPP_FAILCOUNT_PREFIX = 'ORDERAPP_FAILCOUNT_';
 var ORDERAPP_ALERT_THRESHOLD = 2;
 
+var SHOPIFY_REPULL_WEEKS = 4;
+// Never 'shopify' — aggregateSupplierRows_ names online Revenue-tab Summary
+// groups by their `source`, so a channel='online', source='shopify' Revenue
+// row would produce the byte-identical Summary key as this writer and the
+// two would silently overwrite each other (last-write-wins, no divergence
+// signal). See docs/schema.md's shopify_orderapp note.
+var SHOPIFY_ORDERAPP_SOURCE = 'shopify_orderapp';
+
 /* ------------------------------------------------------------------ *
  * Fetch / auth / classify
  * ------------------------------------------------------------------ */
@@ -201,4 +209,85 @@ function lastCompletedWeeks_(todayStr, n) {
     weeks.push({ label: isoWeekLabel_(start), start: start, end: end });
   }
   return weeks;
+}
+
+/* ------------------------------------------------------------------ *
+ * Shopify online revenue — weekly pull from the Order-app read API
+ * ------------------------------------------------------------------ */
+
+/**
+ * Entry point: orderAppRunStart_ runs BEFORE the lock so a lock-timeout skip
+ * still counts as a non-completion (same convention as every other fail-open
+ * accounting call in this file). Lock-wrapped because this is scan-then-write
+ * against Summary (upsertRows_ reads the whole sheet before writing).
+ * @returns {Object} shopifyWeeklyPull_impl_'s result, or {locked:true}.
+ */
+function shopifyWeeklyPull() {
+  orderAppRunStart_(SHOPIFY_ORDERAPP_SOURCE);
+  var res = withScriptLock_(function () { return shopifyWeeklyPull_impl_(); });
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('shopifyWeeklyPull: could not acquire script lock — skipped this run');
+    return { locked: true };
+  }
+  return res;
+}
+
+/**
+ * Pulls the last SHOPIFY_REPULL_WEEKS completed ISO weeks of Shopify online
+ * revenue (?api=shopifySales) and upserts them into Summary as kind:'revenue'
+ * rows. Past weeks are re-pulled every run because the Order app serves a
+ * LIVE snapshot (meta.snapshot) — a changed gross updates the existing row
+ * in place via upsertRows_, rather than appending a duplicate.
+ * @returns {{weeksRequested:number, weeksFetched:number, rowsAdded:number,
+ *   rowsUpdated:number, duplicatesSkipped:number, apiFailed?:boolean, noToken?:boolean}}
+ */
+function shopifyWeeklyPull_impl_() {
+  var token = getOrderAppToken_();
+  if (!token) {
+    return { noToken: true };
+  }
+
+  var weeks = lastCompletedWeeks_(todayStr_(), SHOPIFY_REPULL_WEEKS);
+  var pulledAt = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+
+  var normalizedRows = [];
+  var weeksFetched = 0;
+  var apiFailed = false;
+
+  for (var i = 0; i < weeks.length; i++) {
+    var res = orderAppFetch_({ api: 'shopifySales', week: weeks[i].label });
+    if (!res.ok) {
+      apiFailed = true;
+      continue;
+    }
+    weeksFetched++;
+
+    var body = res.body;
+    var weekStart = String(body.meta.weekStart).slice(0, 10);
+    var weekEnd = addDaysStr_(weekStart, 6);
+    normalizedRows.push([
+      weekStart, weekEnd, SHOPIFY_ORDERAPP_SOURCE, 'online',
+      Number(body.summary.grossSales), pulledAt, 'Roastery', 'revenue'
+    ]);
+  }
+
+  var ss = getHubSpreadsheet_();
+  var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
+  var upsertResult = upsertRows_(summSheet, normalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
+
+  var result = {
+    weeksRequested: weeks.length,
+    weeksFetched: weeksFetched,
+    rowsAdded: upsertResult.rowsAdded,
+    rowsUpdated: upsertResult.rowsUpdated,
+    duplicatesSkipped: upsertResult.duplicatesSkipped
+  };
+
+  if (apiFailed) {
+    result.apiFailed = true;
+  } else {
+    orderAppRunSuccess_(SHOPIFY_ORDERAPP_SOURCE);
+  }
+
+  return result;
 }
