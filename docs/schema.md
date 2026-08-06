@@ -31,6 +31,33 @@ natural key. A re-ingest of the same key **upserts**: unchanged amount is skippe
 a changed amount updates the row in place (`total` + `extracted_at`) rather than
 appending a duplicate — see `ingestSupplierRows`/`upsertRows_` in `Code.gs`.
 
+**`greenbean` source** (`connectors/gas/orderapp.gs`, `greenBeanPull` /
+`greenBeanInvoices_`): pulls green-bean stock-intake invoices from the
+Order-app read API (`?api=greenBeanCost`) and groups raw lines into one
+`Suppliers` row per invoice. `invoice_ref` is `<supplierKey>/<invoiceNum>`,
+or `<supplierKey>/noinv-<dateLocal>` when the API line carries no invoice
+number — this is the grouping key as well as the dedup key, so two lines
+sharing a blank invoice number on the same day and supplier collapse into
+one summed row, but the same supplier's blank-invoice lines on different
+days do not. **All statuses count as committed spend** — the fetch requests
+`status: 'ALL'` and `greenBeanInvoices_` sums every line's `totalCostIncGst`
+with no status-based filtering; there is no "provisional" or "draft" carve-out
+on this source today. **`total` is GST-inclusive for `source='greenbean'`
+only** — this is verified from the API field name (`totalCostIncGst`); GST
+treatment is NOT asserted for any other `Suppliers` source (Food and Dairy
+Co, Fresh and Chill, Kent Paper, Mayers, Ordermentum) — nobody has verified
+those, so don't assume consistency.
+
+**Stale-row limitation and runbook:** if a stock-intake row is deleted from
+the Order app's `06_Stock_Intake` sheet after the hub already ingested it,
+the hub has no delete signal — the API only ever returns what currently
+exists, so a vanished invoice simply stops appearing in future pulls, and
+the already-ingested `Suppliers` row (and its already-summarized `Summary`
+contribution) goes stale silently. To correct it: manually edit the stale
+`Suppliers` row (zero out `total`, or delete the row entirely), then run
+`weeklySummarize('<week_start>')` for the affected week to re-derive
+`Summary` from the corrected `Suppliers` data.
+
 ## Tab `Sales` (Square, daily gross per location — always Cafe)
 
 | Column | Type | Required | Description |
@@ -62,14 +89,14 @@ Sydney day never overwrites itself mid-day — see `appendSalesRow_`.
 **Dedup key:** `source + order_ref`, same upsert semantics as `Suppliers`. An
 amended wholesale order (same key, changed amount) updates in place.
 
-**`shopify` source** (`connectors/gas/shopify.gs`, `shopifyDailyPull`): pulls
-Shopify Admin API orders (`current_total_price`, not `total_price`, so a later
-refund upserts a lower amount) for `channel='online'`, always
-`department='Roastery'`. `customer` is the order's customer name, or
-`#<order_number>` for a guest checkout. `order_ref` is the Shopify order id.
-Requires Script Properties `SHOPIFY_SHOP_DOMAIN` and `SHOPIFY_ACCESS_TOKEN`
-(scope `read_orders`) — never in the repo, never in chat. The daily trigger
-re-pulls the last 2 days so a late refund still lands.
+**`shopify` source — RETIRED.** `connectors/gas/shopify.gs` (`shopifyDailyPull`,
+direct Shopify Admin API access requiring `SHOPIFY_SHOP_DOMAIN` /
+`SHOPIFY_ACCESS_TOKEN` Script Properties) never ran in production and has been
+deleted (git history preserves it). Online Shopify revenue is now sourced
+exclusively via the Order-app read API — see `shopify_orderapp` under
+`Summary` below. `channel='online'` rows in this tab are historical only;
+`validateIngest_` places no special restriction on writing `channel='online'`
+directly into `Revenue`, but no connector does so today.
 
 ## Tab `Summary` (weekly rollup, spend AND revenue)
 
@@ -79,6 +106,16 @@ re-pulls the last 2 days so a late refund still lands.
 name on `kind:'revenue'` rows (dual meaning, documented in `docs/api.md`).
 `weeklySummarize()` **upserts** (see `docs/api.md`), keyed on
 `week_start||department||kind||supplier||location`.
+
+**`supplier='shopify_orderapp'` revenue rows are a direct write, not a
+`weeklySummarize()`-derived row.** `shopifyWeeklyPull`/`_impl_`
+(`connectors/gas/orderapp.gs`) pulls the last 4 completed ISO weeks from the
+Order-app read API (`?api=shopifySales`) and `upsertRows_`s straight into
+`Summary` — `kind='revenue'`, `supplier='shopify_orderapp'`,
+`location='online'`, `department='Roastery'` — bypassing `Revenue` entirely.
+This is the one exception to "`Summary` is always derived from `Suppliers`/
+`Revenue`" in this schema. Past weeks are re-pulled every run (the Order app
+serves a live snapshot), so a changed gross updates the row in place.
 
 ## Canonical Supplier Names
 

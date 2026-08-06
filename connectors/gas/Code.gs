@@ -243,6 +243,18 @@ function validateIngest_(body) {
     return { ok: false, message: 'unknown kind: ' + kind };
   }
 
+  // Stock-intake invoices for Roastery arrive ONLY via the Order-app
+  // greenBeanCost pull (source='greenbean') — coffee_order_app never had a
+  // production suppliers-kind writer, and the reserved payload shape in
+  // docs/ingest-contract.md is now superseded/rejected, not just unused.
+  if (kind === 'suppliers' && body.source === 'coffee_order_app') {
+    return {
+      ok: false,
+      message: 'coffee_order_app suppliers payloads are rejected: stock-intake invoices ' +
+        'for Roastery arrive only via the Order-app greenBeanCost pull (source=\'greenbean\')'
+    };
+  }
+
   if (body.weeks_complete !== undefined && !isValidWeekLabelArray_(body.weeks_complete)) {
     return { ok: false, message: 'invalid weeks_complete' };
   }

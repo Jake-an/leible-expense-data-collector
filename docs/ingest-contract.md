@@ -35,6 +35,13 @@ a numeric string), `order_ref`. `department` is optional — omitted defaults
 to `DEFAULT_DEPARTMENT` (`Cafe`); if present it must be exactly `Cafe` or
 `Roastery`.
 
+**`channel: "online"` is reserved for the `shopify_orderapp` feed
+(`orderapp.gs`, `shopifyWeeklyPull`, PRD-10) and is mutually exclusive with
+this connector.** The coffee order app must never POST online Shopify
+revenue itself — the Order-app read API is the sole source for that channel.
+This wholesale-revenue shape is unaffected: `channel: "wholesale"` (or any
+non-`"online"` channel) from `coffee_order_app` remains valid.
+
 **`channel` is an open enum, and the weekly rollup treats one value specially.**
 `validateIngest_` only requires `channel` to be non-empty. In the weekly
 `Summary`, `channel: "online"` is collapsed to one row per source (guest
@@ -48,7 +55,17 @@ grouped per customer. Two consequences for a new connector:
   per order, add it to the collapse rule in `aggregateSupplierRows_`
   (`connectors/gas/Code.gs`) — otherwise it writes one `Summary` row per order.
 
-### 2. Uploaded bean / packaging invoice
+### 2. Uploaded bean / packaging invoice — SUPERSEDED, mechanically rejected
+
+**Status: this payload shape is retired.** Stock-intake invoices for
+Roastery arrive only via the Order-app `greenBeanCost` pull
+(`source='greenbean'`, `orderapp.gs`, `greenBeanPull`, PRD-11) — the app
+never needed to build this upload path. `validateIngest_`
+(`connectors/gas/Code.gs`) now rejects any `kind:'suppliers'` (or
+omitted-kind, which defaults to `'suppliers'`) payload carrying
+`source: 'coffee_order_app'`, naming the greenbean exclusivity in the error
+message. The shape below is preserved for history only — do not build
+against it.
 
 ```jsonc
 { "kind": "suppliers", "source": "coffee_order_app", "extracted_at": "2026-08-03T09:00:00+10:00",
@@ -56,9 +73,11 @@ grouped per customer. Two consequences for a new connector:
               "total": 1840.00, "invoice_ref": "coa-8823" } ] }
 ```
 
-Lands in the `Suppliers` tab, dedup key `source + invoice_ref`. Required per
-row: `date`, `total` (a JSON number, not a numeric string), `invoice_ref`,
-and `supplier` (see below). `department` follows the same rule as above.
+This would have landed in the `Suppliers` tab, dedup key `source +
+invoice_ref` — required per row: `date`, `total` (a JSON number, not a
+numeric string), `invoice_ref`, and `supplier` (see below). `department`
+followed the same rule as above. None of that applies now; the payload is
+rejected before rows are validated.
 
 ## Response shapes
 
@@ -104,17 +123,10 @@ malformed and will fail again identically.
   legitimately-different keys. This is a human dedup problem the app should
   guard against at upload time (e.g. warn on a same-day/same-vendor
   re-upload); the hub does not and will not attempt to detect it.
-- **No `SUPPLIER_NAMES` entry for `coffee_order_app`.** Every other
-  file-based/portal connector (Food and Dairy Co, Fresh and Chill, Kent
-  Paper, Mayers) maps a fixed `source` string to one canonical supplier name
-  via the `SUPPLIER_NAMES` table in `connectors/gas/Code.gs`. That doesn't
-  fit here — the app's upload form lets the user name any bean/packaging
-  supplier per invoice. So, exactly like Ordermentum (which serves multiple
-  suppliers — Tuga, Butterboy — under one `source`), `coffee_order_app` rows
-  **must carry their own `supplier` field**; `canonicalSupplier_`
-  (`connectors/gas/Code.gs:216`) always prefers `row.supplier` over the
-  `SUPPLIER_NAMES` map when present, so this falls out of existing logic with
-  no code change.
+- **No `SUPPLIER_NAMES` entry for `coffee_order_app`.** True, but now moot —
+  the retired suppliers-kind shape (§2 above) is what would have needed it,
+  and that shape is rejected before `canonicalSupplier_` is ever reached.
+  Kept here only as a historical note.
 - **`department` must be `'Cafe'` or `'Roastery'`, or omitted.** Anything
   else (a typo, a third department the app's UI hasn't been told to
   constrain to `DEPARTMENTS`) is rejected by `validateIngest_` with a
@@ -133,10 +145,11 @@ malformed and will fail again identically.
   through `doPost`, plus the three rejection cases named by the plan:
   missing `order_ref`, an invalid `department`, and a non-numeric `amount`
   string.
-- **Staleness watchdog:** `coffee_order_app` is included in
-  `STALENESS_SOURCES` (`connectors/gas/staleness.gs`), so if the app stops
-  POSTing for >96h an orange all-day alert fires, same as every other
-  source.
+- **Staleness watchdog:** `coffee_order_app` is **NOT** in `STALENESS_SOURCES`
+  (`connectors/gas/staleness.gs`) — it never stamped a heartbeat in
+  production, and its one prospective ingest path (§2) is now mechanically
+  rejected, so watching it could only ever false-alarm. Adding it back would
+  require it to actually stamp a heartbeat via a real write path first.
 
 ## Rollback
 

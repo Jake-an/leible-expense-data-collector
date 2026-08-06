@@ -27,7 +27,10 @@ var STALENESS_CALENDAR_ID = 'mio.jake@gmail.com';
 //   'recurring' — runs MONTHLY (recurring.gs). At a 96h threshold it would sit
 //   stale ~26 days of every month and cry wolf continuously. Watching it needs
 //   per-source thresholds, which this file does not have. See TODO.md.
-var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'coffee_order_app', 'shopify', 'roastery'];
+//   'shopify_orderapp' (weekly, Mon 05:00) and 'greenbean' (weekly, Tue 05:00)
+//   are deliberately NOT in the 96h watchdog — their cadence is 168h and their
+//   failure detection is the orderapp fail-open counter/alert (orderapp.gs).
+var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'roastery'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *

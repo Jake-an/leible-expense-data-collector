@@ -226,7 +226,8 @@
     {
       "step": 5,
       "name": "staleness-and-shopify-retirement",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Deleted shopify.gs (never activated); staleness.gs: removed 'shopify'+'coffee_order_app' from STALENESS_SOURCES; Code.gs validateIngest_ rejects kind=suppliers source=coffee_order_app (greenbean exclusivity); docs updated; 995/995 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -248,9 +249,16 @@
             "reason": "7 failures traced to missing implementation in staleness.gs/Code.gs (right reason), not broken test scaffolding or test infrastructure. 988 passing tests confirm test harness works correctly."
           },
           "at": "2026-08-06T10:30:43+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "run3: CUR-1 total updated in place even though its week is never resummarized  (got 20)\n  ok  - no-token: return shape  (got {\"noToken\":true})\n  ok  - no-token: Suppliers untouched (header row only)  (got 1)\n  ok  - size-guard abort: apiFailed:true surfaced from the wrapper\n  ok  - size-guard abort: failcount incremented by orderAppRunStart_ (1 -> 2) and NEVER reset  (got \"2\")\n  ok  - size-guard abort: no heartbeat stamped\n  ok  - size-guard abort: Suppliers untouched (header row only)  (got 1)\n  ok  - size-guard abort: a loud log records the abort\n\n995 passed, 0 failed\n",
+          "at": "2026-08-06T11:34:35+1000"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-06T11:34:35+1000"
     },
     {
       "step": 6,
