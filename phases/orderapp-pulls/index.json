@@ -6,7 +6,8 @@
     {
       "step": 0,
       "name": "orderapp-config-and-fetch",
-      "status": "pending",
+      "status": "completed",
+      "summary": "orderapp.gs: token-gated fetch/classify plumbing + fail-open failcount/alert accounting for the Order-app read API; 861/861 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [

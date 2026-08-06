@@ -4,7 +4,159 @@
  * These pulls live in GAS (not a Python connector) because they need the
  * hub's internal upsert helpers and Google-side scheduling; the doPost
  * boundary is for external connectors only.
- *
- * RED phase (TDD): implementation intentionally not yet written. See
- * phases/orderapp-pulls/index.json step 0.
  */
+
+var ORDER_APP_EXEC_URL = 'https://script.google.com/macros/s/AKfycbwuLSrcyi-e0dLyjEP4-unU5CLCywm6-SRFhSOq_Cufdn0MnvY0MtP4zNvGj20Dy4S9RQ/exec'; // PROD, not a secret
+var ORDER_APP_TOKEN_PROP = 'ORDER_APP_COST_TOKEN'; // Script Property; value = Order app's COST_API_TOKEN. Jake pastes it manually. NEVER in repo/logs.
+var ORDERAPP_FAILCOUNT_PREFIX = 'ORDERAPP_FAILCOUNT_';
+var ORDERAPP_ALERT_THRESHOLD = 2;
+
+/* ------------------------------------------------------------------ *
+ * Fetch / auth / classify
+ * ------------------------------------------------------------------ */
+
+/**
+ * @returns {string|null} the token, or null (and a skip-safe log) if unset.
+ */
+function getOrderAppToken_() {
+  var token = PropertiesService.getScriptProperties().getProperty(ORDER_APP_TOKEN_PROP);
+  if (!token) {
+    Logger.log('orderapp: ORDER_APP_COST_TOKEN not set — skipping');
+    return null;
+  }
+  return token;
+}
+
+/** Pure. Appends each key=value onto execUrl, percent-encoding values. */
+function orderAppBuildUrl_(execUrl, params) {
+  var parts = [];
+  for (var key in params) {
+    if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+    parts.push(key + '=' + encodeURIComponent(params[key]));
+  }
+  return execUrl + '?' + parts.join('&');
+}
+
+/**
+ * Pure. (httpCode, bodyText) -> {ok:true, body} | {ok:false, reason}.
+ * Never throws — an expired /exec deployment serves an HTML login page,
+ * which must classify as reason:'parse', not blow up the caller.
+ */
+function orderAppClassifyResponse_(httpCode, bodyText) {
+  if (httpCode !== 200) {
+    return { ok: false, reason: 'http-' + httpCode };
+  }
+
+  var parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch (err) {
+    return { ok: false, reason: 'parse' };
+  }
+
+  if (!parsed || parsed.ok !== true) {
+    var errCode = (parsed && parsed.error) ? parsed.error : 'unknown';
+    // Log the body verbatim (it may carry a traceId) — never the token, which
+    // never appears in a response body in the first place.
+    Logger.log('orderapp: API error — ' + bodyText);
+    return { ok: false, reason: 'api:' + errCode };
+  }
+
+  return { ok: true, body: parsed };
+}
+
+/**
+ * Thin fetch wrapper: no token -> zero fetches. A thrown fetch (network
+ * failure) is caught, never left to propagate into a scheduled trigger.
+ * @param {Object} params — query params, excluding token (added here).
+ */
+function orderAppFetch_(params) {
+  var token = getOrderAppToken_();
+  if (!token) {
+    return { ok: false, reason: 'no-token' };
+  }
+
+  var allParams = {};
+  for (var key in params) {
+    if (Object.prototype.hasOwnProperty.call(params, key)) allParams[key] = params[key];
+  }
+  allParams.token = token;
+  var url = orderAppBuildUrl_(ORDER_APP_EXEC_URL, allParams);
+
+  var response;
+  try {
+    response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  } catch (err) {
+    return { ok: false, reason: 'http-exception' };
+  }
+
+  return orderAppClassifyResponse_(response.getResponseCode(), response.getContentText());
+}
+
+/* ------------------------------------------------------------------ *
+ * Failure accounting — fail-open (a crash/timeout must still count)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Call BEFORE lock acquisition so a lock-timeout skip still counts as a
+ * non-completion. Increments the per-source failcount; at >=2 raises the
+ * "previous run did not complete" alert.
+ */
+function orderAppRunStart_(source) {
+  var props = PropertiesService.getScriptProperties();
+  var key = ORDERAPP_FAILCOUNT_PREFIX + source;
+  var current = Number(props.getProperty(key)) || 0;
+  var next = current + 1;
+  props.setProperty(key, String(next));
+
+  if (next >= ORDERAPP_ALERT_THRESHOLD) {
+    orderAppRaiseAlert_(source, next);
+  }
+}
+
+/** Call ONLY on full success: resets the failcount and stamps the heartbeat. */
+function orderAppRunSuccess_(source) {
+  var props = PropertiesService.getScriptProperties();
+  var key = ORDERAPP_FAILCOUNT_PREFIX + source;
+  var previous = Number(props.getProperty(key)) || 0;
+  props.setProperty(key, '0');
+  stalenessStampHeartbeat_(source);
+
+  if (previous >= ORDERAPP_ALERT_THRESHOLD) {
+    Logger.log('orderapp: ' + source + ' recovered');
+  }
+}
+
+/**
+ * Purpose-built alert — do NOT reuse stalenessRaiseAlerts_'s body builder,
+ * which renders age-hours fields that don't exist here and points at Windows
+ * Task Scheduler / Playwright re-auth, the wrong remediation class for a GAS
+ * time trigger. Reuses stalenessCalendar_'s acquisition mechanism only.
+ * Never throws.
+ */
+function orderAppRaiseAlert_(source, count) {
+  try {
+    var cal = stalenessCalendar_();
+    if (!cal) {
+      Logger.log('orderAppRaiseAlert_: no calendar available for ' + source);
+      return;
+    }
+
+    var title = 'LEIBLE expense orderapp: previous ' + source + ' run did not complete';
+    var body = [
+      'The previous orderapp run for "' + source + '" did not complete.',
+      'This run is retrying automatically.',
+      '',
+      'Where to look:',
+      '  - the GAS time trigger for the orderapp pulls',
+      '  - the ORDER_APP_COST_TOKEN Script Property (missing or expired?)',
+      '  - the Order app /exec URL (' + ORDER_APP_EXEC_URL + ') — the deployment may have changed'
+    ].join('\n');
+
+    var ev = cal.createAllDayEvent(title, new Date());
+    ev.setColor(CalendarApp.EventColor.ORANGE);
+    ev.setDescription(body);
+  } catch (err) {
+    Logger.log('orderAppRaiseAlert_: failed to raise alert for ' + source + ' — ' + err.message);
+  }
+}
