@@ -47,9 +47,8 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
 5. ~~Summarize sweep~~ ✅ **NO-OP** — only one week (07-20) was affected; it resummarized inline
    during greenBeanPull (single override block in the log; the `orderapp.gs:960` "still queued
    beyond the cap" warning never printed → queue empty).
-6. Run `installOrderAppTriggers()` once (from the editor). Confirm exactly one
-   `shopifyWeeklyPull` trigger (Monday 05:00) and one `greenBeanPull` trigger (Tuesday 05:00),
-   both `Australia/Sydney`.
+6. ~~Triggers~~ ✅ **DONE 2026-08-06 16:03** — install log confirmed both: "shopifyWeeklyPull
+   Monday 05:00 + greenBeanPull Tuesday 05:00 (Australia/Sydney) installed".
 7. **Probes** — all `curl -sL` **doGet** with query params, never bare `-d`/`-X POST` (either
    mis-probes `/exec` and gives a misleading 411/Drive-404 on a healthy endpoint):
    - Order app: `?api=shopifySales&token=***&week=<last completed>` → `ok:true`; cross-check
@@ -63,8 +62,10 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
      revenue source; sole other Roastery row is the Bennetts greenbean spend.
    - ✅ Negative (2026-08-06): hub wrong-token → `result:'error'` ("unauthorized"); Order app
      wrong-token → `{ok:false,error:'UNAUTHORIZED'}` on BOTH `shopifySales` + `greenBeanCost`.
-   - Idempotency: editor re-run `shopifyWeeklyPull` → `rowsAdded=0` (a settling week may
-     legitimately show `rowsUpdated=1`).
+   - ✅ Idempotency (2026-08-06 ~16:04): editor re-run of `shopifyWeeklyPull`, then probe —
+     row count unchanged (101), same 4 online rows/totals, ALL `summarized_at` stamps still
+     from the first run (15:44:58) → `rowsAdded=0, rowsUpdated=0` proven from the Sheet
+     (counts are returned, never logged — see memory).
 8. **All probes green** → flip PRD-10 and PRD-11 to `built` in `docs/PRD.md`, commit message
    citing which probes passed.
 
