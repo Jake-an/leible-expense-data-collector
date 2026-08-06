@@ -49,13 +49,15 @@
     {
       "step": 1,
       "name": "iso-week-label-helpers",
-      "status": "pending",
+      "status": "completed",
+      "summary": "orderapp.gs: isoWeekLabel_ (ISO Thursday rule, local-date-only) + lastCompletedWeeks_ (composed from getLastCompletedWeek_/addDaysStr_); 872/872 green.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-10"
       ],
       "started_at": "2026-08-06T09:21:47+0900",
+      "completed_at": "2026-08-06T09:30:00+0900",
       "tdd_evidence": {
         "red": {
           "command": "node connectors/gas/test_code.js",
@@ -66,6 +68,12 @@
             "reason": "ReferenceError: isoWeekLabel_ is not defined — implementation function missing, test code and infrastructure healthy"
           },
           "at": "2026-08-06T09:25:22+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "orderapp: isoWeekLabel_ / lastCompletedWeeks_:\n  ok  - 2026-01-01 (Thursday) -> 2026-W01  (got \"2026-W01\")\n  ok  - 2024-12-30 (Monday belonging to the next ISO year) -> 2025-W01  (got \"2025-W01\")\n  ok  - 2021-01-01 (Friday belonging to the previous ISO year) -> 2020-W53  (got \"2020-W53\")\n  ok  - mid-year Monday and the Sunday of the same week share a label (Monday)  (got \"2026-W25\")\n  ok  - mid-year Monday and the Sunday of the same week share a label (Sunday)  (got \"2026-W25\")\n  ok  - zero-padding: a week-5 date yields W05  (got \"2026-W05\")\n  ok  - lastCompletedWeeks_('2026-08-06', 4): 4 entries oldest-first  (got [\"2026-W28\",\"2026-W29\",\"2026-W30\",\"2026-W31\"])\n  ok  - lastCompletedWeeks_: full {label,start,end} shape\n  ok  - lastCompletedWeeks_: every start is a Monday\n  ok  - lastCompletedWeeks_: every end is start+6 and < today\n  ok  - called on a Monday: the newest entry is the week that ended yesterday\n\n872 passed, 0 failed\n",
+          "at": "2026-08-06T09:30:00+0900"
         }
       },
       "tdd_state": "red_done"

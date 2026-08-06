@@ -160,3 +160,45 @@ function orderAppRaiseAlert_(source, count) {
     Logger.log('orderAppRaiseAlert_: failed to raise alert for ' + source + ' — ' + err.message);
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * ISO week labels (pure, unit-tested)
+ * ------------------------------------------------------------------ */
+
+/**
+ * ISO-8601 week label ('YYYY-Www') for a 'yyyy-MM-dd' string, via the ISO
+ * Thursday rule (the week's Thursday determines the ISO year). Built from
+ * local date components only — no toISOString/UTC getters, so it can't pick
+ * up the AEST off-by-one that a UTC round-trip would introduce.
+ */
+function isoWeekLabel_(dateStr) {
+  var parts = dateStr.split('-');
+  var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+
+  // ISO day-of-week: Mon=1..Sun=7 (native getDay() is Sun=0..Sat=6).
+  var isoDay = date.getDay() === 0 ? 7 : date.getDay();
+  date.setDate(date.getDate() + (4 - isoDay)); // jump to this week's Thursday
+
+  var isoYear = date.getFullYear();
+  var jan1 = new Date(isoYear, 0, 1);
+  var dayOfYear = Math.round((date.getTime() - jan1.getTime()) / 86400000);
+  var week = Math.floor(dayOfYear / 7) + 1;
+
+  return isoYear + '-W' + (week < 10 ? '0' + week : week);
+}
+
+/**
+ * The `n` most recent completed ISO weeks (Mon-start, end < todayStr),
+ * oldest-first. Composed from getLastCompletedWeek_/addDaysStr_ (Code.gs) —
+ * they own the week-math single source of truth — plus isoWeekLabel_ above.
+ */
+function lastCompletedWeeks_(todayStr, n) {
+  var newest = getLastCompletedWeek_(todayStr);
+  var weeks = [];
+  for (var i = n - 1; i >= 0; i--) {
+    var start = addDaysStr_(newest.start, -7 * i);
+    var end = addDaysStr_(start, 6);
+    weeks.push({ label: isoWeekLabel_(start), start: start, end: end });
+  }
+  return weeks;
+}
