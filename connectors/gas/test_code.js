@@ -4759,6 +4759,228 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     [{ label: '2026-W31', start: '2026-07-27', end: '2026-08-02' }]);
 })();
 
+/* ------------------------------------------------------------------ *
+ * orderapp-pulls step 2 — shopifyWeeklyPull / shopifyWeeklyPull_impl_
+ * ------------------------------------------------------------------ */
+
+(function testShopifyWeeklyPull() {
+  console.log('\norderapp: shopifyWeeklyPull_impl_ / shopifyWeeklyPull:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const TOKEN = 'shopify-test-token';
+  const SHOPIFY_SUPPLIER = 'shopify_orderapp';
+  const STAMP_PATTERN = "yyyy-MM-dd'T'HH:mm:ssXXX";
+
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: TOKEN };
+    calendarEvents = [];
+    calendarFailMode = null;
+    clearLoggedMessages();
+    global.__forceLockTimeout = false;
+  }
+
+  // Sydney-local ISO datetime strings, matching what the Order app returns
+  // for meta.weekStart / meta.weekEndExclusive.
+  function weekBody(week, grossSales, orderCount) {
+    return {
+      ok: true,
+      meta: {
+        weekStart: week.start + 'T00:00:00+10:00',
+        weekEndExclusive: addDaysStr_(week.end, 1) + 'T00:00:00+10:00',
+        snapshot: true
+      },
+      summary: { orderCount: orderCount, grossSales: grossSales }
+    };
+  }
+
+  // Route UrlFetchApp.fetch by the week= query param so each requested week
+  // gets its own scripted response (a success body, or {ok:false,error:...}).
+  function armShopifyFetch(bodiesByLabel) {
+    global.UrlFetchApp = {
+      fetch: (url) => {
+        const m = /[?&]week=([^&]+)/.exec(String(url));
+        const label = m ? decodeURIComponent(m[1]) : null;
+        const body = bodiesByLabel[label];
+        if (body === undefined) throw new Error('armShopifyFetch: no scripted response for week ' + label);
+        return { getResponseCode: () => 200, getContentText: () => JSON.stringify(body) };
+      },
+    };
+  }
+
+  function summaryRows() {
+    var sheet = currentSS.getSheetByName('Summary');
+    return sheet ? sheet.getDataRange().getValues() : null;
+  }
+
+  function findSummaryRow(rows, weekStart) {
+    for (var i = 1; i < rows.length; i++) {
+      if (cellDate(rows[i][0]) === weekStart) return rows[i];
+    }
+    return null;
+  }
+
+  // The 4 requested weeks are derived from todayStr_() — genuinely "today" in
+  // this environment (todayStr_ reads a bare `new Date()`, which withMockNow
+  // cannot pin — see the top-of-file note on Date.now()/new Date() convention).
+  const weeks4 = lastCompletedWeeks_(todayStr_(), 4);
+
+  eq('SHOPIFY_REPULL_WEEKS is 4', SHOPIFY_REPULL_WEEKS, 4);
+
+  /* --- case 1: 4 mocked weeks -> 4 Summary rows, exact column order,
+   *     including a genuine zero-sales week (index 2) written as a real 0 ---
+   */
+  reset();
+  const gross1 = [111.11, 222.22, 0, 444.44];
+  const orders1 = [5, 6, 0, 8];
+  const bodies1 = {};
+  weeks4.forEach((w, i) => { bodies1[w.label] = weekBody(w, gross1[i], orders1[i]); });
+  armShopifyFetch(bodies1);
+
+  var pulledAt1, res1;
+  withMockNow('2026-08-06T00:00:00Z', function () {
+    pulledAt1 = mockFormatDate(new Date(Date.now()), 'Australia/Sydney', STAMP_PATTERN);
+    res1 = shopifyWeeklyPull_impl_();
+  });
+
+  eq('case1: weeksRequested', res1.weeksRequested, 4);
+  eq('case1: weeksFetched', res1.weeksFetched, 4);
+  eq('case1: rowsAdded', res1.rowsAdded, 4);
+  eq('case1: rowsUpdated', res1.rowsUpdated, 0);
+  eq('case1: duplicatesSkipped', res1.duplicatesSkipped, 0);
+  check('case1: no apiFailed flag on full success', !res1.apiFailed);
+
+  var rows1 = summaryRows();
+  eq('case1: header + 4 rows', rows1.length, 5);
+  weeks4.forEach((w, i) => {
+    var row = findSummaryRow(rows1, w.start);
+    check('case1: a row exists for week ' + w.label, !!row);
+    if (!row) return;
+    eq('case1: row for ' + w.label + ' week_end', cellDate(row[1]), w.end);
+    eq('case1: row for ' + w.label + ' supplier token is shopify_orderapp, never "shopify"', row[2], SHOPIFY_SUPPLIER);
+    eq('case1: row for ' + w.label + ' location is online', row[3], 'online');
+    eq('case1: row for ' + w.label + ' total is the raw grossSales (incl. real zero)', row[4], gross1[i]);
+    eq('case1: row for ' + w.label + ' summarized_at stamp', row[5], pulledAt1);
+    eq('case1: row for ' + w.label + ' department is Roastery', row[6], 'Roastery');
+    eq('case1: row for ' + w.label + ' kind is revenue', row[7], 'revenue');
+  });
+
+  /* --- case 2: re-run with ONE week's gross changed -> that row updates in
+   *     place (amount + stamp); the other 3 settle as duplicatesSkipped;
+   *     row count is unchanged (settling-order case) ---
+   */
+  const gross2 = gross1.slice();
+  gross2[1] = 999.99; // only week index 1 changes
+  const bodies2 = {};
+  weeks4.forEach((w, i) => { bodies2[w.label] = weekBody(w, gross2[i], orders1[i]); });
+  armShopifyFetch(bodies2);
+
+  var pulledAt2, res2;
+  withMockNow('2026-08-07T00:00:00Z', function () {
+    pulledAt2 = mockFormatDate(new Date(Date.now()), 'Australia/Sydney', STAMP_PATTERN);
+    res2 = shopifyWeeklyPull_impl_();
+  });
+
+  eq('case2: rowsAdded stays 0 (settling)', res2.rowsAdded, 0);
+  eq('case2: exactly the changed week updates', res2.rowsUpdated, 1);
+  eq('case2: the other 3 settle as duplicatesSkipped', res2.duplicatesSkipped, 3);
+
+  var rows2 = summaryRows();
+  eq('case2: row count unchanged', rows2.length, 5);
+  var changedRow2 = findSummaryRow(rows2, weeks4[1].start);
+  var unchangedRow2 = findSummaryRow(rows2, weeks4[0].start);
+  eq('case2: changed row total updated in place', changedRow2[4], 999.99);
+  eq('case2: changed row stamp updated in place', changedRow2[5], pulledAt2);
+  eq('case2: an UNCHANGED row keeps its ORIGINAL stamp (no write happened)', unchangedRow2[5], pulledAt1);
+  eq('case2: an UNCHANGED row keeps its original total', unchangedRow2[4], gross1[0]);
+
+  /* --- case 3: one of 4 weeks API-fails -> the other 3 ARE written,
+   *     apiFailed:true, heartbeat NOT stamped, failcount NOT reset ---
+   */
+  reset();
+  const bodies3 = {};
+  weeks4.forEach((w, i) => { bodies3[w.label] = (i === 2) ? { ok: false, error: 'UPSTREAM' } : weekBody(w, 50 + i, 1); });
+  armShopifyFetch(bodies3);
+
+  var res3 = shopifyWeeklyPull(); // the lock-wrapped entry point — exercises the accounting
+  check('case3: wrapper surfaces apiFailed:true from the impl', res3 && res3.apiFailed === true);
+  eq('case3: failcount was incremented by orderAppRunStart_ (before the lock) and never reset',
+    scriptProps['ORDERAPP_FAILCOUNT_' + SHOPIFY_SUPPLIER], '1');
+  check('case3: heartbeat NOT stamped on a partial failure', !(('LAST_INGEST_' + SHOPIFY_SUPPLIER) in scriptProps));
+
+  var rows3 = summaryRows();
+  eq('case3: the 3 successful weeks ARE written', rows3.length, 4);
+
+  /* --- case 4 (zero-sales week) is covered above: case1 index 2 asserts a
+   *     real $0 row, not a skipped/omitted one. ---
+   */
+
+  /* --- case 5: key-disjointness — weeklySummarize must NEVER produce a
+   *     Summary row keyed supplier='shopify_orderapp' from Revenue rows
+   *     carrying source='shopify' or source='coffee_order_app'; those two
+   *     writers (and this new one) must not be able to collide. ---
+   */
+  reset();
+  withMockNow('2026-08-06T00:00:00Z', function () {
+    var revSheet = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
+    revSheet.appendRow(['2026-07-28', 'Roastery', 'online', 'guest', 100, 'ord-1', 'shopify', 'TS']);
+    revSheet.appendRow(['2026-07-28', 'Roastery', 'online', 'guest', 100, 'ord-2', 'coffee_order_app', 'TS']);
+    currentSS._sheets['Revenue'] = revSheet;
+    weeklySummarize('2026-07-28');
+  });
+  var rows5 = summaryRows();
+  eq('case5: sanity — both revenue groups landed (test is not vacuous)', rows5.length, 3);
+  check('case5: the real "shopify" writer still gets its own Summary row',
+    rows5.slice(1).some((r) => r[2] === 'shopify'));
+  check('case5: the real "coffee_order_app" writer still gets its own Summary row',
+    rows5.slice(1).some((r) => r[2] === 'coffee_order_app'));
+  check('case5: weeklySummarize NEVER writes a Summary row keyed supplier=shopify_orderapp',
+    rows5.slice(1).every((r) => r[2] !== SHOPIFY_SUPPLIER));
+
+  /* --- case 6: Sheet Date read-back — a re-read hands week_start back as a
+   *     real Date object (mirroring live Sheets auto-coercion on write);
+   *     dedup must still work via coerceDateStr_/rowKey_ local-component
+   *     coercion, not a string comparison that would silently never match. ---
+   */
+  reset();
+  const bodies6 = {};
+  weeks4.forEach((w, i) => { bodies6[w.label] = weekBody(w, 77 + i, 2); });
+  armShopifyFetch(bodies6);
+  shopifyWeeklyPull_impl_();
+
+  var rawRows6 = currentSS.getSheetByName('Summary').getDataRange().getValues();
+  check('case6: the week_start cell the Sheet hands back for dedup IS a Date object, not a string',
+    rawRows6[1][0] instanceof Date);
+
+  var res6 = shopifyWeeklyPull_impl_(); // identical data re-pulled against those Date cells
+  eq('case6: Date-object week_start cells still dedup cleanly (no re-add)', res6.rowsAdded, 0);
+  eq('case6: identical figures -> all 4 duplicatesSkipped', res6.duplicatesSkipped, 4);
+  eq('case6: Summary row count unchanged', summaryRows().length, 5);
+
+  /* --- case 7: lock timeout — orderAppRunStart_ already ran (counter
+   *     incremented) before the lock is even attempted; nothing written ---
+   */
+  reset();
+  global.__forceLockTimeout = true;
+  var res7 = shopifyWeeklyPull();
+  eq('case7: lock timeout return shape', res7, { locked: true });
+  eq('case7: failcount was still incremented before the lock attempt',
+    scriptProps['ORDERAPP_FAILCOUNT_' + SHOPIFY_SUPPLIER], '1');
+  check('case7: a loud log records the lock timeout', lastLoggedMessages().some((m) => /lock/i.test(m)));
+  check('case7: nothing was written to Summary', !currentSS.getSheetByName('Summary'));
+  global.__forceLockTimeout = false;
+
+  /* --- case 8: token unset -> {noToken:true}, nothing written, no heartbeat --- */
+  reset();
+  scriptProps = {};
+  var res8 = shopifyWeeklyPull_impl_();
+  eq('case8: no-token return shape', res8, { noToken: true });
+  check('case8: nothing written to Summary', !currentSS.getSheetByName('Summary'));
+  check('case8: no heartbeat stamped', !(('LAST_INGEST_' + SHOPIFY_SUPPLIER) in scriptProps));
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

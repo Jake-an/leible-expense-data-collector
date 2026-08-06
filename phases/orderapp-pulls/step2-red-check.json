@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "Test expects SHOPIFY_REPULL_WEEKS constant to exist and equal 4; implementation missing. This is a legitimate RED state — all prior tests pass, and the failure is a ReferenceError in the module under test, not a test syntax or import error."}
