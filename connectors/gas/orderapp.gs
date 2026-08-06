@@ -212,63 +212,6 @@ function lastCompletedWeeks_(todayStr, n) {
 }
 
 /* ------------------------------------------------------------------ *
- * Green Bean Traders — normalizer
- * ------------------------------------------------------------------ */
-
-/**
- * Normalize raw Green Bean Traders invoice lines into Suppliers rows.
- * Groups by (supplierKey, invoiceNum); blank/undefined invoiceNum
- * groups by date as noinv-<dateLocal>. Sums costs, uses earliest date,
- * sorts by invoice_ref.
- * @param {Array} lines raw invoice lines
- * @returns {Array} normalized rows with {date, supplier, total, invoice_ref, department}
- */
-function greenBeanInvoices_(lines) {
-  if (!lines || lines.length === 0) return [];
-
-  var groups = {};
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    var inv = (line.invoiceNum === '' || line.invoiceNum === undefined)
-      ? 'noinv-' + line.dateLocal
-      : line.invoiceNum;
-    var key = line.supplierKey + '/' + inv;
-
-    if (!groups[key]) {
-      groups[key] = {
-        supplierKey: line.supplierKey,
-        supplierRaw: line.supplierRaw,
-        invoiceNum: inv,
-        dates: [],
-        total: 0
-      };
-    }
-
-    groups[key].dates.push(line.dateLocal);
-    groups[key].total += line.totalCostIncGst;
-  }
-
-  var result = [];
-  var keys = Object.keys(groups).sort();
-
-  for (var j = 0; j < keys.length; j++) {
-    var group = groups[keys[j]];
-    var dates = group.dates.sort();
-    var earliestDate = dates[0];
-
-    result.push({
-      date: earliestDate,
-      supplier: group.supplierRaw,
-      total: Math.round(group.total * 100) / 100,
-      invoice_ref: keys[j],
-      department: 'Roastery'
-    });
-  }
-
-  return result;
-}
-
-/* ------------------------------------------------------------------ *
  * Shopify online revenue — weekly pull from the Order-app read API
  * ------------------------------------------------------------------ */
 
@@ -345,6 +288,72 @@ function shopifyWeeklyPull_impl_() {
   } else {
     orderAppRunSuccess_(SHOPIFY_ORDERAPP_SOURCE);
   }
+
+  return result;
+}
+
+/* ------------------------------------------------------------------ *
+ * Green Bean invoices — normalize & group supplier invoice lines
+ * ------------------------------------------------------------------ */
+
+/**
+ * Pure. Groups raw invoice lines by (supplierKey, invoiceNum) or
+ * (supplierKey, date) if invoiceNum is blank/undefined. Sums totals,
+ * uses earliest dateLocal, formats for Suppliers tab.
+ * @param {Array} lines — objects with dateLocal, supplierRaw, supplierKey,
+ *   invoiceNum, totalCostIncGst, status, (optional flags).
+ * @returns {Array} normalized rows [{date, supplier, total, invoice_ref, department}],
+ *   sorted by invoice_ref.
+ */
+function greenBeanInvoices_(lines) {
+  if (!lines || lines.length === 0) {
+    return [];
+  }
+
+  var groups = {};
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var invoiceNum = line.invoiceNum || '';
+    var groupKey;
+    if (invoiceNum) {
+      groupKey = line.supplierKey + '/' + invoiceNum;
+    } else {
+      groupKey = line.supplierKey + '/noinv-' + line.dateLocal;
+    }
+
+    if (!groups[groupKey]) {
+      groups[groupKey] = {
+        supplierRaw: line.supplierRaw,
+        supplierKey: line.supplierKey,
+        invoiceNum: invoiceNum,
+        dateLocal: line.dateLocal,
+        total: 0,
+        groupKey: groupKey
+      };
+    }
+
+    groups[groupKey].total += line.totalCostIncGst;
+    if (line.dateLocal < groups[groupKey].dateLocal) {
+      groups[groupKey].dateLocal = line.dateLocal;
+    }
+  }
+
+  var result = [];
+  for (var key in groups) {
+    if (!Object.prototype.hasOwnProperty.call(groups, key)) continue;
+    var group = groups[key];
+    result.push({
+      date: group.dateLocal,
+      supplier: group.supplierRaw,
+      total: Math.round(group.total * 100) / 100,
+      invoice_ref: group.groupKey,
+      department: 'Roastery'
+    });
+  }
+
+  result.sort(function (a, b) {
+    return a.invoice_ref < b.invoice_ref ? -1 : (a.invoice_ref > b.invoice_ref ? 1 : 0);
+  });
 
   return result;
 }
