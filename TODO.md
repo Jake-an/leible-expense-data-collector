@@ -33,20 +33,20 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
    returned `found: 0, weeks: []` → closed as a no-op per the decision tree; no Apply, no backup
    tab needed, deadline pressure gone (Monday's `weeklySummarize` has nothing to double-count).
    Scan scope was `kind='revenue' AND location='online'`, case-insensitive, whole `Summary` tab.
-2. Jake pastes `ORDER_APP_COST_TOKEN` into the hub's Script Properties (Apps Script editor →
-   Project Settings). Confirm `SHOPIFY_SHOP_DOMAIN`/`SHOPIFY_ACCESS_TOKEN` are absent and no
-   `shopifyTriggerPull_`-era trigger exists (the old direct puller, `shopify.gs`, was deleted in
-   step 5 of this phase — never activated, never had Script Properties set).
-3. `bash scripts/deploy.sh` — note the printed rollback anchor (deployment id + prior version).
-4. Editor-run `shopifyWeeklyPull` then `greenBeanPull`; check the Logger counts for each
-   (rows fetched/added/updated, `weeksResummarized`/`weeksQueued` for greenbean).
-   Do this the SAME DAY as step 3: both sources are now staleness-watched (round 9), and
-   until their first successful run each shows as "never seen" — the daily 11:00 check
-   would raise an orange event per source per day. That alert firing before bring-up is
-   the watchdog working as designed, not a fault.
-5. **After the first greenbean pull:** editor-run `weeklySummarize('<week>')` across the whole
-   seeded 3-month window, one call per week — don't wait for the overflow queue
-   (`GREENBEAN_RESUM_CAP=5` per run) to drain naturally over weeks.
+2. ~~Token paste~~ ✅ **DONE 2026-08-06** — `ORDER_APP_COST_TOKEN` in Script Properties (proven
+   live: the silent shopifyWeeklyPull success path — the "not set — skipping" log never fired).
+   Same visit also fixed the READ token: `.env` `GAS_READ_TOKEN` had NEVER matched the live
+   `API_READ_TOKEN` — rotated a fresh hex value into both sides; doGet now returns `ok`.
+3. ~~Deploy~~ ✅ **DONE** — v27 live (rollback: `clasp redeploy <id> -V 26`).
+4. ~~Editor pulls~~ ✅ **DONE 2026-08-06 15:44–15:45.** Editor-log note for the future: both pulls
+   RETURN their counts (never Logger.log them) — a fully-clean shopifyWeeklyPull run logs
+   NOTHING. Verified via doGet probe instead: exactly one `shopify_orderapp` online revenue row
+   per completed week — 07-06 $972.50 / 07-13 $1,522 / 07-20 $1,502.50 / 07-27 $3,089, all
+   Roastery, current week absent. Greenbean: Summary row = VENDOR name (`Bennetts`, wk 07-20,
+   $14,219 spend, Roastery); `source='greenbean'` only exists on the Suppliers tab.
+5. ~~Summarize sweep~~ ✅ **NO-OP** — only one week (07-20) was affected; it resummarized inline
+   during greenBeanPull (single override block in the log; the `orderapp.gs:960` "still queued
+   beyond the cap" warning never printed → queue empty).
 6. Run `installOrderAppTriggers()` once (from the editor). Confirm exactly one
    `shopifyWeeklyPull` trigger (Monday 05:00) and one `greenBeanPull` trigger (Tuesday 05:00),
    both `Australia/Sydney`.
@@ -59,9 +59,10 @@ unrelated triggers (e.g. `shopSpendWatchdog`). **PRD-10 and PRD-11 stay `planned
    - Hub: `?fn=summary&from=<ws>&to=<we>&department=Roastery&token=<API_READ_TOKEN>` → exactly
      one `supplier:'shopify_orderapp', kind:'revenue', location:'online'` row per completed
      week, plus the new greenbean spend rows.
-   - Double-count sweep: no other `location='online'` revenue row for those weeks from another
-     source; no same-date/same-total Roastery `Suppliers` rows under differing sources.
-   - Negative: wrong tokens → hub `result:'error'`; Order app `{ok:false,error:'UNAUTHORIZED'}`.
+   - ✅ Double-count sweep (2026-08-06): 8-week probe shows shopify_orderapp as the ONLY online
+     revenue source; sole other Roastery row is the Bennetts greenbean spend.
+   - ✅ Negative (2026-08-06): hub wrong-token → `result:'error'` ("unauthorized"); Order app
+     wrong-token → `{ok:false,error:'UNAUTHORIZED'}` on BOTH `shopifySales` + `greenBeanCost`.
    - Idempotency: editor re-run `shopifyWeeklyPull` → `rowsAdded=0` (a settling week may
      legitimately show `rowsUpdated=1`).
 8. **All probes green** → flip PRD-10 and PRD-11 to `built` in `docs/PRD.md`, commit message
