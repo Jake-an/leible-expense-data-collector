@@ -43,7 +43,11 @@ Order-app read API is the sole producer for that channel, and a POSTed online
 row would flow through `weeklySummarize` into a second source-keyed Summary
 row and double-count the week. This wholesale-revenue shape is unaffected:
 `channel: "wholesale"` (or any non-`"online"` channel) from
-`coffee_order_app` remains valid.
+`coffee_order_app` remains valid. **When this wholesale-revenue writer ships,
+add `coffee_order_app` to `STALENESS_SOURCES` (staleness.gs) and
+`STAMPS_HEARTBEAT` (test_code.js)** — it was removed while no live writer
+exists because a never-seen source false-alarms daily, not because the path
+is closed.
 
 **`channel` is an open enum (aside from the `"online"` rejection above), and
 the weekly rollup treats one value specially.** In the weekly

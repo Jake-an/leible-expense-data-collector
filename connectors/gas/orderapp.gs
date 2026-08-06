@@ -275,6 +275,30 @@ function shopifyWeeklyPull() {
  * @returns {{weeksRequested:number, weeksFetched:number, rowsAdded:number,
  *   rowsUpdated:number, duplicatesSkipped:number, apiFailed?:boolean, noToken?:boolean}}
  */
+/**
+ * Pure shape gate for one shopifySales week body. Returns {ok:true, weekStart,
+ * grossSales} only when the body carries a finite numeric summary.grossSales
+ * AND meta.weekStart echoes the requested week's Monday — anything else is
+ * {ok:false, reason} and the week is treated as a failed fetch.
+ */
+function shopifyValidWeekBody_(body, requestedWeek) {
+  if (!body || typeof body !== 'object' || !body.meta || typeof body.meta.weekStart !== 'string') {
+    return { ok: false, reason: 'missing meta.weekStart' };
+  }
+  if (!body.summary || typeof body.summary !== 'object') {
+    return { ok: false, reason: 'missing summary' };
+  }
+  var gross = Number(body.summary.grossSales);
+  if (typeof body.summary.grossSales === 'undefined' || body.summary.grossSales === null || !isFinite(gross)) {
+    return { ok: false, reason: 'grossSales is not a finite number: ' + body.summary.grossSales };
+  }
+  var weekStart = body.meta.weekStart.slice(0, 10);
+  if (weekStart !== requestedWeek.start) {
+    return { ok: false, reason: 'weekStart ' + weekStart + ' does not echo requested ' + requestedWeek.start };
+  }
+  return { ok: true, weekStart: weekStart, grossSales: gross };
+}
+
 function shopifyWeeklyPull_impl_() {
   var token = getOrderAppToken_();
   if (!token) {
@@ -296,14 +320,27 @@ function shopifyWeeklyPull_impl_() {
       apiFailed = true;
       continue;
     }
+
+    // Shape-validate before touching money: an {ok:true} body with a missing
+    // summary would throw out of a scheduled trigger; a non-numeric grossSales
+    // would write NaN into Summary (and NaN !== NaN makes upsertRows_ rewrite
+    // it forever); a weekStart that doesn't echo the requested week means the
+    // API ignored/clamped the week param and one week would be written 4x.
+    var shape = shopifyValidWeekBody_(res.body, weeks[i]);
+    if (!shape.ok) {
+      apiFailed = true;
+      Logger.log('shopifyWeeklyPull: ' + weeks[i].label + ' response failed shape validation (' +
+        shape.reason + ') — week skipped, run marked failed');
+      continue;
+    }
     weeksFetched++;
 
     var body = res.body;
-    var weekStart = String(body.meta.weekStart).slice(0, 10);
+    var weekStart = shape.weekStart;
     var weekEnd = addDaysStr_(weekStart, 6);
     normalizedRows.push([
       weekStart, weekEnd, SHOPIFY_ORDERAPP_SOURCE, 'online',
-      Number(body.summary.grossSales), pulledAt, 'Roastery', 'revenue'
+      shape.grossSales, pulledAt, 'Roastery', 'revenue'
     ]);
 
     // The metric is gross of PAID/PARTIALLY_PAID orders; a refund of any size
@@ -384,7 +421,11 @@ function greenBeanInvoices_(lines) {
       };
     }
 
-    groups[groupKey].total += line.totalCostIncGst;
+    // Coerce like every other money read in the hub: a string-typed cell would
+    // otherwise turn the accumulator into string concatenation (0+'50'->'050'),
+    // a silently 100x-overstated invoice. undefined/non-numeric counts as 0 —
+    // the API's flags[] mechanism marks those lines and the pull alerts on them.
+    groups[groupKey].total += Number(line.totalCostIncGst) || 0;
     if (line.dateLocal < groups[groupKey].dateLocal) {
       groups[groupKey].dateLocal = line.dateLocal;
     }
@@ -415,6 +456,7 @@ function greenBeanInvoices_(lines) {
  * ------------------------------------------------------------------ */
 
 var GREENBEAN_RESUM_CAP = 5;
+var GREENBEAN_MAX_PAGES = 20; // 20 x 5000-row pages >> any real window; a loop that needs more is a paging bug
 var GREENBEAN_RESUM_QUEUE_PROP = 'ORDERAPP_RESUM_QUEUE_greenbean'; // JSON array of 'yyyy-MM-dd' week starts
 
 /**
@@ -453,8 +495,18 @@ function greenBeanFetchAllRows_() {
   var seenRowNumbers = {};
   var duplicatesSkipped = 0;
   var upstreamAlertRaised = false; // one alert per pull, not per page
+  var pages = 0;
 
   while (true) {
+    // Bounded loop — the deleted shopify.gs carried SHOPIFY_MAX_PAGES for the
+    // same reason: an API bug that reports truncated without advancing would
+    // otherwise re-issue the identical fetch until the 6-minute limit,
+    // burning fetch quota every Tuesday with zero ingest.
+    pages++;
+    if (pages > GREENBEAN_MAX_PAGES) {
+      Logger.log('greenBeanFetchAllRows_: exceeded ' + GREENBEAN_MAX_PAGES + ' pages — aborting (suspect non-advancing paging)');
+      return null;
+    }
     var res = orderAppFetch_({
       api: 'greenBeanCost',
       from: window.from,
@@ -506,7 +558,13 @@ function greenBeanFetchAllRows_() {
     }
 
     if (paging.truncated === true && paging.rowsIncluded === true) {
-      offset += paging.returned;
+      var returned = Number(paging.returned);
+      if (!isFinite(returned) || returned <= 0) {
+        Logger.log('greenBeanFetchAllRows_: paging.returned is ' + paging.returned +
+          ' on a truncated page — offset cannot advance, aborting');
+        return null;
+      }
+      offset += returned;
       continue;
     }
     break;
@@ -650,7 +708,6 @@ function greenBeanPull_impl_() {
   mergedUnique.sort();
 
   var toSummarize = mergedUnique.slice(0, GREENBEAN_RESUM_CAP);
-  var remaining = mergedUnique.slice(GREENBEAN_RESUM_CAP);
 
   // Crash safety: Suppliers already holds the new totals, so the snapshot
   // diff above can never be re-derived. Persist the FULL affected list BEFORE
@@ -659,10 +716,21 @@ function greenBeanPull_impl_() {
   // re-runs idempotently. Only after the loop finishes does the property
   // shrink to the true remainder.
   greenBeanWriteQueue_(mergedUnique);
+  var summarizedOk = {};
   for (var s = 0; s < toSummarize.length; s++) {
-    weeklySummarize(toSummarize[s]);
+    // The queue is the SOLE record of pending weeks, so only a call that
+    // actually completed may remove its week — a {refused:...} or empty
+    // return stays queued and is logged, never silently dropped.
+    var sumRes = weeklySummarize(toSummarize[s]);
+    if (sumRes && !sumRes.refused) {
+      summarizedOk[toSummarize[s]] = true;
+    } else {
+      Logger.log('greenBeanPull: weeklySummarize did not complete for ' + toSummarize[s] +
+        ' (' + (sumRes && sumRes.refused ? sumRes.refused : 'no result') + ') — week stays queued');
+    }
   }
-  greenBeanWriteQueue_(remaining);
+  var remainingQueue = mergedUnique.filter(function (w) { return !summarizedOk[w]; });
+  greenBeanWriteQueue_(remainingQueue);
 
   // A live roastery with ZERO intake rows across a rolling quarter almost
   // certainly means a broken feed (renamed 06_Stock_Intake columns that still
@@ -683,8 +751,8 @@ function greenBeanPull_impl_() {
     rowsAdded: ingestResult.rowsAdded,
     rowsUpdated: ingestResult.rowsUpdated,
     duplicatesSkipped: ingestResult.duplicatesSkipped,
-    weeksResummarized: toSummarize.length,
-    weeksQueued: remaining.length
+    weeksResummarized: Object.keys(summarizedOk).length,
+    weeksQueued: remainingQueue.length
   };
 }
 

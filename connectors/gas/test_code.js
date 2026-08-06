@@ -4914,6 +4914,34 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var res9b = shopifyWeeklyPull_impl_();
   eq('case9: weeks without excluded buckets report excludedGross 0', res9b.excludedGross, 0);
 
+  /* --- case 10: shape validation — malformed {ok:true} bodies must not throw
+   *     out of a trigger, must not write NaN money, and a weekStart that does
+   *     not echo the requested week (API ignored/clamped the param) must not
+   *     write one week four times. --- */
+  reset();
+  var weeks10 = lastCompletedWeeks_(todayStr_(), SHOPIFY_REPULL_WEEKS);
+  var bodies10 = {};
+  weeks10.forEach((w, i) => { bodies10[w.label] = weekBody(w, 300 + i, 2); });
+  delete bodies10[weeks10[0].label].summary;                       // missing summary
+  bodies10[weeks10[1].label].summary.grossSales = 'not-a-number';  // NaN money
+  bodies10[weeks10[2].label].meta.weekStart =                      // clamped week
+    weeks10[3].start + 'T00:00:00+10:00';
+  armShopifyFetch(bodies10);
+  var thrown10 = false;
+  var res10;
+  try { res10 = shopifyWeeklyPull_impl_(); } catch (err) { thrown10 = true; }
+  check('case10: malformed bodies never throw out of the pull', !thrown10);
+  eq('case10: only the one well-shaped week is written', res10.rowsAdded, 1);
+  check('case10: run marked apiFailed (no heartbeat)', res10.apiFailed === true);
+  check('case10: heartbeat NOT stamped', !(('LAST_INGEST_' + SHOPIFY_SUPPLIER) in scriptProps));
+  var rows10 = currentSS.getSheetByName('Summary').getDataRange().getValues();
+  eq('case10: exactly one data row landed', rows10.length, 2);
+  check('case10: no NaN total anywhere', rows10.slice(1).every((r) => isFinite(Number(r[4]))));
+  check('case10: each rejection is logged with its reason',
+    lastLoggedMessages().filter((m) => m.indexOf('shape validation') !== -1).length === 3);
+  check('case10: the clamped-week rejection names the echo mismatch',
+    lastLoggedMessages().some((m) => m.indexOf('does not echo') !== -1));
+
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
@@ -4977,6 +5005,18 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   // --- case: empty input -> [] ---
   eq('empty input -> []', greenBeanInvoices_([]), []);
+
+  // --- case: money accumulation coerces like every other money read — a
+  //     string-typed totalCostIncGst must SUM, never concatenate (0+'50' ->
+  //     '050' -> a 100x-overstated invoice); undefined counts as 0 ---
+  const caseCoerce = greenBeanInvoices_([
+    { dateLocal: '2026-06-20', supplierRaw: 'Str Co', supplierKey: 'str_co', invoiceNum: 'S-1', totalCostIncGst: '50', status: 'RECEIVED' },
+    { dateLocal: '2026-06-21', supplierRaw: 'Str Co', supplierKey: 'str_co', invoiceNum: 'S-1', totalCostIncGst: '25.5', status: 'RECEIVED' },
+    { dateLocal: '2026-06-22', supplierRaw: 'Str Co', supplierKey: 'str_co', invoiceNum: 'S-1', totalCostIncGst: undefined, status: 'RECEIVED' }
+  ]);
+  eq('string/undefined totals sum numerically, never concatenate', caseCoerce, [
+    { date: '2026-06-20', supplier: 'Str Co', total: 75.5, invoice_ref: 'str_co/S-1', department: 'Roastery' }
+  ]);
 
   // --- case: a flagged row with totalCostIncGst:0 still contributes a row,
   //     never dropped ---
@@ -5148,6 +5188,55 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('upstream warnings raise ONE data-quality calendar alert', calendarEvents.length, 1);
   check('upstream-warning alert says the spend may be incomplete',
     calendarEvents[0]._description.indexOf('incomplete') !== -1);
+
+  /* --- case: non-advancing page — truncated:true with returned:0 (or a
+   *     renamed/absent field) must abort, not re-issue the identical fetch
+   *     until the 6-minute limit. --- */
+  reset();
+  let stuckFetches = 0;
+  global.UrlFetchApp = {
+    fetch: () => {
+      stuckFetches++;
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: true, rowsIncluded: true, returned: 0 } }, rows: [] })
+      };
+    },
+  };
+  check('non-advancing page (returned:0): returns null', greenBeanFetchAllRows_() === null);
+  eq('non-advancing page: aborts after ONE fetch, no infinite loop', stuckFetches, 1);
+  check('non-advancing page: the abort is logged',
+    lastLoggedMessages().some((m) => /cannot advance/i.test(m)));
+
+  reset();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: true, meta: { paging: { truncated: true, rowsIncluded: true } }, rows: [] })
+    }),
+  };
+  check('absent paging.returned on a truncated page: returns null (NaN offset guard)',
+    greenBeanFetchAllRows_() === null);
+
+  /* --- case: page cap — a paging bug that advances but never terminates is
+   *     cut off at GREENBEAN_MAX_PAGES. --- */
+  reset();
+  let cappedFetches = 0;
+  global.UrlFetchApp = {
+    fetch: () => {
+      cappedFetches++;
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          ok: true,
+          meta: { paging: { truncated: true, rowsIncluded: true, returned: 1 } },
+          rows: [{ rowNumber: 1000 + cappedFetches, dateLocal: '2026-06-01', supplierRaw: 'A', supplierKey: 'a', invoiceNum: 'A-1', totalCostIncGst: 1, status: 'RECEIVED' }]
+        })
+      };
+    },
+  };
+  check('runaway paging: returns null at the page cap', greenBeanFetchAllRows_() === null);
+  eq('runaway paging: fetch count capped at GREENBEAN_MAX_PAGES', cappedFetches, GREENBEAN_MAX_PAGES);
 
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
@@ -5474,6 +5563,24 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('zero-row window: no failure alert', calendarEvents.length, 0);
   check('zero-row window: loud WARNING logged',
     lastLoggedMessages().some((m) => m.indexOf('0 intake rows across the entire 3-month window') !== -1));
+
+  /* --- refused resummarize stays queued: the queue is the sole record of
+   *     pending weeks, so only a call that actually completed may remove its
+   *     week — a {refused:...} return must survive to the next run. --- */
+  reset();
+  armFetch([
+    { rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Q1', supplierKey: 'q1', invoiceNum: 'Q-1', totalCostIncGst: 10, status: 'RECEIVED' },
+    { rowNumber: 2, dateLocal: weeks[1].start, supplierRaw: 'Q2', supplierKey: 'q2', invoiceNum: 'Q-2', totalCostIncGst: 20, status: 'RECEIVED' }
+  ]);
+  global.weeklySummarize = function (w) {
+    if (w === weeks[0].start) return { refused: 'locked' };
+    return REAL_WEEKLY_SUMMARIZE(w);
+  };
+  const refusedRes = greenBeanPull_impl_();
+  eq('refused week: counted out of weeksResummarized', refusedRes.weeksResummarized, 1);
+  eq('refused week: stays in the queue property', queueProp(), [weeks[0].start]);
+  check('refused week: the refusal is logged',
+    lastLoggedMessages().some((m) => m.indexOf('did not complete for ' + weeks[0].start) !== -1));
 
   global.UrlFetchApp = REAL_URL_FETCH;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;

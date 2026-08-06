@@ -30,6 +30,12 @@ var STALENESS_CALENDAR_ID = 'mio.jake@gmail.com';
 //   'shopify_orderapp' (weekly, Mon 05:00) and 'greenbean' (weekly, Tue 05:00)
 //   are deliberately NOT in the 96h watchdog — their cadence is 168h and their
 //   failure detection is the orderapp fail-open counter/alert (orderapp.gs).
+//   'coffee_order_app' — NO LIVE WRITER today, so watching it would false-alarm
+//   daily as a never-seen source. Its suppliers-kind path is mechanically
+//   rejected (validateIngest_), but its wholesale-REVENUE path is still
+//   sanctioned in docs/ingest-contract.md and doPost stamps body.source
+//   generically — so the moment that writer ships, RE-ADD 'coffee_order_app'
+//   here (and to STAMPS_HEARTBEAT in test_code.js) or it runs unwatched.
 var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'roastery'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
