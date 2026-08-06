@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "orderapp-pulls",
+  "steps": [
+    {
+      "step": 0,
+      "name": "orderapp-config-and-fetch",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-10", "PRD-11"]
+    },
+    {
+      "step": 1,
+      "name": "iso-week-label-helpers",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-10"]
+    },
+    {
+      "step": 2,
+      "name": "shopify-weekly-pull",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-10"],
+      "docs": ["schema.md"]
+    },
+    {
+      "step": 3,
+      "name": "greenbean-invoice-grouping",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-11"],
+      "docs": ["schema.md"]
+    },
+    {
+      "step": 4,
+      "name": "greenbean-pull",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-11"],
+      "docs": ["schema.md"]
+    },
+    {
+      "step": 5,
+      "name": "staleness-and-shopify-retirement",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-10", "PRD-11"],
+      "docs": ["schema.md", "ingest-contract.md"]
+    },
+    {
+      "step": 6,
+      "name": "triggers-and-live-runbook",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-10", "PRD-11"],
+      "docs": ["api.md"]
+    }
+  ]
+}
