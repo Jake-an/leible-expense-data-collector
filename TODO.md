@@ -130,8 +130,13 @@ live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unc
       stay ABSENT; the only new property is `ORDER_APP_COST_TOKEN` (see the orderapp-pulls
       live bring-up runbook).
 - [ ] **(Jake) Gmail label `roastery/invoices`** + filter, then install the roastery trigger.
-- [ ] `recurring` is unwatched by the staleness watchdog — monthly cadence vs the 96h threshold
-      would cry wolf ~26 days a month. Needs per-source thresholds in `staleness.gs`.
+- [ ] **Per-source staleness thresholds** — three sources are now unwatched because their cadence
+      exceeds the global 96h threshold: `recurring` (monthly; would cry wolf ~26 days/month),
+      `shopify_orderapp` (weekly, Mon 05:00) and `greenbean` (weekly, Tue 05:00). The orderapp
+      fail-open counter alerts on runs that START and die, but a **deleted or never-installed
+      trigger fires no run at all and is therefore invisible** — heartbeats are stamped
+      (`LAST_INGEST_*`) but nothing reads them. A 168h-aware per-source threshold in
+      `staleness.gs` closes all three at once.
 - [ ] `mayers.gs` entry point (`mayersPull`) was never wrapped in `withScriptLock_` — it fell
       outside every phase's declared `Files:` list. Every other entry point is wrapped.
 - [ ] Decide: `validateIngest_` accepts a numeric-string `amount` (`"340.00"`) via

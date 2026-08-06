@@ -4990,6 +4990,19 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // --- case: empty input -> [] ---
   eq('empty input -> []', greenBeanInvoices_([]), []);
 
+  // --- case: invoiceNum casing drift WITHIN one invoice ('INV-700' +
+  //     'inv-700') must group as ONE invoice with the full sum. Case-sensitive
+  //     grouping would emit two rows whose refs collapse to one dedup key at
+  //     the sheet (rowKey_ lowercases) and the second row's money would
+  //     silently vanish as an in-batch duplicate. Ref keeps first-seen casing.
+  const caseDrift = greenBeanInvoices_([
+    { dateLocal: '2026-06-10', supplierRaw: 'ACME Beans', supplierKey: 'acme_beans', invoiceNum: 'INV-700', totalCostIncGst: 500, status: 'RECEIVED' },
+    { dateLocal: '2026-06-11', supplierRaw: 'ACME Beans', supplierKey: 'acme_beans', invoiceNum: 'inv-700', totalCostIncGst: 300, status: 'RECEIVED' }
+  ]);
+  eq('casing-drifted invoiceNum: ONE row, full sum, first-seen casing', caseDrift, [
+    { date: '2026-06-10', supplier: 'ACME Beans', total: 800, invoice_ref: 'acme_beans/INV-700', department: 'Roastery' }
+  ]);
+
   // --- case: money accumulation coerces like every other money read — a
   //     string-typed totalCostIncGst must SUM, never concatenate (0+'50' ->
   //     '050' -> a 100x-overstated invoice); undefined counts as 0 ---
@@ -5578,6 +5591,31 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('clean run: signature cleared, next occurrence re-arms',
     !('ORDERAPP_DQ_SIG_greenbean_flags' in scriptProps));
 
+  /* --- flag bucketing: the alert names the DISTINCT flags present, so a
+   *     BLANK_SUPPLIER row is not misdiagnosed as a price-cell problem; the
+   *     signature carries the flag names too (new flag type at equal count
+   *     must re-alert). --- */
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 2 } },
+        rows: [
+          { rowNumber: 5, dateLocal: today, supplierRaw: '', supplierKey: 'unknown', invoiceNum: 'B-1', totalCostIncGst: 30, status: 'RECEIVED', flags: ['BLANK_SUPPLIER'] },
+          { rowNumber: 6, dateLocal: today, supplierRaw: 'Flag Co', supplierKey: 'flag_co', invoiceNum: 'F-3', totalCostIncGst: 0, status: 'RECEIVED', flags: ['NON_NUMERIC_PRICE_KG'] }
+        ]
+      })
+    }),
+  };
+  greenBeanPull_impl_();
+  const flagAlert = calendarEvents[calendarEvents.length - 1];
+  check('flag bucketing: alert names BLANK_SUPPLIER and NON_NUMERIC_PRICE_KG',
+    flagAlert._description.indexOf('BLANK_SUPPLIER') !== -1 &&
+    flagAlert._description.indexOf('NON_NUMERIC_PRICE_KG') !== -1);
+  check('flag bucketing: signature carries the flag names',
+    String(scriptProps.ORDERAPP_DQ_SIG_greenbean_flags).indexOf('BLANK_SUPPLIER') !== -1);
+
   global.UrlFetchApp = REAL_URL_FETCH;
 })();
 
@@ -5699,6 +5737,66 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   calendarEvents = [];
   greenBeanPull_impl_(); // re-pull, both suppliers still present
   eq('legit shared invoiceNum across suppliers: no rename alert', calendarEvents.length, 0);
+
+  /* --- rename detection is WINDOW-BOUNDED: a quiet supplier's OLD row
+   *     (storedDate before the 3-month window) colliding on a plain invoice
+   *     number must NOT false-positive — the runbook it points at would zero
+   *     real historical spend. --- */
+  reset();
+  {
+    const supp = currentSS.insertSheet('Suppliers');
+    supp.appendRow(SUPPLIERS_HEADERS);
+    // historical row well before greenBeanWindow_ (month-2 start)
+    supp.appendRow(['2025-01-15', 'Quiet Co', 77, 'quiet_co/1001', '', 'greenbean', 'TS', 'Roastery']);
+  }
+  armFetch([{ rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'New Co', supplierKey: 'new_co', invoiceNum: '1001', totalCostIncGst: 50, status: 'RECEIVED' }]);
+  calendarEvents = [];
+  greenBeanPull_impl_();
+  eq('out-of-window prior holder: no rename alert', calendarEvents.length, 0);
+
+  /* --- upstream signature hashes CONTENT: the same 1-element warnings array
+   *     with changed text ("3 rows" -> "40 rows") must re-alert --- */
+  reset();
+  const warnFetch = (text) => ({
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: 0 } },
+        diagnostics: { warnings: [text] },
+        rows: []
+      })
+    }),
+  });
+  global.UrlFetchApp = warnFetch('3 green-bean row(s) were excluded by the date filter');
+  greenBeanPull_impl_();
+  eq('content-hash sig: first warning alerts', calendarEvents.length, 1);
+  greenBeanPull_impl_();
+  eq('content-hash sig: unchanged text suppressed', calendarEvents.length, 1);
+  global.UrlFetchApp = warnFetch('40 green-bean row(s) were excluded by the date filter');
+  greenBeanPull_impl_();
+  eq('content-hash sig: same count, changed text -> re-alerts', calendarEvents.length, 2);
+
+  /* --- abort path surfaces collected warnings instead of discarding them --- */
+  reset();
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({
+        ok: true,
+        meta: { paging: { truncated: true, rowsIncluded: false, returned: 5000 } },
+        diagnostics: { warnings: ['payload too large to include rows'] },
+        rows: []
+      })
+    }),
+  };
+  calendarEvents = [];
+  const abortRes = greenBeanPull_impl_();
+  check('abort: apiFailed surfaced', abortRes.apiFailed === true);
+  eq('abort: the collected warnings still raise the data-quality alert', calendarEvents.length, 1);
+  check('abort alert says the run ABORTED and carries the warning text',
+    calendarEvents[0]._description.indexOf('ABORTED') !== -1 &&
+    calendarEvents[0]._description.indexOf('payload too large') !== -1);
 
   /* --- upstream warnings: impl raises ONE signature-gated alert, suppresses
    *     while unchanged, clears on a clean pull --- */

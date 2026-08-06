@@ -1634,12 +1634,13 @@ function getLastCompletedWeek_(todayStr) {
  * @param {string} [kind]    'spend' (default) | 'revenue'
  * @returns {Array<{supplier, location, department, kind, total}>}
  *   Spend: supplier=supplier name, location=location, department=row[7].
- *   Revenue: location=channel, department=row[1], and supplier (JSON field name
- *     kept for doGet compat) depends on the channel — the SOURCE when channel
- *     is 'online' (case-insensitive), the customer name otherwise. Online guest
- *     checkouts are named '#<order_number>', unique per order, so grouping them
- *     by customer wrote one Summary row per order; wholesale customers are real
- *     named accounts and keep their own weekly line. Revenue is never netted
+ *   Revenue: location=channel, department=row[1], supplier (JSON field name
+ *     kept for doGet compat) = the customer name. channel='online' rows
+ *     (case-insensitive) are EXCLUDED from the rollup entirely (PRD-10):
+ *     online revenue's sole producer is shopifyWeeklyPull's pull-owned
+ *     supplier='shopify_orderapp' Summary row — deriving a second row here
+ *     would double-count beside it. Wholesale customers are real named
+ *     accounts and keep their own weekly line. Revenue is never netted
  *     against spend — each kind aggregates into its own groups.
  */
 function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {

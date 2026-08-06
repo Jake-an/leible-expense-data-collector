@@ -218,6 +218,20 @@ function orderAppRaiseDataQualityAlert_(source, message, signature) {
   }
 }
 
+/**
+ * Tiny content hash for suppression signatures. Counting is NOT enough: the
+ * producer embeds row counts inside warning STRINGS (e.g. "3 row(s) were
+ * excluded..."), so a condition escalating 3 -> 40 dropped rows changes the
+ * text but not the array length — a count-based signature would stay silent.
+ */
+function orderAppSignatureHash_(s) {
+  var h = 0;
+  for (var i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
 /** Call on a clean run: the condition is gone, so its next occurrence re-alerts. */
 function orderAppClearDataQualitySignature_(source) {
   try {
@@ -430,13 +444,22 @@ function greenBeanInvoices_(lines) {
   var groups = {};
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
-    var invoiceNum = line.invoiceNum || '';
+    var invoiceNum = String(line.invoiceNum || '').trim();
+    // Group case-INSENSITIVELY: the producer trims but does not lowercase
+    // invoiceNum, so one hand-typed invoice can arrive as 'INV-700' + 'inv-700'.
+    // Case-sensitive grouping would emit TWO rows whose refs collapse to ONE
+    // dedup key at the sheet (rowKey_ lowercases) — the second row is dropped
+    // as an in-batch duplicate and its money silently vanishes. The emitted
+    // ref keeps the group's first-seen casing (display only; every key
+    // comparison downstream is lowercased).
+    var displayRef;
     var groupKey;
     if (invoiceNum) {
-      groupKey = line.supplierKey + '/' + invoiceNum;
+      displayRef = line.supplierKey + '/' + invoiceNum;
     } else {
-      groupKey = line.supplierKey + '/noinv-' + line.dateLocal;
+      displayRef = line.supplierKey + '/noinv-' + line.dateLocal;
     }
+    groupKey = displayRef.toLowerCase();
 
     if (!groups[groupKey]) {
       groups[groupKey] = {
@@ -445,7 +468,7 @@ function greenBeanInvoices_(lines) {
         invoiceNum: invoiceNum,
         dateLocal: line.dateLocal,
         total: 0,
-        groupKey: groupKey
+        displayRef: displayRef
       };
     }
 
@@ -467,7 +490,7 @@ function greenBeanInvoices_(lines) {
       date: group.dateLocal,
       supplier: group.supplierRaw,
       total: Math.round(group.total * 100) / 100,
-      invoice_ref: group.groupKey,
+      invoice_ref: group.displayRef,
       department: 'Roastery'
     });
   }
@@ -572,16 +595,11 @@ function greenBeanFetchAllRows_() {
     // is the documented size guard, but an absent/non-boolean value would
     // otherwise fall through BOTH branches, break the loop, and silently ingest
     // a partial window as if it were complete.
-    if (paging.truncated === true && paging.rowsIncluded !== true) {
-      Logger.log('greenBeanFetchAllRows_: truncated response without rows (size guard or ambiguous rowsIncluded=' +
-        paging.rowsIncluded + ') — aborting rather than ingest an incomplete window');
-      return null;
-    }
-
-    // Surface upstream data-quality signals verbatim — the API coerces a
+    // Surface upstream data-quality signals verbatim BEFORE any abort path —
+    // an abort discards the rows but the warnings often EXPLAIN it, and the
+    // impl's abort handler reads what was collected here. The API coerces a
     // non-numeric price/kg cell to 0 and drops invalid-Timestamp rows,
-    // reporting both ONLY here. Discarding them turns a typo'd cell into a
-    // silently understated committed-spend figure.
+    // reporting both ONLY here.
     // The producer recomputes diagnostics.warnings over the WHOLE matched set
     // on every page, so a multi-page pull would collect N identical copies —
     // dedupe here so the alert body lists each warning once and the
@@ -594,6 +612,12 @@ function greenBeanFetchAllRows_() {
         Logger.log('greenBeanFetchAllRows_: UPSTREAM WARNING — ' + warnText);
         GREENBEAN_UPSTREAM_WARNINGS_.push(warnText);
       }
+    }
+
+    if (paging.truncated === true && paging.rowsIncluded !== true) {
+      Logger.log('greenBeanFetchAllRows_: truncated response without rows (size guard or ambiguous rowsIncluded=' +
+        paging.rowsIncluded + ') — aborting rather than ingest an incomplete window');
+      return null;
     }
 
     // Offset paging is not snapshot-stable: the Order app re-slices the live
@@ -691,6 +715,17 @@ function greenBeanPull_impl_() {
 
   var rows = greenBeanFetchAllRows_();
   if (rows === null) {
+    // Surface any upstream warnings collected before the abort — they often
+    // EXPLAIN the failure, and the abort path is exactly where losing them
+    // to the execution log would hurt most.
+    if (GREENBEAN_UPSTREAM_WARNINGS_.length > 0) {
+      Logger.log('greenBeanPull: run aborted with ' + GREENBEAN_UPSTREAM_WARNINGS_.length +
+        ' upstream warning(s) already collected: ' + GREENBEAN_UPSTREAM_WARNINGS_.join(' | '));
+      orderAppRaiseDataQualityAlert_(GREENBEAN_SOURCE + '_upstream',
+        'greenBeanPull ABORTED mid-fetch; upstream warnings collected before the abort ' +
+        '(these may explain it):\n- ' + GREENBEAN_UPSTREAM_WARNINGS_.join('\n- '),
+        'warnings:' + orderAppSignatureHash_(GREENBEAN_UPSTREAM_WARNINGS_.slice().sort().join('|')));
+    }
     return { apiFailed: true };
   }
 
@@ -704,16 +739,19 @@ function greenBeanPull_impl_() {
       'The greenBeanCost API reported ' + upstreamWarnings.length + ' data-quality warning(s) this pull ' +
       '(e.g. rows hidden by an invalid Timestamp) — the ingested spend may be incomplete:\n- ' +
       upstreamWarnings.join('\n- '),
-      'warnings:' + upstreamWarnings.length);
+      // Content-hashed, not counted: the row count lives INSIDE the warning
+      // text, so "3 rows excluded" -> "40 rows excluded" must re-alert.
+      'warnings:' + orderAppSignatureHash_(upstreamWarnings.slice().sort().join('|')));
   } else {
     orderAppClearDataQualitySignature_(GREENBEAN_SOURCE + '_upstream');
   }
 
   // Per-row flags mark data problems the API worked around (NON_NUMERIC_*
-  // coerced to $0, BLANK_SUPPLIER, INVALID_TIMESTAMP, …). The lines still
-  // ingest (locked decision: never dropped), but the count must be loud —
-  // and the alert names the DISTINCT flags present, because "fix the price
-  // cell" is wrong advice for a blank-supplier row.
+  // coerced to $0, BLANK_SUPPLIER, …; invalid-Timestamp rows never reach
+  // rows[] on a from/to query — they surface via diagnostics.warnings above).
+  // The lines still ingest (locked decision: never dropped), but the count
+  // must be loud — and the alert names the DISTINCT flags present, because
+  // "fix the price cell" is wrong advice for a blank-supplier row.
   var flaggedRows = 0;
   var flagNamesSeen = {};
   for (var f = 0; f < rows.length; f++) {
@@ -783,14 +821,24 @@ function greenBeanPull_impl_() {
   for (var pk = 0; pk < invoices.length; pk++) {
     pullSupplierKeys[String(invoices[pk].invoice_ref).trim().toLowerCase().split('/')[0]] = true;
   }
+  // Candidates are BOUNDED to rows whose storedDate falls inside this pull's
+  // window. The Suppliers tab retains ~6 months (ARCHIVE_RETENTION_DAYS=183)
+  // but the pull spans ~3 — a supplier legitimately quiet this quarter would
+  // otherwise satisfy "prior holder absent from pull" and an invoice-number
+  // collision with their old rows would false-positive a rename whose runbook
+  // zeroes REAL historical spend. Same-window rows can't be quiet-supplier
+  // artifacts: if the row's date is in the window, the pull re-fetches it.
+  var renameWindow = greenBeanWindow_(todayStr_());
   var snapshotByInvNum = {};
   for (var snapKey in snapshot) {
     if (!Object.prototype.hasOwnProperty.call(snapshot, snapKey)) continue;
+    var snapEntry = snapshot[snapKey];
+    if (snapEntry.storedDate < renameWindow.from || snapEntry.storedDate > renameWindow.to) continue;
     var refParts = snapKey.replace(GREENBEAN_SOURCE + '||', '').split('/');
     if (refParts.length < 2) continue;
     var bare = refParts.slice(1).join('/');
     if (!snapshotByInvNum[bare]) snapshotByInvNum[bare] = [];
-    snapshotByInvNum[bare].push({ supplierKey: refParts[0], ref: refParts.join('/'), total: snapshot[snapKey].total });
+    snapshotByInvNum[bare].push({ supplierKey: refParts[0], ref: refParts.join('/'), total: snapEntry.total });
   }
   var suspectedRenames = [];
 
