@@ -211,7 +211,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-08-06T10:22:54+0900"
+      "completed_at": "2026-08-06T10:22:54+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/orderapp-pulls/step4-review.json",
+        "checked_at": "2026-08-06T10:24:38+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 5,
@@ -226,7 +236,8 @@
       "docs": [
         "schema.md",
         "ingest-contract.md"
-      ]
+      ],
+      "started_at": "2026-08-06T10:24:38+0900"
     },
     {
       "step": 6,
