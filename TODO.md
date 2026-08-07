@@ -18,6 +18,42 @@
 
 ## Active
 
+### Mayers North Sydney never maps — `BLUES ST` regex miss (found 2026-08-08, NOT fixed)
+Live `doGet` probe (`from=2026-07-20&to=2026-08-03`) found 2 spend rows with
+`location: "UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060"` —
+**$703.00** (wk 2026-07-20) and **$570.15** (wk 2026-07-27). Real North Sydney Mayers spend
+that every consumer buckets to `Other` instead of `North` (confirmed downstream in
+`LEIBLE_GM_COST_MONITOR/ExpenseAPI.gs` — `normaliseShopKey` returns `'Other'`).
+
+Root cause — `connectors/gas/mayers.gs:27`:
+```js
+{ re: /\bBLUE\s*ST/i, shop: 'Leible North' },   // invoice says "5 BLUES ST"
+//        ^ needs S?    \bBLUE matches "BLUE" inside "BLUES", \s* matches nothing,
+//                      then "ST" is required but the next char is "S" → no match
+```
+
+- [ ] Fix + backfill. **Tier-3 work — mutates production Sheet rows; give it its own plan.**
+      Three traps already investigated (2026-08-08) — do not rediscover them:
+      1. `mayersShopFromText_` tests each rule against the **whole** invoice text, and the BLUE
+         rule precedes Crows Nest (`mayers.gs:24-29`). Widening to `/\bBLUES?\s*ST/i` could steal
+         another shop's invoice if "5 Blues St" appears in a bill-to/head-office block — today
+         that misfire is impossible *because* the regex never matches. Pre-flight: dump the OCR
+         text of a known Crows Nest / York / Pitt invoice and grep for `BLUES` before flipping;
+         if present outside Deliver-To, scope the match to the Deliver-To capture instead. Add a
+         Crows-Nest-with-stray-BLUES regression case beside `test_code.js:683`.
+      2. `SUMMARY_KEY_COLS = [0,6,7,2,3]` **includes `location`** (`Code.gs:65`). Rewriting a
+         row's location and re-summarizing therefore *orphans* the old Summary row instead of
+         updating it (`upsertRows_` has no delete path) → the same money is served twice. The
+         backfill must delete the stale `UNMAPPED:` Summary rows explicitly, in code, inside
+         `withScriptLock_` (re-entrant via `SCRIPT_LOCK_DEPTH_`, `Code.gs:104-109`).
+      3. Re-summarize needs the **override** form — `weeklySummarize('2026-07-20')` and
+         `('2026-07-27')`. The bare form does only the last completed week and also fires
+         `archiveAndPurge_` (`Code.gs:1800`). It returns `{refused:…}` on lock contention with
+         **no throw** (`Code.gs:1755-1758`) — assert the return value and
+         `rowsAdded + rowsUpdated > 0`; "no error" is not success.
+      Verification that catches the double-count: week **grand totals unchanged**, `North` up by
+      exactly $703.00 / $570.15, `Other` down by the same, no duplicate Mayers rows.
+
 ### Order-app pulls — live bring-up (Jake + Claude, after phase merge)
 Code (branch `feat-orderapp-pulls`, phase `orderapp-pulls`) is merged and unit-tested
 (1005/1005 green in `connectors/gas/test_code.js`) but **not yet live**. `shopifyWeeklyPull`
