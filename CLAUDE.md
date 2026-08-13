@@ -21,11 +21,6 @@ Central hub that pulls expense + sales data from multiple suppliers into one Goo
 
 Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staff_Onboarding_App`; this collector reads its `LABOUR_COST` sheet via `LABOUR_SHEET_ID` script property (see `docs/ADR.md` ADR-007).
 
-## Architecture (two runtimes)
-- **GAS** handles: Square API pulls, Mayers PDF-invoice parsing (Drive OCR), normalization, Sheet writes, `doPost` ingest endpoint, scheduling
-- **Playwright** handles: portal logins with saved sessions → downloads raw data → POSTs to GAS endpoint
-- Full detail: `docs/ARCHITECTURE.md`
-
 ## Architecture Rules
 - CRITICAL: **Two runtimes, one boundary.** GAS owns every Sheet write, Square API pull, Mayers PDF parse, and normalization. Playwright connectors ONLY log in, download raw data, and POST to the GAS `doPost` ingest endpoint — a connector never writes to the Sheet directly.
 - CRITICAL: **All EXTERNAL ingest flows through `doPost` → `validateIngest_` → the two-tab contract** (`Suppliers` invoice-level + `Sales` Square daily). A connector never appends to a tab outside that path. GAS-native pulls (`square.gs`, `mayers.gs`, labour, `orderapp.gs`) are the sanctioned exception: they write through the internal normalizers/upserts (`ingestSupplierRows`/`upsertRows_`), which enforce the same dedup keys. The dedup keys are the contract — `source`+`invoice_ref` for `Suppliers`, `date`+`location` for `Sales` — see `docs/schema.md`.
@@ -56,15 +51,8 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 - CRITICAL: Steps marked `tdd: true` are test-first — follow the step file's "Test First" block exactly (red-green-refactor; the enumerated cases define "done"). The v2 harness enforces this mechanically: it confirms the test **fails** (RED) before implementation, requires it to **pass** (GREEN) after, and hard-errors a step where `tdd: true` has no `test_cmd`.
 - Commit messages follow conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
 
-## Commands
-```
-python scripts/execute.py <phase-dir>          # Run a connector phase (resolve <phase-dir>: see "Harness" above)
-python scripts/pre_push_sync.py                # "lets stop here": teammate-safe git push only
-bash scripts/deploy.sh                          # Deploy GAS after finishing code (one deployment id, no git)
-```
-
 ## Docs Index (lazy-load)
-- `docs/ARCHITECTURE.md` — two-runtime design, data flow, POST bridge. *Load when reasoning about system design.*
+- `docs/architecture.md` — two-runtime design, data flow, POST bridge. *Load when reasoning about system design.*
 - `docs/ADR.md` — why GAS, why Playwright, why hybrid. *Load when questioning a tech choice.*
 - `docs/PRD.md` — goal, sources, scope. *Load when scoping new connectors.*
 - `docs/rules.md` — full operating rules. *Load before automating or scheduling.*
