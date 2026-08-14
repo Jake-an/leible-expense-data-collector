@@ -32,6 +32,16 @@ Root cause — `connectors/gas/mayers.gs:27`:
 //                      then "ST" is required but the next char is "S" → no match
 ```
 
+- [x] **Evidence step shipped 2026-08-14** (branch `feat-mayers-location-fix`,
+      `connectors/gas/mayers_harvest.gs`, pushed NOT deployed — it is an editor-run
+      diagnostic, `/exec` is untouched). Run `runMayersOcrHarvest()` in the editor; it
+      writes a Google Doc of REAL Drive OCR text for up to one invoice per shop, plus
+      each invoice's verdicts under today's regexes. Read-only: no Suppliers/Summary
+      writes, no Gmail labels. **This gates the fix below** — `pdftotext` is NOT a valid
+      proxy for Drive OCR (measured: the real invoice PDF failed all three production
+      regexes under pdftotext while that same invoice ingested fine live), so neither
+      the Deliver-To scoping nor TODO #8 can be settled offline. Delete the file when
+      the parser work closes.
 - [ ] Fix + backfill. **Tier-3 work — mutates production Sheet rows; give it its own plan.**
       Three traps already investigated (2026-08-08) — do not rediscover them:
       1. `mayersShopFromText_` tests each rule against the **whole** invoice text, and the BLUE
