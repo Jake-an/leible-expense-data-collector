@@ -43,6 +43,9 @@ Root cause — `connectors/gas/mayers.gs:27`:
       the Deliver-To scoping nor TODO #8 can be settled offline. Delete the file when
       the parser work closes.
 - [ ] Fix + backfill. **Tier-3 work — mutates production Sheet rows; give it its own plan.**
+      **Decisions already locked → `docs/mayers-location-fix-decisions.md` (2026-08-14).**
+      Read it before planning: fix shape, safety gate, sweep scope, repair method and
+      verification invariants are all settled, and it records what NOT to rediscover.
       Three traps already investigated (2026-08-08) — do not rediscover them:
       1. `mayersShopFromText_` tests each rule against the **whole** invoice text, and the BLUE
          rule precedes Crows Nest (`mayers.gs:24-29`). Widening to `/\bBLUES?\s*ST/i` could steal
