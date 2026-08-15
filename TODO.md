@@ -62,10 +62,50 @@ Root cause — `connectors/gas/mayers.gs:27`:
       3. Re-summarize needs the **override** form — `weeklySummarize('2026-07-20')` and
          `('2026-07-27')`. The bare form does only the last completed week and also fires
          `archiveAndPurge_` (`Code.gs:1800`). It returns `{refused:…}` on lock contention with
-         **no throw** (`Code.gs:1755-1758`) — assert the return value and
-         `rowsAdded + rowsUpdated > 0`; "no error" is not success.
+         **no throw** (`Code.gs:1755-1758`, and `refused:'incomplete-week'` at 1793) — assert the
+         return value; "no error" is not success.
+         **Field names (verified 2026-08-15, `Code.gs:1854-1855`): `summariesAdded` /
+         `summariesUpdated`** — NOT `rowsAdded`/`rowsUpdated`, which is what an earlier draft of
+         this list and `decisions.md` decision 7 both said. Assert on the wrong names and you are
+         doing arithmetic on `undefined`: `undefined + undefined` is `NaN`, so a
+         `sum > 0` assert always FAILS and a `sum === 0` guard never fires — vacuous in whichever
+         direction it is written. (`upsertRows_` is the one that returns `rowsAdded`/`rowsUpdated`;
+         `weeklySummarize` renames them on the way out.)
       Verification that catches the double-count: week **grand totals unchanged**, `North` up by
       exactly $703.00 / $570.15, `Other` down by the same, no duplicate Mayers rows.
+
+### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
+`mayersDailyPull` only labels a thread once something parsed out of it
+(`mayers.gs`, `if (threadParsed > 0)`). A document that can **never** parse therefore
+never gets labelled, keeps matching `MAYERS_SEARCH`, and is sent to Drive OCR again
+every single day. The live instance is the monthly *"Mayer's Fine Food statement"*.
+
+Evidence (Gmail, 2026-08-15): the Mayers search matches **8** threads;
+`expense-ingested` (`Label_24`) covers **7**. The eighth is the 31 JUL statement.
+Standing Drive-OCR quota leak, and the likely cause of the rate-limiting that
+truncated the 2026-08-14 harvest at 4 of 8 PDFs.
+
+- [x] Fix: an **unparseable-attachment memo** in Script Properties
+      (`MAYERS_UNPARSEABLE`), keyed by attachment name + byte size. A document that
+      OCR'd fine and still didn't parse is remembered, and its OCR is skipped next run.
+      Deliberately **not** a Gmail label on the thread — the thread must stay unlabelled
+      so a new attachment added to it is still processed.
+      - Only *deterministic* failures are memoed. A thrown OCR (rate limit) is transient
+        and is retried, so a bad day can never permanently discard a real invoice.
+        `extractMayersInvoiceFromPdf_` now returns `{parsed, deterministic}` to make that
+        distinction available at the call site.
+      - `MAYERS_PARSER_VERSION` invalidates the whole memo on bump, so every remembered
+        document is retried exactly once against a changed parser — that preserves the
+        original "unparseable threads stay unlabelled so they're retried after a fix"
+        intent. **Bump it as part of the `BLUES ST` fix.**
+      - `resetMayersUnparseableMemo()` is a zero-arg editor escape hatch.
+      - 33 new tests; this is the first coverage `mayersDailyPull` has ever had
+        (`global.GmailApp` was `{}`). Suite 1145 passed / 0 failed.
+- [ ] **Latent, same defect class, NOT fixed:** `roastery_email.gs` has the identical
+      `if (threadParsed > 0)` gate and shares `extractPdfText_`. It is **not leaking
+      today** — its source label `roastery/invoices` does not exist in the mailbox, so
+      its search returns nothing and the connector is dormant. It will leak the moment
+      roastery goes live with any non-invoice attachment. Effort: S (port the memo).
 
 ### Order-app pulls — live bring-up (Jake + Claude, after phase merge)
 Code (branch `feat-orderapp-pulls`, phase `orderapp-pulls`) is merged and unit-tested
@@ -501,9 +541,12 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
       branching driving the live-verification gate has no direct unit tests (grep returns zero). Effort: M.
 
 **P4 — low impact / robustness**
-- [ ] **#8 (MIN) Mayers "Sub Total" may match before real "Total"** — `connectors/gas/mayers.gs:173`. First-match
-      regex `/(?:^|\s)Total.../` — the space in "Sub Total" satisfies `\s`. Unconfirmed against a live sample;
-      flagged as a regex-construction risk. Effort: S.
+- [x] **#8 (MIN) Mayers "Sub Total" may match before real "Total"** — **CLOSED 2026-08-14 as not-a-defect**,
+      on the real Drive-OCR text from `runMayersOcrHarvest()`. The premise does not hold: Mayers invoices carry
+      **no "Sub Total" label at all** (they use `Ex Tax:`). The one genuine near-miss is the `Line Total` column
+      header, and the regex's `\.\d{2}` anchor rejects it because no `123.45`-shaped number follows the header.
+      The stated risk was a regex-construction worry, not an observed misparse. Keep the `\.\d{2}` anchor — it is
+      what makes this safe. Re-open only if Mayers changes its invoice template.
 - [ ] **#10 (MIN) `ensureSheet` never validates existing headers** — `connectors/gas/Code.gs`. No comparison vs
       `SUPPLIERS_HEADERS`/`SALES_HEADERS` for pre-existing tabs; a manual column insert/reorder → every `appendRow`
       writes into the wrong columns silently. Effort: M.

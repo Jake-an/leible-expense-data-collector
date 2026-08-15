@@ -6199,5 +6199,200 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
 /* ------------------------------------------------------------------ */
 
+// The monthly "Mayer's Fine Food statement" is not an invoice and can never
+// parse, so mayersDailyPull never labels its thread, so MAYERS_SEARCH returns it
+// again tomorrow — and Drive OCR runs on it every day forever. Verified against
+// the live mailbox 2026-08-15: 8 threads match the search, `expense-ingested`
+// covers 7. These tests assert the OCR is skipped on the second sighting.
+//
+// This is the FIRST coverage mayersDailyPull has ever had — global.GmailApp was
+// `{}` — so the mock is deliberately faithful on the one axis that matters:
+// search() honours the `-label:expense-ingested` clause by returning only
+// unlabelled threads, exactly as Gmail does.
+console.log('mayersDailyPull — unparseable-attachment memo (Drive OCR quota leak)');
+(function () {
+  const savedGmail = global.GmailApp;
+  const savedExtract = globalThis.extractPdfText_;
+  const savedVersion = globalThis.MAYERS_PARSER_VERSION;
+
+  const INVOICE_TEXT = 'Invoice No: 3429816\nInvoice Date: 17-JUN-26\n' +
+    'Deliver To:\n5 BLUES ST\nNORTH SYDNEY NSW 2060\nTotal: 736.74';
+  const INVOICE2_TEXT = 'Invoice No: 3434688\nInvoice Date: 30-JUN-26\n' +
+    'Deliver To:\n89 YORK ST\nSYDNEY\nTotal: 121.00';
+  const STATEMENT_TEXT = "Mayer's Fine Food statement - 31 JUL 26\nAged balances follow.";
+
+  let ocrCalls = [];        // attachment keys extractPdfText_ was actually asked for
+  let ocrText = {};         // attachment name → text to return, or an Error to throw
+  let allThreads = [];
+
+  function attachment(name, size) {
+    return {
+      getContentType: () => 'application/pdf',
+      getName: () => name,
+      getSize: () => size,
+    };
+  }
+  function message(name, size, dateIso) {
+    return {
+      getAttachments: () => [attachment(name, size)],
+      getDate: () => new Date(dateIso),
+    };
+  }
+  function thread(messages) {
+    const t = {
+      _labelled: false,
+      _messages: messages,
+      getMessages: () => t._messages,
+      addLabel: () => { t._labelled = true; },
+    };
+    return t;
+  }
+
+  global.GmailApp = {
+    // Models `-label:expense-ingested`: a labelled thread stops being returned.
+    search: () => allThreads.filter((t) => !t._labelled),
+    getUserLabelByName: () => ({ _name: MAYERS_LABEL }),
+    createLabel: () => ({ _name: MAYERS_LABEL }),
+  };
+  globalThis.extractPdfText_ = function (pdf) {
+    ocrCalls.push(pdf.getName() + ':' + pdf.getSize());
+    const t = ocrText[pdf.getName()];
+    if (t instanceof Error) throw t;
+    return t;
+  };
+
+  function resetProps() { scriptProps = { HUB_SHEET_ID: 'hub' }; }
+  function run() { ocrCalls = []; return mayersDailyPull(); }
+
+  /* --- scenario: one real invoice + the statement ------------------ */
+  freshSheets();
+  resetProps();
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT, 'statement-31JUL26.pdf': STATEMENT_TEXT };
+  const invoiceThread = thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z')]);
+  const statementThread = thread([message('statement-31JUL26.pdf', 88000, '2026-08-04T03:40:26Z')]);
+  allThreads = [invoiceThread, statementThread];
+
+  const run1 = run();
+
+  // Meta-assertion: the counter genuinely observes OCR. Without this, every
+  // "0 OCR calls" assertion below could pass on a stub that is never wired in.
+  eq('run 1 OCRs both attachments (mock observes real calls)', ocrCalls.length, 2);
+  eq('run 1 ingests the invoice', run1.rowsAdded, 1);
+  eq('run 1 counts the statement as unparsed', run1.unparsed, 1);
+  eq('run 1 skips no OCR — nothing memoed yet', run1.ocrSkipped, 0);
+  check('invoice thread is labelled', invoiceThread._labelled === true);
+  check('statement thread stays UNLABELLED (a new attachment must still be seen)',
+    statementThread._labelled === false);
+
+  /* --- the leak: second sighting of the same statement -------------- */
+  const run2 = run();
+  eq('run 2 performs ZERO OCR — the daily statement re-OCR is gone', ocrCalls.length, 0);
+  eq('run 2 reports the skip', run2.ocrSkipped, 1);
+  eq('run 2 ingests nothing new', run2.rowsAdded, 0);
+  check('statement thread is STILL unlabelled after being memoed',
+    statementThread._labelled === false);
+
+  /* --- a new attachment on that same thread is still processed ------ */
+  ocrText['inv3434688.pdf'] = INVOICE2_TEXT;
+  statementThread._messages = statementThread._messages.concat([
+    message('inv3434688.pdf', 49000, '2026-06-30T20:05:00Z'),
+  ]);
+  const run3 = run();
+  eq('a NEW attachment on the memoed thread is OCRd', ocrCalls, ['inv3434688.pdf:49000']);
+  eq('the new invoice ingests', run3.rowsAdded, 1);
+  eq('the statement beside it is still skipped', run3.ocrSkipped, 1);
+  check('thread is labelled now that something parsed out of it',
+    statementThread._labelled === true);
+
+  /* --- a parser change retries every memoed document exactly once --- */
+  // Fresh scenario on a statement-only thread: nothing ever parses out of it, so
+  // it is never labelled and stays in the search for the whole sequence. (Reusing
+  // the thread above would confound this — it now also carries a parseable
+  // invoice, which re-labels the thread and adds a second OCR call.)
+  freshSheets();
+  resetProps();
+  ocrText = { 'statement-31JUL26.pdf': STATEMENT_TEXT };
+  allThreads = [thread([message('statement-31JUL26.pdf', 88000, '2026-08-04T03:40:26Z')])];
+
+  run();                                  // first sighting: memoed
+  const memoed = run();
+  eq('memoed under the current version → no OCR', ocrCalls.length, 0);
+  eq('…and reports the skip', memoed.ocrSkipped, 1);
+
+  globalThis.MAYERS_PARSER_VERSION = savedVersion + 1;
+  const run4 = run();
+  eq('version bump re-OCRs the memoed statement exactly once',
+    ocrCalls, ['statement-31JUL26.pdf:88000']);
+  eq('version bump means nothing is skipped', run4.ocrSkipped, 0);
+  const run5 = run();
+  eq('and it is immediately re-memoed under the new version', ocrCalls.length, 0);
+  eq('re-memoed under new version reports the skip', run5.ocrSkipped, 1);
+  globalThis.MAYERS_PARSER_VERSION = savedVersion;
+
+  /* --- a TRANSIENT OCR failure must never be memoed ----------------- */
+  freshSheets();
+  resetProps();
+  ocrText = { 'flaky.pdf': new Error('rate limit exceeded for OCR') };
+  const flakyThread = thread([message('flaky.pdf', 12345, '2026-08-10T01:00:00Z')]);
+  allThreads = [flakyThread];
+
+  const flaky1 = run();
+  eq('a thrown OCR counts as unparsed', flaky1.unparsed, 1);
+  const flaky2 = run();
+  eq('a transient OCR failure is NOT memoed — it retries next run',
+    ocrCalls, ['flaky.pdf:12345']);
+  eq('and reports no skip', flaky2.ocrSkipped, 0);
+
+  // Once OCR recovers, the invoice ingests normally.
+  ocrText['flaky.pdf'] = INVOICE_TEXT;
+  const flaky3 = run();
+  eq('a recovered attachment ingests normally', flaky3.rowsAdded, 1);
+
+  global.GmailApp = savedGmail;
+  globalThis.extractPdfText_ = savedExtract;
+  globalThis.MAYERS_PARSER_VERSION = savedVersion;
+  scriptProps = {};
+})();
+
+console.log('mayers memo helpers');
+(function () {
+  const savedVersion = globalThis.MAYERS_PARSER_VERSION;
+  scriptProps = {};
+
+  eq('attachment key pairs name with byte size',
+    mayersAttachmentKey_({ getName: () => 'a.pdf', getSize: () => 42 }), 'a.pdf:42');
+  check('same name, different size → different key',
+    mayersAttachmentKey_({ getName: () => 'a.pdf', getSize: () => 42 }) !==
+    mayersAttachmentKey_({ getName: () => 'a.pdf', getSize: () => 43 }));
+
+  eq('absent memo loads as empty', mayersLoadUnparseable_(), {});
+
+  mayersSaveUnparseable_({ 'x.pdf:1': 1000 });
+  eq('round-trips at the current version', mayersLoadUnparseable_(), { 'x.pdf:1': 1000 });
+
+  globalThis.MAYERS_PARSER_VERSION = savedVersion + 1;
+  eq('a version bump discards the whole memo', mayersLoadUnparseable_(), {});
+  globalThis.MAYERS_PARSER_VERSION = savedVersion;
+
+  scriptProps[MAYERS_UNPARSEABLE_PROP] = '{not json';
+  eq('corrupt memo degrades to empty, not a throw', mayersLoadUnparseable_(), {});
+
+  // Eviction: oldest-first, capped. Guards the 9KB Script-Properties value limit.
+  const many = {};
+  for (let i = 0; i < MAYERS_UNPARSEABLE_MAX_ + 50; i++) many['f' + i + '.pdf:1'] = i;
+  mayersSaveUnparseable_(many);
+  const kept = mayersLoadUnparseable_();
+  eq('memo is capped at MAYERS_UNPARSEABLE_MAX_',
+    Object.keys(kept).length, MAYERS_UNPARSEABLE_MAX_);
+  check('oldest entry was evicted', kept['f0.pdf:1'] === undefined);
+  check('newest entry was kept',
+    kept['f' + (MAYERS_UNPARSEABLE_MAX_ + 49) + '.pdf:1'] !== undefined);
+
+  globalThis.MAYERS_PARSER_VERSION = savedVersion;
+  scriptProps = {};
+})();
+
+/* ------------------------------------------------------------------ */
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
