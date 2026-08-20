@@ -19,11 +19,33 @@
 ## Active
 
 ### Mayers North Sydney never maps — `BLUES ST` regex miss (found 2026-08-08, NOT fixed)
-Live `doGet` probe (`from=2026-07-20&to=2026-08-03`) found 2 spend rows with
-`location: "UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060"` —
-**$703.00** (wk 2026-07-20) and **$570.15** (wk 2026-07-27). Real North Sydney Mayers spend
-that every consumer buckets to `Other` instead of `North` (confirmed downstream in
+**Census refreshed 2026-08-20** via doGet `fn=summary` (2026-01-01..2026-08-20). All seven
+Gmail invoices are in the Sheet, one Summary row each; Mayers total **$5,127.89**.
+**Four rows are misfiled, $2,713.64** — not the two originally recorded:
+
+| Week | Ref | Amount | Stored `location` |
+|---|---|---|---|
+| 2026-06-15 | 3429816 | $736.74 | `''` blank — the `''` path, mechanism still unconfirmed |
+| 2026-07-06 | 3437634 | $703.75 | `UNMAPPED: … 5 BLUES ST …` |
+| 2026-07-20 | 3442003 | $703.00 | `UNMAPPED: … 5 BLUES ST …` |
+| 2026-07-27 | 3446281 | $570.15 | `UNMAPPED: … 5 BLUES ST …` |
+
+Every consumer buckets these to `Other` instead of `North` (confirmed downstream in
 `LEIBLE_GM_COST_MONITOR/ExpenseAPI.gs` — `normaliseShopKey` returns `'Other'`).
+
+**All four shops DO order from Mayers** (York 06-29, Crowsnest 07-27, Pitt 08-10 all map
+correctly) — so this is a naming/regex fault, not a delivery-cadence or missed-forward
+gap. Jake confirmed 2026-08-20: **"if you see 5 blue street it is north sydney invoice."**
+That closes the "is ~7 invoices/2 months real?" question: yes, ~1 invoice per shop per
+3-4 weeks, nothing missing upstream.
+
+**Trap — week 2026-07-27 legitimately holds TWO Mayers rows of the same $570.15**
+(3446281 → North, 3449495 → Crowsnest; identical standing orders, forwarded 15s apart).
+Any "no duplicate Mayers rows" verification **false-positives**. Assert on `invoice_ref`.
+
+**Trap — the stored UNMAPPED hint is EXACTLY 60 chars** (`slice(0,60)` boundary). A
+`hintSuspect >= 60 → quarantine` gate quarantines all three UNMAPPED rows, drops
+`resolvable` to 0 and aborts the repair as a no-op. `BLUES ST` sits at chars 29-37.
 
 Root cause — `connectors/gas/mayers.gs:27`:
 ```js
@@ -72,7 +94,10 @@ Root cause — `connectors/gas/mayers.gs:27`:
          direction it is written. (`upsertRows_` is the one that returns `rowsAdded`/`rowsUpdated`;
          `weeklySummarize` renames them on the way out.)
       Verification that catches the double-count: week **grand totals unchanged**, `North` up by
-      exactly $703.00 / $570.15, `Other` down by the same, no duplicate Mayers rows.
+      exactly **$703.75 / $703.00 / $570.15** (plus **$736.74** if the blank row resolves),
+      `Other` down by the same, **no duplicate `invoice_ref`**.
+      NOT "no duplicate Mayers rows" — wk 2026-07-27 legitimately has two $570.15 rows
+      (see the census + traps at the top of this section).
 
 ### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
 `mayersDailyPull` only labels a thread once something parsed out of it

@@ -35,6 +35,10 @@ matches inside `BLUES`, `\s*` matches empty, then `ST` is required but the next 
 | 6 | **Repair method**: in-place rewrite of the `Suppliers` location cells + **explicit deletion** of stale `UNMAPPED:` Summary rows + re-summarize via the override form. | `SUMMARY_KEY_COLS` includes `location` (`Code.gs:65`) and `upsertRows_` has no delete path — a naive rewrite orphans the old Summary row and the money is served twice. |
 | 7 | **Re-summarize** with `weeklySummarize('2026-07-20')` and `('2026-07-27')`, asserting the return value and `summariesAdded + summariesUpdated > 0`. | The bare form does only the last completed week and fires `archiveAndPurge_`. It returns `{refused:…}` on lock contention **with no throw** — "no error" is not success. |
 
+| 8 | **Fixtures rebuilt from real OCR text**, all four shops. | `test_code.js:680` asserts `BLUE ST` singular — written from the regex, not from an invoice. That is why 1112 green tests coexisted with a live money bug for two months. |
+| 9 | **Harvest search widened** to full Gmail history including already-labelled threads. | Labelled threads are exactly the ones whose rows are already in the Sheet. |
+| 10 | **Overall shape**: split into a trivial read-only evidence plan (done) and a Tier-3 repair plan drafted with complete evidence. | Plan-review is worth most on the mutation, and it should review a definite sequence, not conditional branches. |
+
 > **Correction (2026-08-15) to decision 7.** This row originally said
 > `rowsAdded + rowsUpdated`. Those are `upsertRows_`'s field names;
 > `weeklySummarize` renames them to **`summariesAdded` / `summariesUpdated`** on the
@@ -43,14 +47,64 @@ matches inside `BLUES`, `\s*` matches empty, then `ST` is required but the next 
 > direction: `sum > 0` always fails, `sum === 0` never fires. The whole point of
 > decision 7 is that "no error" is not success — the wrong field names reintroduce
 > exactly that hole.
-| 8 | **Fixtures rebuilt from real OCR text**, all four shops. | `test_code.js:680` asserts `BLUE ST` singular — written from the regex, not from an invoice. That is why 1112 green tests coexisted with a live money bug for two months. |
-| 9 | **Harvest search widened** to full Gmail history including already-labelled threads. | Labelled threads are exactly the ones whose rows are already in the Sheet. |
-| 10 | **Overall shape**: split into a trivial read-only evidence plan (done) and a Tier-3 repair plan drafted with complete evidence. | Plan-review is worth most on the mutation, and it should review a definite sequence, not conditional branches. |
 
 ## Verification that catches the double-count
 
-Week **grand totals unchanged** · `North` up by exactly **$703.00** / **$570.15** ·
-`Other` down by the same · **no duplicate Mayers rows**.
+Week **grand totals unchanged** · `North` up by exactly **$703.75** / **$703.00** /
+**$570.15** (plus **$736.74** if the blank row resolves) · `Other` down by the same ·
+**no duplicate `invoice_ref`**.
+
+> Corrected 2026-08-20: this line used to say "no duplicate Mayers rows" and to name
+> only two weeks. Both were wrong. Week 2026-07-27 legitimately carries TWO Mayers
+> rows of the same $570.15 (different shops, different refs), so a row-level
+> duplicate check false-positives — assert on `invoice_ref`. See the live census below.
+
+## Live row census (doGet `fn=summary`, 2026-01-01..2026-08-20, probed 2026-08-20)
+
+All seven Gmail invoices are present, one Summary row each. **All four shops order
+from Mayers** — the earlier "North Sydney skew" read was an artefact of only having
+evidence for the misattributed rows, which are all North. Jake confirmed the cause is
+naming, not ordering.
+
+| Week | Ref | Amount | Stored `location` | Verdict |
+|---|---|---|---|---|
+| 2026-06-15 | 3429816 | $736.74 | `''` (blank) | **BROKEN** — the `''` path, mechanism unconfirmed |
+| 2026-06-29 | 3434688 | $703.80 | `Leible York` | ok |
+| 2026-07-06 | 3437634 | $703.75 | `UNMAPPED: …5 BLUES ST…` | **BROKEN** |
+| 2026-07-20 | 3442003 | $703.00 | `UNMAPPED: …5 BLUES ST…` | **BROKEN** |
+| 2026-07-27 | 3449495 | $570.15 | `Leible Crowsnest` | ok |
+| 2026-07-27 | 3446281 | $570.15 | `UNMAPPED: …5 BLUES ST…` | **BROKEN** |
+| 2026-08-10 | 3463868 | $1140.30 | `Leible Pitt` | ok |
+
+Mayers total in span: **$5,127.89**. Misfiled: **$2,713.64** across 4 rows.
+
+### Jake's mapping rule (authoritative, 2026-08-20)
+
+> "if you see 5 blue street it is north sydney invoice"
+
+`5 BLUE(S) ST` identifies **Leible North** — confirmed by the business owner, not
+inferred from the regex. This is what decision 1's widening to `/\bBLUES?\s*ST/i`
+rests on.
+
+### Two traps this census exposes
+
+1. **Week 2026-07-27 legitimately holds TWO Mayers rows of the SAME $570.15**
+   (refs 3446281 → North, 3449495 → Crowsnest — identical standing orders to two
+   shops, forwarded 15 seconds apart). The verification line "no duplicate Mayers
+   rows" therefore **false-positives**. Dedup and assert on **`invoice_ref`**, never
+   on week+amount. Nothing is double-counted today.
+2. **The stored UNMAPPED hint is EXACTLY 60 characters** including its trailing
+   space — `slice(0, 60)` lands exactly on the boundary. A `hintSuspect >= 60 →
+   quarantine` gate would quarantine all three UNMAPPED rows, drop `resolvable` to 0
+   and abort the repair as a no-op. Truncation is harmless here: `BLUES ST` sits at
+   chars 29-37, well inside the window.
+
+### Still unconfirmed
+
+The blank-`location` row (3429816) is the `''` return path — no rule matched **and**
+no `Deliver To` marker was found. If its OCR text contains `5 BLUES ST` anywhere,
+decision 1's whole-text retry resolves it and the widened regex fixes all four rows.
+That is **probable but unread** — it needs the harvest Doc for 3429816.
 
 ## Open — gated on the harvest Doc
 
