@@ -25,7 +25,7 @@ Gmail invoices are in the Sheet, one Summary row each; Mayers total **$5,127.89*
 
 | Week | Ref | Amount | Stored `location` |
 |---|---|---|---|
-| 2026-06-15 | 3429816 | $736.74 | `''` blank — the `''` path, mechanism still unconfirmed |
+| 2026-06-15 | 3429816 | $736.74 | `''` blank — **YORK**, historical: predates shop attribution |
 | 2026-07-06 | 3437634 | $703.75 | `UNMAPPED: … 5 BLUES ST …` |
 | 2026-07-20 | 3442003 | $703.00 | `UNMAPPED: … 5 BLUES ST …` |
 | 2026-07-27 | 3446281 | $570.15 | `UNMAPPED: … 5 BLUES ST …` |
@@ -42,6 +42,22 @@ That closes the "is ~7 invoices/2 months real?" question: yes, ~1 invoice per sh
 **Trap — week 2026-07-27 legitimately holds TWO Mayers rows of the same $570.15**
 (3446281 → North, 3449495 → Crowsnest; identical standing orders, forwarded 15s apart).
 Any "no duplicate Mayers rows" verification **false-positives**. Assert on `invoice_ref`.
+
+**Blank row resolved 2026-08-20 (harvest + local PDF):** `3429816` is a **York**
+invoice (`Deliver To: 89 YORK ST`, `Account: LEI05D`), NOT North. It is blank only
+because it was ingested 2026-06-17, five days before `mayersShopFromText_` existed
+(`ff51fab`, 2026-06-22) — there was no attribution logic to run. **The widened `BLUES`
+regex does NOT fix it.** The repair is two sets: **North +$1,976.90** (3437634, 3442003,
+3446281) and **York +$736.74** (3429816). Repairing it as North would misplace $736.74.
+
+**Totals are all CORRECT** — no dollar backfill needed, so "week grand totals unchanged"
+stays a valid invariant. TODO #8 confirmed not-a-defect on real OCR.
+
+**Open recommendation:** every invoice carries a stable account code — `LEI04D`
+Roastery/Crows Nest, `LEI05D` York, `LEI06D` Pitt, `LEI07D` North Sydney. Matching
+`/Account:\s*(LEI\d+D)/i` is immune to `BLUE`/`BLUES` and to all address/OCR variance.
+New evidence since the grill, so it is a legitimate reason to re-open decision 1 —
+Jake's call. See `docs/mayers-location-fix-decisions.md` § HARVEST READ.
 
 **Trap — the stored UNMAPPED hint is EXACTLY 60 chars** (`slice(0,60)` boundary). A
 `hintSuspect >= 60 → quarantine` gate quarantines all three UNMAPPED rows, drops

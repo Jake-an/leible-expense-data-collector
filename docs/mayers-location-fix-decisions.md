@@ -106,7 +106,84 @@ no `Deliver To` marker was found. If its OCR text contains `5 BLUES ST` anywhere
 decision 1's whole-text retry resolves it and the widened regex fixes all four rows.
 That is **probable but unread** — it needs the harvest Doc for 3429816.
 
-## Open — gated on the harvest Doc
+## HARVEST READ 2026-08-20 — the gated questions are now answered
+
+Doc: `1sbid-4-VnA0o8et5Dr8OGXyn8ZyXg12k0QCQ9-UZ_Qc`. 8 PDFs seen, 4 harvested
+(one per shop-hint), all four hints covered.
+
+### 1. The blank row is YORK, not North — and it is a historical artefact
+
+`3429816` ($736.74, wk 2026-06-15) is a **York** invoice: `Deliver To: 89 YORK ST`,
+`Account: LEI05D` — the same account code as `3434688`, which maps to `Leible York`
+correctly. Two independent confirmations:
+
+- `pdftotext` on the local `TAX INVOICE - 3429816.pdf` shows York in both Bill-To and
+  Deliver-To. (Reading an address off pdftotext is legitimate; only *parser* questions
+  are off-limits to it.)
+- The harvester itself skipped `3429816` as **already-covered-York**, which means its
+  real Drive-OCR text matched `/YORK\s*ST/i`. Production's `/\bYORK\s*ST/i` differs
+  only by a word boundary that `89 YORK ST` satisfies — so today's parser resolves it.
+
+**It is blank because it was ingested before shop attribution existed.**
+`mayersShopFromText_` first appears in `ff51fab` (2026-06-22); the invoice is dated
+2026-06-17. There was no `location` logic to run.
+
+> **This corrects the 2026-08-15 note that guessed the blank row was North and would be
+> swept up by the widened `BLUES` regex. It would not.** Repairing it as North would
+> have moved $736.74 to the wrong shop. The repair is now two distinct sets:
+> **North +$1,976.90** (3437634, 3442003, 3446281) and **York +$736.74** (3429816).
+
+### 2. TODO #8 is confirmed not-a-defect, on real OCR
+
+Money labels resolve in document order `Ex Tax → GST → Total`, all equal to the true
+total on all three real invoices. `hasSubTotal` is **false** everywhere — the premise
+never existed. `Line Total` is a column header followed by item rows, so the `\.\d{2}`
+anchor rejects it. The production regex returned 1,140.30 / 570.15 / 703.80 — all
+correct. **Keep the `\.\d{2}` anchor; it is what makes this safe.**
+
+### 3. No dollar backfill needed
+
+Every harvested total matches its `Ex Tax`+`GST` breakdown and the stored Sheet value.
+Only `location` is wrong, so **"week grand totals unchanged" remains a valid
+invariant** — the tension flagged under "Dollar backfill" does not materialise.
+
+### 4. Trap 1 is structurally dead, but unevidenced for Crows Nest
+
+`hasBLUES_ST` is **false** on Pitt (3463868) and York (3434688), **true** only on North
+(3446281) — no steal risk from those. **But no real Crows Nest invoice was harvested:**
+the monthly statement matched the `BURLINGTON|CROWS NEST` hint first and occupied the
+Crowsnest slot, so `3449495` was skipped. The harvest's "shops seen: … Crowsnest" is
+therefore misleading — that slot holds a statement, not an invoice.
+
+Decision 1's two-pass still kills the trap structurally: every real invoice carries a
+`Deliver To` block naming its own shop, so the Deliver-To pass resolves before the
+whole-text retry can mis-fire. Still add the synthetic Crows-Nest-with-stray-`BLUES`
+regression case.
+
+### 5. Recommendation — attribute on the account code, not the address
+
+Every invoice carries a stable, unambiguous shop key that no OCR spelling variance can
+break:
+
+| Account | Shop |
+|---|---|
+| `LEI04D` | Roastery / Crows Nest |
+| `LEI05D` | York |
+| `LEI06D` | Pitt |
+| `LEI07D` | North Sydney |
+
+`/Account:\s*(LEI\d+D)/i` is immune to `BLUE`/`BLUES`, to address reformatting, and to
+the Bill-To/Deliver-To distinction entirely. This evidence did not exist at grill time,
+so it is a legitimate reason to re-open decision 1 — **Jake's call.** Suggested shape:
+account code first, existing address rules as the fallback, so nothing regresses.
+
+### 6. The statement is confirmed unparseable
+
+`LEI04D_31 JUL 26.pdf`: `parseMayersInvoice_ → NULL`, no `Deliver To` marker, no
+`Invoice No`. It can never parse — exactly the permanent-failure case the
+unparseable-attachment memo (shipped `8ae39d8`) exists to stop re-OCRing.
+
+## Open — ~~gated on the harvest Doc~~ RESOLVED 2026-08-20 (see above)
 
 - **TODO #8 (total regex).** In scope, but fix only if the real OCR shows it
   mis-resolves; close as not-a-defect if it resolves correctly. The TODO's stated
