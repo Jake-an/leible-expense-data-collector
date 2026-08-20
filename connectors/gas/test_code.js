@@ -15,6 +15,15 @@
 const fs = require('fs');
 const path = require('path');
 
+// REAL Drive-OCR text for the Mayers documents, harvested 2026-08-20.
+// See that file header for why the old hand-written fixtures were themselves a bug.
+const {
+  MAYERS_OCR_3446281_NORTH,
+  MAYERS_OCR_3463868_PITT,
+  MAYERS_OCR_3434688_YORK,
+  MAYERS_OCR_STATEMENT_LEI04D,
+} = require('./fixtures_mayers_ocr.js');
+
 /* ------------------------------------------------------------------ *
  * Apps Script global mocks
  * ------------------------------------------------------------------ */
@@ -674,15 +683,85 @@ check('falls back to received date when no date in text',
 check('returns null when no total/ref found',
   parseMayersInvoice_('Hello, just a friendly note', '2026-06-17') === null);
 
-console.log('mayersShopFromText_');
-eq('York St → Leible York', mayersShopFromText_('Deliver To:\n89 YORK ST\nSYDNEY'), 'Leible York');
-eq('Pitt St → Leible Pitt', mayersShopFromText_('130 PITT ST\nSYDNEY NSW 2000'), 'Leible Pitt');
-eq('Blue St → Leible North', mayersShopFromText_('BLUE ST\nNORTH SYDNEY NSW 2060'), 'Leible North');
+console.log('mayersShopFromText_ — REAL Drive-OCR fixtures');
+// Fixture fidelity first: if someone "tidies" a fixture, this fails before the
+// shop assertions do, so the failure names the real cause rather than looking
+// like a parser regression. Verified 2026-08-20 — all four fixtures reproduce
+// the harvest Doc's recorded production verdicts byte for byte.
+check('North fixture is real OCR — the Bill-To run-on line is intact',
+  MAYERS_OCR_3446281_NORTH.indexOf('LEIBLE COFFEE NORTH SYDNEY LEGEND STAR INVESTMENTS PTY LTD 5 BLUES ST') !== -1);
+check('North fixture carries its LEI07D account code',
+  MAYERS_OCR_3446281_NORTH.indexOf('LEI07D') !== -1);
+
+// [1] THE DEFECT, on the text that caused it. Live Suppliers row 3446281
+// ($570.15, wk 2026-07-27) stored
+//   'UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060 '
+// because /\bBLUE\s*ST/i matches 'BLUE' inside 'BLUES' and then demands 'ST'
+// where an 'S' stands. Jake, 2026-08-20: "if you see 5 blue street it is north
+// sydney invoice".
+eq('real 3446281 (5 BLUES ST) → Leible North',
+  mayersShopFromText_(MAYERS_OCR_3446281_NORTH), 'Leible North');
+eq('real 3446281 parses whole — North, $570.15, ref and date intact',
+  parseMayersInvoice_(MAYERS_OCR_3446281_NORTH, '2026-07-31'),
+  { date: '2026-07-31', total: 570.15, invoice_ref: '3446281', location: 'Leible North' });
+
+// [2][3] No regression on the two shops that already resolved correctly.
+eq('real 3463868 (130 PITT ST) → Leible Pitt',
+  mayersShopFromText_(MAYERS_OCR_3463868_PITT), 'Leible Pitt');
+eq('real 3434688 (89 YORK ST) → Leible York',
+  mayersShopFromText_(MAYERS_OCR_3434688_YORK), 'Leible York');
+
+// [4] The monthly LEI04D statement is not an invoice and never will be: no
+// 'Invoice No', no 'Deliver To', and its only 'Total' is a balance with no
+// cents-anchored value adjacent. This is the permanent-failure document the
+// unparseable memo (8ae39d8) exists to stop re-OCRing every day.
+check('real LEI04D statement → parseMayersInvoice_ returns null',
+  parseMayersInvoice_(MAYERS_OCR_STATEMENT_LEI04D, '2026-08-04') === null);
+
+console.log('mayersShopFromText_ — two-pass Deliver-To scoping');
+// [5] Steal guard. The goods went to Crows Nest; a North Sydney address sits in
+// the Bill-To block. Pass 1 scopes to Deliver-To, so Bill-To cannot win.
+eq('Deliver-To Crows Nest beats a stray BLUES ST in Bill-To',
+  mayersShopFromText_([
+    'Bill To :', 'LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST', 'NORTH SYDNEY NSW 2060',
+    'Deliver To:', 'LEIBLE COFFEE ROASTERY', '4 BURLINGTON ST', 'CROWS NEST NSW 2065',
+  ].join('\n')), 'Leible Crowsnest');
+// [5b] The same guard with the SINGULAR spelling, which the old whole-text scan
+// did match. This one fails without the two-pass split — the widened regex
+// alone cannot save it, because MAYERS_SHOP_RULES_ tests North before Crowsnest
+// and a whole-text scan has no way to prefer the delivery address.
+eq('Deliver-To Crows Nest beats a stray singular BLUE ST in Bill-To',
+  mayersShopFromText_([
+    'Bill To :', 'LEIBLE COFFEE NORTH SYDNEY', 'BLUE ST', 'NORTH SYDNEY NSW 2060',
+    'Deliver To:', '4 BURLINGTON ST', 'CROWS NEST NSW 2065',
+  ].join('\n')), 'Leible Crowsnest');
+
+// [6] Whole-text retry. Pass 2 is byte-identical to the scan this function has
+// always done, so scoping can only ever REASSIGN a shop, never lose one.
+eq('no Deliver To marker at all → whole-text retry still finds York',
+  mayersShopFromText_('LEIBLE COFFEE\n89 YORK ST\nSYDNEY NSW 2000'), 'Leible York');
+// The rejected strict-Deliver-To-only design (decision 2) would return UNMAPPED
+// here: the shop address sits past the 120-char capture window.
+eq('address outside the Deliver-To window → whole-text retry still finds it',
+  mayersShopFromText_(
+    'Deliver To:\nATTN GOODS INWARD\n' + 'x'.repeat(140) + '\n130 PITT ST\nSYDNEY'),
+  'Leible Pitt');
+
+// [7][8] Fallbacks, unchanged.
+eq('no address anywhere → empty string', mayersShopFromText_('just some random text'), '');
+check('unknown address under Deliver To → UNMAPPED prefix',
+  mayersShopFromText_('Deliver To:\n99 GEORGE ST\nSYDNEY').indexOf('UNMAPPED:') === 0);
+
+// [9] Back-compat for the singular spelling. SYNTHETIC — no Mayers invoice has
+// ever contained 'BLUE ST'. It survives only to prove the widening to
+// /\bBLUES?\s*ST/i did not drop the singular form; the real-invoice claim is
+// carried by case [1] above. The assertion this replaces asserted the singular
+// spelling as though it were real, which is why 1112 green tests coexisted with
+// a live money bug for two months (decisions.md, decision 8).
+eq('synthetic singular BLUE ST still → Leible North',
+  mayersShopFromText_('BLUE ST\nNORTH SYDNEY NSW 2060'), 'Leible North');
 eq('Burlington → Leible Crowsnest', mayersShopFromText_('4 BURLINGTON ST\nCROWS NEST'), 'Leible Crowsnest');
 eq('Crows Nest keyword → Leible Crowsnest', mayersShopFromText_('CROWS NEST NSW 2065'), 'Leible Crowsnest');
-check('unknown address → UNMAPPED prefix',
-  mayersShopFromText_('Deliver To:\n99 GEORGE ST\nSYDNEY').indexOf('UNMAPPED:') === 0);
-eq('no address at all → empty string', mayersShopFromText_('just some random text'), '');
 
 console.log('parseRoasteryInvoice_ (Sample Bean Co — synthetic fixture, no PII, no real amounts)');
 var roasteryFixture = [

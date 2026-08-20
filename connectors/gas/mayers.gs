@@ -37,7 +37,7 @@ var MAYERS_UNPARSEABLE_PROP = 'MAYERS_UNPARSEABLE';
  * discards the whole memo and every remembered document is retried exactly once
  * against the new parser. That is what preserves the original "unparseable
  * threads stay unlabelled so they're retried after a fix" intent. */
-var MAYERS_PARSER_VERSION = 1;
+var MAYERS_PARSER_VERSION = 2;
 
 /* Runaway guard, not a working limit — real growth is ~1 statement/month.
  * Oldest entries are evicted first. */
@@ -48,12 +48,24 @@ var MONTH_MAP_ = {
   'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
 };
 
+/* BLUES? is not a typo. Every real North Sydney invoice reads '5 BLUES ST'
+ * (plural), and /\bBLUE\s*ST/i cannot match it: \bBLUE matches inside BLUES,
+ * \s* matches empty, then ST is required where an S stands. That single
+ * character misfiled $1,976.90 across three weeks. Jake, 2026-08-20:
+ * "if you see 5 blue street it is north sydney invoice". */
 var MAYERS_SHOP_RULES_ = [
   { re: /\bYORK\s*ST/i,                 shop: 'Leible York' },
   { re: /\bPITT\s*ST/i,                 shop: 'Leible Pitt' },
-  { re: /\bBLUE\s*ST/i,                 shop: 'Leible North' },
+  { re: /\bBLUES?\s*ST/i,               shop: 'Leible North' },
   { re: /\bBURLINGTON|\bCROWS\s*NEST/i, shop: 'Leible Crowsnest' }
 ];
+
+/* How much text after the 'Deliver To' marker counts as the delivery block.
+ * 120 chars comfortably covers the name + street + suburb + state/postcode on
+ * all four real invoices (measured 2026-08-20) and stops short of the next
+ * field. It is also the window the stored UNMAPPED: hints were cut from, so
+ * changing it changes hints that Phase 2's repair matches against. */
+var MAYERS_DELIVER_TO_WINDOW_ = 120;
 
 /* ------------------------------------------------------------------ *
  * Entry points
@@ -309,13 +321,64 @@ function parseMayersInvoice_(text, fallbackDate) {
   };
 }
 
+/**
+ * Which Leible shop an invoice was delivered to.
+ *
+ * TWO-PASS. Pass 1 runs the rules against the 'Deliver To' block alone, so an
+ * address sitting in the Bill-To block can never claim an invoice whose goods
+ * went somewhere else. Pass 2 is byte-identical to the whole-text scan this
+ * function has always done, so scoping can only ever REASSIGN a shop — it can
+ * never return emptier than the single-pass version did. That is what makes
+ * the change safe for Pitt and Crowsnest, whose invoices we have less evidence
+ * for; the strict Deliver-To-only variant was rejected for exactly that reason
+ * (docs/mayers-location-fix-decisions.md, decision 2).
+ *
+ * Reassignment is the point, not a side effect: MAYERS_SHOP_RULES_ tests North
+ * before Crowsnest, so a whole-text scan of a Crows Nest delivery billed to the
+ * North Sydney entity resolves to North. Pass 1 is the only thing that fixes
+ * that, and no widening of the regexes could.
+ *
+ * @param {string} text — extracted/OCR'd invoice text
+ * @returns {string} a Leible shop name, 'UNMAPPED: <hint>', or ''
+ */
 function mayersShopFromText_(text) {
+  var block = mayersDeliverToBlock_(text);
+
+  if (block) {
+    var scoped = mayersMatchShopRules_(block);
+    if (scoped) return scoped;
+  }
+
+  var whole = mayersMatchShopRules_(text);
+  if (whole) return whole;
+
+  var hint = block.replace(/\s+/g, ' ').trim().slice(0, 60);
+  return hint ? 'UNMAPPED: ' + hint : '';
+}
+
+/**
+ * The delivery-address block, or '' when the invoice has no 'Deliver To'
+ * marker (monthly statements, and every invoice ingested before this field
+ * was parsed at all).
+ * @returns {string}
+ */
+function mayersDeliverToBlock_(text) {
+  var m = text.match(
+    new RegExp('Deliver\\s*To[:\\s]*([\\s\\S]{0,' + MAYERS_DELIVER_TO_WINDOW_ + '})', 'i'));
+  return m ? m[1] : '';
+}
+
+/**
+ * First shop rule that matches, or '' if none do. Kept separate so both passes
+ * run the identical rule set in the identical order — the moment they diverge,
+ * pass 2 stops being the safety net it is documented to be.
+ * @returns {string}
+ */
+function mayersMatchShopRules_(text) {
   for (var i = 0; i < MAYERS_SHOP_RULES_.length; i++) {
     if (MAYERS_SHOP_RULES_[i].re.test(text)) return MAYERS_SHOP_RULES_[i].shop;
   }
-  var deliv = text.match(/Deliver\s*To[:\s]*([\s\S]{0,120})/i);
-  var hint = deliv ? deliv[1].replace(/\s+/g, ' ').trim().slice(0, 60) : '';
-  return hint ? 'UNMAPPED: ' + hint : '';
+  return '';
 }
 
 /**
