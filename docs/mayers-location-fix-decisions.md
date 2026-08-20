@@ -33,7 +33,7 @@ matches inside `BLUES`, `\s*` matches empty, then `ST` is required but the next 
 | 4 | **Safety gate**: dry-run reports every row it would touch and writes nothing → Jake reviews → separate Apply run mutates inside `withScriptLock_`. | Mirrors the `runOnlineRevenueCleanupDryRun` precedent. |
 | 5 | **Sweep scope**: scan the whole `Suppliers` tab for any `UNMAPPED:` location, all sources, all weeks. Repair only what the Mayers fix resolves; anything else is written up as a separate finding. | Scanning is read-only and near-free; the two known rows came from a single 2-week probe. |
 | 6 | **Repair method**: in-place rewrite of the `Suppliers` location cells + **explicit deletion** of stale `UNMAPPED:` Summary rows + re-summarize via the override form. | `SUMMARY_KEY_COLS` includes `location` (`Code.gs:65`) and `upsertRows_` has no delete path — a naive rewrite orphans the old Summary row and the money is served twice. |
-| 7 | **Re-summarize** with `weeklySummarize('2026-07-20')` and `('2026-07-27')`, asserting the return value and `summariesAdded + summariesUpdated > 0`. | The bare form does only the last completed week and fires `archiveAndPurge_`. It returns `{refused:…}` on lock contention **with no throw** — "no error" is not success. |
+| 7 | **Re-summarize** with the override form for **all four** affected weeks — `weeklySummarize('2026-06-15')`, `('2026-07-06')`, `('2026-07-20')`, `('2026-07-27')`. Assert `res && !res.refused && res.weekStart === '<week>'`, then confirm success by **reading Summary state**. | The bare form does only the last completed week and fires `archiveAndPurge_`. It returns `{refused:…}` on lock contention **with no throw** — "no error" is not success. |
 
 | 8 | **Fixtures rebuilt from real OCR text**, all four shops. | `test_code.js:680` asserts `BLUE ST` singular — written from the regex, not from an invoice. That is why 1112 green tests coexisted with a live money bug for two months. |
 | 9 | **Harvest search widened** to full Gmail history including already-labelled threads. | Labelled threads are exactly the ones whose rows are already in the Sheet. |
@@ -47,6 +47,17 @@ matches inside `BLUES`, `\s*` matches empty, then `ST` is required but the next 
 > direction: `sum > 0` always fails, `sum === 0` never fires. The whole point of
 > decision 7 is that "no error" is not success — the wrong field names reintroduce
 > exactly that hole.
+>
+> **Further amended 2026-08-20 (dual review round 3).** Do **not** assert
+> `summariesAdded + summariesUpdated > 0` either — that was still wrong twice over.
+> (a) Both refusal paths make the sum `NaN`: `{refused:'locked'}` (`Code.gs:1757`)
+> carries neither field, and `{refused:'incomplete-week'}` (`Code.gs:1791-1795`)
+> carries `summariesAdded:0` and no `summariesUpdated`. (b) Counts are not a
+> success signal at all: `upsertRows_` counts an existing key with an unchanged
+> amount as `duplicatesSkipped` (`Code.gs:593`), so a **correct** recovery re-run
+> legitimately returns 0/0 and would read as failure. Assert `!res.refused` and
+> `res.weekStart`, then verify by reading Summary. Also: this decision originally
+> named only two weeks; there are **four**.
 
 ## Verification that catches the double-count
 
