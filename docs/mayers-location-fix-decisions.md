@@ -160,7 +160,7 @@ Decision 1's two-pass still kills the trap structurally: every real invoice carr
 whole-text retry can mis-fire. Still add the synthetic Crows-Nest-with-stray-`BLUES`
 regression case.
 
-### 5. Recommendation — attribute on the account code, not the address
+### 5. ~~Recommendation~~ REJECTED by Jake 2026-08-20 — address, not account code
 
 Every invoice carries a stable, unambiguous shop key that no OCR spelling variance can
 break:
@@ -176,6 +176,11 @@ break:
 the Bill-To/Deliver-To distinction entirely. This evidence did not exist at grill time,
 so it is a legitimate reason to re-open decision 1 — **Jake's call.** Suggested shape:
 account code first, existing address rules as the fallback, so nothing regresses.
+
+Jake's call, 2026-08-20: **"lets go with address"**. Decision 1 stands exactly as
+locked — two-pass Deliver-To-first matching plus the widened `/\bBLUES?\s*ST/i`.
+The account-code idea is recorded here only so it is not re-raised as though it were
+an open question. **Do not re-litigate.**
 
 ### 6. The statement is confirmed unparseable
 
