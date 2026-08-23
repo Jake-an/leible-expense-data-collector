@@ -224,3 +224,90 @@ unparseable-attachment memo (shipped `8ae39d8`) exists to stop re-OCRing.
   a zero-arg wrapper shipped with it.
 - `main` is 0 ahead / **313 behind** `feat-orderapp-pulls`. It is a stale trunk; the
   live line of development is the `feat-<phase>` branch chain.
+
+## PHASE 3 BASELINE — captured 2026-08-24, before any mutation
+
+Phases 1-3 of `~/.claude/plans/mayers-address-repair-quiet-harbor.md` are done.
+**Nothing in production has been mutated.** The parser fix and the repair
+function are deployed but the repair has not been applied.
+
+### Deployment
+
+| | |
+|---|---|
+| **Deployed version** | **30** (parser fix + `mayers_repair.gs` + retained rollback) |
+| **ROLLBACK ANCHOR** | **`clasp redeploy <id> -V 28 -d 'rollback to 28'`** |
+
+> Corrected: the earlier note in this file said `/exec` served version **27**.
+> Live `clasp list-deployments` on 2026-08-24 showed **28** — a deploy landed
+> 2026-08-14 14:54. Re-derive from live, never from this file.
+>
+> **v29 was deployed and rolled back.** `connectors/gas/fixtures_mayers_ocr.js`
+> is a Node module ending in `module.exports`, `.claspignore` only excluded
+> `test_code.js` by name, so it pushed to GAS and threw
+> `ReferenceError: module is not defined` out of `doGet` — killing `/exec`
+> entirely. Fixed in `183788f`: `.claspignore` now excludes `**/*.js` (the rule
+> is the extension — every GAS file is `.gs`), and `deploy.sh` ends with an
+> unauthenticated smoke check that proves the project loads.
+
+### Retained artifacts (do NOT clean these up)
+
+- `Summary_mayers_location_backup` — the only copy of the deleted Summary rows.
+- Script properties `MAYERS_REPAIR_SNAPSHOT_2026-06-15`, `_2026-07-06`,
+  `_2026-07-20`, `_2026-07-27`. Write-once **per week**; a refusal to overwrite
+  means that week already ran. Consumed by `restoreMayersLocationSnapshot()` in
+  `mayers.gs` (kept deliberately — `mayers_repair.gs` is deleted at cleanup).
+
+### Mayers-only baseline (doGet `fn=summary`, live, 2026-08-24)
+
+| Week | Stored `location` | Total |
+|---|---|---|
+| 2026-06-15 | `''` (blank) | $736.74 |
+| 2026-07-06 | `UNMAPPED: …5 BLUES ST…` | $703.75 |
+| 2026-07-20 | `UNMAPPED: …5 BLUES ST…` | $703.00 |
+| 2026-07-27 | `Leible Crowsnest` | $570.15 |
+| 2026-07-27 | `UNMAPPED: …5 BLUES ST…` | $570.15 |
+
+**Mayers across these four weeks: $3,283.79** — must be identical after the
+repair (the money moves between locations, it is not created or destroyed).
+Plus $703.80 (wk 2026-06-29) and $1,140.30 (wk 2026-08-10) outside the repair
+set = the **$5,127.89** span total.
+
+> The FULL multi-supplier baseline — every supplier and kind for the four weeks —
+> is in **`downloads/mayers-repair-baseline-2026-08-24.json`**, which is
+> gitignored (`.gitignore:11`). It stays out of this file on purpose: this file
+> is tracked and pushed, and that dump is business data.
+
+### The unrebuildable row, confirmed live
+
+`2026-07-20` · `Bennetts` · `location=''` · **$14,219.00** · `Roastery/spend`.
+Written straight to `Summary` by `orderapp.gs:406`; `weeklySummarize` rebuilds
+only from `Suppliers`+`Revenue`, so **nothing in this repo can regenerate it**.
+Its key is `2026-07-20||roastery||spend||bennetts||`.
+
+Week `2026-06-15`'s only blank-`location` row is the Mayers one — confirmed, not
+assumed. That is why the delete predicate must be the full `SUMMARY_KEY_COLS`
+tuple: in that week the row being repaired is itself at `location=''`, so only
+`supplier`/`kind`/`department` separate it from a co-located row.
+
+### The literal key list awaiting Jake's approval
+
+Derived from the live baseline above using `rowKey_`'s own normalization
+(`String(v).trim().toLowerCase()`, note the UNMAPPED hint's trailing space is
+trimmed). The dry run must print this same list.
+
+| Week | DELETE (stale key) | ADD (target key) | Target pre-state |
+|---|---|---|---|
+| 2026-06-15 | `2026-06-15\|\|cafe\|\|spend\|\|mayers\|\|` | `…\|\|mayers\|\|leible york` | absent |
+| 2026-07-06 | `2026-07-06\|\|cafe\|\|spend\|\|mayers\|\|unmapped: leible coffee north sydney 5 blues st north sydney nsw 2060` | `…\|\|mayers\|\|leible north` | absent |
+| 2026-07-20 | `2026-07-20\|\|cafe\|\|spend\|\|mayers\|\|unmapped: …` | `…\|\|mayers\|\|leible north` | absent |
+| 2026-07-27 | `2026-07-27\|\|cafe\|\|spend\|\|mayers\|\|unmapped: …` | `…\|\|mayers\|\|leible north` | absent |
+
+One row per key. `Leible North` +$1,976.90 · `Leible York` +$736.74.
+
+### Next action
+
+Run **`runMayersLocationRepairDryRun()`** in the GAS editor (`clasp run` is
+unavailable — the project is deliberately not deployed as API executable), check
+its `staleSummaryKeys[].keyTuple` list against the table above and its
+`drift.nonMayersDriftCount`, then apply one week at a time.
