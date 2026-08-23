@@ -88,6 +88,42 @@ fi
 EXEC_URL="https://script.google.com/macros/s/${DID}/exec"
 node -e 'const fs=require("fs");const p="./config/deployment.json";const c=require(p);c.deploymentId=process.argv[1];c.execUrl=process.argv[2];fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n")' "$DID" "$EXEC_URL"
 
+# Post-deploy smoke check. Apps Script evaluates EVERY top-level statement in the
+# project on any execution, so a single bad file (a Node-only module carrying
+# `module.exports`, a syntax error) throws out of doGet and takes down /exec —
+# the sole ingest path — while clasp reports a perfectly successful deploy. That
+# happened on 2026-08-24 (v29) and was invisible to every check above.
+#
+# Deliberately UNAUTHENTICATED: a healthy project answers a tokenless doGet with
+# JSON ({"result":"error","message":"unauthorized"}), a broken one answers with a
+# Google error PAGE. That tells us the project loads without putting a secret
+# into this script or into CI output.
+echo ""
+echo "==> post-deploy smoke check (unauthenticated — proves the project LOADS)"
+SMOKE="$(curl -sL --max-time 60 "$EXEC_URL?fn=summary" || true)"
+case "$SMOKE" in
+  '{'*)
+    echo "    OK — /exec returned JSON: $(printf '%s' "$SMOKE" | head -c 120)"
+    ;;
+  *)
+    echo "" >&2
+    echo "!!! DEPLOY IS LIVE BUT BROKEN — /exec did not return JSON." >&2
+    echo "    First 200 bytes: $(printf '%s' "$SMOKE" | head -c 200)" >&2
+    if printf '%s' "$SMOKE" | grep -q 'ReferenceError\|SyntaxError\|TypeError'; then
+      echo "    Detected a script load error. A file that is not valid Apps Script" >&2
+      echo "    reached the project — check .claspignore against the pushed file list above." >&2
+    fi
+    if [ -n "${PREV_VER:-}" ]; then
+      echo "" >&2
+      echo "    ROLL BACK NOW:" >&2
+      echo "      clasp redeploy $DID -V $PREV_VER -d 'rollback to $PREV_VER'" >&2
+    else
+      echo "    No rollback anchor was captured — check 'clasp list-versions'." >&2
+    fi
+    exit 1
+    ;;
+esac
+
 echo ""
 echo "==> DEPLOYED (single deployment):"
 echo "    deploymentId: $DID"

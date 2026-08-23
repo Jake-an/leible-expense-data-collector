@@ -1,7 +1,20 @@
-# Keep the Node-only unit test out of the Apps Script project (it uses require/
-# process and is never run inside GAS). Patterns are relative to rootDir.
-**/test_code.js
-**/*.test.js
+# Keep Node-only files out of the Apps Script project. Patterns are relative to
+# rootDir.
+#
+# THE RULE IS THE EXTENSION, deliberately: every real Apps Script file in
+# connectors/gas/ is `.gs` (plus appsscript.json), and every Node-only file —
+# the test suite, its fixtures — is `.js`. So `**/*.js` covers the category, not
+# a list of names.
+#
+# This used to be `**/test_code.js` + `**/*.test.js`, i.e. two exact names. On
+# 2026-08-24 that let connectors/gas/fixtures_mayers_ocr.js (a Node module
+# ending in `module.exports = {...}`) push to GAS, where `module` is undefined.
+# Apps Script evaluates every top-level statement in the project on ANY
+# execution, so one stray `module.exports` threw `ReferenceError: module is not
+# defined` out of doGet — taking down the whole /exec endpoint, which is the
+# sole ingest path. Deployed v29, caught by the post-deploy probe, rolled back
+# to v28. A name-based ignore cannot see the next such file coming.
+**/*.js
 
 # Harness artifacts must never reach the Apps Script project. .clasp.json sets
 # skipSubdirectories:false and jsonExtensions:[".json"], so a step*-red-check.json
