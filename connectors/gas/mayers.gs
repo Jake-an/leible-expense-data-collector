@@ -396,3 +396,242 @@ function parseMayersDate_(dayStr, monthStr, yearStr) {
 function getOrCreateLabel_(name) {
   return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
 }
+
+/* ==================================================================== *
+ * Location repair (2026-08-20) — RETAINED artifacts + rollback
+ *
+ * The repair itself lives in connectors/gas/mayers_repair.gs, which is
+ * DELETED once the repair is verified. This section deliberately stays here
+ * instead, in the file that survives.
+ *
+ * The repair leaves two artifacts in production on purpose: the
+ * MAYERS_REPAIR_SNAPSHOT_<week_start> script properties, and the
+ * Summary_mayers_location_backup tab holding the ONLY copy of the deleted
+ * Summary rows. Deleting mayers_repair.gs would otherwise remove the only code
+ * that knows how to consume them — a retained rollback artifact with no
+ * rollback. Keeping restoreMayersLocationSnapshot() costs nothing while the
+ * properties are being kept anyway.
+ * ==================================================================== */
+
+var MAYERS_REPAIR_BACKUP_TAB = 'Summary_mayers_location_backup';
+var MAYERS_REPAIR_SNAPSHOT_PREFIX_ = 'MAYERS_REPAIR_SNAPSHOT_';
+
+/**
+ * Normalize a cell the way rowKey_ does (Code.gs:607-615). BOTH sides of every
+ * comparison in this repair go through it: rowKey_ lowercases and trims, and
+ * every comparable predicate in Code.gs follows suit, so a stray trailing space
+ * or a different case in one Sheet cell must never make a guard silently miss.
+ */
+function mayersNorm_(v) {
+  return String(v).trim().toLowerCase();
+}
+
+function mayersRepairSnapshotKey_(week) {
+  return MAYERS_REPAIR_SNAPSHOT_PREFIX_ + week;
+}
+
+/**
+ * @returns {Object|null} the parsed snapshot, null if absent, or
+ *   {corrupt:true} — which callers must treat as "stop", never as "absent".
+ */
+function mayersRepairLoadSnapshot_(week) {
+  var raw = PropertiesService.getScriptProperties().getProperty(mayersRepairSnapshotKey_(week));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    Logger.log('mayersRepairLoadSnapshot_: CORRUPT snapshot for ' + week + ' — ' + err.message +
+      '. Treating as a hard stop, not as absent: an absent snapshot means "first run, ' +
+      'safe to proceed", and this is the opposite of that.');
+    return { corrupt: true, week: week };
+  }
+}
+
+/**
+ * WRITE-ONCE, per week. The key is MAYERS_REPAIR_SNAPSHOT_<week_start> and it
+ * refuses to overwrite ITS OWN key.
+ *
+ * A single shared key would break the moment the second week ran: it would
+ * either abort (leaving the Sheet partly repaired) or skip the write (leaving
+ * three weeks mutated with no rollback artifact for the step that deletes
+ * production rows). Per-week plus refuse-to-overwrite means a second run of the
+ * SAME week cannot clobber the real snapshot with an empty one taken after the
+ * locations were already rewritten.
+ *
+ * @returns {{written:boolean, reason:string}}
+ */
+function mayersRepairSaveSnapshot_(week, snapshot) {
+  var props = PropertiesService.getScriptProperties();
+  var key = mayersRepairSnapshotKey_(week);
+  if (props.getProperty(key) !== null) {
+    Logger.log('mayersRepairSaveSnapshot_: ' + key + ' already exists — keeping the original. ' +
+      'This is a resume, not a first run.');
+    return { written: false, reason: 'already-exists' };
+  }
+  props.setProperty(key, JSON.stringify(snapshot));
+  Logger.log('mayersRepairSaveSnapshot_: wrote ' + key);
+  return { written: true, reason: 'written' };
+}
+
+/** Every week that has a retained snapshot, oldest first. */
+function mayersRepairSnapshotWeeks_() {
+  var props = PropertiesService.getScriptProperties();
+  var keys = props.getKeys ? props.getKeys() : [];
+  var weeks = [];
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i].indexOf(MAYERS_REPAIR_SNAPSHOT_PREFIX_) === 0) {
+      weeks.push(keys[i].slice(MAYERS_REPAIR_SNAPSHOT_PREFIX_.length));
+    }
+  }
+  return weeks.sort();
+}
+
+/** A Summary-shaped row array, for feeding rowKey_(row, SUMMARY_KEY_COLS). */
+function mayersSummaryKeyRow_(weekStart, department, kind, supplier, location) {
+  return [weekStart, addDaysStr_(weekStart, 6), supplier, location, 0, '', department, kind];
+}
+
+/**
+ * 1-based Summary row numbers whose FULL SUMMARY_KEY_COLS tuple equals keyRow's.
+ *
+ * NEVER match on (week, location) alone. A ~$14,219 Bennetts row sits at
+ * location='' in week 2026-07-20, written straight to Summary by
+ * orderapp.gs:406 and NOT rebuildable by weeklySummarize (which derives only
+ * from Suppliers + Revenue). A (week, location='') predicate would destroy it
+ * permanently — nothing in this repo could regenerate it.
+ *
+ * @returns {number[]}
+ */
+function mayersFindSummaryRows_(summData, keyRow) {
+  var want = rowKey_(keyRow, SUMMARY_KEY_COLS);
+  var hits = [];
+  for (var r = 1; r < summData.length; r++) {
+    if (rowKey_(summData[r], SUMMARY_KEY_COLS) === want) hits.push(r + 1);
+  }
+  return hits;
+}
+
+/**
+ * Roll the location repair back. Three parts, per week:
+ *   1. restore the Suppliers `location` cells from the snapshot;
+ *   2. undo the target-location Summary rows — delete the ones the repair
+ *      created, restore the pre-repair amount on any that already existed;
+ *   3. re-append the deleted stale Summary rows from MAYERS_REPAIR_BACKUP_TAB.
+ *
+ * Zero-arg-safe: the editor Run button passes no arguments, so calling this
+ * with nothing rolls back EVERY week that has a retained snapshot. Idempotent —
+ * a second run finds nothing left to undo and reports zeros.
+ *
+ * @param {string} [weekStart] 'yyyy-MM-dd' to roll back a single week
+ */
+function restoreMayersLocationSnapshot(weekStart) {
+  var only = resolveDateArg_(weekStart, null);
+  var weeks = only ? [only] : mayersRepairSnapshotWeeks_();
+
+  if (!weeks.length) {
+    Logger.log('restoreMayersLocationSnapshot: no ' + MAYERS_REPAIR_SNAPSHOT_PREFIX_ +
+      '* properties — nothing to roll back.');
+    return { weeks: 0, results: [] };
+  }
+
+  var res = withScriptLock_(function () {
+    var out = [];
+    for (var i = 0; i < weeks.length; i++) out.push(mayersRestoreWeek_(weeks[i]));
+    return out;
+  });
+
+  // withScriptLock_ RETURNS a sentinel rather than throwing (Code.gs:115), so an
+  // unchecked call would report a clean rollback having done nothing at all.
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('restoreMayersLocationSnapshot: could not acquire the script lock — ' +
+      'NOTHING was rolled back. Re-run away from the 6am mayersDailyPull window.');
+    return { refused: 'locked', weeks: 0, results: [] };
+  }
+
+  Logger.log('ROLLED BACK: ' + JSON.stringify({ weeks: weeks.length, results: res }, null, 2));
+  return { weeks: weeks.length, results: res };
+}
+
+/** One week of the 3-part rollback. Assumes the script lock is already held. */
+function mayersRestoreWeek_(week) {
+  var snap = mayersRepairLoadSnapshot_(week);
+  if (!snap) return { week: week, refused: 'no-snapshot' };
+  if (snap.corrupt) return { week: week, refused: 'corrupt-snapshot' };
+
+  var ss = getHubSpreadsheet_();
+  var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  var summSheet = ss.getSheetByName(SUMMARY_TAB);
+  if (!suppSheet || !summSheet) return { week: week, refused: 'missing-tab' };
+
+  /* 1. Suppliers locations. Re-find each row by invoice_ref rather than trusting
+   *    the row number recorded at snapshot time — rows shift under archive/purge. */
+  var suppData = suppSheet.getDataRange().getValues();
+  var locationsRestored = 0;
+  var suppRows = snap.rows || [];
+  for (var i = 0; i < suppRows.length; i++) {
+    for (var r = 1; r < suppData.length; r++) {
+      if (mayersNorm_(suppData[r][5]) !== 'mayers') continue;
+      if (mayersNorm_(suppData[r][3]) !== mayersNorm_(suppRows[i].invoice_ref)) continue;
+      if (String(suppData[r][4]) === String(suppRows[i].location)) break; // already restored
+      suppSheet.getRange(r + 1, 5).setValue(suppRows[i].location);
+      locationsRestored++;
+      break;
+    }
+  }
+
+  /* 2. Undo the target-location Summary rows. Collect first, delete bottom-up so
+   *    the collected row numbers stay valid as rows shift up. */
+  var summData = summSheet.getDataRange().getValues();
+  var toDelete = [];
+  var amountsRestored = 0;
+  var targets = snap.targetKeys || [];
+  for (var t = 0; t < targets.length; t++) {
+    var tk = targets[t];
+    var keyRow = mayersSummaryKeyRow_(week, tk.department, tk.kind, tk.supplier, tk.location);
+    var hits = mayersFindSummaryRows_(summData, keyRow);
+    for (var h = 0; h < hits.length; h++) {
+      if (tk.existedBefore) {
+        summSheet.getRange(hits[h], SUMMARY_TOTAL_COL + 1).setValue(tk.totalBefore);
+        amountsRestored++;
+      } else {
+        toDelete.push(hits[h]);
+      }
+    }
+  }
+  toDelete.sort(function (a, b) { return a - b; });
+  for (var d = toDelete.length - 1; d >= 0; d--) summSheet.deleteRow(toDelete[d]);
+
+  /* 3. Re-append the stale rows from the backup tab. Guarded on presence, so a
+   *    second rollback is a no-op rather than a double-append. */
+  var backup = ss.getSheetByName(MAYERS_REPAIR_BACKUP_TAB);
+  var staleRestored = 0;
+  var stale = snap.staleKeys || [];
+  if (backup) {
+    var backupData = backup.getDataRange().getValues();
+    summData = summSheet.getDataRange().getValues();
+    for (var s = 0; s < stale.length; s++) {
+      var sk = stale[s];
+      var staleRow = mayersSummaryKeyRow_(week, sk.department, sk.kind, sk.supplier, sk.location);
+      if (mayersFindSummaryRows_(summData, staleRow).length) continue; // already back
+      var want = rowKey_(staleRow, SUMMARY_KEY_COLS);
+      for (var b = 1; b < backupData.length; b++) {
+        if (rowKey_(backupData[b], SUMMARY_KEY_COLS) !== want) continue;
+        summSheet.appendRow(backupData[b]);
+        summData.push(backupData[b]);
+        staleRestored++;
+        break; // first (earliest) backup copy only
+      }
+    }
+  }
+
+  var result = {
+    week: week,
+    locationsRestored: locationsRestored,
+    targetRowsDeleted: toDelete.length,
+    targetAmountsRestored: amountsRestored,
+    staleRowsRestored: staleRestored,
+    staleRowsExpected: stale.length
+  };
+  Logger.log('mayersRestoreWeek_: ' + JSON.stringify(result));
+  return result;
+}

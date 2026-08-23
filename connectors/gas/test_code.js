@@ -177,6 +177,10 @@ global.PropertiesService = {
     getProperty: (k) => (k in scriptProps ? scriptProps[k] : null),
     setProperty: (k, v) => { scriptProps[k] = String(v); },
     deleteProperty: (k) => { delete scriptProps[k]; },
+    // Real GAS has getKeys(); the mock did not, so mayersRepairSnapshotWeeks_
+    // would have enumerated nothing and the zero-arg rollback would have
+    // reported "nothing to roll back" over a live snapshot.
+    getKeys: () => Object.keys(scriptProps),
   }),
 };
 
@@ -339,6 +343,7 @@ currentSS = makeSpreadsheet();
 load('square.gs');
 load('orderapp.gs');
 load('mayers.gs');
+load('mayers_repair.gs');   // TEMPORARY — deleted with the file after the repair verifies
 load('staleness.gs');
 load('recurring.gs');
 load('roastery_email.gs');
@@ -6472,6 +6477,408 @@ console.log('mayers memo helpers');
 })();
 
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+
+// mayers_repair.gs — the one-off location repair. TEMPORARY: this block goes
+// when mayers_repair.gs does. The rollback assertions are the exception — they
+// exercise restoreMayersLocationSnapshot(), which lives in mayers.gs and is
+// RETAINED, because the snapshots and the backup tab are retained.
+//
+// The fixture models the live hazard exactly: a $14,219 Bennetts row sits at
+// location='' in week 2026-07-20, written straight to Summary by the order-app
+// path and NOT rebuildable by weeklySummarize. Any predicate that deletes by
+// (week, location) destroys it permanently.
+console.log('mayers_repair.gs — location repair (dry run / apply / abort / rollback)');
+(function testMayersLocationRepair() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+
+  const HINT = 'UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060 ';
+  const TS = '2026-08-01T06:00:00+10:00';
+
+  // Suppliers: date | supplier | total | invoice_ref | location | source | extracted_at | department
+  const SUPPLIER_ROWS = [
+    ['2026-06-17', 'Mayers', 736.74, '3429816', '', 'mayers', TS, 'Cafe'],
+    ['2026-06-30', 'Mayers', 703.80, '3434688', 'Leible York', 'mayers', TS, 'Cafe'],
+    ['2026-07-08', 'Mayers', 703.75, '3437634', HINT, 'mayers', TS, 'Cafe'],
+    ['2026-07-21', 'Mayers', 703.00, '3442003', HINT, 'mayers', TS, 'Cafe'],
+    ['2026-07-31', 'Mayers', 570.15, '3446281', HINT, 'mayers', TS, 'Cafe'],
+    ['2026-07-31', 'Mayers', 570.15, '3449495', 'Leible Crowsnest', 'mayers', TS, 'Cafe'],
+    ['2026-08-12', 'Mayers', 1140.30, '3463868', 'Leible Pitt', 'mayers', TS, 'Cafe'],
+    // Non-Mayers, blank location, inside an affected week — the sweep must see
+    // it and report it, and the repair must not touch it.
+    ['2026-07-22', 'Kent Paper', 88.00, 'KP-1', '', 'kent_paper', TS, 'Cafe'],
+  ];
+
+  // Summary: week_start | week_end | supplier | location | total | summarized_at | department | kind
+  const SUMMARY_ROWS = [
+    ['2026-06-15', '2026-06-21', 'Mayers', '', 736.74, TS, 'Cafe', 'spend'],
+    // A pull-owned, blank-location, NON-Mayers row sharing the week whose stale
+    // key is ALSO blank. This is the row that separates a full-key-tuple
+    // predicate from a (week, location) one: with the tuple it is invisible to
+    // the repair, and with (week, location) it is deleted and unrecoverable.
+    // Production's 2026-06-15 happens to hold Mayers only — the code must not
+    // depend on that accident, so the fixture asserts the harder case.
+    ['2026-06-15', '2026-06-21', 'Bennetts', '', 9100, TS, 'Roastery', 'spend'],
+    ['2026-06-29', '2026-07-05', 'Mayers', 'Leible York', 703.80, TS, 'Cafe', 'spend'],
+    ['2026-07-06', '2026-07-12', 'Mayers', HINT, 703.75, TS, 'Cafe', 'spend'],
+    ['2026-07-20', '2026-07-26', 'Mayers', HINT, 703.00, TS, 'Cafe', 'spend'],
+    // THE UNREBUILDABLE ROW. Same week, same blank location, different supplier.
+    ['2026-07-20', '2026-07-26', 'Bennetts', '', 14219, TS, 'Roastery', 'spend'],
+    ['2026-07-20', '2026-07-26', 'Kent Paper', '', 88.00, TS, 'Cafe', 'spend'],
+    ['2026-07-27', '2026-08-02', 'Mayers', HINT, 570.15, TS, 'Cafe', 'spend'],
+    ['2026-07-27', '2026-08-02', 'Mayers', 'Leible Crowsnest', 570.15, TS, 'Cafe', 'spend'],
+    ['2026-08-10', '2026-08-16', 'Mayers', 'Leible Pitt', 1140.30, TS, 'Cafe', 'spend'],
+  ];
+
+  function seed(opts) {
+    opts = opts || {};
+    scriptProps = {};
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    SUPPLIER_ROWS.forEach((r) => supp.appendRow(r.slice()));
+    if (opts.extraSupplierRows) opts.extraSupplierRows.forEach((r) => supp.appendRow(r.slice()));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    SUMMARY_ROWS.forEach((r) => summ.appendRow(r.slice()));
+    if (opts.extraSummaryRows) opts.extraSummaryRows.forEach((r) => summ.appendRow(r.slice()));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    if (opts.mutateSuppliers) opts.mutateSuppliers(supp);
+    if (opts.mutateSummary) opts.mutateSummary(summ);
+  }
+
+  // Semantic view of Summary — order-independent, stamp-independent. Rollback
+  // re-appends restored rows at the bottom, so row ORDER is not the invariant;
+  // the multiset of (week, supplier, location, total, department, kind) is.
+  function summaryState() {
+    return currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues().slice(1)
+      .map((r) => [cellDate(r[0]), String(r[2]), String(r[3]), Number(r[4]), String(r[6]), String(r[7])])
+      .map((r) => JSON.stringify(r)).sort();
+  }
+  function supplierLocations() {
+    const out = {};
+    currentSS.getSheetByName(SUPPLIERS_TAB).getDataRange().getValues().slice(1)
+      .forEach((r) => { out[String(r[3])] = String(r[4]); });
+    return out;
+  }
+  function summaryRowsForWeek(week) {
+    return currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues().slice(1)
+      .filter((r) => cellDate(r[0]) === week);
+  }
+  function findSummary(week, supplier, location) {
+    return summaryRowsForWeek(week).filter((r) =>
+      String(r[2]).trim().toLowerCase() === supplier.trim().toLowerCase() &&
+      String(r[3]).trim().toLowerCase() === location.trim().toLowerCase());
+  }
+
+  /* ---- the 60-char hint ------------------------------------------------ */
+  eq('the stored UNMAPPED hint is EXACTLY 60 chars after the prefix',
+    HINT.length - 'UNMAPPED: '.length, 60);
+  eq('mayers_repair.gs uses that exact literal', MAYERS_UNMAPPED_NORTH_, HINT);
+
+  /* ---- dry run --------------------------------------------------------- */
+  seed();
+  (function () {
+    const writesBefore = currentSS._writeLog.length;
+    const report = mayersLocationRepair_();
+    eq('dry run writes NOTHING to any tab', currentSS._writeLog.length, writesBefore);
+    eq('dry run mode', report.mode, 'dryRun');
+    eq('dry run covers all four weeks', report.weeks.map((w) => w.week),
+      ['2026-06-15', '2026-07-06', '2026-07-20', '2026-07-27']);
+    check('dry run preflight is clean on a healthy Sheet', report.allOk === true);
+
+    const wk0720 = report.weeks.filter((w) => w.week === '2026-07-20')[0];
+    eq('one stale Summary key for 2026-07-20', wk0720.staleSummaryKeys.length, 1);
+    eq('...matching exactly one row', wk0720.staleSummaryKeys[0].matchedCount, 1);
+    eq('...at the UNMAPPED location, NOT at blank', wk0720.staleSummaryKeys[0].location, HINT);
+    eq('...for supplier Mayers only', wk0720.staleSummaryKeys[0].supplier, 'Mayers');
+    // The whole point: the Bennetts key must be nowhere in the delete list.
+    check('the Bennetts key is NOT in the delete list',
+      wk0720.staleSummaryKeys.every((k) => k.keyTuple.indexOf('bennetts') === -1));
+    eq('no target-location row pre-exists for 2026-07-20',
+      wk0720.targetSummaryKeys[0].matchedCount, 0);
+    eq('...and the target is Leible North', wk0720.targetSummaryKeys[0].location, 'Leible North');
+
+    const wk0615 = report.weeks.filter((w) => w.week === '2026-06-15')[0];
+    eq('the blank-location row is repaired to YORK, not North', wk0615.rows[0].target, 'Leible York');
+    eq('...its stale Summary key is the BLANK location', wk0615.staleSummaryKeys[0].location, '');
+    // TWO blank-location rows share this week. A (week, location) predicate
+    // matches both; the full SUMMARY_KEY_COLS tuple matches only the Mayers one.
+    eq('...matching exactly one row despite a second blank-location row in the week',
+      wk0615.staleSummaryKeys[0].matchedCount, 1);
+    eq('...and that row is the Mayers one',
+      summaryRowsForWeek('2026-06-15').filter((r) => String(r[3]) === '').length, 2);
+    check('the co-located Bennetts key is NOT in the delete list',
+      wk0615.staleSummaryKeys.every((k) => k.keyTuple.indexOf('bennetts') === -1));
+
+    const wk0727 = report.weeks.filter((w) => w.week === '2026-07-27')[0];
+    eq('week 2026-07-27 whitelists ONE ref despite two $570.15 rows', wk0727.rows.length, 1);
+    eq('...and it is 3446281, not 3449495', wk0727.rows[0].ref, '3446281');
+
+    eq('sweep sees every unresolved location, all sources', report.sweep.unresolvedCount, 5);
+    eq('...four of them are in the frozen whitelist', report.sweep.inRepairSet, 4);
+    eq('...the non-Mayers one is report-only', report.sweep.reportOnlyCount, 1);
+    check('...and it is named as report-only, not repaired',
+      report.sweep.rows.filter((r) => r.invoice_ref === 'KP-1')[0].disposition === 'report-only');
+  })();
+
+  /* ---- apply: the Bennetts row survives -------------------------------- */
+  seed();
+  (function () {
+    const bennettsBefore = findSummary('2026-07-20', 'Bennetts', '');
+    eq('fixture really does hold the unrebuildable row', bennettsBefore.length, 1);
+
+    const res = mayersLocationRepair_(false, '2026-07-20');
+    eq('apply mode', res.mode, 'apply');
+    check('apply verified', res.verification.ok === true);
+    eq('one Suppliers cell rewritten', res.locationsRewritten, 1);
+    eq('one stale Summary row backed up', res.summaryRowsBackedUp, 1);
+    eq('one stale Summary row deleted', res.summaryRowsDeleted, 1);
+
+    const bennettsAfter = findSummary('2026-07-20', 'Bennetts', '');
+    eq('the $14,219 Bennetts row SURVIVES', bennettsAfter.length, 1);
+    eq('...with its total untouched', Number(bennettsAfter[0][4]), 14219);
+    eq('the Kent Paper blank-location row also survives',
+      findSummary('2026-07-20', 'Kent Paper', '').length, 1);
+    eq('the stale UNMAPPED row is gone', findSummary('2026-07-20', 'Mayers', HINT).length, 0);
+    const north = findSummary('2026-07-20', 'Mayers', 'Leible North');
+    eq('exactly one Mayers row at Leible North', north.length, 1);
+    eq('...carrying the full $703.00', Number(north[0][4]), 703.00);
+    eq('the Suppliers cell now reads Leible North', supplierLocations()['3442003'], 'Leible North');
+
+    // Bottom-up deletion must not shift a survivor out from under itself.
+    eq('no other week lost a row',
+      summaryState().filter((s) => s.indexOf('2026-07-20') === -1).length,
+      SUMMARY_ROWS.filter((r) => r[0] !== '2026-07-20').length);
+
+    const backup = currentSS.getSheetByName(MAYERS_REPAIR_BACKUP_TAB);
+    check('the deleted row is in the retained backup tab', backup !== null);
+    eq('...exactly once', backup.getDataRange().getValues().slice(1).length, 1);
+    eq('...with its original location', String(backup.getDataRange().getValues()[1][3]), HINT);
+  })();
+
+  /* ---- apply: a co-located blank-location row survives ----------------- */
+  // Week 2026-06-15 is the one where the row being repaired is ITSELF at
+  // location='', so the stale key and the unrebuildable row's key differ only
+  // in supplier/kind/department. Nothing but the full tuple separates them.
+  seed();
+  (function () {
+    const res = mayersLocationRepair_(false, '2026-06-15');
+    check('apply verified', res.verification.ok === true);
+    eq('exactly one stale row deleted, not both blanks', res.summaryRowsDeleted, 1);
+    const survivor = findSummary('2026-06-15', 'Bennetts', '');
+    eq('the co-located Bennetts row SURVIVES a blank-key delete', survivor.length, 1);
+    eq('...with its total untouched', Number(survivor[0][4]), 9100);
+    eq('the Mayers blank row is gone', findSummary('2026-06-15', 'Mayers', '').length, 0);
+    eq('...and its money is at Leible York',
+      Number(findSummary('2026-06-15', 'Mayers', 'Leible York')[0][4]), 736.74);
+    eq('the backup tab holds the one deleted row',
+      currentSS.getSheetByName(MAYERS_REPAIR_BACKUP_TAB).getDataRange().getValues().slice(1).length, 1);
+  })();
+
+  /* ---- apply is idempotent --------------------------------------------- */
+  seed();
+  (function () {
+    mayersLocationRepair_(false, '2026-07-20');
+    const after1 = summaryState();
+    const snap1 = scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-20'];
+
+    const res2 = mayersLocationRepair_(false, '2026-07-20');
+    check('a second apply of the same week recognises it is already applied',
+      res2.alreadyApplied === true);
+    check('...and still verifies', res2.verification.ok === true);
+    eq('...and changes nothing', summaryState(), after1);
+    eq('...and does NOT delete a second time', res2.summaryRowsDeleted, 0);
+    eq('a same-week re-run does not overwrite that snapshot',
+      scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-20'], snap1);
+  })();
+
+  /* ---- snapshots are per week, not shared ------------------------------ */
+  seed();
+  (function () {
+    mayersLocationRepair_(false, '2026-07-06');
+    const snap0706 = scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-06'];
+    check('week 1 wrote its snapshot', typeof snap0706 === 'string');
+
+    mayersLocationRepair_(false, '2026-07-20');
+    check('week 2 wrote its OWN snapshot even though week 1 already exists',
+      typeof scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-20'] === 'string');
+    eq('...without disturbing the first', scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-06'], snap0706);
+    eq('the two snapshots are for different weeks',
+      JSON.parse(scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-20']).week, '2026-07-20');
+  })();
+
+  /* ---- live-state mismatch aborts before touching anything ------------- */
+  seed({
+    mutateSuppliers: (supp) => {
+      // Sheet row 4 is 3437634 (1 header + 3 data rows). Someone moved it since
+      // the dry run Jake approved.
+      supp.getRange(4, 5).setValue('Leible Somewhere Else');
+    },
+  });
+  (function () {
+    const before = summaryState();
+    const res = mayersLocationRepair_(false, '2026-07-06');
+    eq('a live-state mismatch aborts at preflight', res.aborted, 'preflight');
+    check('...naming the offending ref', res.problems.join(' ').indexOf('3437634') !== -1);
+    eq('...having written nothing', summaryState(), before);
+    check('...and having taken no snapshot',
+      scriptProps['MAYERS_REPAIR_SNAPSHOT_2026-07-06'] === undefined);
+  })();
+
+  /* ---- a wrong total aborts too (the blank row has no hint to go on) ---- */
+  seed({ mutateSuppliers: (supp) => { supp.getRange(2, 3).setValue(999.99); } });
+  (function () {
+    const res = mayersLocationRepair_(false, '2026-06-15');
+    eq('a total mismatch on the ref-matched exception aborts', res.aborted, 'preflight');
+    check('...naming the expected total', res.problems.join(' ').indexOf('736.74') !== -1);
+  })();
+
+  /* ---- case / whitespace drift in a supplier cell still matches --------- */
+  seed({
+    // rowKey_ normalizes with .trim().toLowerCase(); so must every predicate
+    // here, on BOTH sides, or a stray space makes the delete guard miss.
+    mutateSummary: (summ) => { summ.getRange(4, 3).setValue('  mAyErS '); },
+  });
+  (function () {
+    const res = mayersLocationRepair_(false, '2026-07-06');
+    check('a supplier cell with padding and odd case still matches',
+      res.verification && res.verification.ok === true);
+    eq('...and its stale row is deleted', findSummary('2026-07-06', 'Mayers', HINT).length, 0);
+  })();
+
+  /* ---- an aborted step 6 leaves NO double-count ------------------------ */
+  seed({
+    extraSummaryRows: [
+      // A pre-existing duplicate of the stale row: the approved key now matches
+      // two rows, so the count assertion must abort rather than guess.
+      ['2026-07-06', '2026-07-12', 'Mayers', HINT, 703.75, TS, 'Cafe', 'spend'],
+    ],
+  });
+  (function () {
+    const res = mayersLocationRepair_(false, '2026-07-06');
+    eq('two rows behind one approved key aborts step 6', res.aborted, 'stale-count-mismatch');
+    eq('the step-5 row is REMOVED — no double-count is left behind',
+      findSummary('2026-07-06', 'Mayers', 'Leible North').length, 0);
+    eq('...the Suppliers cell is restored to its original value',
+      supplierLocations()['3437634'], HINT);
+    eq('...and both stale rows are still there',
+      findSummary('2026-07-06', 'Mayers', HINT).length, 2);
+    check('...the whole week was unwound, not half of it',
+      res.unwind && res.unwind.targetRowsDeleted === 1);
+  })();
+
+  /* ---- rollback, end to end -------------------------------------------- */
+  seed();
+  (function () {
+    const baselineSummary = summaryState();
+    const baselineLocations = supplierLocations();
+
+    ['2026-06-15', '2026-07-06', '2026-07-20', '2026-07-27'].forEach((w) => {
+      const r = mayersLocationRepair_(false, w);
+      check('apply ' + w + ' verified', r.verification.ok === true);
+    });
+
+    eq('all four Suppliers rows are repaired', [
+      supplierLocations()['3429816'], supplierLocations()['3437634'],
+      supplierLocations()['3442003'], supplierLocations()['3446281'],
+    ], ['Leible York', 'Leible North', 'Leible North', 'Leible North']);
+    check('Summary really did change',
+      JSON.stringify(summaryState()) !== JSON.stringify(baselineSummary));
+    eq('Bennetts survived all four applies', findSummary('2026-07-20', 'Bennetts', '').length, 1);
+
+    // Zero-arg: the editor Run button passes no arguments, so this must roll
+    // back every snapshotted week on its own.
+    const back = restoreMayersLocationSnapshot();
+    eq('rollback covered all four weeks', back.weeks, 4);
+
+    eq('rollback restores every Suppliers location to baseline',
+      supplierLocations(), baselineLocations);
+    eq('rollback restores Summary to baseline', summaryState(), baselineSummary);
+
+    const again = restoreMayersLocationSnapshot();
+    eq('a second rollback is a no-op, not a double-append', summaryState(), baselineSummary);
+    check('...reporting nothing left to restore',
+      again.results.every((r) => r.staleRowsRestored === 0 && r.targetRowsDeleted === 0));
+  })();
+
+  /* ---- non-Mayers drift is surfaced, not swallowed --------------------- */
+  seed({
+    extraSupplierRows: [
+      // Kent Paper spent more than Summary records — drift that has sat
+      // unsummarized since the week closed. The re-summarize WILL move it.
+      ['2026-07-23', 'Kent Paper', 12.00, 'KP-2', '', 'kent_paper', TS, 'Cafe'],
+    ],
+    extraSummaryRows: [
+      ['2026-07-20', '2026-07-26', 'Labour', 'Leible York', 4000, TS, 'Cafe', 'spend'],
+    ],
+  });
+  (function () {
+    const dry = mayersLocationRepair_();
+    const drift = dry.weeks.filter((w) => w.week === '2026-07-20')[0].drift;
+    const kent = drift.changes.filter((c) => c.supplier === 'Kent Paper')[0];
+    check('the dry run shows the drift BEFORE Jake approves', kent !== undefined);
+    eq('...as an update, with both figures', [kent.liveTotal, kent.recomputedTotal], [88, 100]);
+    eq('...classified as non-Mayers drift', kent.classification, 'NON-MAYERS DRIFT');
+    eq('...and counted', drift.nonMayersDriftCount, 1);
+    check('Labour is PRE-classified as expected, so the gate is not desensitised',
+      drift.liveOnly.concat(drift.changes).filter((e) => e.supplier === 'Labour')[0]
+        .classification.indexOf('expected') === 0);
+    check('the pull-owned Bennetts row is accounted for as untouched',
+      drift.liveOnly.filter((e) => e.supplier === 'Bennetts')[0].action.indexOf('untouched') === 0);
+
+    const res = mayersLocationRepair_(false, '2026-07-20');
+    check('after apply, the non-Mayers change is reported as needing sign-off',
+      res.verification.ok === false &&
+      res.verification.problems.join(' ').indexOf('non-Mayers') !== -1);
+    check('...but the Mayers money still balances', res.verification.mayersWeekTotalOk === true);
+    check('...and the repair itself still landed', res.verification.targetChecks[0].ok === true);
+    eq('...and Bennetts is STILL there', findSummary('2026-07-20', 'Bennetts', '').length, 1);
+  })();
+
+  /* ---- refusals -------------------------------------------------------- */
+  seed();
+  (function () {
+    eq('apply without a week refuses', mayersLocationRepair_(false).refused, 'apply-requires-week');
+    eq('apply on an unapproved week refuses',
+      mayersLocationRepair_(false, '2026-08-10').refused, 'unknown-week');
+    // A time-based trigger passes an EVENT OBJECT as arg 1; resolveDateArg_
+    // rejects it, so this must land on the refusal, not on a stringified object.
+    eq('a trigger event object is not a week',
+      mayersLocationRepair_(false, {}).refused, 'apply-requires-week');
+
+    global.__forceLockTimeout = true;
+    const locked = mayersLocationRepair_(false, '2026-07-06');
+    eq('a lock timeout refuses instead of silently no-opping', locked.refused, 'locked');
+    const lockedBack = restoreMayersLocationSnapshot('2026-07-06');
+    eq('...and so does the rollback', lockedBack.refused, 'locked');
+    global.__forceLockTimeout = false;
+  })();
+
+  /* ---- zero-arg editor wrappers exist and are wired -------------------- */
+  seed();
+  eq('runMayersLocationRepairDryRun is zero-arg',
+    typeof runMayersLocationRepairDryRun, 'function');
+  ['2026_06_15', '2026_07_06', '2026_07_20', '2026_07_27'].forEach((w) => {
+    check('runMayersRepairApply_' + w + ' exists',
+      typeof globalThis['runMayersRepairApply_' + w] === 'function');
+  });
+  (function () {
+    const writesBefore = currentSS._writeLog.length;
+    const rep = runMayersLocationRepairDryRun();
+    eq('the dry-run wrapper really is a dry run', currentSS._writeLog.length, writesBefore);
+    eq('...and returns the report', rep.mode, 'dryRun');
+    const applied = runMayersRepairApply_2026_07_27();
+    eq('the apply wrapper targets its own week', applied.week, '2026-07-27');
+    eq('...and repairs only 3446281, leaving the other $570.15 row alone',
+      findSummary('2026-07-27', 'Mayers', 'Leible Crowsnest').length, 1);
+    eq('...with a distinct North row beside it',
+      Number(findSummary('2026-07-27', 'Mayers', 'Leible North')[0][4]), 570.15);
+  })();
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
