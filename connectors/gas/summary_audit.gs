@@ -63,7 +63,7 @@ function auditSummaryDrift_(detail) {
    * which is the exact opposite of the problem being looked for. */
   var suppRows = suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [];
   var archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
-  var sourceRows = suppRows.concat(archRows);
+  var sourceRows = auditDedupeSourceRows_(suppRows, archRows);
   var revRows = revSheet ? revSheet.getDataRange().getValues().slice(1) : [];
   var summData = summSheet.getDataRange().getValues();
 
@@ -173,6 +173,110 @@ function auditSummaryDrift_(detail) {
   report.netUnderreported = Math.round(report.netUnderreported * 100) / 100;
   auditLogReport_(report, detail === true, purgeCutoff);
   return report;
+}
+
+/**
+ * Suppliers ++ _archive, with any invoice present in BOTH counted once.
+ *
+ * A plain concat double-counts. archiveAndPurge_ moves rows out of Suppliers
+ * but upsertRows_ only ever sees the tab it writes to, so a re-ingest appends
+ * the same invoice_ref back into Suppliers while its archived copy remains —
+ * and this audit sums both. That inflated the reported drift on all 24 SPLIT
+ * weeks after the 2026-08-25 Ordermentum backfill, which is the opposite of
+ * what an instrument is for.
+ *
+ * The Suppliers copy wins: it is the one a repair would rebuild from, and it
+ * carries the fresher extracted_at.
+ *
+ * A row with an EMPTY key (no source and no invoice_ref) is never deduped —
+ * every such row would collapse onto the single key '||' and silently delete
+ * real money from the recomputed total.
+ */
+function auditDedupeSourceRows_(suppRows, archRows) {
+  var out = [];
+  var seen = {};
+  var i;
+
+  for (i = 0; i < suppRows.length; i++) {
+    var sk = rowKey_(suppRows[i], SUPPLIERS_KEY_COLS);
+    if (sk !== '||') seen[sk] = true;
+    out.push(suppRows[i]);
+  }
+
+  for (i = 0; i < archRows.length; i++) {
+    var ak = rowKey_(archRows[i], SUPPLIERS_KEY_COLS);
+    if (ak !== '||' && seen[ak] === true) continue;
+    out.push(archRows[i]);
+  }
+
+  return out;
+}
+
+/**
+ * READ-ONLY. How many invoices are sitting in BOTH `Suppliers` and `_archive`,
+ * and what are they worth? This is the size of the cleanup job, and the exact
+ * amount by which a non-deduping reader over-reports.
+ *
+ * Zero-arg for the Run button. Writes nothing.
+ */
+function auditArchiveDuplicates() {
+  var ss = getHubSpreadsheet_();
+  var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  var archSheet = ss.getSheetByName(ARCHIVE_TAB);
+  if (!suppSheet || !archSheet) return { error: 'missing Suppliers or _archive tab' };
+
+  var suppRows = suppSheet.getDataRange().getValues().slice(1);
+  var archRows = archSheet.getDataRange().getValues().slice(1);
+
+  var archKeys = {};
+  for (var a = 0; a < archRows.length; a++) {
+    var ak = rowKey_(archRows[a], SUPPLIERS_KEY_COLS);
+    if (ak !== '||') archKeys[ak] = true;
+  }
+
+  var byWeek = {};
+  var dupRows = 0;
+  var dupMoney = 0;
+
+  for (var s = 0; s < suppRows.length; s++) {
+    var key = rowKey_(suppRows[s], SUPPLIERS_KEY_COLS);
+    if (key === '||' || archKeys[key] !== true) continue;
+
+    var d = coerceDateStr_(suppRows[s][0]);
+    if (!DATE_ARG_RE.test(d)) continue;
+    var wk = weekStartForDate_(d);
+    var amt = Number(suppRows[s][2]) || 0;
+
+    if (!byWeek[wk]) byWeek[wk] = { rows: 0, total: 0 };
+    byWeek[wk].rows++;
+    byWeek[wk].total += amt;
+    dupRows++;
+    dupMoney += amt;
+  }
+
+  var weeks = Object.keys(byWeek).sort();
+  Logger.log('=== _archive DUPLICATE AUDIT (read-only, nothing written) ===');
+  Logger.log('Suppliers rows ' + suppRows.length + ' | _archive rows ' + archRows.length);
+  Logger.log('invoices present in BOTH tabs: ' + dupRows + ' | $' + dupMoney.toFixed(2));
+  Logger.log('affected weeks: ' + weeks.length);
+  Logger.log('');
+  Logger.log('week          rows        $');
+  for (var w = 0; w < weeks.length; w++) {
+    Logger.log('  ' + weeks[w] + auditPad_(byWeek[weeks[w]].rows, 8) +
+      auditPad_(byWeek[weeks[w]].total.toFixed(2), 12));
+  }
+  Logger.log('');
+  Logger.log('Each of these is ONE invoice stored twice. Any reader that sums');
+  Logger.log('Suppliers + _archive without deduping over-reports by $' + dupMoney.toFixed(2) + '.');
+
+  return {
+    suppliersRows: suppRows.length,
+    archiveRows: archRows.length,
+    duplicateRows: dupRows,
+    duplicateMoney: Math.round(dupMoney * 100) / 100,
+    weeksAffected: weeks.length,
+    byWeek: byWeek
+  };
 }
 
 /** Are this week's rows still in Suppliers, or only in _archive? Decides

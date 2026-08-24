@@ -472,14 +472,58 @@ function normalizePullMetadataRow_(pull) {
  * batch — see upsertRows_.
  * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
  */
+/**
+ * The dedup keys of every invoice that has been purged to `_archive`.
+ *
+ * upsertRows_ can only see the tab it is writing to, so an invoice that
+ * archiveAndPurge_ moved out of `Suppliers` reads as BRAND NEW on the next
+ * ingest and gets appended again — the same invoice_ref now living in both
+ * tabs. That is not theoretical: the 2026-08-25 Ordermentum backfill put 24
+ * weeks into exactly that state.
+ *
+ * It matters because every consumer that reconstructs history reads
+ * Suppliers + _archive together, so a duplicated invoice is counted twice.
+ *
+ * @returns {Object} { 'source||invoice_ref': true }
+ */
+function supplierArchiveKeySet_() {
+  var ss = getHubSpreadsheet_();
+  var archSheet = ss.getSheetByName(ARCHIVE_TAB);
+  if (!archSheet) return {};
+  return buildKeySet_(archSheet, SUPPLIERS_KEY_COLS);
+}
+
 function ingestSupplierRows(source, rows, extractedAt, sheet) {
   var normalizedRows = [];
   for (var i = 0; i < rows.length; i++) {
     normalizedRows.push(normalizeSupplierRow(rows[i], source, extractedAt));
   }
+
+  /* Drop anything already sitting in `_archive` BEFORE the upsert. Skipping
+   * rather than updating is deliberate: `_archive` is historical, a write
+   * there would not reach Summary anyway, and re-appending to Suppliers is the
+   * defect being fixed. The count is returned and logged so a supplier
+   * genuinely re-issuing old invoices is visible rather than silently ignored. */
+  var archivedKeys = supplierArchiveKeySet_();
+  var fresh = [];
+  var archivedSkipped = 0;
+  for (var j = 0; j < normalizedRows.length; j++) {
+    if (archivedKeys[rowKey_(normalizedRows[j], SUPPLIERS_KEY_COLS)] === true) {
+      archivedSkipped++;
+      continue;
+    }
+    fresh.push(normalizedRows[j]);
+  }
+
   // amountCol=2 (total), stampCol=6 (extracted_at) — department (col 7) is
   // never touched by an upsert; only the invoice's own amount/date can change.
-  return upsertRows_(sheet, normalizedRows, SUPPLIERS_KEY_COLS, 2, 6);
+  var res = upsertRows_(sheet, fresh, SUPPLIERS_KEY_COLS, 2, 6);
+  res.archivedSkipped = archivedSkipped;
+  if (archivedSkipped > 0) {
+    Logger.log('ingestSupplierRows: ' + archivedSkipped + ' row(s) already in ' +
+      ARCHIVE_TAB + ' — not re-appended to ' + SUPPLIERS_TAB);
+  }
+  return res;
 }
 
 /**

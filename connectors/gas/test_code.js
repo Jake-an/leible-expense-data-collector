@@ -601,9 +601,11 @@ freshSheets();
     { date: '2026-06-16', total: 999, invoice_ref: 'A1' }, // dup key A1 within batch
   ];
   const r1 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
-  eq('batch of 3 with 1 dup → 2 added, 1 skipped', r1, { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1 });
+  eq('batch of 3 with 1 dup → 2 added, 1 skipped', r1,
+    { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1, archivedSkipped: 0 });
   const r2 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
-  eq('re-ingest same batch → 0 added (all dup vs sheet)', r2, { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3 });
+  eq('re-ingest same batch → 0 added (all dup vs sheet)', r2,
+    { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3, archivedSkipped: 0 });
 })();
 
 console.log('doPost');
@@ -7116,6 +7118,166 @@ console.log('summary_drift_repair.gs — safe re-summarize of drifted weeks');
 
   globalThis.weeklySummarize = savedWeekly;
   SUMMARY_REPAIR_TIME_BUDGET_MS_ = savedBudget;
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// _archive awareness — the defect that made 24 weeks SPLIT.
+//
+// archiveAndPurge_ moves rows OUT of Suppliers, but upsertRows_ only ever sees
+// the tab it writes to. So a re-ingest of an archived invoice reads as brand
+// new and gets appended again: the same invoice_ref in both tabs, counted twice
+// by every reader that reconstructs history from Suppliers + _archive.
+console.log('_archive dedup — ingest awareness, audit dedup, duplicate census');
+(function testArchiveDedup() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-25T09:00:00+10:00';
+  const NOW = '2026-08-25T02:00:00Z';
+
+  // normalizeSupplierRow's input shape, so the ingest path is exercised whole.
+  const raw = (date, supplier, total, ref, loc) => ({
+    date: date, supplier: supplier, total: total, invoice_ref: ref, location: loc,
+  });
+
+  function fresh(archiveRows) {
+    currentSS = makeSpreadsheet();
+    ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (archiveRows || []).forEach((r) => arch.appendRow(r));
+    return currentSS.getSheetByName(SUPPLIERS_TAB);
+  }
+
+  /* ---- an already-archived invoice is NOT re-appended ------------------ */
+  (function () {
+    const supp = fresh([
+      ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'],
+    ]);
+    const res = ingestSupplierRows('ordermentum',
+      [raw('2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York')], TS, supp);
+
+    eq('the archived invoice is not added to Suppliers', res.rowsAdded, 0);
+    eq('...it is counted, not silently dropped', res.archivedSkipped, 1);
+    eq('...and Suppliers stays empty',
+      supp.getDataRange().getValues().length, 1);   // header only
+  })();
+
+  /* ---- a genuinely new invoice still lands ----------------------------- */
+  (function () {
+    const supp = fresh([
+      ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'],
+    ]);
+    const res = ingestSupplierRows('ordermentum', [
+      raw('2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York'),   // archived
+      raw('2026-08-24', 'Butterboy', 150, 'INV-9', 'Leible York'),   // new
+    ], TS, supp);
+
+    eq('the new invoice is added', res.rowsAdded, 1);
+    eq('...and only the archived one is skipped', res.archivedSkipped, 1);
+    eq('...Suppliers holds exactly the new row',
+      supp.getDataRange().getValues()[1][3], 'INV-9');
+  })();
+
+  /* ---- the archive check is keyed on source+ref, like every other dedup - */
+  (function () {
+    const supp = fresh([
+      ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'],
+    ]);
+    // Same invoice_ref, DIFFERENT source — a different invoice, must land.
+    const res = ingestSupplierRows('fresh_and_chill',
+      [raw('2026-01-07', 'Fresh and Chill', 80, 'INV-1', 'Leible York')], TS, supp);
+    eq('same ref under a different source is not an archive hit', res.rowsAdded, 1);
+    eq('...nothing skipped', res.archivedSkipped, 0);
+  })();
+
+  /* ---- no _archive tab at all must not throw --------------------------- */
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const res = ingestSupplierRows('ordermentum',
+      [raw('2026-08-24', 'Butterboy', 150, 'INV-9', 'Leible York')], TS, supp);
+    eq('ingest works with no _archive tab', res.rowsAdded, 1);
+    eq('...and reports zero archived skips', res.archivedSkipped, 0);
+  })();
+
+  /* ---- the audit no longer double-counts a split invoice --------------- */
+  // THE MEASUREMENT BUG. Before this, an invoice in both tabs was summed twice,
+  // inflating the reported drift on exactly the weeks that were hardest to fix.
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+
+    const row = ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    supp.appendRow(row);
+    arch.appendRow(row);            // the SAME invoice, in both tabs
+
+    withMockNow(NOW, function () {
+      const r = auditSummaryDrift();
+      eq('the duplicated invoice is counted ONCE, not twice', r.netUnderreported, 300);
+    });
+  })();
+
+  (function () {
+    // An archived invoice that is NOT in Suppliers must still be counted.
+    currentSS = makeSpreadsheet();
+    ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    arch.appendRow(['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe']);
+    withMockNow(NOW, function () {
+      eq('an archive-only invoice is still counted', auditSummaryDrift().netUnderreported, 300);
+    });
+  })();
+
+  (function () {
+    // Blank-key rows must NEVER collapse onto each other — they would all
+    // share the key '||' and silently delete real money from the recompute.
+    const blankA = ['2026-01-07', 'A', 100, '', 'X', '', TS, 'Cafe'];
+    const blankB = ['2026-01-08', 'B', 250, '', 'Y', '', TS, 'Cafe'];
+    const out = auditDedupeSourceRows_([blankA], [blankB]);
+    eq('two empty-key rows both survive dedup', out.length, 2);
+  })();
+
+  /* ---- the duplicate census ------------------------------------------- */
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+
+    const dup1 = ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    const dup2 = ['2026-01-08', 'Butterboy', 200, 'INV-2', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    const onlySupp = ['2026-08-24', 'Butterboy', 999, 'INV-9', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    const onlyArch = ['2025-01-06', 'Butterboy', 777, 'INV-0', 'Leible York', 'ordermentum', TS, 'Cafe'];
+
+    [dup1, dup2, onlySupp].forEach((r) => supp.appendRow(r));
+    [dup1, dup2, onlyArch].forEach((r) => arch.appendRow(r));
+
+    const out = auditArchiveDuplicates();
+    eq('counts only invoices in BOTH tabs', out.duplicateRows, 2);
+    eq('...and their money', out.duplicateMoney, 500);
+    eq('...grouped by week', out.weeksAffected, 1);
+    check('a Suppliers-only invoice is not a duplicate',
+      out.duplicateMoney !== 1499);
+    check('an _archive-only invoice is not a duplicate',
+      out.duplicateMoney !== 1277);
+  })();
+
+  (function () {
+    currentSS = makeSpreadsheet();
+    ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    const writes = currentSS._writeLog.length;
+    const out = auditArchiveDuplicates();
+    eq('a clean sheet reports no duplicates', out.duplicateRows, 0);
+    eq('...and the census writes NOTHING', currentSS._writeLog.length, writes);
+  })();
+
   currentSS = savedSS;
   scriptProps = savedProps;
 })();
