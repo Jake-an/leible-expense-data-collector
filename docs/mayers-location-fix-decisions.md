@@ -311,3 +311,42 @@ Run **`runMayersLocationRepairDryRun()`** in the GAS editor (`clasp run` is
 unavailable — the project is deliberately not deployed as API executable), check
 its `staleSummaryKeys[].keyTuple` list against the table above and its
 `drift.nonMayersDriftCount`, then apply one week at a time.
+
+### BASELINE REFRESHED 2026-08-24 — after the Ordermentum North backfill
+
+`downloads/mayers-repair-baseline-2026-08-24.json` was **re-captured** after an
+unrelated fix landed rows in three of the four repair weeks. The Mayers repair
+itself is unchanged — this note exists so the refresh is not mistaken for drift.
+
+**What happened.** The Ordermentum connector was pointed at the dead North
+Sydney retailer account, so `Leible North` had no Ordermentum rows at all. Fixed
+in `516252b`; 54 rows backfilled and weeks `2026-06-29`..`2026-08-17`
+re-summarized. Three of those weeks (`07-06`, `07-20`, `07-27`) are also Mayers
+repair weeks.
+
+**Verified unaffected**, by diffing the superseded baseline against the new one:
+
+- Mayers rows are **byte-identical** in all four weeks (1/1/1/2 rows).
+- Mayers four-week total is still **$3,283.79**.
+- The unrebuildable `Bennetts` row is still **$14,219.00** at `location=''`.
+- The approved DELETE/ADD key tuples are Mayers-only, so **they do not change**.
+  The table above still stands as approved.
+
+**What did change in the repair weeks** — expect these in the dry-run's drift
+list, and do not treat them as new:
+
+| Week | Row | Change |
+|---|---|---|
+| 2026-07-06 | `Fuel Bakery` / `Leible North` | **+** $931.05 (backfill) |
+| 2026-07-20 | `Fuel Bakery` / `Leible North` | **+** $1,328.92 (backfill) |
+| 2026-07-20 | `Tuga Pastries Australia` / `Leible North` | **+** $69.29 (backfill) |
+| 2026-07-27 | `Fuel Bakery` / `Leible North` | **+** $1,674.48 (backfill) |
+| 2026-07-27 | `Fuel Bakery` / `Leible Crowsnest` | $563.23 → $641.77 (pagination fix) |
+| 2026-07-27 | `Fuel Bakery` / `Leible York` | $720.33 → $750.62 (pagination fix) |
+| 2026-07-27 | `Fresh and Chill` / `Leible York` | $913.30 → **$888.68** ⚠️ |
+
+⚠️ The `Fresh and Chill` move is **not** from this backfill — different
+connector, different source. It is pre-existing drift that the re-summarize
+surfaced: the `Summary` row had gone stale against `Suppliers`. This is exactly
+the hazard the plan's "non-Mayers drift lands silently" risk describes, observed
+for real. **Open item for Jake**, tracked separately from the Mayers repair.
