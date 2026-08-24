@@ -89,6 +89,15 @@ def load_env_file() -> dict[str, str]:
     return values
 
 
+# A GAS doPost may legitimately run to its own 6-minute execution limit on a
+# large payload. A client timeout below that reports FAILURE for a request the
+# server went on to process successfully — which is exactly what happened on
+# 2026-08-25: the Ordermentum run timed out at 300s, exited 1, and had in fact
+# ingested three years of invoice history. Overriding via env is for probing;
+# the default must stay above 360s.
+POST_TIMEOUT_SECONDS = int(os.environ.get("GAS_POST_TIMEOUT_SECONDS", "600"))
+
+
 def get_credential(name: str) -> str | None:
     """Return a credential by name: real `os.environ` first, then `.env`.
     Never logs the value. Returns None if unset anywhere."""
@@ -436,7 +445,7 @@ class BaseConnector:
             "rows": rows,
             "extracted_at": datetime.now(SYD_TZ).isoformat(timespec="seconds"),
         }
-        resp = requests.post(self.exec_url, json=payload, timeout=300)
+        resp = requests.post(self.exec_url, json=payload, timeout=POST_TIMEOUT_SECONDS)
         resp.raise_for_status()
         try:
             body = resp.json()
