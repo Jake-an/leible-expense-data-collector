@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +37,10 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 # Repo root = two levels up from this file (connectors/playwright/).
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Backfill scope arg. Matches the GAS-side DATE_ARG_RE (Code.gs:1573) so a
+# --since value and a weeklySummarize override are the same shape.
+DATE_ARG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SESSIONS_DIR = REPO_ROOT / "sessions"
 
 DEPLOYMENT_JSON = REPO_ROOT / "config" / "deployment.json"
@@ -250,9 +255,32 @@ class BaseConnector:
     # ------------------------------------------------------------------ #
     # Shared orchestration
     # ------------------------------------------------------------------ #
-    def run(self, attended: bool = False) -> dict:
-        if not attended:
+    def run(self, attended: bool = False, dry_run: bool = False, since: str | None = None) -> dict:
+        """Read the portal and POST to GAS.
+
+        dry_run reads exactly as a real run does — same session, same auth path,
+        same read_invoices — and then STOPS before post(). It is the only way to
+        see what a connector would write without writing it, which matters most
+        for a backfill: a mapping fix can change how many rows a run produces by
+        orders of magnitude, and doPost has no undo.
+
+        since ('YYYY-MM-DD') drops rows dated before it, AFTER the read. It is a
+        deliberate scope control for backfills, not an optimisation — fixing the
+        Ordermentum North venue turned a routine run into 2,640 rows spanning
+        three years, and two things make posting all of that a bad idea:
+        GAS appends row by row inside a 6-minute execution limit, and
+        ARCHIVE_RETENTION_DAYS (183) means anything older than ~6 months is
+        swept into _archive by the next weekly run without ever reaching Summary
+        unless that week is re-summarized by hand.
+
+        The filter lives here rather than in each read_invoices so a subclass
+        cannot forget it, and so --dry-run reports exactly what --since would
+        post.
+        """
+        if not attended and not dry_run:
             self._require_exec_url()
+        if since is not None and not DATE_ARG_RE.match(since):
+            raise ValueError(f"--since must be YYYY-MM-DD, got {since!r}")
         SESSIONS_DIR.mkdir(exist_ok=True)
         with sync_playwright() as pw:
             context = self._new_context(pw, headed=attended)
@@ -287,9 +315,57 @@ class BaseConnector:
             context.storage_state(path=str(self.session_path))
             context.close()
 
+        if since is not None:
+            before = len(rows)
+            # A row with no/blank date is NOT silently dropped — an undated row
+            # is a parsing problem worth seeing, and dropping it here would hide
+            # it behind a flag that reads as "just narrowing the window".
+            rows = [r for r in rows if not str(r.get("date") or "") or str(r["date"])[:10] >= since]
+            print(f"[{self.NAME}] --since {since}: kept {len(rows)} of {before} row(s)")
+
+        if dry_run:
+            return self._dry_run_report(rows)
+
         result = self.post(rows)
         print(f"[{self.NAME}] read {len(rows)} rows -> POST {result}")
         return {"rows": len(rows), "post": result}
+
+    def _dry_run_report(self, rows: list[dict]) -> dict:
+        """Summarise what a real run WOULD have posted. Writes nothing to GAS.
+
+        The full row dump goes to downloads/ (gitignored) rather than the
+        terminal: it is business data, and a 500-row scroll is not reviewable
+        anyway. The per-location/per-supplier breakdown on screen is what a
+        person can actually check a mapping against.
+        """
+        by_loc: dict[str, list[dict]] = {}
+        for r in rows:
+            by_loc.setdefault(str(r.get("location", "")), []).append(r)
+
+        print(f"\n[{self.NAME}] DRY RUN — {len(rows)} row(s) read, NOTHING POSTED\n")
+        print(f"  {'location':<20}{'supplier':<26}{'rows':>6}{'total':>14}   {'date range'}")
+        print("  " + "-" * 88)
+        for loc in sorted(by_loc):
+            by_sup: dict[str, list[dict]] = {}
+            for r in by_loc[loc]:
+                by_sup.setdefault(str(r.get("supplier", "")), []).append(r)
+            for sup in sorted(by_sup):
+                group = by_sup[sup]
+                dates = sorted(str(g.get("date", ""))[:10] for g in group if g.get("date"))
+                span = f"{dates[0]} .. {dates[-1]}" if dates else "—"
+                total = sum(float(g.get("total") or 0) for g in group)
+                print(f"  {loc:<20}{sup:<26}{len(group):>6}{total:>14,.2f}   {span}")
+        print("  " + "-" * 88)
+        print(
+            f"  {'TOTAL':<46}{len(rows):>6}{sum(float(r.get('total') or 0) for r in rows):>14,.2f}"
+        )
+
+        out = REPO_ROOT / "downloads" / f"{self.NAME}-dryrun.json"
+        out.parent.mkdir(exist_ok=True)
+        out.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
+        print(f"\n  full row dump: {out}  (gitignored)")
+        print(f"  to actually ingest: python connectors/playwright/{self.NAME}.py\n")
+        return {"rows": len(rows), "post": {"result": "dry-run", "reason": "nothing posted"}}
 
     def _attempt_auto_login(self, page: Page, key: str, creds_present: bool) -> None:
         """Orchestrate a headless auto-login attempt for breaker key `key`.
@@ -409,12 +485,22 @@ def cli_main(connector_cls) -> None:
         help="clear the auto-login circuit-breaker without a full attended login "
         "(use after fixing a .env typo)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="read the portal and report what WOULD be ingested; POSTs nothing",
+    )
+    parser.add_argument(
+        "--since",
+        metavar="YYYY-MM-DD",
+        help="ignore rows dated before this (backfill scope control)",
+    )
     args = parser.parse_args()
     if args.clear_breaker:
         _clear_breaker(connector_cls.NAME)
         print(f"[{connector_cls.NAME}] auto-login breaker cleared")
         return
     try:
-        connector_cls().run(attended=args.attended)
+        connector_cls().run(attended=args.attended, dry_run=args.dry_run, since=args.since)
     except BlockedError:
         sys.exit(2)

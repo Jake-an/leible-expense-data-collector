@@ -13,6 +13,7 @@ since there's no package __init__.py in the way).
 import itertools
 import json
 import time
+from pathlib import Path
 
 import base_connector as b
 import fresh_and_chill
@@ -985,3 +986,266 @@ def test_ordermentum_cancelled_invoices_still_excluded(monkeypatch):
     )
     rows = _om_conn().read_invoices(_PagedOMPage(req))
     assert [r["invoice_ref"] for r in rows] == ["INV1"]
+
+
+# ---- --dry-run: read everything, POST nothing ---------------------------- #
+#
+# Added 2026-08-24 for the Ordermentum North Sydney backfill. A mapping fix can
+# change how many rows a run produces by orders of magnitude, and doPost has no
+# undo — so there had to be a way to see the rows before writing them.
+#
+# The load-bearing property is the negative one: dry_run must never reach
+# post(). A dry run that quietly posts is worse than no dry run at all, because
+# it is trusted.
+
+
+class _DryRunConnector(b.BaseConnector):
+    NAME = "dryrun_probe"
+    SOURCE = "dryrun_probe"
+    LOGIN_URL = "https://example.invalid/login"
+
+    def __init__(self, rows, **kw):
+        super().__init__(**kw)
+        self._rows = rows
+        self.post_calls = []
+
+    def is_logged_in(self, page):
+        return True
+
+    def auth_state(self, page):
+        return "ok"
+
+    def read_invoices(self, page):
+        return self._rows
+
+    def post(self, rows):
+        self.post_calls.append(rows)
+        return {"result": "ok", "rowsAdded": len(rows)}
+
+
+def _patch_playwright(monkeypatch, tmp_path):
+    """Stub the browser so run() can be exercised without Playwright."""
+
+    class _Ctx:
+        def new_page(self):
+            class _P:
+                def goto(self, *a, **kw):
+                    return None
+
+            return _P()
+
+        def storage_state(self, path=None):
+            Path(path).write_text("{}", encoding="utf-8")
+
+        def close(self):
+            return None
+
+    class _PW:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(b, "sync_playwright", lambda: _PW())
+    monkeypatch.setattr(b.BaseConnector, "_new_context", lambda self, pw, headed: _Ctx())
+    monkeypatch.setattr(b, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(b, "REPO_ROOT", tmp_path)
+
+
+_DRY_ROWS = [
+    {
+        "date": "2026-08-03",
+        "total": 10.5,
+        "invoice_ref": "A1",
+        "supplier": "Fuel Bakery",
+        "location": "Leible North",
+    },
+    {
+        "date": "2026-08-10",
+        "total": 20.0,
+        "invoice_ref": "A2",
+        "supplier": "Fuel Bakery",
+        "location": "Leible North",
+    },
+    {
+        "date": "2026-08-10",
+        "total": 5.25,
+        "invoice_ref": "B1",
+        "supplier": "Tuga",
+        "location": "Leible Pitt",
+    },
+]
+
+
+def test_dry_run_never_posts(monkeypatch, tmp_path):
+    """THE assertion. Everything else about a dry run is cosmetic."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_DRY_ROWS, exec_url="https://example.invalid/exec")
+    result = conn.run(dry_run=True)
+    assert conn.post_calls == [], "dry run must not reach post()"
+    assert result["post"]["result"] == "dry-run"
+    assert result["rows"] == 3
+
+
+def test_real_run_does_post(monkeypatch, tmp_path):
+    """Guards the inverse: the dry-run branch must not swallow a real run."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_DRY_ROWS, exec_url="https://example.invalid/exec")
+    result = conn.run(dry_run=False)
+    assert len(conn.post_calls) == 1
+    assert result["post"]["result"] == "ok"
+
+
+def test_dry_run_needs_no_exec_url(monkeypatch, tmp_path):
+    """_require_exec_url() must not block a dry run — it posts nothing, so a
+    missing GAS URL is irrelevant, and demanding one makes the safe path harder
+    to reach than the dangerous one."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_DRY_ROWS, exec_url=None)
+    conn.exec_url = None
+    result = conn.run(dry_run=True)
+    assert result["post"]["result"] == "dry-run"
+    assert conn.post_calls == []
+
+
+def test_real_run_still_requires_exec_url(monkeypatch, tmp_path):
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_DRY_ROWS, exec_url=None)
+    conn.exec_url = None
+    with pytest.raises(RuntimeError, match="No GAS /exec URL"):
+        conn.run(dry_run=False)
+
+
+def test_dry_run_writes_the_full_dump_to_downloads(monkeypatch, tmp_path):
+    """downloads/ is gitignored; the dump is business data and must land there,
+    not in the terminal and not anywhere tracked."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_DRY_ROWS, exec_url="https://example.invalid/exec")
+    conn.run(dry_run=True)
+    dump = tmp_path / "downloads" / "dryrun_probe-dryrun.json"
+    assert dump.exists()
+    assert json.loads(dump.read_text(encoding="utf-8")) == _DRY_ROWS
+
+
+def test_dry_run_breaks_down_by_location_and_supplier(monkeypatch, tmp_path, capsys):
+    """The on-screen summary is what a person checks a venue mapping against —
+    per-shop counts and totals are exactly what exposed the North gap."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_DRY_ROWS, exec_url="https://example.invalid/exec")
+    conn.run(dry_run=True)
+    out = capsys.readouterr().out
+    assert "NOTHING POSTED" in out
+    assert "Leible North" in out
+    assert "Leible Pitt" in out
+    assert "30.50" in out, "North's two Fuel Bakery rows must be summed"
+    assert "2026-08-03 .. 2026-08-10" in out, "date span per group"
+
+
+def test_dry_run_handles_zero_rows(monkeypatch, tmp_path):
+    """A connector that reads nothing must not crash the safety gate."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector([], exec_url="https://example.invalid/exec")
+    result = conn.run(dry_run=True)
+    assert result["rows"] == 0
+    assert conn.post_calls == []
+
+
+# ---- --since: backfill scope control ------------------------------------- #
+#
+# Fixing the Ordermentum North venue turned a routine run into 2,640 rows across
+# three years. Two things make posting all of that a bad idea: GAS appends row
+# by row inside a 6-minute limit, and ARCHIVE_RETENTION_DAYS (183) sweeps
+# anything older than ~6 months into _archive without it ever reaching Summary.
+# --since is the scope control, applied in run() so no subclass can forget it.
+
+_SINCE_ROWS = [
+    {
+        "date": "2025-04-02",
+        "total": 100.0,
+        "invoice_ref": "OLD1",
+        "supplier": "Tuga",
+        "location": "Leible North",
+    },
+    {
+        "date": "2026-06-28",
+        "total": 200.0,
+        "invoice_ref": "EDGE0",
+        "supplier": "Tuga",
+        "location": "Leible North",
+    },
+    {
+        "date": "2026-06-29",
+        "total": 300.0,
+        "invoice_ref": "EDGE1",
+        "supplier": "Fuel Bakery",
+        "location": "Leible North",
+    },
+    {
+        "date": "2026-08-24",
+        "total": 400.0,
+        "invoice_ref": "NEW1",
+        "supplier": "Fuel Bakery",
+        "location": "Leible North",
+    },
+]
+
+
+def test_since_keeps_only_rows_on_or_after_the_cutoff(monkeypatch, tmp_path):
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_SINCE_ROWS, exec_url="https://example.invalid/exec")
+    conn.run(since="2026-06-29")
+    posted = conn.post_calls[0]
+    assert [r["invoice_ref"] for r in posted] == ["EDGE1", "NEW1"]
+
+
+def test_since_is_inclusive_of_the_cutoff_date(monkeypatch, tmp_path):
+    """Off-by-one here silently drops a whole day of invoices."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_SINCE_ROWS, exec_url="https://example.invalid/exec")
+    conn.run(since="2026-06-29")
+    assert "EDGE1" in [r["invoice_ref"] for r in conn.post_calls[0]]
+
+
+def test_since_absent_posts_everything(monkeypatch, tmp_path):
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_SINCE_ROWS, exec_url="https://example.invalid/exec")
+    conn.run()
+    assert len(conn.post_calls[0]) == 4
+
+
+def test_since_rejects_a_malformed_date(monkeypatch, tmp_path):
+    """Fail loudly. A silently-ignored --since posts three years of rows."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_SINCE_ROWS, exec_url="https://example.invalid/exec")
+    for bad in ("2026-6-29", "29-06-2026", "yesterday", "2026/06/29", ""):
+        with pytest.raises(ValueError, match="--since must be YYYY-MM-DD"):
+            conn.run(since=bad)
+    assert conn.post_calls == []
+
+
+def test_since_keeps_undated_rows(monkeypatch, tmp_path):
+    """An undated row is a parsing problem worth seeing. Dropping it here would
+    hide it behind a flag that reads as 'just narrowing the window'."""
+    _patch_playwright(monkeypatch, tmp_path)
+    rows = _SINCE_ROWS + [
+        {"date": "", "total": 9.0, "invoice_ref": "NODATE", "supplier": "?", "location": "?"}
+    ]
+    conn = _DryRunConnector(rows, exec_url="https://example.invalid/exec")
+    conn.run(since="2026-06-29")
+    assert "NODATE" in [r["invoice_ref"] for r in conn.post_calls[0]]
+
+
+def test_since_composes_with_dry_run(monkeypatch, tmp_path, capsys):
+    """--dry-run must report exactly what --since would post, or the preview is
+    not a preview of the thing being approved."""
+    _patch_playwright(monkeypatch, tmp_path)
+    conn = _DryRunConnector(_SINCE_ROWS, exec_url="https://example.invalid/exec")
+    result = conn.run(dry_run=True, since="2026-06-29")
+    assert conn.post_calls == []
+    assert result["rows"] == 2
+    dump = json.loads(
+        (tmp_path / "downloads" / "dryrun_probe-dryrun.json").read_text(encoding="utf-8")
+    )
+    assert [r["invoice_ref"] for r in dump] == ["EDGE1", "NEW1"]
+    assert "700.00" in capsys.readouterr().out
