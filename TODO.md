@@ -18,6 +18,46 @@
 
 ## Active
 
+### Summary drift — $148,214.34 missing from reports (MEASURED 2026-08-24, NOT fixed)
+
+`auditSummaryDrift()` (`connectors/gas/summary_audit.gs`, read-only, v34) over all
+50 completed weeks:
+
+| | weeks | $ |
+|---|---:|---:|
+| Past the purge line — source in `_archive` only | 24 | **84,589.41** |
+| Source still in `Suppliers` — re-summarize fixes it | 17 | **63,624.93** |
+| **Total drifted** | **41 of 50** | **148,214.34** |
+
+**205 rows missing, 0 stale.** Nothing in `Summary` is wrong — whole
+supplier@shop rows are absent, reading $0 in every report. Repair is purely
+additive; no double-count risk.
+
+**The 9 clean weeks are exactly the 9 re-summarized on 2026-08-24** (Mayers
+repair + Ordermentum North backfill). Every other completed week had drifted, so
+the default state of a historical week is wrong.
+
+**Cause:** each connector's first run ingested the portal's invoice history into
+`Suppliers`, but nothing ever re-summarized those weeks. The pattern tracks
+connector go-live dates (Butterboy/Tuga 2026-06-18, Fresh and Chill 2026-06-22),
+not amendments. Oldest gap `2025-06-09` (Butterboy @ York, $757.02) — ~14.5
+months unreported.
+
+**⚠️ `weeklySummarize` CANNOT fix the 24 archived weeks.** `weeklySummarize_impl_`
+reads `suppSheet.getDataRange()` — `Suppliers` only, never `_archive`. For those
+weeks it recomputes an empty set and silently changes nothing. They need a repair
+that aggregates from `_archive`, or the rows restored to `Suppliers` first.
+
+**⏳ There is a clock.** `archiveAndPurge_` moves rows older than
+`ARCHIVE_RETENTION_DAYS` (183) out of `Suppliers` on every scheduled run, so one
+more week slips from "fixable" to "archived" every week. `2026-02-23`
+($2,356.67) is next.
+
+- [ ] Decide scope + repair the 17 fixable weeks (`weeklySummarize('<week>')`
+      per week, needs a zero-arg wrapper — the editor Run button passes no args).
+- [ ] Decide how to repair the 24 archived weeks, or accept them as historical.
+- [ ] Consider a standing guard so this cannot silently re-accumulate.
+
 ### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
 `mayersDailyPull` only labels a thread once something parsed out of it
 (`mayers.gs`, `if (threadParsed > 0)`). A document that can **never** parse therefore
