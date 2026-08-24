@@ -18,45 +18,60 @@
 
 ## Active
 
-### Summary drift — $148,214.34 missing from reports (MEASURED 2026-08-24, NOT fixed)
+### Summary drift — RE-MEASURED $351,375.05 on 2026-08-25 (was $148,214.34)
 
-`auditSummaryDrift()` (`connectors/gas/summary_audit.gs`, read-only, v34) over all
-50 completed weeks:
+`auditSummaryDrift()` (`connectors/gas/summary_audit.gs`, read-only) over all
+**169** completed weeks, 2026-08-25 08:09:
 
 | | weeks | $ |
 |---|---:|---:|
-| Past the purge line — source in `_archive` only | 24 | **84,589.41** |
-| Source still in `Suppliers` — re-summarize fixes it | 17 | **63,624.93** |
-| **Total drifted** | **41 of 50** | **148,214.34** |
+| Rebuildable — every source row still in `Suppliers`, none in `_archive` | 136 | **237,064.62** |
+| `SPLIT` — rows in BOTH `Suppliers` and `_archive`, refused (see below) | 24 | **114,310.43** |
+| **Total drifted** | **160 of 169** | **351,375.05** |
 
-**205 rows missing, 0 stale.** Nothing in `Summary` is wrong — whole
-supplier@shop rows are absent, reading $0 in every report. Repair is purely
-additive; no double-count risk.
+**500 rows missing, 0 stale.** Whole supplier@shop rows are absent, reading $0
+in every report.
 
-**The 9 clean weeks are exactly the 9 re-summarized on 2026-08-24** (Mayers
-repair + Ordermentum North backfill). Every other completed week had drifted, so
-the default state of a historical week is wrong.
+**⚠️ Why it tripled overnight — a silent success reported as a failure.** The
+pagination fix (`516252b`) made the Ordermentum connector walk every invoice
+page. The scheduled run at **2026-08-25 03:29** read ~1000 invoices per venue
+instead of the usual 188 rows, POSTed them, and hit the client's 300s timeout —
+`exit=1`, logged as a failure. **GAS had already ingested them.** Three years of
+invoice history (back to `2023-05-29`) landed in `Suppliers` with no run
+anywhere claiming success. Fixed in `0bd2521`: the POST timeout is now 600s,
+above the 360s GAS ceiling, since a client timeout below it turns a server-side
+success into a reported failure.
 
-**Cause:** each connector's first run ingested the portal's invoice history into
-`Suppliers`, but nothing ever re-summarized those weeks. The pattern tracks
-connector go-live dates (Butterboy/Tuga 2026-06-18, Fresh and Chill 2026-06-22),
-not amendments. Oldest gap `2025-06-09` (Butterboy @ York, $757.02) — ~14.5
-months unreported.
+**⚠️ The `_archive` double-count is now live, not hypothetical.**
+`ingestSupplierRows` dedups against `Suppliers` only — it never consults
+`_archive`. So re-ingested historical invoices landed beside their archived
+copies. `auditSummaryDrift_` concatenates both tabs **without deduping on
+`invoice_ref`**, so the $114,310.43 on those 24 weeks is inflated by an unknown
+amount and must not be trusted or repaired until that is resolved.
 
-**⚠️ `weeklySummarize` CANNOT fix the 24 archived weeks.** `weeklySummarize_impl_`
-reads `suppSheet.getDataRange()` — `Suppliers` only, never `_archive`. For those
-weeks it recomputes an empty set and silently changes nothing. They need a repair
-that aggregates from `_archive`, or the rows restored to `Suppliers` first.
+**⚠️ Never re-summarize a `SPLIT` week.** `weeklySummarize_impl_` recomputes
+from `Suppliers` ONLY and `Summary` upserts, so a week straddling the archive
+cutoff gets its live `Summary` row overwritten with the partial total — turning
+missing money into *understated* money, which hides far better. The predicate is
+"no `_archive` rows at all", NOT the audit's `sourceRowsStillPresent`.
+`summaryDriftRepairPlan_()` enforces this; mutation-tested 2026-08-24.
 
-**⏳ There is a clock.** `archiveAndPurge_` moves rows older than
-`ARCHIVE_RETENTION_DAYS` (183) out of `Suppliers` on every scheduled run, so one
-more week slips from "fixable" to "archived" every week. `2026-02-23`
-($2,356.67) is next.
+**⚠️ The old end is truncated.** `INVOICE_PAGE_LIMIT = 40` (1000 invoices) cut
+one supplier off mid-history — `2023-05-29` is where the window ran out, not
+where trading began. Repairing the oldest weeks writes totals that look complete
+and are not.
 
-- [ ] Decide scope + repair the 17 fixable weeks (`weeklySummarize('<week>')`
-      per week, needs a zero-arg wrapper — the editor Run button passes no args).
-- [ ] Decide how to repair the 24 archived weeks, or accept them as historical.
-- [ ] Consider a standing guard so this cannot silently re-accumulate.
+- [x] Zero-arg repair wrapper with the SPLIT guard — `connectors/gas/summary_drift_repair.gs` (`12fde6b`, deployed v35)
+- [x] POST timeout raised above the GAS ceiling — `0bd2521`
+- [ ] **In flight:** confirm the 03:29 ingest landed completely (re-run the
+      connector; dedup makes `rowsAdded≈0` the proof), then repair the approved
+      17-week block `2026-02-23 → 2026-06-22` (**$73,804.61**, no SPLITs).
+- [ ] Decide on the other 119 rebuildable weeks — three years of history that
+      arrived by accident and has not been reviewed.
+- [ ] Fix `ingestSupplierRows` to dedup against `_archive`, then re-measure the
+      24 SPLIT weeks against a non-double-counting audit.
+- [ ] Raise or paginate past `INVOICE_PAGE_LIMIT` so history is not silently cut.
+- [ ] Consider a standing guard so drift cannot silently re-accumulate.
 
 ### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
 `mayersDailyPull` only labels a thread once something parsed out of it
