@@ -398,19 +398,30 @@ function getOrCreateLabel_(name) {
 }
 
 /* ==================================================================== *
- * Location repair (2026-08-20) — RETAINED artifacts + rollback
+ * Location repair (applied 2026-08-24) — RETAINED artifacts + rollback
  *
- * The repair itself lives in connectors/gas/mayers_repair.gs, which is
- * DELETED once the repair is verified. This section deliberately stays here
- * instead, in the file that survives.
+ * THE REPAIR IS DONE. Four Mayers rows carried a wrong `location`
+ * ($2,713.64): three read `UNMAPPED: …5 BLUES ST…` because /\bBLUE\s*ST/i
+ * cannot match the plural, and one was blank because it was ingested before
+ * shop attribution existed. Applied and verified 2026-08-24 — Mayers span
+ * total held at $5,127.89, North +$1,976.90, York +$736.74.
  *
- * The repair leaves two artifacts in production on purpose: the
- * MAYERS_REPAIR_SNAPSHOT_<week_start> script properties, and the
- * Summary_mayers_location_backup tab holding the ONLY copy of the deleted
- * Summary rows. Deleting mayers_repair.gs would otherwise remove the only code
- * that knows how to consume them — a retained rollback artifact with no
- * rollback. Keeping restoreMayersLocationSnapshot() costs nothing while the
- * properties are being kept anyway.
+ * connectors/gas/mayers_repair.gs performed it and has been DELETED. This
+ * section deliberately stays, in the file that survives, because the repair
+ * left two artifacts in production ON PURPOSE and they are still there:
+ *
+ *   - Summary_mayers_location_backup — the ONLY copy of the four deleted
+ *     Summary rows. It is the audit trail; a later tidy-up must not remove it.
+ *   - MAYERS_REPAIR_SNAPSHOT_2026-06-15 / _2026-07-06 / _2026-07-20 /
+ *     _2026-07-27 — the original Suppliers locations. Write-once per week, so
+ *     a "already-exists" refusal means that week already ran.
+ *
+ * restoreMayersLocationSnapshot() is the only code that knows how to consume
+ * them. Deleting it with the repair file would have left a retained rollback
+ * artifact with no rollback — worse than keeping no artifact at all. It is
+ * zero-arg (the editor Run button passes no arguments), idempotent, and
+ * covered by tests in test_code.js that hand-build the post-apply state so the
+ * coverage outlives the file that produced it.
  * ==================================================================== */
 
 var MAYERS_REPAIR_BACKUP_TAB = 'Summary_mayers_location_backup';
