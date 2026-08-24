@@ -228,52 +228,88 @@ function auditArchiveDuplicates() {
   var suppRows = suppSheet.getDataRange().getValues().slice(1);
   var archRows = archSheet.getDataRange().getValues().slice(1);
 
-  var archKeys = {};
-  for (var a = 0; a < archRows.length; a++) {
-    var ak = rowKey_(archRows[a], SUPPLIERS_KEY_COLS);
-    if (ak !== '||') archKeys[ak] = true;
+  /* COUNT EVERY COPY, not just the Suppliers-side one.
+   *
+   * The first version of this census counted one row per Suppliers invoice that
+   * had an archived twin, and reported that sum as the over-count. It was
+   * wrong by 4.5×: on 2026-08-25 it said $4,520.34 while the true over-report
+   * was $20,624.23.
+   *
+   * The reason is a second defect. archiveAndPurge_ appends to `_archive` with
+   * NO dedup check, so every re-ingest-then-purge cycle adds ANOTHER copy of
+   * the same invoice. Nine of the affected weeks had SIX archive copies each —
+   * fourteen months of cycles. A reader that sums both tabs counts an invoice
+   * once per copy, so the over-count is (copies − 1) × amount, not 1 × amount.
+   *
+   * So this walks BOTH tabs and prices every copy beyond the first. */
+  var copies = {};   // key -> { amounts: [], supp: n, arch: n, date: 'YYYY-MM-DD' }
+  function note(row, which) {
+    var key = rowKey_(row, SUPPLIERS_KEY_COLS);
+    if (key === '||') return;                 // never collapse empty keys
+    if (!copies[key]) copies[key] = { amounts: [], supp: 0, arch: 0, date: '' };
+    var c = copies[key];
+    c.amounts.push(Number(row[2]) || 0);
+    c[which]++;
+    var d = coerceDateStr_(row[0]);
+    if (!c.date && DATE_ARG_RE.test(d)) c.date = d;
   }
+  var i;
+  for (i = 0; i < suppRows.length; i++) note(suppRows[i], 'supp');
+  for (i = 0; i < archRows.length; i++) note(archRows[i], 'arch');
 
   var byWeek = {};
-  var dupRows = 0;
-  var dupMoney = 0;
+  var dupInvoices = 0, excessRows = 0, overCount = 0, maxCopies = 0;
+  var keys = Object.keys(copies);
 
-  for (var s = 0; s < suppRows.length; s++) {
-    var key = rowKey_(suppRows[s], SUPPLIERS_KEY_COLS);
-    if (key === '||' || archKeys[key] !== true) continue;
+  for (i = 0; i < keys.length; i++) {
+    var c = copies[keys[i]];
+    var total = c.supp + c.arch;
+    if (total < 2) continue;                  // stored once — correct
+    if (!DATE_ARG_RE.test(c.date)) continue;
 
-    var d = coerceDateStr_(suppRows[s][0]);
-    if (!DATE_ARG_RE.test(d)) continue;
-    var wk = weekStartForDate_(d);
-    var amt = Number(suppRows[s][2]) || 0;
+    // What a non-deduping reader over-reports: every copy past the first.
+    var sum = 0;
+    for (var m = 0; m < c.amounts.length; m++) sum += c.amounts[m];
+    var over = sum - c.amounts[0];
 
-    if (!byWeek[wk]) byWeek[wk] = { rows: 0, total: 0 };
-    byWeek[wk].rows++;
-    byWeek[wk].total += amt;
-    dupRows++;
-    dupMoney += amt;
+    var wk = weekStartForDate_(c.date);
+    if (!byWeek[wk]) byWeek[wk] = { invoices: 0, excess: 0, over: 0 };
+    byWeek[wk].invoices++;
+    byWeek[wk].excess += total - 1;
+    byWeek[wk].over += over;
+
+    dupInvoices++;
+    excessRows += total - 1;
+    overCount += over;
+    if (total > maxCopies) maxCopies = total;
   }
 
   var weeks = Object.keys(byWeek).sort();
   Logger.log('=== _archive DUPLICATE AUDIT (read-only, nothing written) ===');
   Logger.log('Suppliers rows ' + suppRows.length + ' | _archive rows ' + archRows.length);
-  Logger.log('invoices present in BOTH tabs: ' + dupRows + ' | $' + dupMoney.toFixed(2));
+  Logger.log('invoices stored more than once: ' + dupInvoices);
+  Logger.log('redundant rows (copies beyond the first): ' + excessRows);
+  Logger.log('most copies of a single invoice: ' + maxCopies);
+  Logger.log('OVER-COUNT by a reader that sums both tabs: $' + overCount.toFixed(2));
   Logger.log('affected weeks: ' + weeks.length);
   Logger.log('');
-  Logger.log('week          rows        $');
+  Logger.log('week          inv   excess    over$');
   for (var w = 0; w < weeks.length; w++) {
-    Logger.log('  ' + weeks[w] + auditPad_(byWeek[weeks[w]].rows, 8) +
-      auditPad_(byWeek[weeks[w]].total.toFixed(2), 12));
+    var b = byWeek[weeks[w]];
+    Logger.log('  ' + weeks[w] + auditPad_(b.invoices, 6) + auditPad_(b.excess, 9) +
+      auditPad_(b.over.toFixed(2), 10));
   }
   Logger.log('');
-  Logger.log('Each of these is ONE invoice stored twice. Any reader that sums');
-  Logger.log('Suppliers + _archive without deduping over-reports by $' + dupMoney.toFixed(2) + '.');
+  Logger.log('auditSummaryDrift() is immune to this — it keeps one copy per key.');
+  Logger.log('Cleanup = delete the ' + excessRows + ' redundant row(s), keeping one of each.');
 
   return {
     suppliersRows: suppRows.length,
     archiveRows: archRows.length,
-    duplicateRows: dupRows,
-    duplicateMoney: Math.round(dupMoney * 100) / 100,
+    duplicateInvoices: dupInvoices,
+    excessRows: excessRows,
+    maxCopies: maxCopies,
+    overCount: Math.round(overCount * 100) / 100,
     weeksAffected: weeks.length,
     byWeek: byWeek
   };

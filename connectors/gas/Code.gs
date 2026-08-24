@@ -1905,6 +1905,18 @@ function weeklySummarize_impl_(weekStartOverride) {
 function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
   var data = sourceSheet.getDataRange().getValues();
   var archived = 0;
+  var alreadyArchived = 0;
+
+  /* `_archive` has no dedup of its own, and appendRow always appends. So an
+   * invoice that was re-ingested into Suppliers after being purged gained
+   * ANOTHER archive copy on the next run — and another, every cycle. By
+   * 2026-08-25 nine weeks held six copies each of the same invoices, and any
+   * reader summing Suppliers + _archive over-counted by $20,624.23.
+   *
+   * The re-ingest that starts the cycle is fixed in ingestSupplierRows, but
+   * this is the step that MULTIPLIES it, so it guards too: purge the Suppliers
+   * row either way, only append when the archive does not already hold it. */
+  var archivedKeys = buildKeySet_(archiveSheet, SUPPLIERS_KEY_COLS);
 
   for (var r = data.length - 1; r >= 1; r--) {
     var rowDate = coerceDateStr_(data[r][0]);
@@ -1912,13 +1924,21 @@ function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
     // archive+purge every blank row. Only ever act on a real calendar date.
     if (!DATE_ARG_RE.test(rowDate)) continue;
     if (rowDate <= cutoffDateStr) {
-      archiveSheet.appendRow(data[r]);
+      var key = rowKey_(data[r], SUPPLIERS_KEY_COLS);
+      if (key !== '||' && archivedKeys[key] === true) {
+        alreadyArchived++;                 // already preserved — do not duplicate it
+      } else {
+        archiveSheet.appendRow(data[r]);
+        if (key !== '||') archivedKeys[key] = true;   // guard within this run too
+        archived++;
+      }
       sourceSheet.deleteRow(r + 1);
-      archived++;
     }
   }
 
-  Logger.log('archiveAndPurge_: archived=' + archived + ' rows older than ' + cutoffDateStr);
+  Logger.log('archiveAndPurge_: archived=' + archived +
+    ' alreadyInArchive=' + alreadyArchived +
+    ' rows older than ' + cutoffDateStr);
   return archived;
 }
 

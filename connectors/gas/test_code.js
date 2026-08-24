@@ -7244,28 +7244,44 @@ console.log('_archive dedup — ingest awareness, audit dedup, duplicate census'
     eq('two empty-key rows both survive dedup', out.length, 2);
   })();
 
-  /* ---- the duplicate census ------------------------------------------- */
+  /* ---- the duplicate census prices EVERY copy -------------------------- */
+  // The first version counted one row per Suppliers invoice with an archived
+  // twin. That under-reported the real over-count by 4.5x on production
+  // ($4,520.34 vs $20,624.23) because _archive can hold the SAME invoice many
+  // times over — archiveAndPurge_ appends without deduping.
   (function () {
     currentSS = makeSpreadsheet();
     const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
     const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
 
     const dup1 = ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'];
-    const dup2 = ['2026-01-08', 'Butterboy', 200, 'INV-2', 'Leible York', 'ordermentum', TS, 'Cafe'];
     const onlySupp = ['2026-08-24', 'Butterboy', 999, 'INV-9', 'Leible York', 'ordermentum', TS, 'Cafe'];
     const onlyArch = ['2025-01-06', 'Butterboy', 777, 'INV-0', 'Leible York', 'ordermentum', TS, 'Cafe'];
 
-    [dup1, dup2, onlySupp].forEach((r) => supp.appendRow(r));
-    [dup1, dup2, onlyArch].forEach((r) => arch.appendRow(r));
+    supp.appendRow(dup1);
+    supp.appendRow(onlySupp);
+    // SIX archive copies — the production shape for the 2025 weeks.
+    for (let i = 0; i < 6; i++) arch.appendRow(dup1);
+    arch.appendRow(onlyArch);
 
     const out = auditArchiveDuplicates();
-    eq('counts only invoices in BOTH tabs', out.duplicateRows, 2);
-    eq('...and their money', out.duplicateMoney, 500);
+    eq('one invoice is stored more than once', out.duplicateInvoices, 1);
+    eq('...with six redundant copies (7 total, minus the one real)', out.excessRows, 6);
+    eq('...and the deepest stack is reported', out.maxCopies, 7);
+    eq('...the over-count prices EVERY extra copy, not just one', out.overCount, 1800);
     eq('...grouped by week', out.weeksAffected, 1);
-    check('a Suppliers-only invoice is not a duplicate',
-      out.duplicateMoney !== 1499);
-    check('an _archive-only invoice is not a duplicate',
-      out.duplicateMoney !== 1277);
+  })();
+
+  (function () {
+    // Duplicates living ONLY in _archive still over-count a naive reader.
+    currentSS = makeSpreadsheet();
+    ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    const r = ['2025-01-06', 'Butterboy', 250, 'INV-5', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    arch.appendRow(r); arch.appendRow(r);
+    const out = auditArchiveDuplicates();
+    eq('an archive-only duplicate is caught', out.duplicateInvoices, 1);
+    eq('...priced once', out.overCount, 250);
   })();
 
   (function () {
@@ -7274,8 +7290,51 @@ console.log('_archive dedup — ingest awareness, audit dedup, duplicate census'
     ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
     const writes = currentSS._writeLog.length;
     const out = auditArchiveDuplicates();
-    eq('a clean sheet reports no duplicates', out.duplicateRows, 0);
+    eq('a clean sheet reports no duplicates', out.duplicateInvoices, 0);
+    eq('...no over-count', out.overCount, 0);
     eq('...and the census writes NOTHING', currentSS._writeLog.length, writes);
+  })();
+
+  /* ---- archiveAndPurge_ never stores a second copy --------------------- */
+  // This is the step that MULTIPLIES the duplication: every re-ingest-then-
+  // purge cycle used to add another archive copy, forever.
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    const row = ['2025-01-06', 'Butterboy', 250, 'INV-5', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    arch.appendRow(row);        // already archived once
+    supp.appendRow(row);        // and re-ingested since
+
+    const n = archiveAndPurge_(supp, arch, '2026-02-23');
+    eq('it is not archived a second time', n, 0);
+    eq('..._archive still holds exactly one copy',
+      arch.getDataRange().getValues().length, 2);   // header + 1
+    eq('...but the Suppliers row is still purged',
+      supp.getDataRange().getValues().length, 1);   // header only
+  })();
+
+  (function () {
+    // A genuinely new old row must still be archived normally.
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    supp.appendRow(['2025-01-06', 'Butterboy', 250, 'INV-5', 'Leible York', 'ordermentum', TS, 'Cafe']);
+    const n = archiveAndPurge_(supp, arch, '2026-02-23');
+    eq('an unarchived old row IS archived', n, 1);
+    eq('..._archive holds it', arch.getDataRange().getValues().length, 2);
+  })();
+
+  (function () {
+    // Two copies of the same invoice inside ONE purge run must not both land.
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    const row = ['2025-01-06', 'Butterboy', 250, 'INV-5', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    supp.appendRow(row); supp.appendRow(row);
+    archiveAndPurge_(supp, arch, '2026-02-23');
+    eq('within-run duplicates collapse to one archive row',
+      arch.getDataRange().getValues().length, 2);
   })();
 
   currentSS = savedSS;
