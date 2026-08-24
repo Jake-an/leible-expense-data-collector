@@ -348,6 +348,7 @@ load('recurring.gs');
 load('roastery_email.gs');
 load('shopspend.gs');
 load('summary_audit.gs');
+load('summary_drift_repair.gs');  // TEMPORARY — deleted with the file after the repair verifies
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -6846,6 +6847,232 @@ console.log('summary_audit.gs — Summary vs Suppliers drift audit');
     check('detail names the missing row', joined.indexOf('MISSING  B @ Y') !== -1);
   });
 
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_drift_repair.gs — TEMPORARY, goes when the file does.
+//
+// Closes the Summary drift for the weeks a re-summarize can still rebuild.
+// The assertion that carries this whole file is the SPLIT-WEEK guard:
+// weeklySummarize recomputes from Suppliers ONLY and Summary now UPSERTS, so
+// re-summarizing a week whose rows straddle the archive cutoff overwrites the
+// live Summary row with a partial total — turning missing money into
+// UNDERSTATED money, which hides better than the gap it replaced.
+console.log('summary_drift_repair.gs — safe re-summarize of drifted weeks');
+(function testSummaryDriftRepair() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const savedWeekly = globalThis.weeklySummarize;
+  const savedBudget = SUMMARY_REPAIR_TIME_BUDGET_MS_;
+
+  const TS = '2026-08-24T13:00:00+10:00';
+  const NOW = '2026-08-24T02:00:00Z';   // Mon 24 Aug 2026, 12:00 Sydney
+
+  function seed(supplierRows, summaryRows, archiveRows) {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (archiveRows || []).forEach((r) => arch.appendRow(r));
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  /* ---- all four classifications in one sheet --------------------------- */
+  //  2026-08-10  rebuildable — source entirely in Suppliers, Summary has none
+  //  2026-08-03  archived    — source entirely in _archive
+  //  2026-07-27  SPLIT       — source in BOTH, and the Summary row is stale
+  //  2026-07-20  orphan-only — a Summary row with no source at all
+  function seedFourBuckets() {
+    seed(
+      [sup('2026-08-12', 'Kent Paper', 100, 'K1', 'Leible York'),
+       sup('2026-07-29', 'Butterboy', 200, 'B1', 'Leible York')],        // split: live half
+      [sum('2026-07-27', 'Butterboy', 'Leible York', 250),               // stale — real is 500
+       sum('2026-07-20', 'Ghost Supplier', 'Leible York', 999)],         // orphan
+      [sup('2026-08-05', 'Fresh and Chill', 300, 'F1', 'Leible North'),  // fully archived week
+       sup('2026-07-30', 'Butterboy', 300, 'B2', 'Leible York')]         // split: archived half
+    );
+  }
+
+  seedFourBuckets();
+  withMockNow(NOW, function () {
+    const writes = currentSS._writeLog.length;
+    const plan = summaryDriftRepairPlan_();
+    eq('planning writes NOTHING', currentSS._writeLog.length, writes);
+
+    eq('exactly one week is rebuildable', plan.repair.length, 1);
+    eq('...and it is the Suppliers-only week', plan.repair[0].week, '2026-08-10');
+    eq('...its money is claimed', plan.repairMoney, 100);
+    eq('the other three are skipped', plan.skipped.length, 3);
+
+    const by = {};
+    plan.skipped.forEach((s) => { by[s.week] = s; });
+
+    // THE GUARD. This week has 200 in Suppliers and 300 in _archive; the live
+    // Summary row says 250. A re-summarize would recompute 200 from Suppliers
+    // alone and upsert it, dragging a row that was merely stale DOWN below what
+    // it already reported. Missing money is visible; understated money is not.
+    check('a SPLIT week is refused', by['2026-07-27'] !== undefined);
+    check('...naming the split as the reason',
+      by['2026-07-27'].reason.indexOf('SPLIT') !== -1);
+    check('...and it is NOT in the repair list',
+      plan.repair.every((r) => r.week !== '2026-07-27'));
+    check('...the audit alone would have called it fixable',
+      by['2026-07-27'].inSuppliers === true && by['2026-07-27'].inArchive === true);
+
+    check('a fully-archived week is skipped for the purge line',
+      by['2026-08-03'].reason.indexOf('purge line') !== -1);
+    check('an orphan-only week is skipped — a recompute has no delete path',
+      by['2026-07-20'].reason.indexOf('orphan-only') !== -1);
+  });
+
+  /* ---- the split week is the destructive case, not merely a no-op ------- */
+  // Proves the fixture really is dangerous: recomputing from Suppliers alone
+  // yields LESS than the figure already sitting in Summary.
+  seedFourBuckets();
+  withMockNow(NOW, function () {
+    const suppOnly = currentSS.getSheetByName(SUPPLIERS_TAB).getDataRange().getValues().slice(1);
+    const recomputed = aggregateSupplierRows_(suppOnly, '2026-07-27', '2026-08-02', 'spend');
+    eq('a Suppliers-only recompute of the split week yields the partial total',
+      recomputed[0].total, 200);
+    check('...which is LOWER than what Summary already reports (250)',
+      recomputed[0].total < 250);
+  });
+
+  /* ---- repairable weeks are attempted oldest-first --------------------- */
+  function seedThreeRepairable() {
+    seed([sup('2026-08-12', 'Kent Paper', 100, 'K1', 'X'),
+          sup('2026-08-05', 'Kent Paper', 200, 'K2', 'X'),
+          sup('2026-07-29', 'Kent Paper', 300, 'K3', 'X')], [], []);
+  }
+
+  seedThreeRepairable();
+  withMockNow(NOW, function () {
+    const plan = summaryDriftRepairPlan_();
+    eq('all three are rebuildable', plan.repair.length, 3);
+    eq('...oldest first', plan.repair.map((r) => r.week),
+      ['2026-07-27', '2026-08-03', '2026-08-10']);
+    eq('...with the money summed', plan.repairMoney, 600);
+  });
+
+  /* ---- the dry run is genuinely read-only ------------------------------ */
+  seedThreeRepairable();
+  withMockNow(NOW, function () {
+    const called = [];
+    globalThis.weeklySummarize = function (w) { called.push(w); return { weekStart: w }; };
+    const writes = currentSS._writeLog.length;
+    runSummaryDriftRepairDryRun();
+    eq('the dry run never calls weeklySummarize', called.length, 0);
+    eq('...and writes nothing', currentSS._writeLog.length, writes);
+    globalThis.weeklySummarize = savedWeekly;
+  });
+
+  /* ---- applying calls ONLY the repairable weeks ------------------------ */
+  seedFourBuckets();
+  withMockNow(NOW, function () {
+    const called = [];
+    globalThis.weeklySummarize = function (week) {
+      called.push(week);
+      return { weekStart: week, weekEnd: 'x', summariesAdded: 1, summariesUpdated: 0 };
+    };
+    const res = runSummaryDriftRepair();
+    eq('only the rebuildable week is summarized', called, ['2026-08-10']);
+    eq('...reported ok', res.ok, 1);
+    eq('...none failed', res.failed, 0);
+    globalThis.weeklySummarize = savedWeekly;
+  });
+
+  /* ---- "no error" is NOT success -------------------------------------- */
+  seedThreeRepairable();
+  withMockNow(NOW, function () {
+    // Lock contention (Code.gs) returns this, carrying NEITHER count field.
+    globalThis.weeklySummarize = function () { return { refused: 'locked' }; };
+    let res = runSummaryDriftRepair();
+    eq('a locked refusal fails every week', res.failed, 3);
+    eq('...and none are counted ok', res.ok, 0);
+    eq('...with the reason surfaced', res.results[0].refused, 'locked');
+
+    // Incomplete week returns summariesAdded:0 and NO summariesUpdated — so
+    // `added + updated` is NaN, which is why the shape is asserted, not counts.
+    globalThis.weeklySummarize = function (week) {
+      return { weekStart: week, weekEnd: 'x', refused: 'incomplete-week', summariesAdded: 0 };
+    };
+    res = runSummaryDriftRepair();
+    eq('an incomplete-week refusal fails despite carrying weekStart', res.failed, 3);
+
+    // The subtle one: it summarized a DIFFERENT week than asked. That is
+    // exactly what the bare no-arg form does — it silently does last week.
+    globalThis.weeklySummarize = function () {
+      return { weekStart: '2026-08-10', weekEnd: 'x', summariesAdded: 3, summariesUpdated: 0 };
+    };
+    res = runSummaryDriftRepair();
+    eq('a week that summarized the WRONG week is not ok', res.ok, 1);
+    check('...only the one that genuinely matches',
+      res.results.filter((r) => r.ok)[0].week === '2026-08-10');
+
+    // upsertRows_ counts an unchanged amount as duplicatesSkipped, so a CORRECT
+    // idempotent second run returns 0 added / 0 updated. Counts would misread it.
+    globalThis.weeklySummarize = function (week) {
+      return { weekStart: week, weekEnd: 'x', summariesAdded: 0, summariesUpdated: 0 };
+    };
+    res = runSummaryDriftRepair();
+    eq('a 0/0 idempotent re-run is SUCCESS, not failure', res.ok, 3);
+
+    globalThis.weeklySummarize = function () { return null; };
+    res = runSummaryDriftRepair();
+    eq('a null return fails rather than throwing', res.failed, 3);
+
+    globalThis.weeklySummarize = savedWeekly;
+  });
+
+  /* ---- the time budget stops cleanly and says what is left ------------- */
+  seedThreeRepairable();
+  withMockNow(NOW, function () {
+    const called = [];
+    globalThis.weeklySummarize = function (w) { called.push(w); return { weekStart: w }; };
+    SUMMARY_REPAIR_TIME_BUDGET_MS_ = -1;          // budget already blown
+    const res = runSummaryDriftRepair();
+    eq('nothing is attempted once the budget is gone', called.length, 0);
+    check('...the run says it stopped early', res.stoppedEarly === true);
+    eq('...and reports every week as still outstanding', res.remaining, 3);
+    SUMMARY_REPAIR_TIME_BUDGET_MS_ = savedBudget;
+    globalThis.weeklySummarize = savedWeekly;
+  });
+
+  /* ---- a clean sheet plans nothing ------------------------------------- */
+  seed([sup('2026-08-12', 'Kent Paper', 100, 'K1', 'X')],
+       [sum('2026-08-10', 'Kent Paper', 'X', 100)], []);
+  withMockNow(NOW, function () {
+    const plan = summaryDriftRepairPlan_();
+    eq('no drift, nothing to repair', plan.repair.length, 0);
+    eq('...and nothing skipped either', plan.skipped.length, 0);
+  });
+
+  /* ---- the plan log is readable in the editor -------------------------- */
+  seedFourBuckets();
+  withMockNow(NOW, function () {
+    clearLoggedMessages();
+    runSummaryDriftRepairDryRun();
+    const log = lastLoggedMessages();
+    check('logs line by line, not as one truncatable blob', log.length > 6);
+    check('no line risks truncation', log.every((l) => String(l).length < 300));
+    const joined = log.join('\n');
+    check('the repair list is stated', joined.indexOf('REPAIR 2026-08-10') !== -1);
+    check('every skip is stated with its week', joined.indexOf('SKIP   2026-07-27') !== -1);
+    check('and it says plainly that nothing was written',
+      joined.indexOf('DRY RUN — nothing was written') !== -1);
+  });
+
+  globalThis.weeklySummarize = savedWeekly;
+  SUMMARY_REPAIR_TIME_BUDGET_MS_ = savedBudget;
   currentSS = savedSS;
   scriptProps = savedProps;
 })();
