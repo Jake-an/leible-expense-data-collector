@@ -63,9 +63,18 @@ and are not.
 
 - [x] Zero-arg repair wrapper with the SPLIT guard — `connectors/gas/summary_drift_repair.gs` (`12fde6b`, deployed v35)
 - [x] POST timeout raised above the GAS ceiling — `0bd2521`
-- [ ] **In flight:** confirm the 03:29 ingest landed completely (re-run the
-      connector; dedup makes `rowsAdded≈0` the proof), then repair the approved
-      17-week block `2026-02-23 → 2026-06-22` (**$73,804.61**, no SPLITs).
+- [x] **Ingest confirmed PARTIAL and completed 2026-08-25.** The re-run returned
+      `read 2644 rows -> rowsAdded: 622, duplicatesSkipped: 2022` — the 03:29 POST
+      had landed only 2022 of 2644 rows before GAS hit its own limit. Any plan
+      computed before this re-run was stale.
+- [x] **Approved window repaired 2026-08-25 09:18 — 18 weeks, +$94,348.88.**
+      `runSummaryDriftRepair()`: 18 ok, 0 failed, 0 not attempted, 101s.
+      `Summary` 155 → 337 rows, $329,894.37 → $424,243.25, verified by doGet
+      before/after. **182 rows added, 0 updated, 0 keys removed** — purely
+      additive, no live figure overwritten. Only two pre-existing weeks moved,
+      by exactly their planned net (`2026-06-15` +$942.27, `2026-06-22`
+      +$2,021.39). 18 weeks not 17: `2026-06-15` drifted once the ingest
+      completed. Labour did NOT move — those weeks predate its coverage.
 - [ ] Decide on the other 119 rebuildable weeks — three years of history that
       arrived by accident and has not been reviewed.
 - [ ] Fix `ingestSupplierRows` to dedup against `_archive`, then re-measure the
