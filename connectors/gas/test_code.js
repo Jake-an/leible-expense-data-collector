@@ -347,6 +347,7 @@ load('staleness.gs');
 load('recurring.gs');
 load('roastery_email.gs');
 load('shopspend.gs');
+load('summary_audit.gs');
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -6675,6 +6676,175 @@ console.log('mayers.gs — retained location-repair rollback');
     eq('...and does NOT confuse it with a blank-location Mayers key', mayersBlank.length, 0);
     eq('mayersNorm_ matches rowKey_ normalization', mayersNorm_('  MaYeRs  '), 'mayers');
   })();
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — READ-ONLY drift audit.
+//
+// Summary is written once per week and never revisited, so anything landing in
+// Suppliers afterwards never reaches reports. Week 2026-06-15 was found short
+// $3,176.95 BY ACCIDENT during the Mayers repair; this function looks for the
+// rest on purpose. archiveAndPurge_ moves source rows out of Suppliers after
+// 183 days, so there is a clock on how long each gap stays fixable.
+console.log('summary_audit.gs — Summary vs Suppliers drift audit');
+(function testSummaryDriftAudit() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+
+  // 'now' is fixed so "is this week complete?" is deterministic.
+  const NOW = '2026-08-24T02:00:00Z';   // Mon 24 Aug 2026, 12:00 Sydney
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+    (opts.revenueRows || []).forEach((r) => currentSS.getSheetByName(REVENUE_TAB).appendRow(r));
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total, dept, kind) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
+
+  /* ---- a clean week reports nothing ------------------------------------ */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(NOW, function () {
+    const writes = currentSS._writeLog.length;
+    const r = auditSummaryDrift();
+    eq('the audit writes NOTHING', currentSS._writeLog.length, writes);
+    eq('a matching week is clean', r.weeksDrifted, 0);
+    eq('...and counted as audited', r.weeksAudited, 1);
+    eq('...with no money reported', r.netUnderreported, 0);
+  });
+
+  /* ---- a row in Suppliers but NOT in Summary --------------------------- */
+  // This is the 2026-06-15 shape: the row reads $0 in every report.
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York'),
+        sup('2026-07-09', 'Fresh and Chill', 250.50, 'F1', 'Leible North')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('a missing row is found', r.missingRows, 1);
+    eq('...the week is flagged', r.weeksDrifted, 1);
+    eq('...and the money is quantified', r.netUnderreported, 250.50);
+    eq('...naming supplier and shop',
+      r.weeks[0].detail.missing[0].supplier + '@' + r.weeks[0].detail.missing[0].location,
+      'Fresh and Chill@Leible North');
+  });
+
+  /* ---- a stale amount -------------------------------------------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('a stale amount is found', r.staleRows, 1);
+    eq('...reporting only the shortfall, not the whole row', r.netUnderreported, 75.25);
+    eq('...with both figures', [r.weeks[0].detail.stale[0].live, r.weeks[0].detail.stale[0].actual],
+      [100, 175.25]);
+  });
+
+  /* ---- float noise is not drift ---------------------------------------- */
+  // aggregateSupplierRows_ rounds its OWN output, so the recomputed side is
+  // always clean — the unrounded value can only come off the Summary sheet,
+  // which is read raw. This fixture puts it there, which is the only way the
+  // cents guard is actually exercised: comparing 0.1+0.2 against a rounded 0.3
+  // passes even with a strict === and proves nothing.
+  seed([sup('2026-07-08', 'A', 0.1, 'K1', 'X'), sup('2026-07-09', 'A', 0.2, 'K2', 'X')],
+       [sum('2026-07-06', 'A', 'X', 0.1 + 0.2)]);
+  withMockNow(NOW, function () {
+    check('the fixture really does hold an unrounded float',
+      currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()[1][4] !== 0.3);
+    eq('a Summary cell of 0.30000000000000004 is NOT reported as drift',
+      auditSummaryDrift().weeksDrifted, 0);
+  });
+
+  /* ---- the ARCHIVE is part of the source ------------------------------- */
+  // Once archiveAndPurge_ runs, Suppliers is empty for that week. Auditing
+  // against Suppliers alone would report every archived week as an orphan —
+  // the exact opposite of the problem being looked for.
+  seed([], [sum('2026-01-05', 'Kent Paper', 'Leible York', 100)],
+       { archiveRows: [sup('2026-01-07', 'Kent Paper', 100, 'K1', 'Leible York')] });
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('an archived week that matches is CLEAN, not an orphan', r.weeksDrifted, 0);
+  });
+
+  seed([], [sum('2026-01-05', 'Kent Paper', 'Leible York', 100)],
+       { archiveRows: [sup('2026-01-07', 'Kent Paper', 180, 'K1', 'Leible York')] });
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('...but a genuinely stale archived week IS reported', r.staleRows, 1);
+    check('...flagged as past the purge line', r.weeks[0].pastPurgeLine === true);
+    check('...and as no longer present in Suppliers', r.weeks[0].sourceRowsStillPresent === false);
+  });
+
+  /* ---- pull-owned rows are expected, not orphans ----------------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+        sum('2026-07-06', 'Labour', 'york', 4000),
+        sum('2026-07-06', 'Bennetts', '', 14219, 'Roastery'),
+        sum('2026-07-06', 'shopify_orderapp', 'online', 900, 'Roastery', 'revenue')]);
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('Labour / Bennetts / shopify_orderapp are NOT flagged as orphans', r.weeksDrifted, 0);
+  });
+
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+        sum('2026-07-06', 'Ghost Supplier', 'Leible Pitt', 55)]);
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('a NON-pull-owned Summary-only row IS flagged', r.weeks[0].summaryOnly, 1);
+    // An orphan may be double-counted money, not missing money — netting it
+    // into the shortfall would misstate the problem in the wrong direction.
+    eq('...but is NOT netted into the under-reported figure', r.netUnderreported, 0);
+  });
+
+  /* ---- the incomplete current week is skipped, not flagged ------------- */
+  seed([sup('2026-08-25', 'Kent Paper', 100, 'K1', 'Leible York')], []);
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('the in-flight week is skipped', r.skipped.length, 1);
+    eq('...and not counted as drift', r.weeksDrifted, 0);
+    check('...with the reason recorded',
+      r.skipped[0].reason.indexOf('incomplete') !== -1);
+  });
+
+  /* ---- revenue rows are audited too ------------------------------------ */
+  seed([], [], { revenueRows: [
+    ['2026-07-08', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'O1', 'src', TS],
+  ] });
+  withMockNow(NOW, function () {
+    const r = auditSummaryDrift();
+    eq('a missing REVENUE row is found too', r.missingRows, 1);
+    eq('...and quantified', r.netUnderreported, 500);
+  });
+
+  /* ---- the report survives the editor log ------------------------------ */
+  seed([sup('2026-07-08', 'A', 10, 'K1', 'X'), sup('2026-07-09', 'B', 20, 'K2', 'Y')],
+       [sum('2026-07-06', 'A', 'X', 10)]);
+  withMockNow(NOW, function () {
+    clearLoggedMessages();
+    auditSummaryDriftDetail();
+    const log = lastLoggedMessages();
+    check('logs line by line, not as one blob', log.length > 8);
+    check('no line risks truncation', log.every((l) => String(l).length < 300));
+    const joined = log.join('\n');
+    check('the headline number is present', joined.indexOf('NET UNDER-REPORTED: $20') !== -1);
+    check('the purge line is stated', joined.indexOf('purge line') !== -1);
+    check('detail names the missing row', joined.indexOf('MISSING  B @ Y') !== -1);
+  });
 
   currentSS = savedSS;
   scriptProps = savedProps;
