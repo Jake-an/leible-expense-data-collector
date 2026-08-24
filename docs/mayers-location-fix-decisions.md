@@ -350,3 +350,62 @@ connector, different source. It is pre-existing drift that the re-summarize
 surfaced: the `Summary` row had gone stale against `Suppliers`. This is exactly
 the hazard the plan's "non-Mayers drift lands silently" risk describes, observed
 for real. **Open item for Jake**, tracked separately from the Mayers repair.
+
+## ✅ JAKE'S APPROVAL — 2026-08-24, all four weeks
+
+The Phase 3 gate is **satisfied**. `runMayersLocationRepairDryRunCompact()` ran
+live at 12:50:39 and printed the literal key list below; every key was checked
+against the table approved 2026-08-20 and **matches byte-for-byte**.
+
+| Week | DELETE (verified live) | rows | $ | ADD | pre-existing |
+|---|---|:--:|---:|---|---|
+| 2026-06-15 | `2026-06-15\|\|cafe\|\|spend\|\|mayers\|\|` | 1 | 736.74 | `…\|\|leible york` | none |
+| 2026-07-06 | `2026-07-06\|\|cafe\|\|spend\|\|mayers\|\|unmapped: leible coffee north sydney 5 blues st north sydney nsw 2060` | 1 | 703.75 | `…\|\|leible north` | none |
+| 2026-07-20 | `2026-07-20\|\|…\|\|unmapped: …` | 1 | 703.00 | `…\|\|leible north` | none |
+| 2026-07-27 | `2026-07-27\|\|…\|\|unmapped: …` | 1 | 570.15 | `…\|\|leible north` | none |
+
+Total **$2,713.64**. `preflightOk=true` on all four. `locLen` = 0 (blank row) and
+70 = `UNMAPPED: ` + **exactly 60** on the three North rows — the slice-boundary
+trap confirmed on live data three times over.
+
+**Jake approved applying all four weeks**, including the drift below.
+
+### Pre-approved drift — week 2026-06-15 ONLY
+
+Weeks `07-06`, `07-20`, `07-27` report `DRIFT non-Mayers: 0 row(s)`. Week
+`2026-06-15` carries **7 rows, net $3,176.95**, which the re-summarize will land:
+
+| Row | Live | Recomputed |
+|---|---:|---:|
+| Food and Dairy Co @ Leible Crowsnest | 102.97 | 214.69 |
+| Food and Dairy Co @ Leible North | *absent* | 285.10 |
+| Fresh and Chill @ Leible North | *absent* | 1,046.90 |
+| Fresh and Chill @ Leible Pitt | *absent* | 1,405.43 |
+| Tuga Pastries Australia @ Leible Crowsnest | 164.58 | 233.20 |
+| Tuga Pastries Australia @ Leible Pitt | 505.75 | 677.92 |
+| Tuga Pastries Australia @ Leible York | 325.68 | 412.69 |
+
+This is **not caused by the repair**. These rows are already in `Suppliers` and
+never reached `Summary`; three of them read $0 in every report today. See
+`memory/summary-goes-stale-against-suppliers.md`.
+
+> ⚠️ **EXPECT `verification.ok: false` ON WEEK 2026-06-15.** `mayersRepairVerifyWeek_`
+> deliberately treats any non-Mayers Summary change as "needs sign-off", so it
+> will log `VERIFICATION FAILED` and list these 7 rows. **That is the
+> pre-approved drift above, not a fault.** The apply does **not** auto-unwind on
+> a verification failure — the repair still lands. Check that
+> `mayersWeekTotalOk` is `true` and `targetChecks[0].ok` is `true`; those are the
+> Mayers post-conditions. The other three weeks should report `ok: true`.
+
+### Incidental finding, NOT part of this repair
+
+The sweep reports `1 report-only ($14219)`, and it scans **`Suppliers`**. That is
+exactly the `Bennetts` figure, which suggests the row may exist in `Suppliers`
+after all — contrary to this plan's premise that it is written directly to
+`Summary` by `orderapp.gs` and is unrebuildable. Consistent with week `2026-07-20`
+showing zero drift (a derivable row would recompute to the same total).
+
+It changes nothing here: the row is report-only, and the delete predicate is the
+full `SUMMARY_KEY_COLS` tuple with `supplier=mayers`, so it is untouchable either
+way. Worth verifying separately, since [[orderapp-summary-rows-are-unrebuildable]]
+rests on the opposite assumption.
