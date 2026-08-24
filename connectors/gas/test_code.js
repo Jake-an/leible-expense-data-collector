@@ -6947,6 +6947,49 @@ console.log('summary_drift_repair.gs — safe re-summarize of drifted weeks');
       recomputed[0].total < 250);
   });
 
+  /* ---- the approved window bounds the repair --------------------------- */
+  // Without this, runSummaryDriftRepair() would write every rebuildable week —
+  // after the 2026-08-25 backfill that is 136 weeks / $237k, not the 17-week
+  // block that was actually approved.
+  eq('the window opens at the approved week', SUMMARY_REPAIR_MIN_WEEK_, '2026-02-23');
+
+  seed([sup('2026-02-25', 'Kent Paper', 100, 'K1', 'X'),   // inside, just
+        sup('2026-02-18', 'Kent Paper', 200, 'K2', 'X'),   // outside, just
+        sup('2024-06-05', 'Kent Paper', 900, 'K3', 'X')],  // long outside
+       [], []);
+  withMockNow(NOW, function () {
+    const plan = summaryDriftRepairPlan_();
+    eq('only the in-window week is repaired', plan.repair.map((r) => r.week), ['2026-02-23']);
+    eq('...and only its money is claimed', plan.repairMoney, 100);
+    const by = {};
+    plan.skipped.forEach((s) => { by[s.week] = s; });
+    check('the week one before the boundary is out of scope',
+      by['2026-02-16'].reason.indexOf('outside the approved window') === 0);
+    check('...as is the 2024 history',
+      by['2024-06-03'].reason.indexOf('outside the approved window') === 0);
+    eq('...and their money is NOT claimed', plan.skippedMoney, 1100);
+  });
+
+  // The boundary week itself must be INSIDE. Off-by-one here silently drops
+  // 2026-02-23 — the week the audit named as next to fall past the purge line.
+  seed([sup('2026-02-23', 'Kent Paper', 50, 'K1', 'X')], [], []);
+  withMockNow(NOW, function () {
+    eq('the boundary week is inside the window',
+      summaryDriftRepairPlan_().repair.map((r) => r.week), ['2026-02-23']);
+  });
+
+  // A SPLIT week outside the window must still read as SPLIT, not as merely
+  // out of scope — the hazard label has to survive wherever the week falls.
+  seed([sup('2025-06-11', 'Butterboy', 200, 'B1', 'X')],
+       [sum('2025-06-09', 'Butterboy', 'X', 250)],
+       [sup('2025-06-12', 'Butterboy', 300, 'B2', 'X')]);
+  withMockNow(NOW, function () {
+    const plan = summaryDriftRepairPlan_();
+    eq('nothing is repaired', plan.repair.length, 0);
+    check('an out-of-window SPLIT week is still labelled SPLIT',
+      plan.skipped[0].reason.indexOf('SPLIT') !== -1);
+  });
+
   /* ---- repairable weeks are attempted oldest-first --------------------- */
   function seedThreeRepairable() {
     seed([sup('2026-08-12', 'Kent Paper', 100, 'K1', 'X'),

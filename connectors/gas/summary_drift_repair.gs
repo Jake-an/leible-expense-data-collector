@@ -54,6 +54,23 @@
  * Therefore the predicate is NOT the audit's `sourceRowsStillPresent` (which
  * only asks whether ANY row survives in Suppliers). It is: the week has NO rows
  * in `_archive` at all. */
+/* The oldest week this repair is authorised to touch (Jake, 2026-08-25).
+ *
+ * The approved scope is the post-purge-line block 2026-02-23 → 2026-06-22: the
+ * weeks that were drifting on their own merits, before the accidental backfill.
+ *
+ * Everything older is three years of Ordermentum invoice history that arrived
+ * on 2026-08-25 via a POST the connector reported as FAILED (see 0bd2521), was
+ * only completed by a manual re-run, and that nobody has reviewed. It is very
+ * likely real and worth ~$163k more — but "probably real" is not the standard
+ * for writing figures into the tab every report reads. Widening this constant
+ * is a deliberate decision, not a default.
+ *
+ * Its old end is also knowingly truncated: INVOICE_PAGE_LIMIT=40 cut one
+ * supplier off mid-history, so the earliest weeks would be written looking
+ * complete while missing invoices nobody has counted. */
+var SUMMARY_REPAIR_MIN_WEEK_ = '2026-02-23';
+
 function summaryRepairWeekPresence_(rows) {
   var present = {};
   for (var i = 0; i < rows.length; i++) {
@@ -129,6 +146,16 @@ function summaryDriftRepairPlan_() {
       continue;
     }
 
+    /* THE APPROVED WINDOW. Checked LAST, so the safety classifications above
+     * still get their accurate label on weeks outside it — a SPLIT week must
+     * read as SPLIT in the log wherever it falls. */
+    if (w.week < SUMMARY_REPAIR_MIN_WEEK_) {
+      entry.reason = 'outside the approved window (older than ' + SUMMARY_REPAIR_MIN_WEEK_ + ')';
+      plan.skipped.push(entry);
+      plan.skippedMoney += w.net;
+      continue;
+    }
+
     entry.reason = 'rebuildable — every source row for this week is still in Suppliers';
     plan.repair.push(entry);
     plan.repairMoney += w.net;
@@ -154,10 +181,32 @@ function summaryRepairLogPlan_(plan) {
       '  missing=' + r.missing + ' stale=' + r.stale);
   }
   Logger.log('--- WILL SKIP: ' + plan.skipped.length + ' week(s), $' + plan.skippedMoney.toFixed(2) + ' ---');
+
+  /* Tally first. The window skips run to three figures after the 2026-08-25
+   * backfill, and a wall of them buries the SPLIT lines — which are the ones
+   * that carry a live data hazard. */
+  var tally = {}, tallyMoney = {};
+  for (var t = 0; t < plan.skipped.length; t++) {
+    var key = plan.skipped[t].reason.split(' (')[0].split(' —')[0];
+    tally[key] = (tally[key] || 0) + 1;
+    tallyMoney[key] = (tallyMoney[key] || 0) + plan.skipped[t].net;
+  }
+  var reasons = Object.keys(tally);
+  for (var q = 0; q < reasons.length; q++) {
+    Logger.log('  ' + tally[reasons[q]] + ' week(s), $' + tallyMoney[reasons[q]].toFixed(2) +
+      '  — ' + reasons[q]);
+  }
+
+  // Then every skip that is NOT simply "out of scope" — those are hazards.
+  Logger.log('  (weeks skipped for a reason other than the approved window:)');
+  var listed = 0;
   for (var j = 0; j < plan.skipped.length; j++) {
     var s = plan.skipped[j];
+    if (s.reason.indexOf('outside the approved window') === 0) continue;
     Logger.log('  SKIP   ' + s.week + '  $' + s.net.toFixed(2) + '  ' + s.reason);
+    listed++;
   }
+  if (!listed) Logger.log('    none');
 }
 
 /**
