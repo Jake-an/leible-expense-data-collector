@@ -7236,6 +7236,35 @@ console.log('_archive dedup — ingest awareness, audit dedup, duplicate census'
   })();
 
   (function () {
+    // _archive holds REPEATED copies of the same invoice, and an invoice that
+    // never returned to Suppliers appears N times in archRows alone. The first
+    // version of the dedup only marked keys seen while walking Suppliers, so
+    // every archive-only copy survived — the audit still over-reported by
+    // $32,747.64 on production, and those weeks' drift never moved.
+    currentSS = makeSpreadsheet();
+    ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    const r = ['2026-01-07', 'Butterboy', 300, 'INV-1', 'Leible York', 'ordermentum', TS, 'Cafe'];
+    for (let i = 0; i < 6; i++) arch.appendRow(r);   // six copies, none in Suppliers
+    withMockNow(NOW, function () {
+      eq('six ARCHIVE-ONLY copies count as one invoice, not six',
+        auditSummaryDrift().netUnderreported, 300);
+    });
+  })();
+
+  (function () {
+    // The direct unit check on the helper, both duplication shapes at once.
+    const row = (ref, amt) =>
+      ['2026-01-07', 'B', amt, ref, 'X', 'ordermentum', TS, 'Cafe'];
+    const out = auditDedupeSourceRows_(
+      [row('A', 10)],                                  // Suppliers
+      [row('A', 10), row('B', 20), row('B', 20), row('B', 20)]);
+    eq('one row per distinct invoice, across BOTH tabs', out.length, 2);
+  })();
+
+  (function () {
     // Blank-key rows must NEVER collapse onto each other — they would all
     // share the key '||' and silently delete real money from the recompute.
     const blankA = ['2026-01-07', 'A', 100, '', 'X', '', TS, 'Cafe'];

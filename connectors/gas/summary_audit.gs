@@ -206,6 +206,14 @@ function auditDedupeSourceRows_(suppRows, archRows) {
   for (i = 0; i < archRows.length; i++) {
     var ak = rowKey_(archRows[i], SUPPLIERS_KEY_COLS);
     if (ak !== '||' && seen[ak] === true) continue;
+    /* Mark it seen HERE too, not just in the Suppliers loop. `_archive` holds
+     * repeated copies of the SAME invoice (archiveAndPurge_ appended without
+     * deduping), so an invoice that never made it back into Suppliers appears
+     * N times in archRows alone. Without this line every one of those copies
+     * survived and the audit still over-reported — measured 2026-08-25 at
+     * $32,747.64 across the weeks whose duplicates are archive-only, which is
+     * why their drift did not move when the Suppliers-side dedup landed. */
+    if (ak !== '||') seen[ak] = true;
     out.push(archRows[i]);
   }
 
