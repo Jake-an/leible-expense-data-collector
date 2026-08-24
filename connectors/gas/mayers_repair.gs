@@ -93,7 +93,7 @@ function mayersRepairWeeks_() {
  *   to dry-run (omitted = report on all four weeks)
  * @returns {Object} report
  */
-function mayersLocationRepair_(isDryRun, weekStart) {
+function mayersLocationRepair_(isDryRun, weekStart, quiet) {
   var dry = (isDryRun !== false);
   // resolveDateArg_ rejects anything that is not a real yyyy-MM-dd string,
   // including the event object a time-based trigger would pass as arg 1.
@@ -111,7 +111,7 @@ function mayersLocationRepair_(isDryRun, weekStart) {
   }
 
   var res = withScriptLock_(function () {
-    return dry ? mayersRepairDryRun_(week) : mayersRepairApplyWeek_(week);
+    return dry ? mayersRepairDryRun_(week, quiet === true) : mayersRepairApplyWeek_(week);
   });
 
   // withScriptLock_ RETURNS LOCK_TIMEOUT_ instead of throwing (Code.gs:115).
@@ -283,7 +283,7 @@ function mayersAnnotateKeys_(summData, keys) {
  * Dry run — writes NOTHING
  * ------------------------------------------------------------------ */
 
-function mayersRepairDryRun_(week) {
+function mayersRepairDryRun_(week, quiet) {
   var ss = getHubSpreadsheet_();
   var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
   var summSheet = ss.getSheetByName(SUMMARY_TAB);
@@ -335,7 +335,11 @@ function mayersRepairDryRun_(week) {
     report.weeks.push(weekReport);
   }
 
-  Logger.log('DRY RUN (nothing written): ' + JSON.stringify(report, null, 2));
+  /* The full JSON is ~4x the Apps Script log budget — printing it truncates the
+   * output mid-report, and an approval read off a truncated log is an approval
+   * of a list nobody has seen. runMayersLocationRepairDryRunCompact() passes
+   * quiet=true and prints the approval-relevant lines itself. */
+  if (!quiet) Logger.log('DRY RUN (nothing written): ' + JSON.stringify(report, null, 2));
   Logger.log('mayersRepairDryRun_: allOk=' + report.allOk +
     ' — Jake must approve the staleSummaryKeys[].keyTuple list above before any apply runs.');
   return report;
@@ -793,6 +797,75 @@ function mayersRepairVerifyWeek_(summData, governing, assess, week) {
 function runMayersLocationRepairDryRun() {
   var report = mayersLocationRepair_();
   Logger.log('DRY RUN COMPLETE (nothing written). allOk=' + report.allOk);
+  return report;
+}
+
+/**
+ * The dry run's approval-relevant facts ONLY, small enough to survive the
+ * Apps Script log.
+ *
+ * The full JSON report is ~4x the editor's log budget: run 2026-08-24 printed
+ * week 1 and half of week 2, then "Logging output too large. Truncating
+ * output." An approval read off a truncated log is an approval of a list nobody
+ * has seen, which defeats the gate this whole design exists to provide. So this
+ * prints one line per key and one per drift row — everything Jake has to check,
+ * nothing he doesn't.
+ *
+ * Same computation, same matcher: it calls mayersLocationRepair_() and only
+ * formats. It cannot report a different assessment from the one an apply uses.
+ */
+function runMayersLocationRepairDryRunCompact() {
+  var report = mayersLocationRepair_(true, null, true);
+  var out = [];
+
+  out.push('=== MAYERS REPAIR DRY RUN — allOk=' + report.allOk + ' (nothing written) ===');
+  out.push('sweep: ' + report.sweep.unresolvedCount + ' unresolved location(s), ' +
+    report.sweep.inRepairSet + ' in whitelist, ' + report.sweep.reportOnlyCount +
+    ' report-only ($' + report.sweep.reportOnlyTotal + ')');
+  out.push('');
+
+  for (var i = 0; i < report.weeks.length; i++) {
+    var w = report.weeks[i];
+    out.push('--- ' + w.week + '  preflightOk=' + w.preflightOk +
+      (w.problems.length ? '  PROBLEMS: ' + w.problems.join(' | ') : ''));
+
+    for (var r = 0; r < w.rows.length; r++) {
+      out.push('  row ' + w.rows[r].ref + ' $' + w.rows[r].liveTotal +
+        ' state=' + w.rows[r].state +
+        ' locLen=' + w.rows[r].liveLocationLength + ' -> ' + w.rows[r].target);
+    }
+    for (var s = 0; s < w.staleSummaryKeys.length; s++) {
+      var sk = w.staleSummaryKeys[s];
+      out.push('  DEL ' + sk.keyTuple + '  [' + sk.matchedCount + ' row, $' +
+        sk.matchedTotals.join(',') + ']');
+    }
+    for (var t = 0; t < w.targetSummaryKeys.length; t++) {
+      var tk = w.targetSummaryKeys[t];
+      out.push('  ADD ' + tk.keyTuple + '  [pre-existing: ' +
+        (tk.matchedCount ? '$' + tk.matchedTotals.join(',') : 'none') + ']');
+    }
+
+    // The drift list is the part that needs explicit sign-off: re-summarizing a
+    // historical week lands EVERY change accumulated since it was last
+    // summarized, not just the Mayers correction.
+    var d = w.drift;
+    out.push('  DRIFT non-Mayers: ' + d.nonMayersDriftCount + ' row(s), net $' +
+      d.nonMayersDriftTotal);
+    for (var c = 0; c < d.changes.length; c++) {
+      var ch = d.changes[c];
+      if (ch.classification !== 'NON-MAYERS DRIFT') continue;
+      out.push('    ' + (ch.action === 'will-be-ADDED' ? '+' : '~') + ' ' +
+        ch.supplier + ' @ ' + (ch.location || "''") + ': ' +
+        (ch.liveTotal === null ? 'absent' : '$' + ch.liveTotal) + ' -> $' + ch.recomputedTotal);
+    }
+    out.push('');
+  }
+
+  out.push('APPROVE THE "DEL" LINES ABOVE BEFORE RUNNING ANY runMayersRepairApply_<week>().');
+
+  // One Logger.log per line: the editor truncates a single huge entry, but
+  // copes with many small ones.
+  for (var L = 0; L < out.length; L++) Logger.log(out[L]);
   return report;
 }
 

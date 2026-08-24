@@ -6877,6 +6877,71 @@ console.log('mayers_repair.gs — location repair (dry run / apply / abort / rol
       Number(findSummary('2026-07-27', 'Mayers', 'Leible North')[0][4]), 570.15);
   })();
 
+
+  /* ---- compact dry-run report ------------------------------------------ */
+  // The full JSON report overflows the Apps Script log — run 2026-08-24 printed
+  // week 1 and half of week 2, then truncated. An approval read off a truncated
+  // log approves a list nobody has seen, which defeats the gate entirely.
+  seed();
+  (function () {
+    clearLoggedMessages();
+    const writesBefore = currentSS._writeLog.length;
+    const report = runMayersLocationRepairDryRunCompact();
+    eq('the compact report still writes nothing', currentSS._writeLog.length, writesBefore);
+    eq('...and returns the same report object', report.mode, 'dryRun');
+
+    const log = lastLoggedMessages();
+    // Many small entries, not one huge one — that is what survives the editor.
+    check('logs line by line, not as one blob', log.length > 20);
+    check('no single line is anywhere near the truncation limit',
+      log.every((l) => String(l).length < 400));
+
+    const joined = log.join('\n');
+    // Every DELETE key must appear: this is the literal list Jake approves.
+    ['2026-06-15||cafe||spend||mayers||',
+     '2026-07-06||cafe||spend||mayers||unmapped: leible coffee north sydney 5 blues st north sydney nsw 2060',
+     '2026-07-20||cafe||spend||mayers||unmapped: leible coffee north sydney 5 blues st north sydney nsw 2060',
+     '2026-07-27||cafe||spend||mayers||unmapped: leible coffee north sydney 5 blues st north sydney nsw 2060',
+    ].forEach((k, i) => check('DEL key ' + (i + 1) + ' of 4 is present', joined.indexOf('DEL ' + k) !== -1));
+
+    ['leible york', 'leible north'].forEach((t) =>
+      check('ADD target ' + t + ' is present', joined.indexOf('||mayers||' + t) !== -1));
+
+    check('all four weeks appear', ['2026-06-15', '2026-07-06', '2026-07-20', '2026-07-27']
+      .every((w) => joined.indexOf('--- ' + w) !== -1));
+    check('the Bennetts key is never offered for deletion',
+      joined.indexOf('DEL 2026-07-20||roastery||spend||bennetts') === -1);
+    check('the 60-char hint length is shown, since it is the silent-no-op trap',
+      joined.indexOf('locLen=70') !== -1);
+    check('it ends on the approval instruction', joined.indexOf('APPROVE THE "DEL" LINES') !== -1);
+  })();
+
+  /* ---- the compact report must not disagree with the apply ------------- */
+  seed({
+    extraSupplierRows: [
+      ['2026-07-23', 'Kent Paper', 12.00, 'KP-2', '', 'kent_paper', TS, 'Cafe'],
+    ],
+  });
+  (function () {
+    clearLoggedMessages();
+    runMayersLocationRepairDryRunCompact();
+    const joined = lastLoggedMessages().join('\n');
+    check('drift is surfaced in the compact form too',
+      joined.indexOf('DRIFT non-Mayers: 1 row(s)') !== -1);
+    check('...naming the supplier and both figures',
+      joined.indexOf('Kent Paper') !== -1 && joined.indexOf('$88 -> $100') !== -1);
+  })();
+
+  seed({ mutateSuppliers: (supp) => { supp.getRange(4, 5).setValue('Leible Somewhere Else'); } });
+  (function () {
+    clearLoggedMessages();
+    const report = runMayersLocationRepairDryRunCompact();
+    eq('a live-state mismatch shows as not-ok', report.allOk, false);
+    const joined = lastLoggedMessages().join('\n');
+    check('...and the problem is printed, not just returned',
+      joined.indexOf('PROBLEMS:') !== -1 && joined.indexOf('3437634') !== -1);
+  })();
+
   currentSS = savedSS;
   scriptProps = savedProps;
 })();
