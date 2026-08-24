@@ -348,6 +348,7 @@ load('staleness.gs');
 load('recurring.gs');
 load('roastery_email.gs');
 load('shopspend.gs');
+load('backfill_resummarize.gs');  // TEMPORARY — deleted with the file after the backfill verifies
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -6874,6 +6875,147 @@ console.log('mayers_repair.gs — location repair (dry run / apply / abort / rol
       findSummary('2026-07-27', 'Mayers', 'Leible Crowsnest').length, 1);
     eq('...with a distinct North row beside it',
       Number(findSummary('2026-07-27', 'Mayers', 'Leible North')[0][4]), 570.15);
+  })();
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// backfill_resummarize.gs — TEMPORARY, goes when the file does.
+//
+// The Ordermentum connector was pointed at the DEAD North Sydney retailer
+// account, so North produced no rows for any supplier, ever. The backfill added
+// 54 Suppliers rows ($10,792.80); this re-summarizes the weeks so they reach
+// Summary, which is what doGet serves and every report reads.
+//
+// The assertion that matters is the refusal one. weeklySummarize returns
+// {refused:…} WITHOUT throwing, so a wrapper that only checks "did it throw"
+// reports eight clean weeks having summarized none of them.
+console.log('backfill_resummarize.gs — Ordermentum North backfill re-summarize');
+(function testOrdermentumBackfillResummarize() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const savedWeekly = globalThis.weeklySummarize;
+
+  const TS = '2026-08-24T09:00:00+10:00';
+
+  eq('covers the eight COMPLETE weeks the backfill touched',
+    ORDERMENTUM_BACKFILL_WEEKS_,
+    ['2026-06-29', '2026-07-06', '2026-07-13', '2026-07-20',
+     '2026-07-27', '2026-08-03', '2026-08-10', '2026-08-17']);
+  // 2026-08-24 has not finished. weeklySummarize REFUSES an incomplete week, so
+  // including it would guarantee a permanent 1-of-9 failure and train the reader
+  // to ignore the failure count.
+  check('the incomplete week 2026-08-24 is deliberately excluded',
+    ORDERMENTUM_BACKFILL_WEEKS_.indexOf('2026-08-24') === -1);
+  check('weeks are oldest-first',
+    ORDERMENTUM_BACKFILL_WEEKS_.slice().sort().join() === ORDERMENTUM_BACKFILL_WEEKS_.join());
+
+  /* ---- every week summarizes ------------------------------------------ */
+  (function () {
+    const called = [];
+    globalThis.weeklySummarize = function (week) {
+      called.push(week);
+      return { weekStart: week, weekEnd: 'x', summariesAdded: 1, summariesUpdated: 0 };
+    };
+    const res = runOrdermentumBackfillResummarize();
+    eq('calls weeklySummarize once per week, in order', called, ORDERMENTUM_BACKFILL_WEEKS_);
+    eq('all eight report ok', res.ok, 8);
+    eq('none failed', res.failed, 0);
+  })();
+
+  /* ---- a refusal must NOT read as success ------------------------------ */
+  (function () {
+    // Lock contention: Code.gs:1757 returns this, carrying NEITHER count field.
+    globalThis.weeklySummarize = function () { return { refused: 'locked' }; };
+    const res = runOrdermentumBackfillResummarize();
+    eq('a locked refusal fails every week', res.failed, 8);
+    eq('...and none are counted ok', res.ok, 0);
+    eq('...and the reason is surfaced', res.results[0].refused, 'locked');
+  })();
+
+  (function () {
+    // Incomplete week: Code.gs:1791 returns summariesAdded:0 and NO
+    // summariesUpdated — so `added + updated` is NaN, which is exactly why this
+    // wrapper asserts the SHAPE instead of the counts.
+    globalThis.weeklySummarize = function (week) {
+      return { weekStart: week, weekEnd: 'x', refused: 'incomplete-week', summariesAdded: 0 };
+    };
+    const res = runOrdermentumBackfillResummarize();
+    eq('an incomplete-week refusal fails, despite carrying weekStart', res.failed, 8);
+    eq('...reason surfaced', res.results[0].refused, 'incomplete-week');
+  })();
+
+  (function () {
+    // The subtle one: weeklySummarize summarized a DIFFERENT week than asked.
+    // That is what the bare (no-arg) form does — it silently does last week.
+    globalThis.weeklySummarize = function () {
+      return { weekStart: '2026-08-17', weekEnd: 'x', summariesAdded: 3, summariesUpdated: 0 };
+    };
+    const res = runOrdermentumBackfillResummarize();
+    eq('a week that summarized the WRONG week is not ok', res.ok, 1);
+    check('...and it is only the week that genuinely matches',
+      res.results.filter((r) => r.ok)[0].week === '2026-08-17');
+  })();
+
+  (function () {
+    // Idempotent re-run: upsertRows_ counts an unchanged amount as
+    // duplicatesSkipped, so a CORRECT second run returns 0 added / 0 updated.
+    // Asserting on counts would read that as failure.
+    globalThis.weeklySummarize = function (week) {
+      return { weekStart: week, weekEnd: 'x', summariesAdded: 0, summariesUpdated: 0 };
+    };
+    const res = runOrdermentumBackfillResummarize();
+    eq('a 0/0 idempotent re-run is SUCCESS, not failure', res.ok, 8);
+  })();
+
+  (function () {
+    globalThis.weeklySummarize = function () { return null; };
+    const res = runOrdermentumBackfillResummarize();
+    eq('a null return fails rather than throwing', res.failed, 8);
+  })();
+
+  globalThis.weeklySummarize = savedWeekly;
+
+  /* ---- checkOrdermentumNorthInSummary reads real Summary state ---------- */
+  (function () {
+    currentSS = makeSpreadsheet();
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    [
+      ['2026-07-06', '2026-07-12', 'Fuel Bakery', 'Leible North', 1000.00, TS, 'Cafe', 'spend'],
+      ['2026-07-06', '2026-07-12', 'Tuga Pastries Australia', 'Leible North', 50.00, TS, 'Cafe', 'spend'],
+      // Same shop, but these suppliers never came through Ordermentum and were
+      // never affected — counting them would inflate the verdict.
+      ['2026-07-06', '2026-07-12', 'Fresh and Chill', 'Leible North', 9999.00, TS, 'Cafe', 'spend'],
+      ['2026-07-06', '2026-07-12', 'Food and Dairy Co', 'Leible North', 8888.00, TS, 'Cafe', 'spend'],
+      // Right supplier, different shop.
+      ['2026-07-06', '2026-07-12', 'Fuel Bakery', 'Leible Pitt', 777.00, TS, 'Cafe', 'spend'],
+      // Right supplier and shop, but a week outside the backfill.
+      ['2026-05-04', '2026-05-10', 'Fuel Bakery', 'Leible North', 123.00, TS, 'Cafe', 'spend'],
+      ['2026-08-10', '2026-08-16', 'Fuel Bakery', 'Leible North', 500.00, TS, 'Cafe', 'spend'],
+    ].forEach((r) => summ.appendRow(r));
+
+    const out = checkOrdermentumNorthInSummary();
+    eq('counts only Ordermentum suppliers at Leible North',
+      out.grandTotal, 1550.00);
+    eq('...across the weeks that actually have data', out.weeksWithNorthData, 2);
+    eq('...checking all eight', out.weeksChecked, 8);
+    eq('...per-week totals are right', out.byWeek['2026-07-06'].total, 1050.00);
+    eq('...and a week with none reads zero', out.byWeek['2026-06-29'].total, 0);
+    check('Fresh and Chill at North is NOT counted — it was never affected',
+      out.byWeek['2026-07-06'].suppliers.join(' ').indexOf('Fresh and Chill') === -1);
+  })();
+
+  (function () {
+    // A case-drifted supplier cell must still be recognised; rowKey_ normalizes
+    // everywhere else in this codebase and this check must match.
+    currentSS = makeSpreadsheet();
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summ.appendRow(['2026-07-20', '2026-07-26', '  fuel bakery ', ' LEIBLE NORTH ', 42.00, TS, 'Cafe', 'spend']);
+    const out = checkOrdermentumNorthInSummary();
+    eq('padded/odd-case supplier and location still counted', out.grandTotal, 42.00);
   })();
 
   currentSS = savedSS;
