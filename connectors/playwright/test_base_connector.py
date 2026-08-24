@@ -800,3 +800,188 @@ def test_fc_auto_login_shop_returns_false_when_never_settles(monkeypatch, tmp_pa
     assert page.wait_for_timeout_calls == 3  # full window exhausted
     assert elapsed < 1.0  # no real sleep happened
     assert b._breaker_tripped("fresh_and_chill_north")
+
+
+# ---- Ordermentum venue mapping + invoice pagination ---------------------- #
+#
+# Two live defects found 2026-08-24, both of which produced NO error and NO
+# short-payload signal — the connector reported success while money went
+# missing:
+#
+#   1. VENUES["Leible North"] pointed at retailer 5dc2803b-… ('Apex
+#      international group pty ltd'), the DEAD one of the two North Sydney
+#      accounts. It resolves, returns HTTP 200, and has zero SUPPLIER_FILTER
+#      suppliers — so North produced no rows at all, for any supplier, ever,
+#      while the other three shops looked healthy. >= $11,931.92 of real spend
+#      never reached the Sheet.
+#   2. _get_invoices requested pageNo=1 only. The North venue's Tuga history is
+#      437 invoices across 18 pages; Fuel Bakery 53 across 3.
+
+VENUES_NORTH_ID = "2476a89b-060e-4308-9a18-558bbf475782"
+
+
+class _PagedOMRequest:
+    """Models /v2/invoices pagination and /v2/marketplaces, recording calls."""
+
+    def __init__(self, pages=None, page_status=None, suppliers=None, meta_totalpages=True):
+        self.pages = pages or {}
+        self.page_status = page_status or {}
+        self.suppliers = suppliers if suppliers is not None else []
+        self.meta_totalpages = meta_totalpages
+        self.calls = []
+
+    def get(self, url, params=None):
+        params = params or {}
+        self.calls.append((url, dict(params)))
+        outer = self
+
+        if "marketplaces" in url:
+
+            class MarketResp:
+                status = 200
+
+                @staticmethod
+                def json():
+                    return {"data": outer.suppliers}
+
+            return MarketResp()
+
+        page_no = int(params.get("pageNo", 1))
+        page_status = outer.page_status.get(page_no, 200)
+
+        class InvoiceResp:
+            status = page_status
+
+            @staticmethod
+            def json():
+                body = {"data": outer.pages.get(page_no, [])}
+                if outer.meta_totalpages:
+                    body["meta"] = {"totalPages": len(outer.pages), "pageNo": page_no}
+                return body
+
+        return InvoiceResp()
+
+
+class _PagedOMPage:
+    def __init__(self, request):
+        self.request = request
+
+
+def _inv(n):
+    return {"date": "2026-08-03T00:00:00Z", "total": 10.0, "number": f"INV{n}"}
+
+
+def _om_conn():
+    return ordermentum.OrdermentumConnector(exec_url="https://example.invalid/exec")
+
+
+def test_ordermentum_north_venue_is_the_live_legend_star_account():
+    """The whole defect in one assertion. Apex resolves and returns 200, so
+    nothing but this mapping distinguishes it from the live account."""
+    assert VENUES_NORTH_ID in ordermentum.VENUES
+    assert ordermentum.VENUES[VENUES_NORTH_ID] == "Leible North"
+
+
+def test_ordermentum_dead_north_account_is_not_mapped():
+    dead = "5dc2803b-51e2-4415-8484-edb4cdf40517"
+    assert dead not in ordermentum.VENUES
+    assert dead in ordermentum.RETIRED_VENUES
+
+
+def test_ordermentum_all_four_shops_are_mapped_exactly_once():
+    assert sorted(ordermentum.VENUES.values()) == [
+        "Leible Crowsnest",
+        "Leible North",
+        "Leible Pitt",
+        "Leible York",
+    ]
+
+
+def test_ordermentum_read_invoices_rejects_a_retired_venue(monkeypatch):
+    """Re-adding a retired id must fail loudly, not silently return nothing."""
+    dead = next(iter(ordermentum.RETIRED_VENUES))
+    monkeypatch.setattr(ordermentum, "VENUES", {dead: "Leible North"})
+    with pytest.raises(ValueError, match="retired retailer"):
+        _om_conn().read_invoices(_PagedOMPage(_PagedOMRequest()))
+
+
+def test_ordermentum_get_invoices_follows_every_page():
+    """pageNo=1 alone truncated at 25. Real case: 53 Fuel Bakery invoices."""
+    req = _PagedOMRequest(
+        pages={
+            1: [_inv(i) for i in range(25)],
+            2: [_inv(i) for i in range(25, 50)],
+            3: [_inv(i) for i in range(50, 53)],
+        }
+    )
+    got = _om_conn()._get_invoices(_PagedOMPage(req), "venue", "supplier")
+    assert len(got) == 53, "must read all 3 pages, not just the first 25"
+    assert [i["number"] for i in got] == [f"INV{i}" for i in range(53)]
+    assert [c[1]["pageNo"] for c in req.calls] == ["1", "2", "3"]
+
+
+def test_ordermentum_get_invoices_stops_when_meta_is_missing():
+    """No usable meta -> behave exactly as before (one page), never guess."""
+    req = _PagedOMRequest(pages={1: [_inv(1)], 2: [_inv(2)]}, meta_totalpages=False)
+    got = _om_conn()._get_invoices(_PagedOMPage(req), "venue", "supplier")
+    assert len(got) == 1
+    assert len(req.calls) == 1
+
+
+def test_ordermentum_get_invoices_keeps_what_it_read_when_a_page_fails():
+    """A partial read is real invoices; doPost dedups on source+invoice_ref, so
+    the next run fills the gap. Discarding them would turn a transient blip into
+    permanent data loss."""
+    req = _PagedOMRequest(pages={1: [_inv(1)], 2: [_inv(2)], 3: [_inv(3)]}, page_status={2: 503})
+    got = _om_conn()._get_invoices(_PagedOMPage(req), "venue", "supplier")
+    assert [i["number"] for i in got] == ["INV1"]
+
+
+def test_ordermentum_get_invoices_respects_the_runaway_limit(monkeypatch):
+    monkeypatch.setattr(ordermentum, "INVOICE_PAGE_LIMIT", 2)
+    req = _PagedOMRequest(pages={n: [_inv(n)] for n in range(1, 6)})
+    got = _om_conn()._get_invoices(_PagedOMPage(req), "venue", "supplier")
+    assert len(got) == 2
+    assert len(req.calls) == 2
+
+
+def test_ordermentum_barren_venue_warns_loudly(monkeypatch, capsys):
+    """A venue returning zero matching suppliers is exactly what the dead North
+    account looked like for months. Every venue in VENUES is there because it
+    orders, so zero is a broken mapping — not a quiet week."""
+    monkeypatch.setattr(ordermentum, "VENUES", {"live-id": "Leible North"})
+    rows = _om_conn().read_invoices(_PagedOMPage(_PagedOMRequest(suppliers=[])))
+    assert rows == []
+    err = capsys.readouterr().err
+    assert "returned NO matching suppliers" in err
+    assert "Leible North" in err
+
+
+def test_ordermentum_healthy_venue_does_not_warn(monkeypatch, capsys):
+    """The warning must not cry wolf, or it gets ignored like every other one."""
+    monkeypatch.setattr(ordermentum, "VENUES", {"live-id": "Leible North"})
+    req = _PagedOMRequest(
+        pages={1: [_inv(1)]},
+        suppliers=[
+            {
+                "supplierId": "s1",
+                "supplier": {"name": "Fuel Bakery Pty Ltd", "tradingName": "Fuel Bakery"},
+            }
+        ],
+    )
+    rows = _om_conn().read_invoices(_PagedOMPage(req))
+    assert len(rows) == 1
+    assert rows[0]["location"] == "Leible North"
+    assert rows[0]["supplier"] == "Fuel Bakery"
+    assert "returned NO matching suppliers" not in capsys.readouterr().err
+
+
+def test_ordermentum_cancelled_invoices_still_excluded(monkeypatch):
+    """Pagination must not have quietly dropped the cancelled-invoice filter."""
+    monkeypatch.setattr(ordermentum, "VENUES", {"live-id": "Leible North"})
+    req = _PagedOMRequest(
+        pages={1: [_inv(1), dict(_inv(2), cancelled=True)]},
+        suppliers=[{"supplierId": "s1", "supplier": {"name": "Fuel Bakery", "tradingName": ""}}],
+    )
+    rows = _om_conn().read_invoices(_PagedOMPage(req))
+    assert [r["invoice_ref"] for r in rows] == ["INV1"]

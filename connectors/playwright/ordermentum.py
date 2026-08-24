@@ -17,6 +17,8 @@ Usage:
 
 from __future__ import annotations
 
+import sys
+
 from base_connector import BaseConnector, TransientLoginError, _form_login, cli_main, get_credential
 from playwright.sync_api import Page
 
@@ -35,14 +37,56 @@ SUPPLIER_FILTER = [
     "fuel",
 ]
 
-# Active venues Jake confirmed 2026-06-18.
-# venue_id → canonical shop name (for the `location` column).
+# retailer_id → canonical shop name (for the `location` column).
+#
+# These are Ordermentum RETAILER ids, which are legal entities, not shopfronts —
+# that is why they read as company names and not "Leible North".
+#
+# 5 Blue St North Sydney has TWO retailer accounts and only one of them is live:
+#
+#   5dc2803b-…  'Apex international group pty ltd'      created 2022-05-30  DEAD
+#               tradingName 'Leible coffee blue street - North Sydney'
+#   2476a89b-…  'LEGEND STAR INVESTMENTS PTY LTD'       created 2025-03-23  LIVE
+#               tradingName 'Leible Coffee North Sydney Blue'
+#
+# Both carry a 5 Blue St North Sydney delivery address, so the names cannot tell
+# them apart. This mapping pointed at Apex, which has **zero** SUPPLIER_FILTER
+# suppliers — so North produced no rows at all, for any supplier, ever, while
+# the other three shops looked perfectly healthy. Measured 2026-08-24: at least
+# $11,931.92 of real North spend never reached the Sheet (Fuel Bakery, Tuga,
+# Allie's Foods). Jake confirmed the two-account situation the same day.
+#
+# Corroboration from a different source: Mayers' North Sydney invoices bill to
+# "LEIBLE COFFEE NORTH SYDNEY LEGEND STAR INVESTMENTS PTY LTD 5 BLUES ST".
+#
+# Verify a change here with connectors/playwright/ordermentum.py --list-venues,
+# which prints every retailer this login owns and how many of its suppliers
+# match SUPPLIER_FILTER. Do not hand-edit an id from the Ordermentum URL bar.
 VENUES = {
-    "73cb4dc6-bc70-431c-bfad-186f05e8851b": "Leible York",
-    "c2942ee1-acb5-45a1-b8df-72c5e5f03aa3": "Leible Pitt",
-    "73904d83-094a-4764-9da9-cfa61231001c": "Leible Crowsnest",
-    "5dc2803b-51e2-4415-8484-edb4cdf40517": "Leible North",
+    "73cb4dc6-bc70-431c-bfad-186f05e8851b": "Leible York",  # KAFFAPRO PTY LTD
+    "c2942ee1-acb5-45a1-b8df-72c5e5f03aa3": "Leible Pitt",  # MZCOFFEE PTY LTD
+    "73904d83-094a-4764-9da9-cfa61231001c": "Leible Crowsnest",  # LEIBLE COFFEE ROASTERS PTY LTD
+    "2476a89b-060e-4308-9a18-558bbf475782": "Leible North",  # LEGEND STAR INVESTMENTS PTY LTD
 }
+
+# Retailer ids that are known-dead and must never be re-added. Without this the
+# next person reading an old commit, or an Ordermentum export, puts Apex back.
+RETIRED_VENUES = {
+    "5dc2803b-51e2-4415-8484-edb4cdf40517": (
+        "Apex international group pty ltd — the OLD North Sydney account, "
+        "superseded by LEGEND STAR INVESTMENTS PTY LTD (2476a89b-…). "
+        "It still resolves and still returns HTTP 200, it just has no bakery "
+        "suppliers, so using it fails silently."
+    ),
+}
+
+# /v2/invoices is paginated at 25/page and the connector used to request page 1
+# only, dropping everything older with no warning. Measured 2026-08-24: Tuga at
+# the North venue has 437 invoices across 18 pages, Fuel Bakery 53 across 3.
+# That never showed up in the weekly figures because the sort is newest-first
+# and a weekly run only needs the newest few — it bites a backfill, or any
+# recovery after an outage, which is exactly when the data matters most.
+INVOICE_PAGE_LIMIT = 40  # runaway guard; 40 * 25 = 1000 invoices per venue+supplier
 
 
 class OrdermentumConnector(BaseConnector):
@@ -107,7 +151,14 @@ class OrdermentumConnector(BaseConnector):
 
     def read_invoices(self, page: Page) -> list[dict]:
         rows: list[dict] = []
+        barren: list[str] = []
+
         for venue_id, shop in VENUES.items():
+            if venue_id in RETIRED_VENUES:
+                raise ValueError(
+                    f"VENUES maps {shop!r} to retired retailer {venue_id}: "
+                    f"{RETIRED_VENUES[venue_id]}"
+                )
             suppliers = self._get_suppliers(page, venue_id)
             for sid, sname in suppliers:
                 invoices = self._get_invoices(page, venue_id, sid)
@@ -124,6 +175,24 @@ class OrdermentumConnector(BaseConnector):
                         }
                     )
             print(f"  [{self.NAME}] {shop}: {len(suppliers)} suppliers")
+            if not suppliers:
+                barren.append(shop)
+
+        # A venue with no matching suppliers is indistinguishable from a venue
+        # that is simply quiet — which is precisely how the wrong North Sydney
+        # retailer id survived for months while three shops looked healthy.
+        # Every configured venue is there BECAUSE it orders; if one stops
+        # returning suppliers, that is a broken mapping or a revoked permission,
+        # not a quiet week. Say so loudly rather than posting a short payload.
+        if barren:
+            print(
+                f"  [{self.NAME}] WARNING: {len(barren)} configured venue(s) returned NO "
+                f"matching suppliers: {', '.join(barren)}. Every venue in VENUES is there "
+                f"because it orders — a zero here means a stale retailer id, a revoked "
+                f"permission, or a supplier renamed out of SUPPLIER_FILTER. "
+                f"Run with --list-venues to see the live retailer list.",
+                file=sys.stderr,
+            )
         return rows
 
     def _get_suppliers(self, page: Page, venue_id: str) -> list[tuple[str, str]]:
@@ -151,20 +220,137 @@ class OrdermentumConnector(BaseConnector):
         return out
 
     def _get_invoices(self, page: Page, venue_id: str, supplier_id: str) -> list[dict]:
-        resp = page.request.get(
-            f"{API_BASE}/v2/invoices",
-            params={
-                "supplierId": supplier_id,
-                "retailerId": venue_id,
-                "sortBy[dueAt]": "-1",
-                "pageNo": "1",
-            },
-        )
-        if resp.status != 200:
-            print(f"  [{self.NAME}] WARNING: invoices returned {resp.status}")
-            return []
-        return resp.json().get("data", [])
+        """Every invoice for this venue+supplier, following pagination.
+
+        The response carries meta.totalPages; requesting page 1 alone silently
+        truncated at 25 invoices (see INVOICE_PAGE_LIMIT). Because the sort is
+        newest-first, a weekly run never noticed — it only needs the newest few
+        — so the loss was invisible until a backfill needed the history.
+
+        A mid-way page failure returns what was collected so far rather than
+        discarding it: a partial read is still real invoices, and doPost dedups
+        on source+invoice_ref, so the next run fills the gap.
+        """
+        out: list[dict] = []
+        page_no = 1
+        total_pages = 1
+
+        while page_no <= total_pages and page_no <= INVOICE_PAGE_LIMIT:
+            resp = page.request.get(
+                f"{API_BASE}/v2/invoices",
+                params={
+                    "supplierId": supplier_id,
+                    "retailerId": venue_id,
+                    "sortBy[dueAt]": "-1",
+                    "pageNo": str(page_no),
+                },
+            )
+            if resp.status != 200:
+                print(
+                    f"  [{self.NAME}] WARNING: invoices returned {resp.status} "
+                    f"on page {page_no} — keeping the {len(out)} invoice(s) read so far"
+                )
+                return out
+
+            body = resp.json()
+            out.extend(body.get("data", []))
+
+            meta = body.get("meta") or {}
+            reported = meta.get("totalPages")
+            if not isinstance(reported, int) or reported < 1:
+                # No usable meta: stop after this page rather than guess. Old
+                # behaviour, so this can only ever match what we had before.
+                break
+            total_pages = reported
+            page_no += 1
+
+        if total_pages > INVOICE_PAGE_LIMIT:
+            print(
+                f"  [{self.NAME}] WARNING: supplier {supplier_id} at venue {venue_id} "
+                f"reports {total_pages} pages, over the INVOICE_PAGE_LIMIT of "
+                f"{INVOICE_PAGE_LIMIT} — read {len(out)} invoice(s), OLDEST ONES SKIPPED",
+                file=sys.stderr,
+            )
+        return out
+
+
+def list_venues() -> None:
+    """Print every retailer this login owns, and how many of each one's suppliers
+    match SUPPLIER_FILTER. Read-only.
+
+    This is the check that settles a VENUES edit. A retailer id copied from the
+    Ordermentum URL bar looks identical to a correct one and fails silently — an
+    id can be live, return HTTP 200, and still be the wrong company. The
+    supplier count is the signal: a shop that orders shows a non-zero count.
+
+    Usage:  python connectors/playwright/ordermentum.py --list-venues
+    """
+    from pathlib import Path
+
+    from playwright.sync_api import sync_playwright
+
+    session = Path(__file__).resolve().parents[2] / "sessions" / "ordermentum.json"
+    if not session.exists():
+        print(f"no saved session at {session} — run with --attended first", file=sys.stderr)
+        raise SystemExit(2)
+
+    # Keyed by retailer id, the same thing the loop below iterates. Inverting it
+    # to shop-name keys makes every `rid in known` test false, so the whole
+    # "which of these is mapped?" column silently disappears — which is the one
+    # question this diagnostic exists to answer.
+    known = dict(VENUES)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_context(storage_state=str(session)).new_page()
+
+        probe = page.request.get(f"{API_BASE}/v1/profiles/")
+        if probe.status != 200:
+            print(f"session is dead (profiles -> {probe.status}); run --attended", file=sys.stderr)
+            browser.close()
+            raise SystemExit(2)
+
+        resp = page.request.get(f"{API_BASE}/v1/retailers")
+        retailers = resp.json().get("data", resp.json())
+        print(f"{len(retailers)} retailer account(s) visible to this login:\n")
+        for r in retailers:
+            rid, name = r.get("id"), r.get("name")
+            trading = r.get("tradingName") or ""
+            mark = f"  <== VENUES[{known[rid]!r}]" if rid in known else ""
+            if rid in RETIRED_VENUES:
+                mark = "  <== RETIRED, do not use"
+            print(f"  {rid}  {name!r}")
+            if trading:
+                print(
+                    f"      tradingName: {trading!r}{mark}"
+                    if mark
+                    else f"      tradingName: {trading!r}"
+                )
+            elif mark:
+                print(f"     {mark}")
+
+            m = page.request.get(
+                f"{API_BASE}/v2/marketplaces", params={"retailerId": rid, "disabled": "false"}
+            )
+            if m.status != 200:
+                print(f"      marketplaces -> HTTP {m.status}\n")
+                continue
+            data = m.json().get("data", [])
+            matched = []
+            for entry in data:
+                s = entry.get("supplier", {})
+                hay = f"{s.get('name', '')} {s.get('tradingName') or ''}".lower()
+                if any(kw in hay for kw in SUPPLIER_FILTER):
+                    matched.append((s.get("tradingName") or s.get("name") or "?").strip())
+            print(
+                f"      {len(data)} supplier(s); {len(matched)} match SUPPLIER_FILTER: {sorted(matched)}\n"
+            )
+        browser.close()
 
 
 if __name__ == "__main__":
-    cli_main(OrdermentumConnector)
+    # Handled here rather than in cli_main: this is an Ordermentum-specific
+    # diagnostic and does not belong on every connector's CLI.
+    if "--list-venues" in sys.argv:
+        list_venues()
+    else:
+        cli_main(OrdermentumConnector)
