@@ -77,7 +77,17 @@
       },
       "tdd_state": "green_done",
       "summary": "upsertRows_ now returns updates:[{key,from,to}] for genuinely rewritten rows only; labourWeeklyPull_ takes a week list (reads LABOUR_COST once) and returns summaryUpdated — 1354 passed, 0 failed.",
-      "completed_at": "2026-08-25T11:09:37+0900"
+      "completed_at": "2026-08-25T11:09:37+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/summary-self-heal/step1-review.json",
+        "checked_at": "2026-08-25T11:12:27+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 2,
@@ -87,7 +97,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-12"
-      ]
+      ],
+      "started_at": "2026-08-25T11:12:27+0900"
     },
     {
       "step": 3,
