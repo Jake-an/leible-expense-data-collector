@@ -1,0 +1,1 @@
+{"red_valid": true, "reason": "Test correctly fails because Step 4 functions (checkSummaryDrift, summaryDriftCheck_, raiseCalendarAlert_, installSummaryDriftTrigger) are not yet implemented. 1447/1448 cases pass; the single failure is the expected unimplemented-symbol case. Test code is sound."}

@@ -8612,6 +8612,248 @@ console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphan
   scriptProps = savedProps;
 })();
 
+/* ------------------------------------------------------------------ *
+ * Step 4 — drift-guard-and-calendar-helper (PRD-13)
+ *
+ * checkSummaryDrift() / summaryDriftCheck_(nowMs) [summary_audit.gs]: a
+ * zero-arg trigger handler that runs a WINDOWED auditSummaryDrift_ (only
+ * weeks still inside the ARCHIVE_RETENTION_DAYS purge horizon) and raises AT
+ * MOST one calendar alert naming any genuinely alertable drifted week.
+ *
+ * summaryDriftCheck_ contract (this step's own design — not pre-existing):
+ *   { weeksAudited:number,
+ *     drifted: Array<{week:string, ...auditSummaryDrift_ week fields}>,
+ *     splitSuppressed: Array<{week:string, reason:string}>,
+ *     eventsCreated:number }
+ * A SPLIT week (has at least one _archive row, same test the heal itself
+ * uses — computeHealPlan_/Code.gs) is un-actionable — the heal skips it and
+ * the sanctioned repair understates it — so it is moved into
+ * splitSuppressed instead of drifted, never alerted daily.
+ *
+ * raiseCalendarAlert_(title, bodyLines, color, nowMs) [staleness.gs] is the
+ * one calendar-writing helper both this guard and the refactored
+ * stalenessRaiseAlerts_ now share — staleness.gs stays the ONLY file that
+ * touches CalendarApp.
+ * ------------------------------------------------------------------ */
+console.log('summary_audit.gs / staleness.gs — checkSummaryDrift() drift guard (Step 4, PRD-13)');
+(function testSummaryDriftGuard() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const savedTriggers = scriptTriggers;
+  const TS = '2026-08-24T13:00:00+10:00';
+
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    calendarEvents = [];
+    calendarFailMode = null;
+  }
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    reset();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  // The purge line runs off todayStr_(), which reads the REAL system clock
+  // (Code.gs:1618 uses a bare `new Date()` — withMockNow only patches
+  // Date.now(), so it cannot reach this call). Fixtures are built RELATIVE
+  // to today, not to a fixed calendar date, or this suite goes stale the
+  // day it stops matching a hand-picked literal.
+  const today = todayStr_();
+  const cutoff = auditPurgeCutoff_(today);
+  const insideDate = addDaysStr_(cutoff, 14);    // well inside the window, long-completed
+  const insideDate2 = addDaysStr_(cutoff, 28);   // a second, distinct in-window week
+  const outsideDate = addDaysStr_(cutoff, -14);  // past the purge line
+  const insideWeek = weekStartForDate_(insideDate);
+  const insideWeek2 = weekStartForDate_(insideDate2);
+  const outsideWeek = weekStartForDate_(outsideDate);
+  const NOW_MS = new Date(today + 'T01:00:00+10:00').getTime();
+
+  /* ---- 3. regression guard: zero-arg auditSummaryDrift() still audits
+   *         every week, window or not — does not need any new symbol ------ */
+  seed([sup(outsideDate, 'Kent Paper', 100, 'K1', 'X')], []);
+  const unwindowed = auditSummaryDrift();
+  check('auditSummaryDrift() with no args still audits a week past the purge line',
+    unwindowed.weeks.some((w) => w.week === outsideWeek));
+
+  const hasFn = typeof checkSummaryDrift === 'function' &&
+    typeof summaryDriftCheck_ === 'function' &&
+    typeof raiseCalendarAlert_ === 'function' &&
+    typeof installSummaryDriftTrigger === 'function';
+  check('checkSummaryDrift / summaryDriftCheck_ / raiseCalendarAlert_ / installSummaryDriftTrigger are all defined', hasFn);
+
+  if (!hasFn) {
+    console.log('  (skipping Step 4 drift-guard cases — not yet implemented)');
+    currentSS = savedSS;
+    scriptProps = savedProps;
+    scriptTriggers = savedTriggers;
+    return;
+  }
+
+  /* ---- 1. checkSummaryDrift() tolerates a trigger event object ---------- */
+  eq('checkSummaryDrift takes no declared parameters (zero-arg contract)',
+    checkSummaryDrift.length, 0);
+  seed([], []);
+  let threw = false;
+  try { checkSummaryDrift({ triggerUid: 'abc', 'day-of-week': 'MONDAY' }); }
+  catch (e) { threw = true; }
+  check('checkSummaryDrift(eventObject) does not throw', !threw);
+
+  /* ---- 2. windowed audit excludes past-purge-line weeks, includes inside */
+  seed(
+    [sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York'),
+     sup(outsideDate, 'Fresh and Chill', 200, 'F1', 'Leible North')],
+    []);
+  let report = summaryDriftCheck_(NOW_MS);
+  check('the in-window drifted week is reported',
+    report.drifted.some((w) => w.week === insideWeek));
+  check('the past-purge-line week is excluded entirely, not merely unalerted',
+    !report.drifted.some((w) => w.week === outsideWeek) &&
+    !report.splitSuppressed.some((w) => w.week === outsideWeek));
+
+  /* ---- 9. read-only: zero writes anywhere -------------------------------- */
+  seed([sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')], []);
+  clearWriteOrderLog();
+  const writesBefore = currentSS._writeLog.length;
+  checkSummaryDrift();
+  eq('checkSummaryDrift() writes nothing (spreadsheet write log)',
+    currentSS._writeLog.length, writesBefore);
+  eq('checkSummaryDrift() writes nothing (cross-sheet write-order log — no setValue/appendRow/deleteRow)',
+    getWriteOrderLog().length, 0);
+
+  /* ---- 4. a drifted week inside the window raises exactly one alert ----- */
+  seed([sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')], []);
+  report = summaryDriftCheck_(NOW_MS);
+  eq('exactly one calendar alert is raised', calendarEvents.length, 1);
+  eq('...and the report agrees', report.eventsCreated, 1);
+
+  /* ---- 5. no drifted week inside the window raises zero alerts ---------- */
+  seed(
+    [sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum(insideWeek, 'Kent Paper', 'Leible York', 100)]);
+  report = summaryDriftCheck_(NOW_MS);
+  eq('a clean window raises no alert', calendarEvents.length, 0);
+  eq('...and the report agrees', report.eventsCreated, 0);
+  eq('...nothing drifted', report.drifted.length, 0);
+
+  /* ---- 6. idempotent within a day: a second run creates no 2nd event ---- */
+  seed([sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')], []);
+  summaryDriftCheck_(NOW_MS);
+  const countAfterFirst = calendarEvents.length;
+  const second = summaryDriftCheck_(NOW_MS);
+  eq('a same-day re-run creates no new event', second.eventsCreated, 0);
+  eq('event count is unchanged', calendarEvents.length, countAfterFirst);
+
+  /* ---- 7. a SPLIT week inside the window is suppressed, raises no alert - */
+  // Same shape as the SPLIT fixtures elsewhere in this file: the week has at
+  // least one _archive row, so computeHealPlan_/healWeek_ would skip it — an
+  // un-actionable recurring alert, not a real finding worth chasing daily.
+  seed(
+    [sup(insideDate, 'Butterboy', 200, 'B1', 'Leible York')],
+    [sum(insideWeek, 'Butterboy', 'Leible York', 250)],
+    { archiveRows: [sup(addDaysStr_(insideWeek, 1), 'Butterboy', 300, 'B2', 'Leible York')] });
+  report = summaryDriftCheck_(NOW_MS);
+  eq('the SPLIT-only week raises no alert', calendarEvents.length, 0);
+  check('...it is recorded as suppressed, not silently dropped',
+    report.splitSuppressed.some((w) => w.week === insideWeek));
+  check('...for an explicit reason naming SPLIT',
+    report.splitSuppressed.some((w) => w.week === insideWeek && /SPLIT/i.test(w.reason)));
+  check('...and it is NOT double-counted as an alertable drift too',
+    !report.drifted.some((w) => w.week === insideWeek));
+
+  /* ---- 8. bodyLines is an array (not a hand-built blob), and a mixed run
+   *         (one alertable week + one SPLIT week) still names remediation -- */
+  calendarEvents = [];
+  raiseCalendarAlert_('Test alert title', ['line one', 'line two', 'line three'], 'ORANGE', NOW_MS);
+  eq('raiseCalendarAlert_ joins bodyLines (array) with newlines, not a hand-built blob',
+    calendarEvents[0] && calendarEvents[0]._description,
+    'line one\nline two\nline three');
+
+  seed(
+    [sup(insideDate, 'Butterboy', 200, 'B1', 'Leible York'),          // SPLIT week
+     sup(insideDate2, 'Kent Paper', 150, 'K9', 'Leible York')],       // plain drifted week
+    [sum(insideWeek, 'Butterboy', 'Leible York', 250)],
+    { archiveRows: [sup(addDaysStr_(insideWeek, 1), 'Butterboy', 300, 'B2', 'Leible York')] });
+  report = summaryDriftCheck_(NOW_MS);
+  eq('the mixed run still alerts once, for the plain week', calendarEvents.length, 1);
+  eq('...the plain week is the one reported as drifted',
+    report.drifted.map((w) => w.week), [insideWeek2]);
+  eq('...the SPLIT week is suppressed, not alerted',
+    report.splitSuppressed.map((w) => w.week), [insideWeek]);
+  check('...and the alert body still names the SPLIT week + a remediation line',
+    calendarEvents.length === 1 &&
+    /SPLIT/.test(calendarEvents[0]._description) &&
+    calendarEvents[0]._description.indexOf(insideWeek) !== -1);
+
+  /* ---- 10. a broken/unavailable calendar does not throw ----------------- */
+  calendarFailMode = 'all';
+  threw = false;
+  let created = null;
+  try { created = raiseCalendarAlert_('Another title', ['body'], 'ORANGE', NOW_MS); }
+  catch (e) { threw = true; }
+  check('raiseCalendarAlert_ does not throw when the calendar is unavailable', !threw);
+  check('...and reports that nothing was created', !created);
+  calendarFailMode = null;
+
+  /* ---- 12. installSummaryDriftTrigger only ever touches its own handler - */
+  scriptTriggers = [];
+  ScriptApp.newTrigger('shopSpendWatchdog')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(14)
+    .inTimezone('Australia/Sydney').create();
+  ScriptApp.newTrigger('checkIngestStaleness')
+    .timeBased().atHour(11).everyDays(1).inTimezone('Australia/Sydney').create();
+
+  installSummaryDriftTrigger();
+  installSummaryDriftTrigger();
+
+  const driftTriggers = ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'checkSummaryDrift');
+  const watchdogTriggers = ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'shopSpendWatchdog');
+  const stalenessTriggers = ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'checkIngestStaleness');
+
+  eq('installing twice leaves exactly one checkSummaryDrift trigger', driftTriggers.length, 1);
+  check('unrelated shopSpendWatchdog trigger is untouched', watchdogTriggers.length === 1);
+  check('unrelated checkIngestStaleness trigger is untouched', stalenessTriggers.length === 1);
+  if (driftTriggers.length === 1) {
+    const cfg = driftTriggers[0]._cfg;
+    eq('trigger is MONDAY', cfg.weekDay, ScriptApp.WeekDay.MONDAY);
+    eq('trigger is hour 7 (after weeklySummarize 04:00, clear of staleness 11:00)', cfg.hour, 7);
+    eq('trigger is Australia/Sydney', cfg.timezone, 'Australia/Sydney');
+  }
+  scriptTriggers = [];
+
+  /* ---- 11. stalenessRaiseAlerts_'s existing behaviour is unchanged ------ */
+  reset();
+  let res = stalenessRun_(NOW_MS);
+  eq('every source is stale on a cold start (unchanged post-refactor)',
+    res.stale.length, STALENESS_SOURCES.length);
+  eq('one orange event per stale source (unchanged post-refactor)',
+    res.eventsCreated, STALENESS_SOURCES.length);
+  check('events are still ORANGE', calendarEvents.every((e) => e._color === 'ORANGE'));
+  check('events still carry a description', calendarEvents.every((e) => e._description.length > 0));
+  const countAfterStaleness = calendarEvents.length;
+  res = stalenessRun_(NOW_MS);
+  eq('re-run still creates no duplicate events (idempotency unchanged)', res.eventsCreated, 0);
+  eq('event count still unchanged', calendarEvents.length, countAfterStaleness);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+  scriptTriggers = savedTriggers;
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
