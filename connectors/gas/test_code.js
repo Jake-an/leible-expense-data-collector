@@ -9018,6 +9018,273 @@ console.log('summary_audit.gs / staleness.gs — checkSummaryDrift() drift guard
   scriptTriggers = savedTriggers;
 })();
 
+/* ------------------------------------------------------------------ *
+ * REVIEW FIXES 2026-08-26, round 2 (Step 6: phase-review-fixes)
+ *
+ * The phase-end gate REVISEd this step twice. Round 1's CRITICAL is closed;
+ * this closes round 2's 2 IMPORTANT + 3 MINOR findings:
+ *   FIX1 (IMPORTANT) — healRaiseAlert_ must route through raiseCalendarAlert_
+ *     (staleness.gs): no direct CalendarApp reference, idempotent within a
+ *     day, bodyLines passed as an array (not a hand-built blob).
+ *   FIX2 (IMPORTANT) — aggregateSupplierRows_ must group on the SAME
+ *     .trim().toLowerCase() normalization rowKey_ uses, so a case/whitespace
+ *     twin SUMS instead of splitting into two groups that collapse to one
+ *     Summary key and silently lose money via upsertRows_'s duplicatesSkipped
+ *     branch, and so the heal actually CONVERGES on re-run instead of
+ *     perpetually re-splitting.
+ *   FIX3 (MINOR) — healRaiseAlert_/the heal path had zero test coverage;
+ *     covered here alongside FIX1/FIX2.
+ *   FIX4 (MINOR) — the orphan-sweep approval-staleness gate
+ *     (summary_audit.gs:666) must fail CLOSED on a malformed/missing
+ *     approvedAt, not silently proceed.
+ *   FIX5 (MINOR) — healEarliestBackupRows_ has no production caller; either
+ *     wire it in or remove it.
+ * ------------------------------------------------------------------ */
+
+// Code.gs / summary_audit.gs — FIX2: aggregateSupplierRows_ groups on the
+// SAME normalization rowKey_ uses. A case/whitespace-only twin must SUM into
+// one group (not split into two that later collapse to one Summary key and
+// lose money), the heal must actually converge on re-run, a non-zero
+// duplicatesSkipped on the heal path must be reported (not silent), and
+// auditSummaryDrift_ must not see a phantom stale entry once converged.
+console.log('Code.gs / summary_audit.gs — FIX2: aggregateSupplierRows_ normalization (case/whitespace collisions SUM, converge, and are reported)');
+(function testAggregationNormalizationFix2() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-26T09:00:00+10:00';
+
+  /* ---- Test 1: two source rows differing only by case/trailing space SUM
+   *      into ONE group at the FULL total ($350), not split ($100) -------- */
+  const caseVariantRows = [
+    ['2026-07-08', 'Mayers', 100, 'M1', 'Leible North', 'mayers', TS, 'Cafe'],
+    ['2026-07-09', 'mayers ', 250, 'M2', 'leible north', 'mayers', TS, 'Cafe'],
+  ];
+  const aggResult = aggregateSupplierRows_(caseVariantRows, '2026-07-06', '2026-07-12', 'spend');
+  eq('FIX2 test1: a case/whitespace-variant pair collapses to ONE group, not two',
+    aggResult.length, 1);
+  eq('FIX2 test1: ...summed to the FULL total ($350), not split ($100 + $250 discarded)',
+    aggResult.length === 1 ? aggResult[0].total : null, 350);
+  eq('FIX2 test1: displayed supplier keeps the FIRST-seen raw casing ("Mayers", not "mayers ")',
+    aggResult.length === 1 ? aggResult[0].supplier : null, 'Mayers');
+  eq('FIX2 test1: displayed location keeps the FIRST-seen raw casing ("Leible North")',
+    aggResult.length === 1 ? aggResult[0].location : null, 'Leible North');
+
+  /* ---- Tests 2 & 3: healWeek_ convergence + reportable duplicatesSkipped - */
+  function seed(supplierRows, summaryRows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  }
+  function buildCtx(opts) {
+    opts = opts || {};
+    const suppSheet = currentSS.getSheetByName(SUPPLIERS_TAB);
+    const archSheet = currentSS.getSheetByName(ARCHIVE_TAB);
+    const summSheet = currentSS.getSheetByName(SUMMARY_TAB);
+    const revSheet = currentSS.getSheetByName(REVENUE_TAB);
+    const backupSheet = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+    const archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
+    const archiveWeeks = {};
+    archRows.forEach((r) => {
+      const d = coerceDateStr_(r[0]);
+      if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+    });
+    const backupRows = backupSheet.getDataRange().getValues().slice(1);
+    const backedUpWeeks = {};
+    backupRows.forEach((r) => { backedUpWeeks[coerceDateStr_(r[0])] = true; });
+    return {
+      archiveWeeks: archiveWeeks,
+      summaryRows: summSheet.getDataRange().getValues(),
+      supplierRows: suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [],
+      revenueRows: revSheet ? revSheet.getDataRange().getValues().slice(1) : [],
+      summSheet: summSheet,
+      backupSheet: backupSheet,
+      backedUpWeeks: backedUpWeeks,
+      runId: opts.runId || 'RUN-FIX2-TEST',
+      extractedAt: opts.extractedAt || TS
+    };
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'mayers', TS, 'Cafe'];
+
+  seed(
+    [sup('2026-07-08', 'Mayers', 100, 'M1', 'Leible North'),
+     sup('2026-07-09', 'mayers ', 250, 'M2', 'leible north')],
+    []);
+
+  const res1 = healWeek_('2026-07-06', buildCtx());
+  eq('FIX2 test1 (via healWeek_): first heal writes ONE new row (the merged group)',
+    res1.rowsAdded, 1);
+  const writtenRow = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()[1];
+  eq('...and the Summary row itself carries the FULL $350, not $100',
+    writtenRow ? writtenRow[SUMMARY_TOTAL_COL] : null, 350);
+  eq('FIX3: healWeek_ reports duplicatesSkipped (0 on this first, non-colliding heal)',
+    res1.duplicatesSkipped, 0);
+
+  const res2 = healWeek_('2026-07-06', buildCtx());
+  eq('FIX2 test2: a second heal of the SAME week reports convergence — zero new/updated rows',
+    res2.rowsAdded + res2.rowsUpdated, 0);
+  eq('FIX2 test2: ...and duplicatesSkipped settles at 1 (one converged row), not the pre-fix ' +
+     'non-convergent 2 (two split groups colliding on the same key forever)',
+    res2.duplicatesSkipped, 1);
+
+  clearLoggedMessages();
+  const res3 = healWeek_('2026-07-06', buildCtx());
+  eq('FIX3: a third (still-converged) heal keeps reporting duplicatesSkipped, not silence',
+    res3.duplicatesSkipped, 1);
+  check('FIX3 test3: a non-zero duplicatesSkipped on the heal path is logged, not silently discarded',
+    lastLoggedMessages().some((m) => /duplicatesskipped/i.test(m) && m.indexOf('2026-07-06') !== -1));
+
+  /* ---- Test 4: auditSummaryDrift_ sees the SAME normalized total — no
+   *      phantom stale entry for the case-variant week once converged ----- */
+  withMockNow('2026-08-26T02:00:00Z', function () {
+    const audit = auditSummaryDrift_(false);
+    const driftedWeek = audit.weeks.find((w) => w.week === '2026-07-06');
+    check('FIX2 test4: the converged case-variant week is NOT reported as drifted by auditSummaryDrift_',
+      !driftedWeek);
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — FIX1: healRaiseAlert_ must route through raiseCalendarAlert_
+// (staleness.gs) — no direct CalendarApp reference, idempotent within a day
+// (no duplicate event on a re-run of the same week+kind), bodyLines passed
+// as an ARRAY (joined by raiseCalendarAlert_, never hand-joined by the
+// caller), and a broken/unavailable calendar must not throw out of it.
+console.log('Code.gs — FIX1: healRaiseAlert_ routes through raiseCalendarAlert_ (idempotent, array bodyLines, no CalendarApp, no throw)');
+(function testHealRaiseAlertFix1() {
+  const savedFail = calendarFailMode;
+  const NOW = '2026-08-26T09:00:00+10:00';
+
+  /* ---- Test 5: idempotent within a day — a same week+kind re-run creates
+   *      no second event ---------------------------------------------------*/
+  calendarEvents = [];
+  calendarFailMode = null;
+  withMockNow(NOW, function () {
+    healRaiseAlert_('2026-07-06', 'Summary corrected', ['line one'], false);
+    healRaiseAlert_('2026-07-06', 'Summary corrected', ['line one'], false);
+  });
+  eq('FIX1 test5: a same-day re-run of the same week+kind creates no second event',
+    calendarEvents.length, 1);
+
+  /* ---- Test 6: bodyLines passed as an ARRAY, joined by raiseCalendarAlert_,
+   *      not a caller-hand-built blob --------------------------------------*/
+  calendarEvents = [];
+  withMockNow(NOW, function () {
+    healRaiseAlert_('2026-08-01', 'orphan candidate(s) found', ['line one', 'line two'], false);
+  });
+  eq('FIX1 test6: bodyLines is an array — the description is newline-joined by ' +
+     'raiseCalendarAlert_, not pre-joined by the caller into one blob',
+    calendarEvents[0] ? calendarEvents[0]._description : null, 'line one\nline two');
+
+  /* ---- Test 7: no file other than staleness.gs references CalendarApp --- */
+  const codeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');
+  check('FIX1 test7: Code.gs no longer references CalendarApp directly (routes through raiseCalendarAlert_ instead)',
+    codeSrc.indexOf('CalendarApp') === -1);
+
+  /* ---- Test 8: a broken/unavailable calendar cannot throw out of the heal
+   *      alert path --------------------------------------------------------*/
+  calendarFailMode = 'all';
+  let threw = false;
+  try {
+    withMockNow(NOW, function () {
+      healRaiseAlert_('2026-08-08', 'Summary corrected', ['detail'], false);
+    });
+  } catch (e) { threw = true; }
+  check('FIX1 test8: healRaiseAlert_ does not throw when the calendar is unavailable', !threw);
+
+  calendarFailMode = savedFail;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — FIX4: the orphan-sweep approval-staleness gate
+// (runSummaryOrphanSweep, summary_audit.gs:666) must fail CLOSED on a
+// malformed/missing approvedAt — a gate that cannot read its own approval
+// must refuse, not silently proceed as if the approval were fresh.
+console.log('summary_audit.gs — FIX4: a malformed/missing approvedAt on the orphan-sweep approval fails CLOSED, not open');
+(function testOrphanSweepApprovalFailsClosedFix4() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-20T09:00:00+10:00';
+  const TODAY = '2026-08-25T00:00:00Z';
+
+  function seed(supplierRows, summaryRows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  seed(
+    [sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+     sum('2026-07-06', 'Kent Paper', 'Old Pyrmont', 250)]);   // exactly 1 real orphan candidate
+
+  withMockNow(TODAY, function () {
+    runSummaryOrphanSweepDryRun();   // approves the 1 orphan candidate, WITH a valid approvedAt
+
+    // Hand-corrupt the just-written approval — matches count/keys but carries
+    // no usable timestamp, simulating a malformed/hand-edited property.
+    const approved = JSON.parse(scriptProps[SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_]);
+    delete approved.approvedAt;
+    scriptProps[SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_] = JSON.stringify(approved);
+
+    clearWriteOrderLog();
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const result = runSummaryOrphanSweep();
+
+    eq('FIX4 test9: a missing approvedAt refuses the apply (fails CLOSED) — deletes nothing',
+      result && result.deleted, 0);
+    eq('Summary is byte-identical after a fail-closed refusal',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    check('the refusal is reported as aborted, not silently treated as success',
+      !!result && (result.aborted === true || result.mode === 'aborted'));
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — FIX5: healEarliestBackupRows_ has no production caller today
+// (grep across connectors/ returns only its own definition). It must either
+// be wired into the documented restore path or removed entirely — dead code
+// on a restore path reads as an available recovery mechanism that nothing
+// invokes.
+console.log('Code.gs — FIX5: healEarliestBackupRows_ is either called by production code, or removed');
+(function testHealEarliestBackupRowsWiredOrGoneFix5() {
+  const codeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');
+  // Counts call-SITE syntax (name followed by an opening paren), which also
+  // matches the function's own `function healEarliestBackupRows_(...)`
+  // declaration — so a lone match means "only its own definition exists",
+  // and more than one means a real caller was added elsewhere.
+  const callSites = (codeSrc.match(/healEarliestBackupRows_\s*\(/g) || []).length;
+  const exists = typeof healEarliestBackupRows_ === 'function';
+  check('FIX5 test10: healEarliestBackupRows_ is either called by production code ' +
+    '(more than just its own definition) or has been removed entirely',
+    !exists || callSites > 1);
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

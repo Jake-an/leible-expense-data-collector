@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test suite is healthy (1500/1517 pass). 17 failures are feature-level assertion mismatches in the implementation code: aggregateSupplierRows_ case-collapsing not implemented, healRaiseAlert_ routing to raiseCalendarAlert_ incomplete, duplicatesSkipped field missing, orphan-sweep approvedAt validation not implemented, healEarliestBackupRows_ removal/call-site verification pending. No syntax/import/framework errors in test code."
+}
