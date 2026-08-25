@@ -134,7 +134,7 @@
     {
       "step": 3,
       "name": "orphan-detection",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -151,6 +151,12 @@
             "reason": "Test code is syntactically correct. Implementation is incomplete: healWeek_ exists but doesn't populate res.orphans or fire alerts; runSummaryOrphanSweepDryRun does not exist. These are implementation gaps, not test bugs."
           },
           "at": "2026-08-25T11:58:05+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "1446 passed, 0 failed",
+          "at": "2026-08-25T13:30:00+1000"
         }
       },
       "tdd_state": "red_done",
@@ -160,7 +166,9 @@
         "model": "sonnet",
         "at": "2026-08-25T12:09:22+0900"
       },
-      "resume_note": "Resolved 2026-08-25 by Jake: the round-9 test's 0-alert expectation was changed to 1. The greenbean date-move genuinely orphans a Summary row (real double-count); detection alerts, the gated manual sweep clears it. tdd_state stays red_done so GREEN runs, not RED."
+      "resume_note": "Resolved 2026-08-25 by Jake: the round-9 test's 0-alert expectation was changed to 1. The greenbean date-move genuinely orphans a Summary row (real double-count); detection alerts, the gated manual sweep clears it. tdd_state stays red_done so GREEN runs, not RED.",
+      "summary": "healOrphanCandidates_ (Code.gs) detects stale Summary keys per healed week and folds them into the existing alert; runSummaryOrphanSweepDryRun/runSummaryOrphanSweep (summary_audit.gs) are the gated, backed-up, bottom-up manual removal path — see phases/summary-self-heal/step3-report.md — 1446 passed, 0 failed.",
+      "completed_at": "2026-08-25T13:30:00+1000"
     },
     {
       "step": 4,
