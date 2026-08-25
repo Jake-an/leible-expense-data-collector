@@ -143,3 +143,93 @@ test must still pass. Suite was green at **1446 passed, 0 failed** after the cha
 Follow-up recorded for Step 5's `TODO.md` work: the greenbean date-move path mints a
 Summary orphan every time it fires, so each occurrence needs a manual sweep. Fixing the
 root cause safely is out of scope here and belongs in its own reviewed change.
+
+---
+
+## REVIEW FIXES 2026-08-26 — phase gate returned REVISE (1 CRITICAL, 2 IMPORTANT, 3 MINOR)
+
+Every per-step review approved this phase with 0 criticals. The **phase-end** gate then
+found a CRITICAL that no step review caught. The defects below are errors in THIS STEP
+FILE's original spec, not in the implementation — the implementation followed the spec
+faithfully. The corrected requirements supersede the conflicting parts of the Task and
+Prohibitions sections above.
+
+### FIX 1 — CRITICAL. The sweep must merge `_archive` and respect the purge line.
+
+`summaryOrphanSweep_` (`summary_audit.gs:518`) recomputes each week from
+**Suppliers + Revenue only** and iterates **every week Summary knows about**.
+`archiveAndPurge_` DELETES `Suppliers` rows older than `ARCHIVE_RETENTION_DAYS = 183`
+after copying them to `_archive`. So for every week past the purge line the recompute is
+empty, every non-`shopify_orderapp` row for that week reads as an orphan candidate, and
+`runSummaryOrphanSweep()` deletes it.
+
+Live impact: ~143 of 169 weeks in `Summary` are past the purge line. This would delete
+the bulk of the tab `doGet` serves and `LEIBLE_GM_COST_MONITOR` reads weekly — and for
+purged weeks the `Summary` row is the ONLY surviving aggregate.
+
+The dry-run/approve gate does **not** mitigate this: it only checks that two consecutive
+computations agree, so it approves 1000+ deletions exactly as readily as 2.
+
+The pre-existing `auditSummaryDrift_` avoids this trap deliberately and documents why at
+`summary_audit.gs:64-70`. Copy that approach:
+
+- Build source rows with `auditDedupeSourceRows_(suppRows, archRows)`, not `suppRows` alone.
+- **Skip weeks below `auditPurgeCutoff_(todayStr_())`** entirely.
+- **Skip weeks that have any `_archive` row** (SPLIT). The sweep is currently the only
+  member of this phase with no SPLIT guard — `computeHealPlan_` skips split weeks and
+  `summaryDriftCheck_` explicitly suppresses them. It must not be the exception.
+
+### FIX 2 — IMPORTANT. Exclude `Labour` rows. My earlier Prohibition was wrong.
+
+The Prohibition above says "Do not extend the sweep exclusion to
+`SUMMARY_AUDIT_PULL_OWNED_` — greenbean and labour rows ARE derived." **That is correct
+for greenbean and WRONG for labour, and this retracts it for labour.**
+
+`labourWeeklyPull_` writes `Summary` rows with `supplier='Labour'` (`Code.gs:802`) sourced
+from an EXTERNAL spreadsheet via `LABOUR_SHEET_ID`. They are structurally unreachable from
+an `aggregateSupplierRows_` recompute — which is the exact criterion
+`healOrphanCandidates_`'s own docstring uses to justify excluding `shopify_orderapp`.
+`SUMMARY_AUDIT_PULL_OWNED_` names `labour` first for this reason.
+
+Exclude `Labour` in **both** `summaryOrphanSweep_` (`summary_audit.gs:558`) and
+`healOrphanCandidates_` (`Code.gs:2071`). Without it: (a) every `healWeek_` raises a false
+orphan alert on every week every run forever — alert fatigue on the exact channel meant to
+signal real corruption, made certain because `healWeeks_` (`Code.gs:2263`) runs BEFORE
+`labourWeeklyPull_` (`Code.gs:2277`); (b) Labour rows become deletion candidates.
+
+Greenbean/Bennetts stay INCLUDED — greenbean writes `Suppliers` via `ingestSupplierRows`
+(`orderapp.gs:808`), so it is genuinely derived. Do not "simplify" this into filtering the
+whole `SUMMARY_AUDIT_PULL_OWNED_` list; the distinction is external-source vs derived.
+
+### FIX 3 — IMPORTANT. The destructive path is untested. 1484 green proves nothing here.
+
+`testSummaryOrphanSweep`'s `seed()` (`test_code.js:8488`) creates `ARCHIVE_TAB` but leaves
+it **empty**, seeds no Labour row, and uses only weeks well inside the purge line. The
+fixture cannot exercise a single one of the failure modes above. Add cases, each asserting
+**zero candidates**:
+
+1. A week whose `Suppliers` rows exist only in `_archive`.
+2. A week past `auditPurgeCutoff_`.
+3. A `Labour` Summary row.
+
+Plus: a SPLIT week (rows in both `Suppliers` and `_archive`) yields zero candidates.
+
+### FIX 4 — MINOR ×3, all in `summary_audit.gs`.
+
+- `:680` `summaryDriftCheck_` does not check `auditSummaryDrift_`'s error return
+  (`{error:...}` with no `.weeks`), so `report.weeks.length` throws a TypeError inside the
+  scheduled trigger handler, converting a clean "cannot audit" signal into an opaque
+  trigger-failure email. Guard it.
+- `:423` `previewSummaryHeal` is documented "READ-ONLY … Writes nothing" but calls
+  `ensureSheet` three times, which inserts a sheet and writes a header row when the tab is
+  absent (`Code.gs:833`). Its "writes NOTHING" test passes only because the fixture
+  pre-creates every tab. Use `getSheetByName` with null-guards — the pattern
+  `summaryOrphanSweep_` already uses.
+- `:614` `SUMMARY_ORPHAN_SWEEP_APPROVED` stores `{count, keys}` with no timestamp, so a
+  dry run from weeks ago still authorizes a delete today whenever the candidate set
+  happens to match. Stamp the approval and refuse one older than ~1 hour.
+
+### Verification additions
+
+- Mutation-test FIX 1: remove the purge-line skip and confirm a test goes red.
+- Re-run the phase gate. It must return `approve` before this phase is done.
