@@ -18,7 +18,7 @@
 
 ## Active
 
-### Summary drift — RE-MEASURED $351,375.05 on 2026-08-25 (was $148,214.34)
+### Summary drift — $288,852.51 across 143 weeks (SETTLED 2026-08-25)
 
 `auditSummaryDrift()` (`connectors/gas/summary_audit.gs`, read-only) over all
 **169** completed weeks, 2026-08-25 08:09:
@@ -63,6 +63,25 @@ and are not.
 
 - [x] Zero-arg repair wrapper with the SPLIT guard — `connectors/gas/summary_drift_repair.gs` (`12fde6b`, deployed v35)
 - [x] POST timeout raised above the GAS ceiling — `0bd2521`
+- [x] **`_archive` made consistent 2026-08-25.** Three defects, all fixed and
+      deployed (v37–v39):
+      - `ingestSupplierRows` never consulted `_archive`, so purged invoices were
+        re-appended to `Suppliers` (`6dc5e5b`; returns `archivedSkipped`).
+      - `archiveAndPurge_` appended with no dedup, so every re-ingest-then-purge
+        cycle added ANOTHER `_archive` copy — up to **7 copies** of one invoice
+        (`0734916`).
+      - `auditSummaryDrift_` summed both tabs without deduping, then deduped only
+        against `Suppliers` and not `_archive` against itself (`6dc5e5b`,
+        `4b141df`).
+- [x] **Drift figure now trustworthy: $288,852.51.** Reconciled two ways —
+      $342,224.38 − $20,624.23 (cross-tab dedup) − $32,747.64 (same-tab dedup)
+      = $288,852.51, and the removed total $53,371.87 equals
+      `auditArchiveDuplicates()`'s independently-computed over-count exactly.
+      `stale` stayed 0 throughout, so none of the duplication sat in groups
+      already present in `Summary`.
+- [x] **Approved window fully closed.** All 143 remaining drifted weeks are past
+      the purge line, so `runSummaryDriftRepairDryRun()` now has nothing to
+      repair inside `SUMMARY_REPAIR_MIN_WEEK_`.
 - [x] **Ingest confirmed PARTIAL and completed 2026-08-25.** The re-run returned
       `read 2644 rows -> rowsAdded: 622, duplicatesSkipped: 2022` — the 03:29 POST
       had landed only 2022 of 2644 rows before GAS hit its own limit. Any plan
@@ -75,10 +94,15 @@ and are not.
       by exactly their planned net (`2026-06-15` +$942.27, `2026-06-22`
       +$2,021.39). 18 weeks not 17: `2026-06-15` drifted once the ingest
       completed. Labour did NOT move — those weeks predate its coverage.
-- [ ] Decide on the other 119 rebuildable weeks — three years of history that
-      arrived by accident and has not been reviewed.
-- [ ] Fix `ingestSupplierRows` to dedup against `_archive`, then re-measure the
-      24 SPLIT weeks against a non-double-counting audit.
+- [ ] Decide on the ~119 rebuildable weeks of backfilled history nobody has
+      reviewed. **Re-derive the figure first** — the $195,966.77 and the SPLIT
+      weeks' $146,257.61 were both measured before the dedup fixes and are
+      overstated by an unallocated share of $53,371.87. Run
+      `runSummaryDriftRepairDryRun()` for current numbers.
+- [ ] Clean up the **253 redundant `_archive` rows** (113 invoices, up to 7
+      copies each; `_archive` is 405 rows, so ~62% redundant). Low urgency —
+      nothing feeding a report reads `_archive`, and the audit now dedups — but
+      it must happen before any archive-aware repair.
 - [ ] Raise or paginate past `INVOICE_PAGE_LIMIT` so history is not silently cut.
 - [ ] Consider a standing guard so drift cannot silently re-accumulate.
 
