@@ -183,13 +183,20 @@
     {
       "step": 4,
       "name": "drift-guard-and-calendar-helper",
-      "status": "pending",
+      "status": "error",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-13"
       ],
-      "started_at": "2026-08-25T12:22:14+0900"
+      "started_at": "2026-08-25T12:22:14+0900",
+      "error_message": "[RED sub-phase failed after 3 attempts] Test command did not fail as expected — test command passed (exit 0). Output tail:\nhealthy Kent Paper / Leible York row survives the apply\n  ok  - both orphans are gone from Summary\n  ok  - a count mismatch deletes nothing  (got 0)\n  ok  - Summary is byte-identical after an aborted apply  (got \"[[\\\"week_start\\\",\\\"week_end\\\",\\\"supplier\\\",\\\"location\\\",\\\"total\\\",\\\"summarized_at\\\",\\\"department\\\",\\\"kind\\\"],[\\\"2026-07-05T14:00:00.000Z\\\",\\\"2026-07-11T14:00:00.000Z\\\",\\\"Kent Paper\\\",\\\"Leible York\\\",100,\\\"2026-08-20T09:00:00+10:00\\\",\\\"Cafe\\\",\\\"spend\\\"],[\\\"2026-07-05T14:00:00.000Z\\\",\\\"2026-07-11T14:00:00.000Z\\\",\\\"Kent Paper\\\",\\\"Old Pyrmont\\\",250,\\\"2026-08-20T09:00:00+10:00\\\",\\\"Cafe\\\",\\\"spend\\\"],[\\\"2026-07-05T14:00:00.000Z\\\",\\\"2026-07-11T14:00:00.000Z\\\",\\\"Kent Paper\\\",\\\"Even Older Shop\\\",60,\\\"2026-08-20T09:00:00+10:00\\\",\\\"Cafe\\\",\\\"spend\\\"]]\")\n  ok  - zero deleteRow calls were made on an aborted apply  (got 0)\n  ok  - the abort is reported, not silently swallowed as success\n  ok  - a differently-cased/whitespace twin of a real computed key is NOT an orphan\n\n1446 passed, 0 failed\n",
+      "failed_at": "2026-08-25T12:24:45+0900",
+      "last_failure": {
+        "step_file_sha256": "dad7d5ef794e6d92f3fdb41b9f86419fbc2b8234b8ea4570d852acbec6d3656c",
+        "model": "sonnet",
+        "at": "2026-08-25T12:24:45+0900"
+      }
     },
     {
       "step": 5,
