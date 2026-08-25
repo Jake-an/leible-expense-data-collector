@@ -253,6 +253,7 @@ function stalenessEventTitle_(source) {
   return 'LEIBLE expense stale: ' + source;
 }
 
+/** @returns {string[]} body lines — joined by raiseCalendarAlert_, never hand-joined here. */
 function stalenessEventBody_(entry, thresholdHours) {
   var age = (entry.ageHours === null)
     ? 'never seen since the watchdog was installed'
@@ -268,11 +269,13 @@ function stalenessEventBody_(entry, thresholdHours) {
     '    check the time trigger still exists and is not disabled)',
     '',
     'If the portal session expired, re-auth with: --attended'
-  ].join('\n');
+  ];
 }
 
 /* ------------------------------------------------------------------ *
- * Calendar alerting
+ * Calendar alerting — the ONLY functions in the project that touch
+ * CalendarApp. Every other file raises an alert by calling
+ * raiseCalendarAlert_(title, bodyLines, color, nowMs) below.
  * ------------------------------------------------------------------ */
 
 /** Primary calendar (its id IS the account address), else the default. Never throws. */
@@ -291,40 +294,65 @@ function stalenessCalendar_() {
   return null;
 }
 
-/** Raise one orange all-day event per stale source; idempotent within a day. */
-function stalenessRaiseAlerts_(staleEntries, nowMs) {
+/** Named color ('ORANGE'/'RED') -> CalendarApp.EventColor, so callers elsewhere
+ *  in the project never need to import the CalendarApp symbol themselves. */
+function stalenessResolveColor_(name) {
+  if (CalendarApp.EventColor && Object.prototype.hasOwnProperty.call(CalendarApp.EventColor, name)) {
+    return CalendarApp.EventColor[name];
+  }
+  return name;
+}
+
+/**
+ * Shared calendar-alert primitive. Resolves the calendar via
+ * stalenessCalendar_ (never throws), and is idempotent within a day: a title
+ * already present among today's events is treated as "already raised" and
+ * skipped — the title IS the idempotency key, so callers must keep it stable
+ * (no varying number/date in it).
+ *
+ * @param {string} title stable event title
+ * @param {string[]} bodyLines joined with '\n' here — callers must not hand-build one blob
+ * @param {string} color 'ORANGE' | 'RED' (or any CalendarApp.EventColor key)
+ * @param {number} nowMs injected clock
+ * @returns {number} 1 if a new event was created, 0 otherwise (incl. on failure)
+ */
+function raiseCalendarAlert_(title, bodyLines, color, nowMs) {
   var cal = stalenessCalendar_();
   if (!cal) {
-    Logger.log('stalenessRaiseAlerts_: no calendar available — logging only. Stale: ' +
-      staleEntries.map(function (e) { return e.source; }).join(', '));
+    Logger.log('raiseCalendarAlert_: no calendar available — logging only. ' + title);
     return 0;
   }
 
   var now = new Date(nowMs);
 
-  // One read → titles already on the day = alerts already raised.
   var existing = {};
   try {
     var events = cal.getEventsForDay(now);
     for (var i = 0; i < events.length; i++) existing[events[i].getTitle()] = true;
   } catch (err) {
-    Logger.log('stalenessRaiseAlerts_: getEventsForDay failed — ' + err.message);
+    Logger.log('raiseCalendarAlert_: getEventsForDay failed — ' + err.message);
   }
+  if (existing[title]) return 0;
 
+  try {
+    var ev = cal.createAllDayEvent(title, now);
+    ev.setColor(stalenessResolveColor_(color));
+    ev.setDescription(bodyLines.join('\n'));
+    return 1;
+  } catch (err2) {
+    Logger.log('raiseCalendarAlert_: could not create event for ' + title + ' — ' + err2.message);
+    return 0;
+  }
+}
+
+/** Raise one orange all-day event per stale source; idempotent within a day. */
+function stalenessRaiseAlerts_(staleEntries, nowMs) {
   var created = 0;
   for (var s = 0; s < staleEntries.length; s++) {
-    var title = stalenessEventTitle_(staleEntries[s].source);
-    if (existing[title]) continue;
-    try {
-      var ev = cal.createAllDayEvent(title, now);
-      ev.setColor(CalendarApp.EventColor.ORANGE);
-      ev.setDescription(stalenessEventBody_(staleEntries[s],
-        staleEntries[s].thresholdHours || STALENESS_THRESHOLD_HOURS));
-      created++;
-    } catch (err2) {
-      Logger.log('stalenessRaiseAlerts_: could not create event for ' +
-        staleEntries[s].source + ' — ' + err2.message);
-    }
+    var entry = staleEntries[s];
+    var title = stalenessEventTitle_(entry.source);
+    var bodyLines = stalenessEventBody_(entry, entry.thresholdHours || STALENESS_THRESHOLD_HOURS);
+    created += raiseCalendarAlert_(title, bodyLines, 'ORANGE', nowMs);
   }
   return created;
 }

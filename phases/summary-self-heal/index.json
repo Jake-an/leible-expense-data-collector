@@ -183,7 +183,7 @@
     {
       "step": 4,
       "name": "drift-guard-and-calendar-helper",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -202,9 +202,17 @@
             "reason": "Test correctly fails because Step 4 functions (checkSummaryDrift, summaryDriftCheck_, raiseCalendarAlert_, installSummaryDriftTrigger) are not yet implemented. 1447/1448 cases pass; the single failure is the expected unimplemented-symbol case. Test code is sound."
           },
           "at": "2026-08-26T06:23:11+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "1484 passed, 0 failed\n",
+          "at": "2026-08-26T07:20:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "raiseCalendarAlert_ (staleness.gs) is now the one CalendarApp-touching primitive stalenessRaiseAlerts_ and the new summaryDriftCheck_/checkSummaryDrift (summary_audit.gs) both share; a windowed, read-only drift check raises at most one weekly alert, suppressing SPLIT weeks with a recorded reason — 1484 passed, 0 failed.",
+      "completed_at": "2026-08-26T07:20:00+0900"
     },
     {
       "step": 5,

@@ -649,6 +649,134 @@ function runSummaryOrphanSweep() {
   return { mode: 'apply', deleted: deleted, found: report.candidates.length };
 }
 
+/* ------------------------------------------------------------------ *
+ * Drift guard (PRD-13, Step 4) — a scheduled trigger that watches the
+ * DRIFT ITSELF, separate from anything that could self-heal it. A guard
+ * that ran inside weeklySummarize/healWeeks_ could never report that those
+ * never ran at all.
+ *
+ * Windowed to auditPurgeCutoff_(todayStr_()) — the same ARCHIVE_RETENTION_DAYS
+ * horizon archiveAndPurge_ already enforces, so this never re-alerts on the
+ * 143+ weeks that are deliberately written off. Read-only: auditSummaryDrift_
+ * writes nothing, and this adds no Sheet write of its own.
+ *
+ * A drifted week that also has an _archive row (SPLIT — same detection
+ * computeHealPlan_ uses) cannot be closed by weeklySummarize('<week>') without
+ * UNDERSTATING it, so flagging it daily would be un-actionable noise. It is
+ * suppressed into splitSuppressed instead of drifted — but if any OTHER week
+ * in the window is genuinely actionable, the one alert that fires still names
+ * the SPLIT week too, for visibility.
+ * ------------------------------------------------------------------ */
+
+var SUMMARY_DRIFT_ALERT_TITLE_ = 'LEIBLE Summary drift detected';
+
+/**
+ * @param {number} nowMs injected clock
+ * @returns {{weeksAudited:number, drifted:Array, splitSuppressed:Array, eventsCreated:number}}
+ */
+function summaryDriftCheck_(nowMs) {
+  var ss = getHubSpreadsheet_();
+  var cutoff = auditPurgeCutoff_(todayStr_());
+  var report = auditSummaryDrift_(false, cutoff);
+
+  // Same "week has an _archive row" test computeHealPlan_ (Code.gs) uses to
+  // decide skip-split — read-only, ARCHIVE_TAB may not exist yet.
+  var archSheet = ss.getSheetByName(ARCHIVE_TAB);
+  var archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
+  var archiveWeeks = {};
+  for (var i = 0; i < archRows.length; i++) {
+    var d = coerceDateStr_(archRows[i][0]);
+    if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+  }
+
+  var drifted = [], splitSuppressed = [];
+  for (var w = 0; w < report.weeks.length; w++) {
+    var wk = report.weeks[w];
+    if (archiveWeeks[wk.week]) {
+      splitSuppressed.push({
+        week: wk.week,
+        reason: 'SPLIT — week has _archive row(s); a recompute would understate it, not close the gap'
+      });
+    } else {
+      drifted.push(wk);
+    }
+  }
+
+  // Only an actionable (non-SPLIT) week is worth interrupting Jake for — a
+  // window with SPLIT weeks alone stays silent, not a daily un-actionable ping.
+  var eventsCreated = 0;
+  if (drifted.length) {
+    eventsCreated = raiseCalendarAlert_(
+      SUMMARY_DRIFT_ALERT_TITLE_,
+      summaryDriftAlertBody_(drifted, splitSuppressed, cutoff),
+      'ORANGE',
+      nowMs);
+  }
+
+  return {
+    weeksAudited: report.weeksAudited,
+    drifted: drifted,
+    splitSuppressed: splitSuppressed,
+    eventsCreated: eventsCreated
+  };
+}
+
+/** @returns {string[]} body lines — joined by raiseCalendarAlert_. */
+function summaryDriftAlertBody_(drifted, splitSuppressed, cutoff) {
+  var lines = [];
+  lines.push('Summary has drifted from Suppliers/Revenue for ' + drifted.length +
+    ' week(s) inside the repair window (purge line ' + cutoff + '):');
+  for (var i = 0; i < drifted.length; i++) {
+    var w = drifted[i];
+    lines.push('  - ' + w.week + ': net $' + w.net + ' (' + w.missing + ' missing, ' +
+      w.stale + ' stale, ' + w.summaryOnly + ' orphan)');
+  }
+  if (splitSuppressed.length) {
+    lines.push('');
+    lines.push('SPLIT week(s) — suppressed, cannot be closed without understating them:');
+    for (var s = 0; s < splitSuppressed.length; s++) {
+      lines.push('  - ' + splitSuppressed[s].week + ': ' + splitSuppressed[s].reason);
+    }
+  }
+  lines.push('');
+  lines.push('To repair a week: read the detail with auditSummaryDrift(true), then ' +
+    "weeklySummarize('<week_start>') — it lands every change in that week at once.");
+  return lines;
+}
+
+/**
+ * Trigger handler. Zero arguments — deliberately (see staleness.gs header: a
+ * time-based trigger passes an event object as arg 1, which corrupted the
+ * Sales tab once already). All logic lives in the injectable summaryDriftCheck_.
+ */
+function checkSummaryDrift() {
+  return summaryDriftCheck_(Date.now());
+}
+
+/**
+ * Weekly, Monday 07:00 Australia/Sydney — after weeklySummarize's 04:00 slot
+ * (so the week it audits has actually been summarized first) and clear of
+ * the staleness watchdog's daily 11:00. A guard that ran inside the thing it
+ * watches could never report that the thing never ran, so this is its own
+ * trigger, not a call tacked onto weeklySummarize.
+ *
+ * Delete-then-create, touching ONLY its own handler name — five other
+ * handlers (shopSpendWatchdog, checkIngestStaleness, weeklySummarize,
+ * shopifyWeeklyPull, greenBeanPull) share this project's trigger list.
+ */
+function installSummaryDriftTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'checkSummaryDrift') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('checkSummaryDrift')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(7)
+    .inTimezone('Australia/Sydney').create();
+  Logger.log('installSummaryDriftTrigger: Monday 07:00 Australia/Sydney trigger installed');
+}
+
 /* Zero-arg editor entry points — the Run button passes no arguments. */
 function auditSummaryDrift() { return auditSummaryDrift_(false); }
 function auditSummaryDriftDetail() { return auditSummaryDrift_(true); }
