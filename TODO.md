@@ -18,97 +18,60 @@
 
 ## Active
 
-### Summary drift — $288,852.51 across 143 weeks (SETTLED 2026-08-25)
+### Summary drift — SELF-HEALING GUARDS LIVE (phase `summary-self-heal`, 2026-08-26)
 
-`auditSummaryDrift()` (`connectors/gas/summary_audit.gs`, read-only) over all
-**169** completed weeks, 2026-08-25 08:09:
+**Policy (Jake, 2026-08-25):** everything past the 183-day purge line —
+**$288,852.51 across 143 weeks** — is a **deliberate write-off**, not pending
+work. Do not "discover" this as an unaddressed bug in a future session; it is
+a closed decision, not an omission.
 
-| | weeks | $ |
-|---|---:|---:|
-| Rebuildable — every source row still in `Suppliers`, none in `_archive` | 136 | **237,064.62** |
-| `SPLIT` — rows in BOTH `Suppliers` and `_archive`, refused (see below) | 24 | **114,310.43** |
-| **Total drifted** | **160 of 169** | **351,375.05** |
+**Two guards now in place**, built in `phases/summary-self-heal/` against the
+plan at `C:/Users/mioja/.claude/plans/graceful-brewing-piglet.md`:
+- **4-week self-heal window** — `weeklySummarize()` re-heals the last
+  `SUMMARY_HEAL_WEEKS` (Script Property, default 4) completed weeks on every
+  scheduled run, through the one shared guarded write path `healWeeks_`/
+  `healWeek_` (`Code.gs`): snapshot-once backup, SPLIT-week refusal,
+  duplicate-key refusal, correction alert, orphan detection — shared by the
+  scheduled run and every override (incl. `greenBeanPull_`). Armed by
+  `SUMMARY_HEAL_ENABLED` (Script Property, default **off**).
+- **`checkSummaryDrift()` weekly alert** — read-only, windowed audit out to the
+  183-day purge line; raises at most one Calendar alert per week and
+  suppresses SPLIT weeks (they need the archive-aware repair below, not a
+  false alarm). Installed via `installSummaryDriftTrigger()` (Monday 07:00
+  Australia/Sydney, after `weeklySummarize` 04:00 and clear of the staleness
+  watchdog 11:00).
 
-**500 rows missing, 0 stale.** Whole supplier@shop rows are absent, reading $0
-in every report.
-
-**⚠️ Why it tripled overnight — a silent success reported as a failure.** The
-pagination fix (`516252b`) made the Ordermentum connector walk every invoice
-page. The scheduled run at **2026-08-25 03:29** read ~1000 invoices per venue
-instead of the usual 188 rows, POSTed them, and hit the client's 300s timeout —
-`exit=1`, logged as a failure. **GAS had already ingested them.** Three years of
-invoice history (back to `2023-05-29`) landed in `Suppliers` with no run
-anywhere claiming success. Fixed in `0bd2521`: the POST timeout is now 600s,
-above the 360s GAS ceiling, since a client timeout below it turns a server-side
-success into a reported failure.
-
-**⚠️ The `_archive` double-count is now live, not hypothetical.**
-`ingestSupplierRows` dedups against `Suppliers` only — it never consults
-`_archive`. So re-ingested historical invoices landed beside their archived
-copies. `auditSummaryDrift_` concatenates both tabs **without deduping on
-`invoice_ref`**, so the $114,310.43 on those 24 weeks is inflated by an unknown
-amount and must not be trusted or repaired until that is resolved.
-
-**⚠️ Never re-summarize a `SPLIT` week.** `weeklySummarize_impl_` recomputes
-from `Suppliers` ONLY and `Summary` upserts, so a week straddling the archive
-cutoff gets its live `Summary` row overwritten with the partial total — turning
-missing money into *understated* money, which hides far better. The predicate is
-"no `_archive` rows at all", NOT the audit's `sourceRowsStillPresent`.
-`summaryDriftRepairPlan_()` enforces this; mutation-tested 2026-08-24.
-
-**⚠️ The old end is truncated.** `INVOICE_PAGE_LIMIT = 40` (1000 invoices) cut
-one supplier off mid-history — `2023-05-29` is where the window ran out, not
-where trading began. Repairing the oldest weeks writes totals that look complete
-and are not.
-
-- [x] Zero-arg repair wrapper with the SPLIT guard — `connectors/gas/summary_drift_repair.gs` (`12fde6b`, deployed v35)
-- [x] POST timeout raised above the GAS ceiling — `0bd2521`
-- [x] **`_archive` made consistent 2026-08-25.** Three defects, all fixed and
-      deployed (v37–v39):
-      - `ingestSupplierRows` never consulted `_archive`, so purged invoices were
-        re-appended to `Suppliers` (`6dc5e5b`; returns `archivedSkipped`).
-      - `archiveAndPurge_` appended with no dedup, so every re-ingest-then-purge
-        cycle added ANOTHER `_archive` copy — up to **7 copies** of one invoice
-        (`0734916`).
-      - `auditSummaryDrift_` summed both tabs without deduping, then deduped only
-        against `Suppliers` and not `_archive` against itself (`6dc5e5b`,
-        `4b141df`).
-- [x] **Drift figure now trustworthy: $288,852.51.** Reconciled two ways —
-      $342,224.38 − $20,624.23 (cross-tab dedup) − $32,747.64 (same-tab dedup)
-      = $288,852.51, and the removed total $53,371.87 equals
-      `auditArchiveDuplicates()`'s independently-computed over-count exactly.
-      `stale` stayed 0 throughout, so none of the duplication sat in groups
-      already present in `Summary`.
-- [x] **Approved window fully closed.** All 143 remaining drifted weeks are past
-      the purge line, so `runSummaryDriftRepairDryRun()` now has nothing to
-      repair inside `SUMMARY_REPAIR_MIN_WEEK_`.
-- [x] **Ingest confirmed PARTIAL and completed 2026-08-25.** The re-run returned
-      `read 2644 rows -> rowsAdded: 622, duplicatesSkipped: 2022` — the 03:29 POST
-      had landed only 2022 of 2644 rows before GAS hit its own limit. Any plan
-      computed before this re-run was stale.
-- [x] **Approved window repaired 2026-08-25 09:18 — 18 weeks, +$94,348.88.**
-      `runSummaryDriftRepair()`: 18 ok, 0 failed, 0 not attempted, 101s.
-      `Summary` 155 → 337 rows, $329,894.37 → $424,243.25, verified by doGet
-      before/after. **182 rows added, 0 updated, 0 keys removed** — purely
-      additive, no live figure overwritten. Only two pre-existing weeks moved,
-      by exactly their planned net (`2026-06-15` +$942.27, `2026-06-22`
-      +$2,021.39). 18 weeks not 17: `2026-06-15` drifted once the ingest
-      completed. Labour did NOT move — those weeks predate its coverage.
-- [ ] Decide on the **119 out-of-window weeks — $195,966.77** (re-derived
-      2026-08-25 10:10, unchanged by the dedup fixes: those weeks have no
-      `_archive` rows, so none of the duplication was theirs). Three years of
-      backfilled history nobody has reviewed; its old end is truncated by
-      `INVOICE_PAGE_LIMIT=40`. Widening `SUMMARY_REPAIR_MIN_WEEK_` is the lever.
-- [ ] Decide on the **24 SPLIT weeks — $92,885.74** (was $146,257.61; the whole
-      $53,371.87 of duplication was in these weeks). Still NOT repairable by
-      `weeklySummarize` — it reads `Suppliers` only and would understate them.
-      Needs an archive-aware aggregate, and the 253 redundant rows cleaned first.
+**Genuinely open, out of scope for this phase:**
 - [ ] Clean up the **253 redundant `_archive` rows** (113 invoices, up to 7
-      copies each; `_archive` is 405 rows, so ~62% redundant). Low urgency —
-      nothing feeding a report reads `_archive`, and the audit now dedups — but
-      it must happen before any archive-aware repair.
-- [ ] Raise or paginate past `INVOICE_PAGE_LIMIT` so history is not silently cut.
-- [ ] Consider a standing guard so drift cannot silently re-accumulate.
+      copies each) — must happen before any archive-aware repair of the SPLIT
+      weeks below.
+- [ ] Raise or paginate past `INVOICE_PAGE_LIMIT = 40` — Ordermentum history
+      is silently cut at ~1000 invoices/venue (`2023-05-29` is where the
+      window ran out, not where trading began).
+- [ ] The **24 SPLIT weeks — $92,885.74** — still NOT repairable by
+      `weeklySummarize` (reads `Suppliers` only, would understate them);
+      needs an archive-aware aggregate, blocked on the `_archive` cleanup above.
+
+**Post-verification action:** flip `PRD-12`/`PRD-13` to `built` in
+`docs/PRD.md` **only after Jake's live verification** of the self-heal window
+and drift guard passes — the same rule `PRD-9`/`10`/`11` followed. Green tests
+alone are not that verification.
+
+**Rollback facts an operator needs at 3am:**
+- **Kill switch:** `SUMMARY_HEAL_ENABLED=false` (Script Property) — instant,
+  no deploy, stops the self-heal write immediately. `checkSummaryDrift()`
+  keeps running unaffected (it's read-only).
+- **Data undo:** restore the affected week from the **earliest**
+  `Summary_heal_backup` snapshot for that week — snapshot-once by design, so
+  the first entry is always the true pre-heal baseline, never a later
+  re-heal's value.
+- **A code rollback does NOT undo a bad heal.** `upsertRows_` writes with an
+  in-place `setValue` and has no delete path; `clasp redeploy … -V 39` reverts
+  the code, not the data. The backup tab is the only undo.
+
+Full drift root-cause history (why it tripled overnight, the `_archive`
+double-count fix, the $288,852.51 reconciliation, the 18-week repair receipt)
+archived to `TODO_ARCHIVE.md` — superseded by the guards above, not deleted.
 
 ### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
 `mayersDailyPull` only labels a thread once something parsed out of it

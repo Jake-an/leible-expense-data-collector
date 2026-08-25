@@ -166,3 +166,103 @@ Root cause — `connectors/gas/mayers.gs:27`:
       (see the census + traps at the top of this section).
 
 </details>
+
+---
+
+## Summary drift — $288,852.51 across 143 weeks — root cause + repair history (2026-08-25, superseded 2026-08-26)
+
+**Superseded by the "Summary drift — SELF-HEALING GUARDS LIVE" section in `TODO.md`**
+(phase `summary-self-heal`). Kept here for the root-cause narrative and repair
+receipts; the open decisions below are now resolved — see `TODO.md` for the
+current policy and the two guards that ship it.
+
+`auditSummaryDrift()` (`connectors/gas/summary_audit.gs`, read-only) over all
+**169** completed weeks, 2026-08-25 08:09:
+
+| | weeks | $ |
+|---|---:|---:|
+| Rebuildable — every source row still in `Suppliers`, none in `_archive` | 136 | **237,064.62** |
+| `SPLIT` — rows in BOTH `Suppliers` and `_archive`, refused (see below) | 24 | **114,310.43** |
+| **Total drifted** | **160 of 169** | **351,375.05** |
+
+**500 rows missing, 0 stale.** Whole supplier@shop rows are absent, reading $0
+in every report.
+
+**Why it tripled overnight — a silent success reported as a failure.** The
+pagination fix (`516252b`) made the Ordermentum connector walk every invoice
+page. The scheduled run at **2026-08-25 03:29** read ~1000 invoices per venue
+instead of the usual 188 rows, POSTed them, and hit the client's 300s timeout —
+`exit=1`, logged as a failure. **GAS had already ingested them.** Three years of
+invoice history (back to `2023-05-29`) landed in `Suppliers` with no run
+anywhere claiming success. Fixed in `0bd2521`: the POST timeout is now 600s,
+above the 360s GAS ceiling, since a client timeout below it turns a server-side
+success into a reported failure.
+
+**The `_archive` double-count was live, not hypothetical.**
+`ingestSupplierRows` dedups against `Suppliers` only — it never consulted
+`_archive`. So re-ingested historical invoices landed beside their archived
+copies. `auditSummaryDrift_` concatenated both tabs **without deduping on
+`invoice_ref`**, so the $114,310.43 on those 24 weeks was inflated by an unknown
+amount until fixed.
+
+**Never re-summarize a `SPLIT` week.** `weeklySummarize_impl_` recomputes
+from `Suppliers` ONLY and `Summary` upserts, so a week straddling the archive
+cutoff gets its live `Summary` row overwritten with the partial total — turning
+missing money into *understated* money, which hides far better. The predicate is
+"no `_archive` rows at all", NOT the audit's `sourceRowsStillPresent`.
+`summaryDriftRepairPlan_()` enforces this; mutation-tested 2026-08-24. This is
+still true and still enforced — the self-heal window inherits the same guard.
+
+**The old end is truncated.** `INVOICE_PAGE_LIMIT = 40` (1000 invoices) cut
+one supplier off mid-history — `2023-05-29` is where the window ran out, not
+where trading began. Still open — see `TODO.md`.
+
+- [x] Zero-arg repair wrapper with the SPLIT guard — `connectors/gas/summary_drift_repair.gs` (`12fde6b`, deployed v35)
+- [x] POST timeout raised above the GAS ceiling — `0bd2521`
+- [x] **`_archive` made consistent 2026-08-25.** Three defects, all fixed and
+      deployed (v37–v39):
+      - `ingestSupplierRows` never consulted `_archive`, so purged invoices were
+        re-appended to `Suppliers` (`6dc5e5b`; returns `archivedSkipped`).
+      - `archiveAndPurge_` appended with no dedup, so every re-ingest-then-purge
+        cycle added ANOTHER `_archive` copy — up to **7 copies** of one invoice
+        (`0734916`).
+      - `auditSummaryDrift_` summed both tabs without deduping, then deduped only
+        against `Suppliers` and not `_archive` against itself (`6dc5e5b`,
+        `4b141df`).
+- [x] **Drift figure now trustworthy: $288,852.51.** Reconciled two ways —
+      $342,224.38 − $20,624.23 (cross-tab dedup) − $32,747.64 (same-tab dedup)
+      = $288,852.51, and the removed total $53,371.87 equals
+      `auditArchiveDuplicates()`'s independently-computed over-count exactly.
+      `stale` stayed 0 throughout, so none of the duplication sat in groups
+      already present in `Summary`.
+- [x] **Approved window fully closed.** All 143 remaining drifted weeks are past
+      the purge line, so `runSummaryDriftRepairDryRun()` now has nothing to
+      repair inside `SUMMARY_REPAIR_MIN_WEEK_`.
+- [x] **Ingest confirmed PARTIAL and completed 2026-08-25.** The re-run returned
+      `read 2644 rows -> rowsAdded: 622, duplicatesSkipped: 2022` — the 03:29 POST
+      had landed only 2022 of 2644 rows before GAS hit its own limit. Any plan
+      computed before this re-run was stale.
+- [x] **Approved window repaired 2026-08-25 09:18 — 18 weeks, +$94,348.88.**
+      `runSummaryDriftRepair()`: 18 ok, 0 failed, 0 not attempted, 101s.
+      `Summary` 155 → 337 rows, $329,894.37 → $424,243.25, verified by doGet
+      before/after. **182 rows added, 0 updated, 0 keys removed** — purely
+      additive, no live figure overwritten. Only two pre-existing weeks moved,
+      by exactly their planned net (`2026-06-15` +$942.27, `2026-06-22`
+      +$2,021.39). 18 weeks not 17: `2026-06-15` drifted once the ingest
+      completed. Labour did NOT move — those weeks predate its coverage.
+- [x] **Decided 2026-08-25 (Jake):** the 119 out-of-window weeks and the
+      $288,852.51 past the 183-day purge line are **written off**, not
+      repaired. Instead of widening the repair window, `summary-self-heal`
+      ships a standing 4-week self-heal + weekly drift alert so new drift
+      cannot silently reaccumulate the same way. See `TODO.md`.
+- [ ] The **24 SPLIT weeks — $92,885.74** (was $146,257.61; the whole
+      $53,371.87 of duplication was in these weeks) — still open, carried
+      forward to `TODO.md`. Still NOT repairable by `weeklySummarize` — it
+      reads `Suppliers` only and would understate them. Needs an
+      archive-aware aggregate, and the 253 redundant rows cleaned first.
+- [ ] Clean up the **253 redundant `_archive` rows** — carried forward to `TODO.md`.
+- [ ] Raise or paginate past `INVOICE_PAGE_LIMIT` — carried forward to `TODO.md`.
+- [x] **Standing guard against silent re-accumulation — shipped 2026-08-26**
+      (phase `summary-self-heal`): the 4-week self-heal window + weekly
+      `checkSummaryDrift()` alert. See `TODO.md`.
+

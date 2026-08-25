@@ -227,11 +227,13 @@
     {
       "step": 5,
       "name": "docs-and-operator-guidance",
-      "status": "pending",
+      "status": "completed",
       "tdd": false,
       "covers": [],
       "covers_reason": "Documentation and operator-guidance only: TODO.md drift section, summary_drift_repair.gs comment corrections. Implements no PRD requirement; PRD-12/PRD-13 stay `planned` until Jake's live verification passes.",
-      "started_at": "2026-08-26T06:33:27+0900"
+      "started_at": "2026-08-26T06:33:27+0900",
+      "summary": "Corrected summary_drift_repair.gs operator guidance (:34 snapshot-once backup caveat, :300-302 refuse-duplicate-keys is not transient — points to cleanupDuplicateSummaryRows(false)), comments only; closed the TODO.md drift section with the write-off policy, the two guards, remaining out-of-scope items, the PRD-12/13 gate, and 3am rollback facts, archiving the full root-cause/repair history to TODO_ARCHIVE.md — 1484 GAS + 485 pytest tests unchanged, 0 failed.",
+      "completed_at": "2026-08-26T06:45:00+0900"
     }
   ],
   "created_at": "2026-08-25T10:39:23+0900"

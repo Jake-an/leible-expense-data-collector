@@ -30,8 +30,12 @@
  * start decaying the day it was written. The plan is recomputed from the live
  * audit on every call.
  *
- * Idempotent. upsertRows_ updates a changed total and counts an unchanged one
- * as duplicatesSkipped, so a second run is a no-op — re-run it freely.
+ * Idempotent for the totals it writes — upsertRows_ updates a changed total and
+ * counts an unchanged one as duplicatesSkipped, so a second run recomputes the
+ * same numbers. But every run also writes a SNAPSHOT-ONCE backup (healWeek_):
+ * only the FIRST heal of a given week is captured, so re-running this can never
+ * poison the undo with a post-heal value — the backup always stays the true
+ * pre-heal baseline. Re-run freely; just don't expect a second backup snapshot.
  */
 
 /* The single most important rule in this file.
@@ -298,8 +302,11 @@ function runSummaryDriftRepair() {
     out.remaining + ' not attempted ===');
   if (out.failed > 0) {
     Logger.log('runSummaryDriftRepair: ' + out.failed + ' week(s) did NOT succeed. ' +
-      'A "locked" refusal just means something else held the script lock — re-run this, ' +
-      'it is idempotent.');
+      'Check each result\'s reason. A "locked" refusal just means something else held ' +
+      'the script lock — re-run this, it is idempotent for that case. A ' +
+      '"refuse-duplicate-keys" refusal is NOT transient — it will refuse on every ' +
+      're-run until you fix the live duplicate keys with ' +
+      'cleanupDuplicateSummaryRows(false), then re-run this.');
   }
   Logger.log('Now run auditSummaryDrift() — the drift should have dropped by about $' +
     plan.repairMoney.toFixed(2) + '. Labour moves legitimately on every re-summarize ' +
