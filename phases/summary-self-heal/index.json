@@ -35,7 +35,17 @@
       },
       "tdd_state": "green_done",
       "summary": "Added computeHealPlan_ (Code.gs) as the pure heal-planning primitive, previewSummaryHeal() (summary_audit.gs, zero-arg read-only entry point) and an opt-in minWeek window on auditSummaryDrift_ — 1331 passed, 0 failed, no Sheet writes.",
-      "completed_at": "2026-08-25T10:54:29+0900"
+      "completed_at": "2026-08-25T10:54:29+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/summary-self-heal/step0-review.json",
+        "checked_at": "2026-08-25T10:57:58+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 1,
@@ -45,7 +55,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-12"
-      ]
+      ],
+      "started_at": "2026-08-25T10:57:58+0900"
     },
     {
       "step": 2,
