@@ -119,7 +119,17 @@
       },
       "tdd_state": "green_done",
       "summary": "healWeeks_/healWeek_ (Code.gs) is now the one guarded write path (snapshot-once backup, SPLIT guard, duplicate refusal, correction alert) shared by the scheduled run and every override incl. greenBeanPull_; see phases/summary-self-heal/step2-report.md — 1412 passed, 0 failed, …",
-      "completed_at": "2026-08-25T11:45:04+0900"
+      "completed_at": "2026-08-25T11:45:04+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/summary-self-heal/step2-review.json",
+        "checked_at": "2026-08-25T11:47:47+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 3,
@@ -129,7 +139,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-12"
-      ]
+      ],
+      "started_at": "2026-08-25T11:47:47+0900"
     },
     {
       "step": 4,
