@@ -94,11 +94,15 @@ and are not.
       by exactly their planned net (`2026-06-15` +$942.27, `2026-06-22`
       +$2,021.39). 18 weeks not 17: `2026-06-15` drifted once the ingest
       completed. Labour did NOT move — those weeks predate its coverage.
-- [ ] Decide on the ~119 rebuildable weeks of backfilled history nobody has
-      reviewed. **Re-derive the figure first** — the $195,966.77 and the SPLIT
-      weeks' $146,257.61 were both measured before the dedup fixes and are
-      overstated by an unallocated share of $53,371.87. Run
-      `runSummaryDriftRepairDryRun()` for current numbers.
+- [ ] Decide on the **119 out-of-window weeks — $195,966.77** (re-derived
+      2026-08-25 10:10, unchanged by the dedup fixes: those weeks have no
+      `_archive` rows, so none of the duplication was theirs). Three years of
+      backfilled history nobody has reviewed; its old end is truncated by
+      `INVOICE_PAGE_LIMIT=40`. Widening `SUMMARY_REPAIR_MIN_WEEK_` is the lever.
+- [ ] Decide on the **24 SPLIT weeks — $92,885.74** (was $146,257.61; the whole
+      $53,371.87 of duplication was in these weeks). Still NOT repairable by
+      `weeklySummarize` — it reads `Suppliers` only and would understate them.
+      Needs an archive-aware aggregate, and the 253 redundant rows cleaned first.
 - [ ] Clean up the **253 redundant `_archive` rows** (113 invoices, up to 7
       copies each; `_archive` is 405 rows, so ~62% redundant). Low urgency —
       nothing feeding a report reads `_archive`, and the audit now dedups — but
