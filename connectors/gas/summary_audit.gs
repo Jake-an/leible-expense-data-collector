@@ -46,9 +46,13 @@ function auditCents_(v) {
 
 /**
  * @param {boolean} [detail=false] also log every drifted row
+ * @param {?string} [minWeek] 'YYYY-MM-DD' week_start — when supplied, weeks
+ *   before it are skipped entirely (not counted, not logged). null/absent
+ *   audits every week exactly as before minWeek existed — the 14 pre-existing
+ *   tests and the manual auditSummaryDrift() entry point depend on that.
  * @returns {Object} audit report
  */
-function auditSummaryDrift_(detail) {
+function auditSummaryDrift_(detail, minWeek) {
   var ss = getHubSpreadsheet_();
   var summSheet = ss.getSheetByName(SUMMARY_TAB);
   if (!summSheet) return { error: 'no Summary tab' };
@@ -96,6 +100,7 @@ function auditSummaryDrift_(detail) {
 
   for (var w = 0; w < weekList.length; w++) {
     var week = weekList[w];
+    if (minWeek && week < minWeek) continue;
     var weekEnd = addDaysStr_(week, 6);
 
     // An unfinished week has no business being in Summary — weeklySummarize
@@ -402,6 +407,83 @@ function auditPad_(v, width) {
   var s = String(v);
   while (s.length < width) s = ' ' + s;
   return s;
+}
+
+/**
+ * READ-ONLY preview of what a heal WOULD do to the last 4 completed weeks.
+ * Builds ctx once (including the guarded `_archive` week Set — an ungated
+ * build would seed a '' key off a blank/pre-guard date cell, or throw on a
+ * Date-typed one) and calls computeHealPlan_, the same function the eventual
+ * write path calls, so the preview and the real heal can never diverge.
+ *
+ * Zero-arg for the Run button. Writes nothing.
+ *
+ * @returns {{generatedAt:string, weeks:Array, projectedSetValues:number, projectedOverrideCost:number}}
+ */
+function previewSummaryHeal() {
+  var ss = getHubSpreadsheet_();
+  var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
+  var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+
+  var archRows = archSheet.getDataRange().getValues().slice(1);
+  var archiveWeeks = {};
+  for (var i = 0; i < archRows.length; i++) {
+    var d = coerceDateStr_(archRows[i][0]);
+    if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+  }
+
+  var summaryValues = summSheet.getDataRange().getValues();
+  var supplierRows = suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [];
+  var revenueRows = revSheet.getDataRange().getValues().slice(1);
+
+  var ctx = {
+    archiveWeeks: archiveWeeks,
+    summaryRows: summaryValues,
+    supplierRows: supplierRows,
+    revenueRows: revenueRows
+  };
+
+  // The last 4 completed weeks, oldest first — the same "last completed
+  // week" anchor weeklySummarize_impl_/auditSummaryDrift_ already use.
+  var lastCompleted = getLastCompletedWeek_(todayStr_());
+  var weeks = [];
+  var wk = lastCompleted.start;
+  for (var n = 0; n < 4; n++) {
+    weeks.unshift(wk);
+    wk = addDaysStr_(wk, -7);
+  }
+
+  var plan = computeHealPlan_(weeks, ctx);
+
+  var projectedSetValues = 0;
+  for (var p = 0; p < plan.length; p++) projectedSetValues += plan[p].projectedSetValues;
+
+  // The _archive + Summary read sizes a SINGLE override call would pay —
+  // feeds the same >300 batching threshold greenBeanPull_'s up-to-5-calls-
+  // per-run path is measured against.
+  var projectedOverrideCost = archRows.length + (summaryValues.length - 1);
+
+  // Line-per-week — one big Logger.log(JSON.stringify(...)) gets truncated
+  // by the editor (documented project gotcha).
+  var out = [];
+  out.push('=== SUMMARY HEAL PREVIEW (read-only, nothing written) ===');
+  for (var q = 0; q < plan.length; q++) {
+    var wp = plan[q];
+    out.push(wp.week + '  ' + wp.action + '  rows=' + wp.rows.length +
+      (wp.reason ? '  (' + wp.reason + ')' : ''));
+  }
+  out.push('projected setValue calls (whole 4-week window): ' + projectedSetValues);
+  out.push('projected override read cost (_archive + Summary): ' + projectedOverrideCost);
+  for (var L = 0; L < out.length; L++) Logger.log(out[L]);
+
+  return {
+    generatedAt: Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX"),
+    weeks: plan,
+    projectedSetValues: projectedSetValues,
+    projectedOverrideCost: projectedOverrideCost
+  };
 }
 
 /* Zero-arg editor entry points — the Run button passes no arguments. */

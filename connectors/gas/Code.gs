@@ -1752,6 +1752,106 @@ function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {
   return result;
 }
 
+/**
+ * The single source of truth for what a Summary heal WOULD do, for a given
+ * set of weeks. Both the read-only preview (previewSummaryHeal) and the
+ * eventual write path call this — they must never diverge, because the
+ * preview is the only look Jake gets before real money moves. Pure: `ctx` is
+ * built ONCE by the caller and holds `archiveWeeks` (a Set of week_start
+ * strings present in `_archive`), `summaryRows` (live Summary values,
+ * header included), `supplierRows`, `revenueRows` — this function performs
+ * NO Sheet reads and NO Sheet writes.
+ *
+ * @param {string[]} weeks 'YYYY-MM-DD' week_start strings to plan
+ * @param {{archiveWeeks:Object, summaryRows:Array, supplierRows:Array, revenueRows:Array}} ctx
+ * @returns {Array<{week:string, action:string, rows:Array, projectedSetValues:number, reason:?string}>}
+ *   action is one of:
+ *     'heal'                 — rows is [{key, live, computed, delta, isNew}]
+ *     'skip-split'           — the week has at least one _archive row
+ *     'refuse-duplicate-keys'— the live Summary already holds duplicate keys
+ *   No pull-owned filtering of any kind: a derived row (e.g. Bennetts,
+ *   location='') is healed like any other. Rows that are structurally
+ *   unreachable from Suppliers/Revenue (e.g. shopify_orderapp's online
+ *   revenue, excluded by aggregateSupplierRows_ itself) never appear in the
+ *   recomputed batch and so are left untouched, not orphaned.
+ */
+function computeHealPlan_(weeks, ctx) {
+  var archiveWeeks = ctx.archiveWeeks || {};
+  var summaryRows = ctx.summaryRows || [];
+  var supplierRows = ctx.supplierRows || [];
+  var revenueRows = ctx.revenueRows || [];
+
+  var plan = [];
+  for (var w = 0; w < weeks.length; w++) {
+    var week = weeks[w];
+    var weekEnd = addDaysStr_(week, 6);
+
+    if (archiveWeeks[week]) {
+      plan.push({
+        week: week,
+        action: 'skip-split',
+        rows: [],
+        projectedSetValues: 0,
+        reason: 'week has _archive row(s) — a heal here would overwrite a partial recompute (split week)'
+      });
+      continue;
+    }
+
+    // Live rows for this week, keyed exactly as rowKey_(SUMMARY_KEY_COLS)
+    // would key them — duplicate detection mirrors that normalization.
+    var liveCounts = {};
+    var live = {};
+    for (var s = 1; s < summaryRows.length; s++) {
+      var srow = summaryRows[s];
+      if (coerceDateStr_(srow[0]) !== week) continue;
+      var lkey = rowKey_(srow, SUMMARY_KEY_COLS);
+      liveCounts[lkey] = (liveCounts[lkey] || 0) + 1;
+      live[lkey] = { total: Number(srow[SUMMARY_TOTAL_COL]) };
+    }
+    var hasDuplicate = false;
+    for (var lk in liveCounts) {
+      if (liveCounts[lk] > 1) { hasDuplicate = true; break; }
+    }
+    if (hasDuplicate) {
+      plan.push({
+        week: week,
+        action: 'refuse-duplicate-keys',
+        rows: [],
+        projectedSetValues: 0,
+        reason: 'live Summary already holds duplicate keys for this week — refusing to heal until deduplicated'
+      });
+      continue;
+    }
+
+    var recomputed = aggregateSupplierRows_(supplierRows, week, weekEnd, 'spend')
+      .concat(aggregateSupplierRows_(revenueRows, week, weekEnd, 'revenue'));
+
+    var rows = [];
+    var projectedSetValues = 0;
+    for (var g = 0; g < recomputed.length; g++) {
+      var grp = recomputed[g];
+      var keyRow = mayersSummaryKeyRow_(week, grp.department, grp.kind, grp.supplier, grp.location);
+      var key = rowKey_(keyRow, SUMMARY_KEY_COLS);
+      var hit = live[key];
+
+      if (!hit) {
+        // Brand-new row: upsertRows_ appends it — 0 setValue calls.
+        rows.push({ key: key, live: null, computed: grp.total, delta: grp.total, isNew: true });
+        continue;
+      }
+      if (auditCents_(hit.total) === auditCents_(grp.total)) continue; // matches — nothing to write
+
+      var delta = Math.round((grp.total - hit.total) * 100) / 100;
+      // An updated row: upsertRows_ pays amountCol + stampCol — 2 setValue calls.
+      rows.push({ key: key, live: hit.total, computed: grp.total, delta: delta, isNew: false });
+      projectedSetValues += 2;
+    }
+
+    plan.push({ week: week, action: 'heal', rows: rows, projectedSetValues: projectedSetValues, reason: null });
+  }
+  return plan;
+}
+
 function summaryDataToObjects_(values) {
   var headers = values[0];
   var result = [];

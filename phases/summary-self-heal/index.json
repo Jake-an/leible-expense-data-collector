@@ -7,7 +7,7 @@
     {
       "step": 0,
       "name": "preflight-instrumentation",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -25,9 +25,16 @@
             "reason": "computeHealPlan_ is not defined — implementation is missing"
           },
           "at": "2026-08-25T10:48:08+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "1331 passed, 0 failed",
+          "at": "2026-08-25T12:05:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done",
+      "summary": "Added computeHealPlan_ (Code.gs) as the pure heal-planning primitive, previewSummaryHeal() (summary_audit.gs, zero-arg read-only entry point) and an opt-in minWeek window on auditSummaryDrift_ — 1331 passed, 0 failed, no Sheet writes."
     },
     {
       "step": 1,
