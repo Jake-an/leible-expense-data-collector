@@ -212,7 +212,17 @@
       },
       "tdd_state": "red_done",
       "summary": "raiseCalendarAlert_ (staleness.gs) is now the one CalendarApp-touching primitive stalenessRaiseAlerts_ and the new summaryDriftCheck_/checkSummaryDrift (summary_audit.gs) both share; a windowed, read-only drift check raises at most one weekly alert, suppressing SPLIT weeks wit…",
-      "completed_at": "2026-08-26T06:30:09+0900"
+      "completed_at": "2026-08-26T06:30:09+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/summary-self-heal/step4-review.json",
+        "checked_at": "2026-08-26T06:33:27+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 5,
@@ -220,7 +230,8 @@
       "status": "pending",
       "tdd": false,
       "covers": [],
-      "covers_reason": "Documentation and operator-guidance only: TODO.md drift section, summary_drift_repair.gs comment corrections. Implements no PRD requirement; PRD-12/PRD-13 stay `planned` until Jake's live verification passes."
+      "covers_reason": "Documentation and operator-guidance only: TODO.md drift section, summary_drift_repair.gs comment corrections. Implements no PRD requirement; PRD-12/PRD-13 stay `planned` until Jake's live verification passes.",
+      "started_at": "2026-08-26T06:33:27+0900"
     }
   ],
   "created_at": "2026-08-25T10:39:23+0900"
