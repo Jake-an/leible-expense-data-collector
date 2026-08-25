@@ -168,7 +168,17 @@
       },
       "resume_note": "Resolved 2026-08-25 by Jake: the round-9 test's 0-alert expectation was changed to 1. The greenbean date-move genuinely orphans a Summary row (real double-count); detection alerts, the gated manual sweep clears it. tdd_state stays red_done so GREEN runs, not RED.",
       "summary": "healOrphanCandidates_ (Code.gs) detects stale Summary keys per healed week and folds them into the existing alert; runSummaryOrphanSweepDryRun/runSummaryOrphanSweep (summary_audit.gs) are the gated, backed-up, bottom-up manual removal path — see phases/summary-self-heal/step3-…",
-      "completed_at": "2026-08-25T12:19:01+0900"
+      "completed_at": "2026-08-25T12:19:01+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/summary-self-heal/step3-review.json",
+        "checked_at": "2026-08-25T12:22:14+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 4,
@@ -178,7 +188,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-13"
-      ]
+      ],
+      "started_at": "2026-08-25T12:22:14+0900"
     },
     {
       "step": 5,
