@@ -486,6 +486,169 @@ function previewSummaryHeal() {
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * Orphan sweep (PRD-12, Step 3) — the MANUAL, gated removal half of orphan
+ * handling. healOrphanCandidates_ (Code.gs) reports orphans automatically
+ * inside every heal but never deletes; this is the one place a stale
+ * Summary row is actually removed, and only on Jake's say-so.
+ *
+ * Follows this project's established dry-run-then-gated-apply shape
+ * (cleanupDuplicateSummaryRows, cleanupOnlineRevenueSummaryRows):
+ *   runSummaryOrphanSweepDryRun() — read-only, logs one line per candidate
+ *     and records what it approved.
+ *   runSummaryOrphanSweep()       — recomputes candidates fresh and refuses
+ *     to proceed unless they are IDENTICAL to what the dry run approved —
+ *     Sheet state can drift between the two calls (another heal landing in
+ *     between), and adjusting the approved count to fit would defeat the
+ *     whole point of a gate. On mismatch: re-run the dry run and re-approve.
+ * ------------------------------------------------------------------ */
+
+var SUMMARY_ORPHAN_BACKUP_TAB = 'Summary_orphan_backup';
+var SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_ = 'SUMMARY_ORPHAN_SWEEP_APPROVED';
+
+/**
+ * Core sweep, read-only. For every week Summary knows about, recomputes that
+ * week's batch from Suppliers/Revenue exactly as healWeek_ does and reports
+ * any live Summary key absent from it — same exclusions and normalization as
+ * healOrphanCandidates_ (Code.gs): shopify_orderapp is skipped (pull-owned,
+ * never derived), and matching is the full SUMMARY_KEY_COLS tuple via
+ * rowKey_, never (week, location) alone.
+ * @returns {{mode:'dryRun', candidates:Array}}
+ */
+function summaryOrphanSweep_() {
+  var ss = getHubSpreadsheet_();
+  var summSheet = ss.getSheetByName(SUMMARY_TAB);
+  if (!summSheet) { Logger.log('summaryOrphanSweep_: no Summary tab'); return { error: 'no-sheet' }; }
+
+  var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  var revSheet = ss.getSheetByName(REVENUE_TAB);
+  var supplierRows = suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [];
+  var revenueRows = revSheet ? revSheet.getDataRange().getValues().slice(1) : [];
+  var data = summSheet.getDataRange().getValues();
+
+  var weeks = {};
+  for (var r = 1; r < data.length; r++) {
+    var wk = coerceDateStr_(data[r][0]);
+    if (DATE_ARG_RE.test(wk)) weeks[wk] = true;
+  }
+
+  // Recompute each distinct week's batch once, not once per row.
+  var computedKeysByWeek = {};
+  var weekList = Object.keys(weeks);
+  for (var w = 0; w < weekList.length; w++) {
+    var week = weekList[w];
+    var weekEnd = addDaysStr_(week, 6);
+    var recomputed = aggregateSupplierRows_(supplierRows, week, weekEnd, 'spend')
+      .concat(aggregateSupplierRows_(revenueRows, week, weekEnd, 'revenue'));
+    var keys = {};
+    for (var g = 0; g < recomputed.length; g++) {
+      var grp = recomputed[g];
+      var keyRow = mayersSummaryKeyRow_(week, grp.department, grp.kind, grp.supplier, grp.location);
+      keys[rowKey_(keyRow, SUMMARY_KEY_COLS)] = true;
+    }
+    computedKeysByWeek[week] = keys;
+  }
+
+  var candidates = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var rowWeek = coerceDateStr_(row[0]);
+    if (!DATE_ARG_RE.test(rowWeek)) continue;
+    var supplier = String(row[2]);
+    if (mayersNorm_(supplier) === 'shopify_orderapp') continue;
+    var key = rowKey_(row, SUMMARY_KEY_COLS);
+    var keysForWeek = computedKeysByWeek[rowWeek] || {};
+    if (keysForWeek[key]) continue;
+    candidates.push({
+      row: i, week: rowWeek, key: key,
+      supplier: supplier, location: String(row[3]),
+      total: Number(row[SUMMARY_TOTAL_COL]),
+      raw: row
+    });
+  }
+
+  return { mode: 'dryRun', candidates: candidates };
+}
+
+/**
+ * Read-only. Logs one line per candidate — a single Logger.log(JSON.stringify)
+ * gets truncated by the editor, and an approval gate nobody can read is not a
+ * gate. Records the approved candidate set (count + keys) to a Script
+ * Property so runSummaryOrphanSweep() can refuse to proceed if reality has
+ * since drifted. Zero-arg for the Run button. Writes nothing to Summary.
+ * @returns {{mode:'dryRun', candidates:Array}}
+ */
+function runSummaryOrphanSweepDryRun() {
+  var report = summaryOrphanSweep_();
+  if (report.error) { Logger.log('runSummaryOrphanSweepDryRun: ' + report.error); return report; }
+
+  Logger.log('=== SUMMARY ORPHAN SWEEP — DRY RUN (nothing written) ===');
+  Logger.log('found ' + report.candidates.length + ' orphan candidate(s)');
+  for (var c = 0; c < report.candidates.length; c++) {
+    var cd = report.candidates[c];
+    Logger.log('  ORPHAN row ' + (cd.row + 1) + '  week ' + cd.week + '  ' +
+      cd.supplier + ' @ ' + cd.location + '  $' + cd.total);
+  }
+  Logger.log('DRY RUN — nothing was written. Run runSummaryOrphanSweep() to apply.');
+
+  var approved = {
+    count: report.candidates.length,
+    keys: report.candidates.map(function (cd) { return cd.key; }).sort()
+  };
+  PropertiesService.getScriptProperties().setProperty(
+    SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_, JSON.stringify(approved));
+
+  return report;
+}
+
+/**
+ * Gated apply. Recomputes candidates fresh and refuses to delete anything
+ * unless they match EXACTLY (same count, same keys) what
+ * runSummaryOrphanSweepDryRun() last approved — never adjusts the approved
+ * count to fit a drifted reality. Backs every matched row up to
+ * SUMMARY_ORPHAN_BACKUP_TAB before the first delete, then deletes bottom-up
+ * so earlier row numbers stay valid as later rows shift.
+ * Zero-arg for the Run button.
+ * @returns {{mode:string, deleted:number, found:number, aborted:?boolean}}
+ */
+function runSummaryOrphanSweep() {
+  var report = summaryOrphanSweep_();
+  if (report.error) { Logger.log('runSummaryOrphanSweep: ' + report.error); return report; }
+
+  var approvedRaw = PropertiesService.getScriptProperties().getProperty(SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_);
+  var approved = approvedRaw ? JSON.parse(approvedRaw) : null;
+  var liveKeys = report.candidates.map(function (cd) { return cd.key; }).sort();
+
+  var matches = !!approved && approved.count === liveKeys.length &&
+    JSON.stringify(approved.keys) === JSON.stringify(liveKeys);
+
+  if (!matches) {
+    Logger.log('runSummaryOrphanSweep: ABORTED — live orphan candidates (' + liveKeys.length +
+      ') no longer match what runSummaryOrphanSweepDryRun() approved' +
+      (approved ? ' (' + approved.count + ')' : ' (no dry run on record)') +
+      '. Re-run runSummaryOrphanSweepDryRun() and re-approve — never force this through.');
+    return { mode: 'aborted', aborted: true, deleted: 0, found: liveKeys.length };
+  }
+
+  var ss = getHubSpreadsheet_();
+  var summSheet = ss.getSheetByName(SUMMARY_TAB);
+  var backup = ensureSheet(ss, SUMMARY_ORPHAN_BACKUP_TAB, SUMMARY_HEADERS);
+
+  for (var b = 0; b < report.candidates.length; b++) backup.appendRow(report.candidates[b].raw);
+  Logger.log('runSummaryOrphanSweep: backed up ' + report.candidates.length +
+    ' row(s) to ' + SUMMARY_ORPHAN_BACKUP_TAB);
+
+  var deleted = 0;
+  for (var m = report.candidates.length - 1; m >= 0; m--) {
+    summSheet.deleteRow(report.candidates[m].row + 1);
+    deleted++;
+  }
+
+  PropertiesService.getScriptProperties().deleteProperty(SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_);
+  Logger.log('runSummaryOrphanSweep: APPLIED — deleted=' + deleted);
+  return { mode: 'apply', deleted: deleted, found: report.candidates.length };
+}
+
 /* Zero-arg editor entry points — the Run button passes no arguments. */
 function auditSummaryDrift() { return auditSummaryDrift_(false); }
 function auditSummaryDriftDetail() { return auditSummaryDrift_(true); }

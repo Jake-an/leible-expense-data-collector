@@ -1987,6 +1987,7 @@ function healRaiseAlert_(week, kind, detail, highSeverity) {
  *   batch; escalates a SPLIT-skip/duplicate-refusal alert to high severity.
  * @returns {{week:string, action:string, reason:?string, rowsAdded:number,
  *   rowsUpdated:number, updates:Array<{key:string,from:number,to:number}>,
+ *   orphans:Array<{key:string,supplier:string,location:string,total:number}>,
  *   backedUp:boolean}}
  */
 function healWeek_(week, ctx, isNewest) {
@@ -2000,7 +2001,7 @@ function healWeek_(week, ctx, isNewest) {
       plan.reason, !!isNewest);
     return {
       week: week, action: plan.action, reason: plan.reason,
-      rowsAdded: 0, rowsUpdated: 0, updates: [], backedUp: true
+      rowsAdded: 0, rowsUpdated: 0, updates: [], orphans: [], backedUp: true
     };
   }
 
@@ -2013,18 +2014,69 @@ function healWeek_(week, ctx, isNewest) {
 
   var writeRes = upsertRows_(ctx.summSheet, normalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
 
+  var computedKeys = {};
+  normalizedRows.forEach(function (r) { computedKeys[rowKey_(r, SUMMARY_KEY_COLS)] = true; });
+  var orphans = healOrphanCandidates_(week, ctx, computedKeys);
+
+  var alertDetail = [];
   if (writeRes.updates.length > 0) {
-    var detail = writeRes.updates.map(function (u) {
+    alertDetail.push(writeRes.updates.map(function (u) {
       return u.key + ': ' + u.from + ' -> ' + u.to;
-    }).join('\n');
-    healRaiseAlert_(week, 'Summary corrected', detail, false);
+    }).join('\n'));
+  }
+  if (orphans.length > 0) {
+    alertDetail.push('Orphan candidate(s) — stale Summary key(s) with no matching row in ' +
+      'this recompute (NOT deleted; review with runSummaryOrphanSweepDryRun()):\n' +
+      orphans.map(function (o) { return o.key + ' ($' + o.total + ')'; }).join('\n'));
+  }
+  if (alertDetail.length > 0) {
+    healRaiseAlert_(week,
+      writeRes.updates.length > 0 ? 'Summary corrected' : 'orphan candidate(s) found',
+      alertDetail.join('\n\n'), false);
   }
 
   return {
     week: week, action: 'heal', reason: null,
     rowsAdded: writeRes.rowsAdded, rowsUpdated: writeRes.rowsUpdated,
-    updates: writeRes.updates, backedUp: true
+    updates: writeRes.updates, orphans: orphans, backedUp: true
   };
+}
+
+/**
+ * Live Summary rows for `week` that are NOT present in `computedKeys` — a
+ * heal that mints a NEW Summary key (a location/supplier/department rename)
+ * leaves the OLD key's row behind; upsertRows_ has no delete path, so the
+ * stale row survives and doGet serves the money twice (PRD-12, Step 3).
+ * Detection only — this never deletes; see runSummaryOrphanSweep (the
+ * manual, gated removal half) in summary_audit.gs.
+ *
+ * shopify_orderapp rows are excluded: they are written directly by the
+ * order-app pull (orderapp.gs), have no Suppliers/Revenue backing, and are
+ * structurally unreachable from a recompute — they would ALWAYS look like an
+ * orphan otherwise. Matching is on the full SUMMARY_KEY_COLS tuple,
+ * normalized exactly like rowKey_ — never (week, location) alone, since a
+ * blank location is not a safe predicate.
+ *
+ * @param {string} week 'YYYY-MM-DD'
+ * @param {{summaryRows:Array}} ctx
+ * @param {Object} computedKeys rowKey_-shaped key -> true, this week's fresh recompute
+ * @returns {Array<{key:string, supplier:string, location:string, total:number}>}
+ */
+function healOrphanCandidates_(week, ctx, computedKeys) {
+  var orphans = [];
+  for (var i = 1; i < ctx.summaryRows.length; i++) { // row 0 = header
+    var row = ctx.summaryRows[i];
+    if (coerceDateStr_(row[0]) !== week) continue;
+    var supplier = String(row[2]);
+    if (mayersNorm_(supplier) === 'shopify_orderapp') continue;
+    var key = rowKey_(row, SUMMARY_KEY_COLS);
+    if (computedKeys[key]) continue;
+    orphans.push({
+      key: key, supplier: supplier, location: String(row[3]),
+      total: Number(row[SUMMARY_TOTAL_COL])
+    });
+  }
+  return orphans;
 }
 
 /**

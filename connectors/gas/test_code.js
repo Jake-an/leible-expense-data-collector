@@ -6362,7 +6362,27 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('date-move self-heal still updates the date cell', cellDate(healed[0]), weeks[1].start);
   check('date-move self-heal re-stamps extracted_at alongside the date (value+stamp convention)',
     String(healed[6]) !== 'OLD-TS' && String(healed[6]).indexOf('T') !== -1);
-  eq('same ref, same total: the date move itself is not an orphan', calendarEvents.length, 0);
+  /* EXPECTATION CHANGED 2026-08-25 (summary-self-heal step 3), 0 -> 1, deliberately.
+   *
+   * At the SUPPLIERS level this assertion's original claim still holds: a re-dated
+   * invoice is NOT an orphan there, because the ref is still present in the pull, and
+   * orderapp's own sweep correctly stays silent about it.
+   *
+   * But the date move DOES orphan a SUMMARY row, and that is a real double-count, not a
+   * false positive. The self-heal rewrites the Suppliers date and re-summarizes both
+   * weeks; re-summarizing the OLD week then aggregates to no row for that key at all,
+   * and upsertRows_ has no delete path — so the old week's Summary row survives holding
+   * the full amount while the new week also gains it. The same money reads twice through
+   * doGet, and every report built on it.
+   *
+   * Step 3's Summary-level orphan detection is what surfaces that. Per Jake's decision
+   * (2026-08-25): alert on it, clear it with the gated manual sweep — never suppress it,
+   * and never auto-delete on this path, because shopify_orderapp Summary rows are
+   * unrebuildable and an automatic deleter over financial records is not recoverable.
+   *
+   * So: 1 alert, and it names the stale old-week row. If this ever goes back to 0, the
+   * double-count has gone silent again — that is a regression, not a cleanup. */
+  eq('date move orphans a Summary row — real double-count, must alert', calendarEvents.length, 1);
 
   global.UrlFetchApp = REAL_URL_FETCH;
 })();

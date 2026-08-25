@@ -35,7 +35,8 @@
     },
     {
       "dir": "summary-self-heal",
-      "status": "pending"
+      "status": "pending",
+      "needs_context_at": "2026-08-25T12:09:22+0900"
     }
   ]
 }

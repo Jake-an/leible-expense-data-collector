@@ -97,3 +97,49 @@ node connectors/gas/test_code.js   # all suites green, including every case abov
 - Do not emit the candidate list as one big `Logger.log(JSON.stringify(...))`. Reason: editor truncation hides items from the approval gate.
 - Do not use bare `new Date()`. Reason: `withMockNow` patches only `Date.now()`.
 - Do not break existing tests.
+
+---
+
+## RESOLVED 2026-08-25 — the round-9 test conflict (read this before re-running)
+
+The first attempt at this step implemented the spec correctly and then stopped at
+`needs_context`, because the literal spec breaks one pre-existing test
+(`connectors/gas/test_code.js`, the round-9 case
+`same ref, same total: the date move itself is not an orphan`). That stop was correct:
+the conflict is a financial-correctness decision, not an implementation detail.
+
+**The conflict is real, and both sides were right about different things.**
+
+`greenBeanPull_`'s date-move self-heal (`orderapp.gs:842-858`) rewrites the `Suppliers`
+row's date in place and re-summarizes BOTH the old and the new week. Re-summarizing the
+OLD week aggregates to **no row at all** for that key, and `upsertRows_` has no delete
+path — so the old week's `Summary` row survives holding the full amount while the new
+week also gains it. **The same money is then live at two weeks and `doGet` serves it
+twice.**
+
+- At the SUPPLIERS level the original assertion still holds: a re-dated invoice is not an
+  orphan there (the ref is still in the pull), and orderapp's own sweep correctly stays
+  silent.
+- At the SUMMARY level it genuinely is an orphan. This step's detection is what surfaces it.
+
+**Jake's decision (2026-08-25): accept it as a real finding.** The round-9 expectation is
+changed from 0 alerts to 1, with the full reasoning written into the test body so a future
+session cannot quietly revert it and re-silence the double-count. Detection alerts; the
+gated manual sweep clears it. This is exactly the design this step already specifies —
+detection automatic, deletion manual and backed up.
+
+**Explicitly rejected**, do not re-propose:
+- Narrowing the detection with a heuristic to suppress cross-week date-moves. It hides a
+  genuine double-count, which is the failure mode this whole phase exists to prevent.
+- Fixing the root cause by having the date-move self-heal delete the stale old-week
+  `Summary` row. That adds an automatic `Summary` delete on the greenbean path, which this
+  step's Prohibitions forbid and which the Tier 3 plan review ruled out as unrecoverable —
+  `shopify_orderapp` rows cannot be regenerated.
+
+**Therefore the "Do not break existing tests" Prohibition is narrowed for this one case
+only:** the round-9 alert-count expectation may change from 0 to 1. Every other existing
+test must still pass. Suite was green at **1446 passed, 0 failed** after the change.
+
+Follow-up recorded for Step 5's `TODO.md` work: the greenbean date-move path mints a
+Summary orphan every time it fires, so each occurrence needs a manual sweep. Fixing the
+root cause safely is out of scope here and belongs in its own reviewed change.
