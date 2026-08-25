@@ -1,0 +1,56 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "summary-self-heal",
+  "plan": "C:/Users/mioja/.claude/plans/graceful-brewing-piglet.md",
+  "steps": [
+    {
+      "step": 0,
+      "name": "preflight-instrumentation",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-12", "PRD-13"]
+    },
+    {
+      "step": 1,
+      "name": "primitives-report-what-they-did",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-12"]
+    },
+    {
+      "step": 2,
+      "name": "guarded-shared-write-path",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-12"]
+    },
+    {
+      "step": 3,
+      "name": "orphan-detection",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-12"]
+    },
+    {
+      "step": 4,
+      "name": "drift-guard-and-calendar-helper",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": ["PRD-13"]
+    },
+    {
+      "step": 5,
+      "name": "docs-and-operator-guidance",
+      "status": "pending",
+      "tdd": false,
+      "covers": [],
+      "covers_reason": "Documentation and operator-guidance only: TODO.md drift section, summary_drift_repair.gs comment corrections. Implements no PRD requirement; PRD-12/PRD-13 stay `planned` until Jake's live verification passes."
+    }
+  ]
+}
