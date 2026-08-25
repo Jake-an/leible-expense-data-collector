@@ -78,6 +78,7 @@ function makeSheet(headers, name, globalWriteLog) {
     const entry = { type, sheet: name, numRows };
     writeCalls.push(entry);
     if (globalWriteLog) globalWriteLog.push(entry);
+    writeOrderLog.push({ sheet: name, type: type });
   }
   // Real Sheet 1-indexed row/col growth: writing past the current bounds
   // extends the sheet rather than throwing.
@@ -114,7 +115,11 @@ function makeSheet(headers, name, globalWriteLog) {
       setBackground(c) { call.background = c; return chain; },
       setFontColor(c) { call.fontColor = c; return chain; },
       setFontWeight(w) { call.fontWeight = w; return chain; },
-      setValue(v) { setCell(row - 1, col - 1, v); return chain; },
+      setValue(v) {
+        setCell(row - 1, col - 1, v);
+        writeOrderLog.push({ sheet: name, type: 'setValue', row: row, col: col });
+        return chain;
+      },
       setValues(vals) {
         vals.forEach((rowVals, ri) => {
           rowVals.forEach((v, ci) => setCell(row - 1 + ri, col - 1 + ci, v));
@@ -168,6 +173,17 @@ function makeSpreadsheet() {
 let currentSS;
 let scriptProps = {};
 
+// Cross-sheet write-order log: appendRow / setValues / per-cell setValue all
+// push here, in call order, regardless of which sheet or which mechanism —
+// needed to assert "the backup snapshot is written before any Summary
+// setValue" (PRD-12 guarded write path). The pre-existing writeCalls log is
+// per-spreadsheet but excludes per-cell setValue by design (see the comment
+// above it), and rangeCalls is per-sheet — neither can answer a cross-sheet
+// ordering question, which is why this is a separate, additive log.
+let writeOrderLog = [];
+function getWriteOrderLog() { return writeOrderLog.slice(); }
+function clearWriteOrderLog() { writeOrderLog = []; }
+
 global.SpreadsheetApp = {
   getActiveSpreadsheet: () => currentSS,
   openById: () => currentSS,
@@ -201,7 +217,9 @@ function makeCalEvent(title, date) {
   return ev;
 }
 global.CalendarApp = {
-  EventColor: { ORANGE: 'ORANGE' },
+  // RED is additive here for the summary-heal high-severity alert (PRD-12) —
+  // every pre-existing alert in this codebase only ever used ORANGE.
+  EventColor: { ORANGE: 'ORANGE', RED: 'RED' },
   getCalendarById: (id) => {
     if (calendarFailMode === 'byId' || calendarFailMode === 'all') return null;
     return global.CalendarApp._cal(id);
@@ -7793,6 +7811,501 @@ console.log('_archive dedup — ingest awareness, audit dedup, duplicate census'
 
   currentSS = savedSS;
   scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — healWeek_(week, ctx): the guarded per-week write. Every gate
+// (SPLIT skip, duplicate-key refusal, snapshot-once backup, correction alert)
+// lives here so the scheduled path and every override caller (greenBeanPull_
+// included) share exactly one write path — PRD-12.
+//
+// ctx extends computeHealPlan_'s ctx (step 0: archiveWeeks/summaryRows/
+// supplierRows/revenueRows) with the sheet refs and write-side bookkeeping
+// healWeek_ needs (summSheet, backupSheet, backedUpWeeks, runId, extractedAt).
+// Built ONCE by the caller here, exactly like healWeeks_ must build it once
+// per entry point — see testHealWeeksOrchestration below for the multi-week
+// version of that same rule.
+console.log('Code.gs — healWeek_ (guarded per-week write: backup, SPLIT guard, duplicate refusal, correction alert)');
+(function testHealWeekGuardsAndBackup() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    const rev = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    (opts.revenueRows || []).forEach((r) => rev.appendRow(r));
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+    ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total, dept, kind) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
+
+  function buildCtx(opts) {
+    opts = opts || {};
+    const suppSheet = currentSS.getSheetByName(SUPPLIERS_TAB);
+    const archSheet = currentSS.getSheetByName(ARCHIVE_TAB);
+    const summSheet = currentSS.getSheetByName(SUMMARY_TAB);
+    const revSheet = currentSS.getSheetByName(REVENUE_TAB);
+    const backupSheet = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+    const archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
+    const archiveWeeks = {};
+    archRows.forEach((r) => {
+      const d = coerceDateStr_(r[0]);
+      if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+    });
+    const backupRows = backupSheet.getDataRange().getValues().slice(1);
+    const backedUpWeeks = {};
+    backupRows.forEach((r) => { backedUpWeeks[coerceDateStr_(r[0])] = true; });
+    return {
+      archiveWeeks: archiveWeeks,
+      summaryRows: summSheet.getDataRange().getValues(),
+      supplierRows: suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [],
+      revenueRows: revSheet ? revSheet.getDataRange().getValues().slice(1) : [],
+      summSheet: summSheet,
+      backupSheet: backupSheet,
+      backedUpWeeks: backedUpWeeks,
+      runId: opts.runId || 'RUN-TEST-1',
+      extractedAt: opts.extractedAt || TS
+    };
+  }
+
+  /* ---- SPLIT guard: skip, write nothing, back up, alert ----------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)],
+       { archiveRows: [sup('2026-07-09', 'Fresh and Chill', 50, 'F1', 'Leible North')] });
+  {
+    calendarEvents = [];
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('SPLIT week action is skip-split', res.action, 'skip-split');
+    eq('SPLIT week: Summary is byte-identical afterwards',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    check('SPLIT week is still backed up', res.backedUp === true);
+    check('SPLIT week raises an alert', calendarEvents.length >= 1);
+  }
+
+  /* ---- duplicate-key refusal: refuse, write nothing, alert -------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+        sum('2026-07-06', '  KENT PAPER  ', 'leible york', 999)]);
+  {
+    calendarEvents = [];
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('duplicate-key week is refused, not half-updated', res.action, 'refuse-duplicate-keys');
+    eq('duplicate-key week: Summary is byte-identical afterwards',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    check('duplicate-key week raises an alert', calendarEvents.length >= 1);
+  }
+
+  /* ---- Bennetts / location='' IS healed — no pull-owned filtering ------- */
+  seed([sup('2026-07-08', 'Bennetts', 14219, 'B1', '')], []);
+  {
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('Bennetts (blank location) IS summarized', res.action, 'heal');
+    eq('...one row added, proving no pull-owned filtering', res.rowsAdded, 1);
+  }
+
+  /* ---- shopify_orderapp online revenue row is untouched ----------------- */
+  seed([], [sum('2026-07-06', 'shopify_orderapp', 'online', 900, 'Roastery', 'revenue')],
+       { revenueRows: [['2026-07-08', 'Roastery', 'online', 'N/A', 900, 'O1', 'shopify_orderapp', TS]] });
+  {
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('action is heal (nothing computed collides)', res.action, 'heal');
+    eq('zero rows written — the online row is untouched', res.rowsAdded + res.rowsUpdated, 0);
+    eq('Summary is byte-identical',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+  }
+
+  /* ---- backup is written before any setValue for that week -------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  {
+    clearWriteOrderLog();
+    healWeek_('2026-07-06', buildCtx());
+    const order = getWriteOrderLog();
+    const backupIdx = order.findIndex((o) => o.sheet === SUMMARY_HEAL_BACKUP_TAB);
+    const summarySetIdx = order.findIndex((o) => o.sheet === SUMMARY_TAB && o.type === 'setValue');
+    check('a backup write happened', backupIdx !== -1);
+    check('a Summary setValue happened (this is the update case)', summarySetIdx !== -1);
+    check('the backup was written strictly before the Summary setValue',
+      backupIdx !== -1 && summarySetIdx !== -1 && backupIdx < summarySetIdx);
+  }
+
+  /* ---- backup idempotency: healing the same week twice keeps the FIRST -- */
+  seed([sup('2026-07-08', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  {
+    healWeek_('2026-07-06', buildCtx());   // first heal: 100 -> 175.25, backs up the ORIGINAL 100
+    const backupAfterFirst = currentSS.getSheetByName(SUMMARY_HEAL_BACKUP_TAB)
+      .getDataRange().getValues().filter((r) => coerceDateStr_(r[0]) === '2026-07-06');
+    eq('first heal snapshots exactly one row (the pre-heal 100)', backupAfterFirst.length, 1);
+    eq('...carrying the PRE-heal total', backupAfterFirst[0][4], 100);
+
+    // Second heal of the SAME week (e.g. re-run) must NOT append a second
+    // snapshot, even though the live total has now moved to 175.25.
+    healWeek_('2026-07-06', buildCtx());
+    const backupAfterSecond = currentSS.getSheetByName(SUMMARY_HEAL_BACKUP_TAB)
+      .getDataRange().getValues().filter((r) => coerceDateStr_(r[0]) === '2026-07-06');
+    eq('a second heal of the same week does not add a second snapshot',
+      backupAfterSecond.length, 1);
+    eq('...the ORIGINAL pre-heal value survives, not the post-heal one',
+      backupAfterSecond[0][4], 100);
+  }
+
+  /* ---- correction alert: loud when something changed, silent when not --- */
+  seed([sup('2026-07-08', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  {
+    calendarEvents = [];
+    const res = healWeek_('2026-07-06', buildCtx());
+    check('a genuine correction (100 -> 175.25) raises an alert', calendarEvents.length >= 1);
+    check('...naming the week',
+      calendarEvents[calendarEvents.length - 1]._title.indexOf('2026-07-06') !== -1);
+    eq('...and the update is reported', res.updates.length, 1);
+  }
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  {
+    calendarEvents = [];
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('an idempotent re-heal (nothing changed) reports zero updates', res.updates.length, 0);
+    eq('...and raises NO alert', calendarEvents.length, 0);
+  }
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — healEarliestBackupRows_: pure. Given Summary_heal_backup rows
+// (possibly holding more than one snapshot for a week, which the write-once
+// guard above is meant to prevent but a restore must still defend against),
+// returns only the EARLIEST snapshot's rows for that week — never a later one.
+console.log('Code.gs — healEarliestBackupRows_ (restore resolves to the earliest snapshot)');
+(function testHealEarliestBackupRows() {
+  const TS = '2026-08-24T13:00:00+10:00';
+  const row = (wk, supplier, loc, total, runId) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend', runId];
+
+  const rows = [
+    row('2026-07-06', 'Kent Paper', 'Leible York', 100, 'RUN-1'),     // earliest — must win
+    row('2026-07-06', 'Kent Paper', 'Leible York', 175.25, 'RUN-2'),  // later, corrupted-order artifact
+    row('2026-06-29', 'Fresh and Chill', 'Leible North', 50, 'RUN-1'), // a different week entirely
+  ];
+
+  const earliest = healEarliestBackupRows_(rows, '2026-07-06');
+  eq('exactly one row resolves for the week', earliest.length, 1);
+  eq('...the FIRST (earliest) snapshot, not the later one', earliest[0][4], 100);
+  eq('...tagged with the earliest run_id', earliest[0][8], 'RUN-1');
+
+  const other = healEarliestBackupRows_(rows, '2026-06-29');
+  eq('a different week resolves independently', other.length, 1);
+  eq("...unaffected by the other week's duplicate", other[0][4], 50);
+
+  eq('an absent week resolves to nothing', healEarliestBackupRows_(rows, '2026-01-01').length, 0);
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — healWeeks_(weeks): the entry both the scheduled run and every
+// override caller (greenBeanPull_ included) now share. Builds ctx ONCE for
+// the whole batch, processes newest-first regardless of input order, and
+// treats a refused/skipped NEWEST week as a loud, run-level failure — a
+// silently un-summarized current week is worse than a slightly wrong one.
+console.log('Code.gs — healWeeks_ (shared entry: ctx-once, newest-first, newest-week failure is loud)');
+(function testHealWeeksOrchestration() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+    ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  /* ---- ctx built ONCE: a 5-week batch reads _archive exactly once ------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York'),
+     sup('2026-08-12', 'Kent Paper', 200, 'K2', 'Leible York'),
+     sup('2026-08-05', 'Kent Paper', 300, 'K3', 'Leible York'),
+     sup('2026-07-29', 'Kent Paper', 400, 'K4', 'Leible York'),
+     sup('2026-07-22', 'Kent Paper', 500, 'K5', 'Leible York')],
+    []);
+  {
+    const archBefore = currentSS.getSheetByName(ARCHIVE_TAB).getDataRangeCallCount();
+    const weeks = ['2026-08-17', '2026-08-10', '2026-08-03', '2026-07-27', '2026-07-20'];
+    healWeeks_(weeks);
+    eq('a 5-week batch reads _archive exactly once, not five times',
+      currentSS.getSheetByName(ARCHIVE_TAB).getDataRangeCallCount() - archBefore, 1);
+  }
+
+  /* ---- newest-first processing order, regardless of input order --------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York'),
+     sup('2026-08-12', 'Fresh and Chill', 200, 'F2', 'Leible North')],
+    [sum('2026-08-17', 'Kent Paper', 'Leible York', 100),
+     sum('2026-08-10', 'Fresh and Chill', 'Leible North', 100)]);
+  {
+    // Deliberately passed OLDEST-first — healWeeks_ must reorder, not trust
+    // caller order, so a mid-run death always leaves the MOST RECENT weeks
+    // done regardless of how the caller happened to build the list.
+    const res = healWeeks_(['2026-08-10', '2026-08-17']);
+    eq('processed newest-first regardless of input order',
+      res.weeks.map((w) => w.week), ['2026-08-17', '2026-08-10']);
+  }
+
+  /* ---- a refused/skipped NEWEST week is a loud, run-level failure -------- */
+  seed(
+    [sup('2026-08-12', 'Fresh and Chill', 300, 'F1', 'Leible North')],
+    [sum('2026-08-17', 'Kent Paper', 'Leible York', 100),
+     sum('2026-08-10', 'Fresh and Chill', 'Leible North', 250)],
+    { archiveRows: [sup('2026-08-18', 'Kent Paper', 50, 'K9', 'Leible York')] }); // makes wk-1 SPLIT
+  {
+    calendarEvents = [];
+    const res = healWeeks_(['2026-08-17', '2026-08-10']);
+    const wk1 = res.weeks.filter((w) => w.week === '2026-08-17')[0];
+    eq('the newest week is SPLIT', wk1.action, 'skip-split');
+    eq('the run reports overall failure', res.success, false);
+    check('newestWeekFailed is set', res.newestWeekFailed === true);
+    const wk1Events = calendarEvents.filter((e) => e._title.indexOf('2026-08-17') !== -1);
+    check('the newest-week alert is HIGH severity (RED)',
+      wk1Events.some((e) => e._color === 'RED'));
+  }
+
+  /* ---- the SAME failure on an OLDER (non-newest) week is not high-severity */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+    [sum('2026-08-17', 'Kent Paper', 'Leible York', 100),
+     sum('2026-08-10', 'Fresh and Chill', 'Leible North', 250)],
+    { archiveRows: [sup('2026-08-11', 'Fresh and Chill', 50, 'F9', 'Leible North')] }); // makes wk-2 SPLIT
+  {
+    calendarEvents = [];
+    const res = healWeeks_(['2026-08-17', '2026-08-10']);
+    const wk2 = res.weeks.filter((w) => w.week === '2026-08-10')[0];
+    eq('the older week is SPLIT', wk2.action, 'skip-split');
+    eq('the run still reports success — only the NEWEST week failing is fatal', res.success, true);
+    const wk2Events = calendarEvents.filter((e) => e._title.indexOf('2026-08-10') !== -1);
+    check("the older week's alert is NORMAL severity, not RED",
+      wk2Events.length > 0 && wk2Events.every((e) => e._color !== 'RED'));
+  }
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — weeklySummarize(): now routes through healWeeks_/healWeek_ for
+// BOTH branches. Branch differences reduce to exactly two: week selection
+// (kill switch) and archive/purge (scheduled only) — every safety gate is
+// shared, which is what finally brings greenBeanPull_'s override writes
+// under the same protection.
+console.log('Code.gs — weeklySummarize() wired to the guarded heal path (kill switch, archive/purge, override parity)');
+(function testWeeklySummarizeGuardedIntegration() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const savedArchive = globalThis.archiveAndPurge_;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const NOW = '2026-08-24T02:00:00Z';   // Mon 24 Aug 2026 Sydney — wk-1 = 2026-08-17
+  const WK1 = '2026-08-17', WK2 = '2026-08-10', WK3 = '2026-08-03', WK4 = '2026-07-27', WK5 = '2026-07-20';
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+    ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  eq('SUMMARY_HEAL_WEEKS_ default window is 4', SUMMARY_HEAL_WEEKS_, 4);
+
+  /* ---- kill switch OFF: window = 1 --------------------------------------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York'),
+     sup('2026-08-12', 'Kent Paper', 200, 'K2', 'Leible York')],
+    [sum(WK1, 'Kent Paper', 'Leible York', 100),
+     sum(WK2, 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(NOW, function () {
+    scriptProps = {};   // SUMMARY_HEAL_ENABLED absent — the documented default
+    weeklySummarize();
+    const summary = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const wk1Row = summary.filter((r) => r[2] === 'Kent Paper' && coerceDateStr_(r[0]) === WK1)[0];
+    const wk2Row = summary.filter((r) => r[2] === 'Kent Paper' && coerceDateStr_(r[0]) === WK2)[0];
+    eq('switch OFF: wk-1 is healed', wk1Row[4], 175.25);
+    eq('switch OFF: wk-2 is left untouched (window=1)', wk2Row[4], 100);
+  });
+
+  /* ---- kill switch OFF, but the gates are still active for wk-1 --------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+    [sum(WK1, 'Kent Paper', 'Leible York', 100)],
+    { archiveRows: [sup('2026-08-20', 'Fresh and Chill', 50, 'F1', 'Leible North')] });
+  withMockNow(NOW, function () {
+    scriptProps = {};
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    weeklySummarize();
+    eq('switch OFF: a SPLIT wk-1 is STILL refused, not force-written',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+  });
+
+  /* ---- kill switch ON: full window, wk-5 untouched ----------------------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York'),
+     sup('2026-08-12', 'Kent Paper', 200, 'K2', 'Leible York'),
+     sup('2026-08-05', 'Kent Paper', 300, 'K3', 'Leible York'),
+     sup('2026-07-29', 'Kent Paper', 400, 'K4', 'Leible York'),
+     sup('2026-07-22', 'Kent Paper', 500, 'K5', 'Leible York')],
+    [sum(WK1, 'Kent Paper', 'Leible York', 100),
+     sum(WK2, 'Kent Paper', 'Leible York', 100),
+     sum(WK3, 'Kent Paper', 'Leible York', 100),
+     sum(WK4, 'Kent Paper', 'Leible York', 100),
+     sum(WK5, 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(NOW, function () {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true' };
+    weeklySummarize();
+    const summary = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const totalFor = (wk) => summary.filter((r) => r[2] === 'Kent Paper' && coerceDateStr_(r[0]) === wk)[0][4];
+    eq('switch ON: wk-1 healed', totalFor(WK1), 175.25);
+    eq('switch ON: wk-2 healed', totalFor(WK2), 200);
+    eq('switch ON: wk-3 healed', totalFor(WK3), 300);
+    eq('switch ON: wk-4 healed', totalFor(WK4), 400);
+    eq('switch ON: wk-5 is OUTSIDE the window — untouched', totalFor(WK5), 100);
+  });
+
+  /* ---- archiveAndPurge_ runs exactly once on a scheduled run ------------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+    [sum(WK1, 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(NOW, function () {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true' };
+    let calls = 0;
+    globalThis.archiveAndPurge_ = function () { calls++; return savedArchive.apply(null, arguments); };
+    weeklySummarize();
+    eq('archiveAndPurge_ runs exactly once for a 4-week scheduled heal, not once per week', calls, 1);
+    globalThis.archiveAndPurge_ = savedArchive;
+  });
+
+  /* ---- archiveAndPurge_ never runs on an override ------------------------ */
+  seed([sup('2025-01-06', 'Kent Paper', 100, 'K1', 'Leible York')], []);
+  {
+    let calls = 0;
+    globalThis.archiveAndPurge_ = function () { calls++; return savedArchive.apply(null, arguments); };
+    weeklySummarize('2025-01-06');
+    eq('archiveAndPurge_ never runs on an override', calls, 0);
+    globalThis.archiveAndPurge_ = savedArchive;
+  }
+
+  /* ---- override path gets the SAME gates as the scheduled path ---------- */
+  // Make the override week ITSELF the SPLIT week and confirm it is refused
+  // exactly like the scheduled path refuses a SPLIT wk-1 above.
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+    [sum(WK1, 'Kent Paper', 'Leible York', 100)],
+    { archiveRows: [sup('2026-08-20', 'Fresh and Chill', 50, 'F1', 'Leible North')] });
+  withMockNow(NOW, function () {
+    scriptProps = {};
+    calendarEvents = [];
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const res = weeklySummarize(WK1);   // override, one-element list
+    eq('override path: SPLIT week is refused too', res.refused, 'skip-split');
+    eq('override path: Summary is byte-identical afterwards',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    check('override path raises the same alert the scheduled path would',
+      calendarEvents.length >= 1);
+  });
+
+  /* ---- duplicate-key refusal via override -------------------------------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+    [sum(WK1, 'Kent Paper', 'Leible York', 100),
+     sum(WK1, '  KENT PAPER  ', 'leible york', 999)]);
+  withMockNow(NOW, function () {
+    scriptProps = {};
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const res = weeklySummarize(WK1);
+    eq('override path: duplicate keys refuse too', res.refused, 'refuse-duplicate-keys');
+    eq('override path: Summary is byte-identical afterwards',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+  });
+
+  /* ---- correction alert: a LABOUR-only change still raises it ----------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 100, 'K1', 'Leible York')],  // unchanged vs Summary
+    [sum(WK1, 'Kent Paper', 'Leible York', 100),
+     sum(WK1, 'Labour', 'Leible York', 4000)]);
+  scriptProps.LABOUR_SHEET_ID = 'labour-sheet-id';
+  const labourSrc = currentSS.insertSheet('LABOUR_COST');
+  labourSrc.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
+  labourSrc.appendRow([WK1, addDaysStr_(WK1, 6), 'Leible York', 4500.00, '2026-W33', 'x']); // labour CHANGED
+  withMockNow(NOW, function () {
+    calendarEvents = [];
+    weeklySummarize(WK1);
+    check('a labour-only correction (no Suppliers change) still raises an alert',
+      calendarEvents.length >= 1);
+    const summary = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const labourRow = summary.filter((r) => r[2] === 'Labour' && coerceDateStr_(r[0]) === WK1)[0];
+    eq('...and the labour figure actually moved', labourRow[4], 4500);
+  });
+
+  /* ---- silent when nothing changed: idempotent override re-run ---------- */
+  // Mirrors greenBeanPull_'s own pattern (weeklySummarize(week) called again
+  // for a week whose committed spend did not actually change this pull).
+  seed([sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')], []);
+  withMockNow(NOW, function () {
+    scriptProps = {};
+    weeklySummarize(WK1);              // first run: writes the row
+    calendarEvents = [];               // only care about the SECOND, idempotent run
+    weeklySummarize(WK1);              // greenbean-style re-summarize of an unchanged week
+    eq('an idempotent re-summarize of an unchanged week raises NO alert',
+      calendarEvents.length, 0);
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+  globalThis.archiveAndPurge_ = savedArchive;
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
