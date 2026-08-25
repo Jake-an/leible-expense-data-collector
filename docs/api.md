@@ -73,11 +73,12 @@ fork per kind):
 Revenue and spend rows are never netted against each other — sum them
 separately per `kind` if you need a combined figure.
 
-> **Channel casing must be consistent (non-online channels).** `location`
-> stores the raw channel string, but Summary dedup lowercases it. If two rows
-> in the same week carry `"Wholesale"` and `"wholesale"`, they collapse to a
-> single Summary row and the later group is dropped as a duplicate — that week
-> under-reports. Emit one canonical casing per channel.
+> **Prefer consistent channel casing anyway (non-online channels).** `location`
+> stores the raw channel string. If two rows in the same week carry
+> `"Wholesale"` and `"wholesale"`, `aggregateSupplierRows_` now sums them into
+> one Summary row (fixed 2026-08-26) rather than under-reporting — but the
+> displayed `location` keeps whichever casing was seen first, which reads as
+> inconsistent. Emit one canonical casing per channel.
 
 ### Error responses
 

@@ -1750,7 +1750,14 @@ function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {
       department = rows[i][7] ? String(rows[i][7]) : DEFAULT_DEPARTMENT;
     }
 
-    var key = department + '||' + kind + '||' + name + '||' + location;
+    // Normalized exactly like rowKey_ (.trim().toLowerCase()) so a case- or
+    // whitespace-only twin SUMS into one group instead of splitting into two
+    // that later collapse onto the same Summary key and lose money via
+    // upsertRows_'s duplicatesSkipped branch (REVIEW FIXES 2026-08-26, FIX 2).
+    // Display fields keep the FIRST-seen raw casing — doGet consumers and
+    // LEIBLE_GM_COST_MONITOR's location mapping read those strings.
+    var key = String(department).trim().toLowerCase() + '||' + kind + '||' +
+      String(name).trim().toLowerCase() + '||' + String(location).trim().toLowerCase();
     if (!groups[key]) groups[key] = { supplier: name, location: location, department: department, kind: kind, total: 0 };
     groups[key].total += total;
   }
@@ -1914,6 +1921,36 @@ function healEarliestBackupRows_(backupRows, week) {
 }
 
 /**
+ * Data undo (TODO.md "Rollback facts an operator needs at 3am"): a bad heal
+ * has no delete path of its own (upsertRows_ only appends/setValue-updates),
+ * so this is the only way back. Overwrites `week`'s LIVE Summary rows with
+ * its EARLIEST Summary_heal_backup snapshot via healEarliestBackupRows_ —
+ * never a later, already-corrected one. Manual, zero-arg-friendly: run by
+ * hand from the editor; not wired to any trigger.
+ * @param {string} week 'YYYY-MM-DD'
+ * @returns {{week:string, restored:number}}
+ */
+function restoreWeekFromHealBackup_(week) {
+  var ss = getHubSpreadsheet_();
+  var summSheet = ss.getSheetByName(SUMMARY_TAB);
+  var backupSheet = ss.getSheetByName(SUMMARY_HEAL_BACKUP_TAB);
+  var backupRows = backupSheet ? backupSheet.getDataRange().getValues().slice(1) : [];
+  var snapshotRows = healEarliestBackupRows_(backupRows, week);
+
+  var liveValues = summSheet.getDataRange().getValues();
+  for (var r = liveValues.length - 1; r >= 1; r--) { // bottom-up: row numbers stay valid
+    if (coerceDateStr_(liveValues[r][0]) === week) summSheet.deleteRow(r + 1);
+  }
+  for (var s = 0; s < snapshotRows.length; s++) {
+    summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_HEADERS.length)); // drop trailing run_id
+  }
+
+  Logger.log('restoreWeekFromHealBackup_: week ' + week + ' — restored ' + snapshotRows.length +
+    ' row(s) from the earliest ' + SUMMARY_HEAL_BACKUP_TAB + ' snapshot');
+  return { week: week, restored: snapshotRows.length };
+}
+
+/**
  * Snapshot-once backup of a week's LIVE Summary rows (pre-heal state) to
  * SUMMARY_HEAL_BACKUP_TAB, tagged with ctx.runId. Refuses to overwrite an
  * existing snapshot for the week — without that, healing the same week twice
@@ -1940,24 +1977,24 @@ function healBackupWeek_(week, ctx) {
 }
 
 /**
- * Raise one all-day calendar alert for a heal event on `week`. Reuses
- * stalenessCalendar_'s acquisition mechanism (staleness.gs) — never throws.
+ * Raise one all-day calendar alert for a heal event on `week`. Routes through
+ * raiseCalendarAlert_ (staleness.gs) — the ONE function in the project
+ * allowed to touch the calendar API directly — which resolves the color from
+ * a string key, is idempotent within a day (a title already on today's
+ * events is treated as already raised), and joins `bodyLines` itself; never
+ * throws.
+ * @param {string} week 'YYYY-MM-DD'
+ * @param {string} kind short label, folded into the (stable) event title
+ * @param {string[]} bodyLines caller must NOT hand-build one blob — passed
+ *   straight through to raiseCalendarAlert_, which joins with '\n'.
  * @param {boolean} highSeverity RED (not ORANGE) — reserved for a SPLIT-skip
  *   or duplicate-refusal of the NEWEST week: a silently un-summarized current
  *   week is worse than a slightly wrong one (PRD-12).
  */
-function healRaiseAlert_(week, kind, detail, highSeverity) {
+function healRaiseAlert_(week, kind, bodyLines, highSeverity) {
   try {
-    var cal = stalenessCalendar_();
-    if (!cal) {
-      Logger.log('healRaiseAlert_: no calendar available for week ' + week + ' (' + kind + ')');
-      return;
-    }
     var title = 'LEIBLE expense Summary heal ' + week + ': ' + kind;
-    var ev = cal.createAllDayEvent(title, new Date(Date.now()));
-    ev.setColor(highSeverity ? CalendarApp.EventColor.RED : CalendarApp.EventColor.ORANGE);
-    ev.setDescription((detail || '') + '\n\nWeek: ' + week +
-      '\nSnapshot: ' + SUMMARY_HEAL_BACKUP_TAB + ' (earliest run_id per week is the pre-heal truth).');
+    raiseCalendarAlert_(title, bodyLines, highSeverity ? 'RED' : 'ORANGE', Date.now());
   } catch (err) {
     Logger.log('healRaiseAlert_: failed for week ' + week + ' — ' + err.message);
   }
@@ -1986,7 +2023,8 @@ function healRaiseAlert_(week, kind, detail, highSeverity) {
  * @param {boolean} [isNewest] — true only for the newest week in the caller's
  *   batch; escalates a SPLIT-skip/duplicate-refusal alert to high severity.
  * @returns {{week:string, action:string, reason:?string, rowsAdded:number,
- *   rowsUpdated:number, updates:Array<{key:string,from:number,to:number}>,
+ *   rowsUpdated:number, duplicatesSkipped:number,
+ *   updates:Array<{key:string,from:number,to:number}>,
  *   orphans:Array<{key:string,supplier:string,location:string,total:number}>,
  *   backedUp:boolean}}
  */
@@ -1998,10 +2036,10 @@ function healWeek_(week, ctx, isNewest) {
   if (plan.action === 'skip-split' || plan.action === 'refuse-duplicate-keys') {
     healRaiseAlert_(week,
       plan.action === 'skip-split' ? 'SPLIT week skipped' : 'duplicate keys — refused',
-      plan.reason, !!isNewest);
+      [plan.reason], !!isNewest);
     return {
       week: week, action: plan.action, reason: plan.reason,
-      rowsAdded: 0, rowsUpdated: 0, updates: [], orphans: [], backedUp: true
+      rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 0, updates: [], orphans: [], backedUp: true
     };
   }
 
@@ -2032,12 +2070,22 @@ function healWeek_(week, ctx, isNewest) {
   if (alertDetail.length > 0) {
     healRaiseAlert_(week,
       writeRes.updates.length > 0 ? 'Summary corrected' : 'orphan candidate(s) found',
-      alertDetail.join('\n\n'), false);
+      alertDetail, false);
+  }
+
+  // A non-zero duplicatesSkipped on the heal path is a reportable condition,
+  // not silence — that silent discard on a money path is exactly what let
+  // FIX2's case/whitespace split understate Summary for weeks (REVIEW FIXES
+  // 2026-08-26, FIX 3).
+  if (writeRes.duplicatesSkipped > 0) {
+    Logger.log('healWeek_: week ' + week + ' — duplicatesSkipped=' + writeRes.duplicatesSkipped +
+      ' (recomputed row(s) already matched the stored key + amount)');
   }
 
   return {
     week: week, action: 'heal', reason: null,
     rowsAdded: writeRes.rowsAdded, rowsUpdated: writeRes.rowsUpdated,
+    duplicatesSkipped: writeRes.duplicatesSkipped,
     updates: writeRes.updates, orphans: orphans, backedUp: true
   };
 }
@@ -2282,8 +2330,8 @@ function weeklySummarize_impl_(weekStartOverride) {
     labourResult = labourWeeklyPull_(labourWeeks, ss, summSheet, extractedAt);
     if (labourResult.summaryAdded + labourResult.summaryUpdated > 0) {
       healRaiseAlert_(labourWeeks.map(function (w) { return w.start; }).join(', '), 'Labour correction',
-        'labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
-        ' summaryUpdated=' + labourResult.summaryUpdated, false);
+        ['labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
+        ' summaryUpdated=' + labourResult.summaryUpdated], false);
     }
   }
 

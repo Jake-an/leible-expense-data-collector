@@ -248,7 +248,7 @@
     {
       "step": 6,
       "name": "phase-review-fixes",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -266,9 +266,17 @@
             "reason": "Test suite is healthy (1500/1517 pass). 17 failures are feature-level assertion mismatches in the implementation code: aggregateSupplierRows_ case-collapsing not implemented, healRaiseAlert_ routing to raiseCalendarAlert_ incomplete, duplicatesSkipped field missing, orphan-sweep approvedAt validation not implemented, healEarliestBackupRows_ removal/call-site verification pending. No syntax/import/framework errors in test code."
           },
           "at": "2026-08-26T07:32:42+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "Code.gs / summary_audit.gs — FIX2: aggregateSupplierRows_ normalization (case/whitespace collisions SUM, converge, and are reported)\n  ok  - FIX2 test1: a case/whitespace-variant pair collapses to ONE group, not two  (got 1)\n  ok  - FIX2 test1: ...summed to the FULL total ($350), not split ($100 + $250 discarded)  (got 350)\n  ok  - FIX2 test1: displayed supplier keeps the FIRST-seen raw casing (\"Mayers\", not \"mayers \")  (got \"Mayers\")\n  ok  - FIX2 test1: displayed location keeps the FIRST-seen raw casing (\"Leible North\")  (got \"Leible North\")\n  ok  - FIX2 test1 (via healWeek_): first heal writes ONE new row (the merged group)  (got 1)\n  ok  - ...and the Summary row itself carries the FULL $350, not $100  (got 350)\n  ok  - FIX3: healWeek_ reports duplicatesSkipped (0 on this first, non-colliding heal)  (got 0)\n  ok  - FIX2 test2: a second heal of the SAME week reports convergence — zero new/updated rows  (got 0)\n  ok  - FIX2 test2: ...and duplicatesSkipped settles at 1 (one converged row), not the pre-fix non-convergent 2 (two split groups colliding on the same key forever)  (got 1)\n  ok  - FIX3: a third (still-converged) heal keeps reporting duplicatesSkipped, not silence  (got 1)\n  ok  - FIX3 test3: a non-zero duplicatesSkipped on the heal path is logged, not silently discarded\n  ok  - FIX2 test4: the converged case-variant week is NOT reported as drifted by auditSummaryDrift_\nCode.gs — FIX1: healRaiseAlert_ routes through raiseCalendarAlert_ (idempotent, array bodyLines, no CalendarApp, no throw)\n  ok  - FIX1 test5: a same-day re-run of the same week+kind creates no second event  (got 1)\n  ok  - FIX1 test6: bodyLines is an array — the description is newline-joined by raiseCalendarAlert_, not pre-joined by the caller into one blob  (got \"line one\\nline two\")\n  ok  - FIX1 test7: Code.gs no longer references CalendarApp directly (routes through raiseCalendarAlert_ instead)\n  ok  - FIX1 test8: healRaiseAlert_ does not throw when the calendar is unavailable\nsummary_audit.gs — FIX4: a malformed/missing approvedAt on the orphan-sweep approval fails CLOSED, not open\n  ok  - FIX4 test9: a missing approvedAt refuses the apply (fails CLOSED) — deletes nothing  (got 0)\n  ok  - Summary is byte-identical after a fail-closed refusal\n  ok  - the refusal is reported as aborted, not silently treated as success\nCode.gs — FIX5: healEarliestBackupRows_ is either called by production code, or removed\n  ok  - FIX5 test10: healEarliestBackupRows_ is either called by production code (more than just its own definition) or has been removed entirely\n\n1517 passed, 0 failed\n",
+          "at": "2026-08-26T08:45:00+1000"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "FIX1 healRaiseAlert_ now routes through raiseCalendarAlert_ (no CalendarApp in Code.gs); FIX2 aggregateSupplierRows_ groups on rowKey_-matching normalization so case/whitespace twins sum instead of losing money; FIX3 healWeek_ reports duplicatesSkipped; FIX4 orphan-sweep approval gate fails closed; FIX5 healEarliestBackupRows_ wired via restoreWeekFromHealBackup_ — 1517 passed, 0 failed, python 485 passed; see phases/summary-self-heal/step6-report.md.",
+      "completed_at": "2026-08-26T08:45:00+1000"
     }
   ],
   "created_at": "2026-08-25T10:39:23+0900"

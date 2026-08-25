@@ -57,9 +57,12 @@ counted + logged) — the sole online figure is the pull-owned
 (PRD-10). Every other channel is grouped per customer. Two consequences for a
 new connector:
 
-- Use a **consistent casing** per channel. `Summary` dedup lowercases the
-  channel, so mixing `"Wholesale"` and `"wholesale"` in one week silently
-  drops one group's revenue from that week's figure.
+- Prefer a **consistent casing** per channel anyway. `aggregateSupplierRows_`
+  now groups on the same normalized (`.trim().toLowerCase()`) key `Summary`
+  dedup uses, so mixing `"Wholesale"` and `"wholesale"` in one week sums
+  correctly rather than silently dropping a group — but the displayed
+  `location` keeps whichever casing was seen first, which reads as
+  inconsistent to a consumer.
 - If you introduce a channel whose `customer` values are synthetic or unique
   per order, it will write one `Summary` row per order — talk to the schema
   first (the old online→source collapse rule was removed with PRD-10; there is

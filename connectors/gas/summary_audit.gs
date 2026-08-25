@@ -663,18 +663,26 @@ function runSummaryOrphanSweep() {
   var approved = approvedRaw ? JSON.parse(approvedRaw) : null;
   var liveKeys = report.candidates.map(function (cd) { return cd.key; }).sort();
 
-  var stale = !!approved && typeof approved.approvedAt === 'number' &&
+  // A gate that cannot read its own approval must fail CLOSED: a missing or
+  // non-numeric approvedAt is treated as unusable, not as "not stale"
+  // (REVIEW FIXES 2026-08-26, FIX 4 — the prior `typeof === 'number' && …`
+  // check made a malformed approvedAt silently pass the staleness check).
+  var approvalUsable = !!approved && typeof approved.approvedAt === 'number';
+  var malformed = !!approved && !approvalUsable;
+  var stale = approvalUsable &&
     (Date.now() - approved.approvedAt) > SUMMARY_ORPHAN_SWEEP_APPROVAL_MAX_AGE_MS_;
 
-  var matches = !!approved && !stale && approved.count === liveKeys.length &&
+  var matches = approvalUsable && !stale && approved.count === liveKeys.length &&
     JSON.stringify(approved.keys) === JSON.stringify(liveKeys);
 
   if (!matches) {
     Logger.log('runSummaryOrphanSweep: ABORTED — ' +
-      (stale
-        ? 'the approved dry run is more than an hour old'
-        : 'live orphan candidates (' + liveKeys.length + ') no longer match what ' +
-          'runSummaryOrphanSweepDryRun() approved' + (approved ? ' (' + approved.count + ')' : ' (no dry run on record)')) +
+      (malformed
+        ? 'the approval record is missing/malformed (no usable approvedAt) — refusing to proceed'
+        : stale
+          ? 'the approved dry run is more than an hour old'
+          : 'live orphan candidates (' + liveKeys.length + ') no longer match what ' +
+            'runSummaryOrphanSweepDryRun() approved' + (approved ? ' (' + approved.count + ')' : ' (no dry run on record)')) +
       '. Re-run runSummaryOrphanSweepDryRun() and re-approve — never force this through.');
     return { mode: 'aborted', aborted: true, deleted: 0, found: liveKeys.length };
   }

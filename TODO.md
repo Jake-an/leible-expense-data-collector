@@ -302,12 +302,21 @@ Australia/Sydney), so:
       (`staleness.gs:113`). `weeklySummarize` aggregates `Suppliers` + `Revenue` only
       (`Code.gs:1239-1243`) and `doGet` serves `Summary` only (`Code.gs:955`) — so no Square figure
       is reachable via the API at all. Decide whether that's intended.
-- [ ] **Mixed channel casing silently loses revenue (pre-existing).** The aggregator groups on the
-      raw `location` string but Summary dedup lowercases it (`rowKey_`, `Code.gs:421`), so `"Online"`
-      and `"online"` in one week collapse to one Summary row and the later group is dropped as an
-      in-batch duplicate — 100 + 25 reports as **25**. Pinned by a test; documented in
-      `docs/api.md` and `docs/ingest-contract.md`. A real fix would normalize channel casing on
-      write, which changes wholesale dedup keys — deliberately not done here.
+- [x] **Mixed channel casing silently loses revenue — FIXED 2026-08-26 (summary-self-heal step 6,
+      FIX 2).** `aggregateSupplierRows_` now groups on the SAME `.trim().toLowerCase()`
+      normalization `rowKey_` uses, so `"Wholesale"`/`"wholesale"` (or any case/whitespace twin)
+      SUM into one group instead of splitting into two that collapse onto the same Summary key —
+      100 + 25 now reports the full **125**, not 25. Applies to both `Suppliers` (spend) and
+      `Revenue` (non-online) rows, since both share `aggregateSupplierRows_`. `healWeek_` also now
+      reports a non-zero `duplicatesSkipped` on the heal path instead of discarding it silently
+      (FIX 3) — a genuinely converged re-heal still reports 1, distinguishing "already correct"
+      from the old "perpetually re-splitting" state.
+      **Consequence:** any in-window (last-4-week self-heal / drift-guard) week carrying a real
+      case/whitespace-variant supplier or channel will recompute HIGHER than before this fix —
+      that's the fix surfacing itself, not a regression. The $288,852.51/143-week write-off above
+      is past the 183-day purge line and untouched by this (self-heal/drift-guard never reach
+      those weeks); no dollar figure in this file needed updating. Re-check for a live delta on
+      Jake's next weekly self-heal run.
 
 ### Shopify bring-up — ❌ SUPERSEDED (2026-08-06, orderapp-pulls phase)
 The direct Shopify puller (`shopify.gs`) was deleted without ever being activated — its Script

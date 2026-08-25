@@ -2793,14 +2793,15 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     eq('...the stale figure persists until the cleanup removes it', revenueRows[0][4], 62);
   })();
 
-  // Case-variant channels in ONE week SILENTLY LOSE REVENUE (non-online). The
-  // aggregator groups on the raw location string, so 'Wholesale' and
-  // 'wholesale' are two groups; but Summary dedup lowercases (rowKey_), so
-  // both produce the same Summary key and the later one is dropped as an
-  // in-batch duplicate. Whichever casing sorts first wins — here 100 + 25
-  // reports as 25, not 125. PRE-EXISTING; pinned so the loss is visible if
-  // any connector emits mixed casing. Recorded in TODO.md. (Online variants
-  // are now excluded outright, so the trap only bites non-online channels.)
+  // Case-variant channels in ONE week now SUM correctly (non-online).
+  // aggregateSupplierRows_ groups on the SAME .trim().toLowerCase()
+  // normalization rowKey_ uses (REVIEW FIXES 2026-08-26, FIX 2), so
+  // 'wholesale' and 'Wholesale' collapse into ONE aggregation group before
+  // Summary is even written — no split-then-silently-dropped-duplicate.
+  // FORMERLY: two raw-string groups collapsed onto the same Summary key and
+  // upsertRows_ discarded the second as a duplicate — 100 + 25 reported as
+  // 25, not 125. Recorded in TODO.md. (Online variants are excluded outright,
+  // so this only ever applied to non-online channels.)
   (function () {
     currentSS = makeSpreadsheet();
     scriptProps = {};
@@ -2812,7 +2813,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     var revRows = currentSS.getSheetByName('Summary').getDataRange().getValues()
       .slice(1).filter(function (r) { return r[7] === 'revenue'; });
     eq('mixed channel casing collapses to ONE Summary row', revRows.length, 1);
-    eq('...and 100 is silently lost: reports 25, not the 125 sum', revRows[0][4], 25);
+    eq('...and both are summed: reports the full 125, not 25', revRows[0][4], 125);
   })();
 
   // doGet &department=Roastery → only Roastery rows; absent → all rows.
