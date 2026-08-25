@@ -1415,8 +1415,11 @@ summary_audit.gs — previewSummaryHeal() (zero-arg editor entry point)
   ok  - ...delta correctly quantified  (got 75.25)
   ok  - projectedSetValues sums the whole window (2 per updated row, upsertRows_-style)  (got 2)
   ok  - projectedOverrideCost is the _archive + Summary read size a single override call pays  (got 4)
+  ok  - FIX4: previewSummaryHeal does not create the Summary tab
+  ok  - FIX4: previewSummaryHeal does not create the _archive tab
+  ok  - FIX4: previewSummaryHeal does not create the Revenue tab
 summary_audit.gs — auditSummaryDrift_ minWeek window (opt-in)
-  ok  - a null minWeek is byte-identical to omitting it entirely  (got "{\"generatedAt\":\"2026-08-24T12:00:00+10:00\",\"weeksAudited\":2,\"weeksClean\":0,\"weeksDrifted\":2,\"missingRows\":2,\"staleRows\":0,\"netUnderreported\":500,\"pastPurgeLine\":0,\"weeks\":[{\"week\":\"2026-02-23\",\"missing\":1,\"stale\":0,\"summaryOnly\":0,\"pullOwnedIgnored\":0,\"net\":200,\"sourceRowsStillPresent\":true,\"pastPurgeLine\":false,\"detail\":{\"missing\":[{\"supplier\":\"Kent Paper\",\"location\":\"X\",\"amount\":200}],\"stale\":[],\"summaryOnly\":[]}},{\"week\":\"2026-07-06\",\"missing\":1,\"stale\":0,\"summaryOnly\":0,\"pullOwnedIgnored\":0,\"net\":300,\"sourceRowsStillPresent\":true,\"pastPurgeLine\":false,\"detail\":{\"missing\":[{\"supplier\":\"Kent Paper\",\"location\":\"Y\",\"amount\":300}],\"stale\":[],\"summaryOnly\":[]}}],\"skipped\":[]}")
+  ok  - a null minWeek is byte-identical to omitting it entirely  (got "{\"generatedAt\":\"2026-08-24T12:00:00+10:00\",\"weeksAudited\":2,\"weeksClean\":0,\"weeksDrifted\":2,\"missingRows\":2,\"staleRows\":0,\"netUnderreported\":500,\"pastPurgeLine\":1,\"weeks\":[{\"week\":\"2026-02-23\",\"missing\":1,\"stale\":0,\"summaryOnly\":0,\"pullOwnedIgnored\":0,\"net\":200,\"sourceRowsStillPresent\":true,\"pastPurgeLine\":true,\"detail\":{\"missing\":[{\"supplier\":\"Kent Paper\",\"location\":\"X\",\"amount\":200}],\"stale\":[],\"summaryOnly\":[]}},{\"week\":\"2026-07-06\",\"missing\":1,\"stale\":0,\"summaryOnly\":0,\"pullOwnedIgnored\":0,\"net\":300,\"sourceRowsStillPresent\":true,\"pastPurgeLine\":false,\"detail\":{\"missing\":[{\"supplier\":\"Kent Paper\",\"location\":\"Y\",\"amount\":300}],\"stale\":[],\"summaryOnly\":[]}}],\"skipped\":[]}")
   ok  - the week before minWeek is excluded  (got ["2026-07-06"])
   ok  - ...and weeksAudited only counts the included week  (got 1)
   ok  - the boundary week itself is included  (got ["2026-03-02"])
@@ -1578,6 +1581,8 @@ Code.gs — healWeek_ orphan detection (Step 3: automatic, read-only, rides the 
   ok  - shopify_orderapp online row is excluded from orphan candidates
   ok  - action is heal (nothing changed)  (got "heal")
   ok  - a derived, blank-location row that matches the computed batch is NOT an orphan
+  ok  - action is heal (the Kent Paper row matches)  (got "heal")
+  ok  - FIX2: a Labour Summary row is excluded from orphan candidates
 summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphanSweep (Step 3: gated, backed-up, bottom-up removal)
   ok  - dry run writes NOTHING to Summary  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-12T14:00:00.000Z\",\"2026-07-18T14:00:00.000Z\",\"Fresh and Chill\",\"Old Balmain\",75,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
   ok  - dry run finds exactly the 2 orphan candidates
@@ -1599,5 +1604,52 @@ summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphanSweep (Step 3
   ok  - zero deleteRow calls were made on an aborted apply  (got 0)
   ok  - the abort is reported, not silently swallowed as success
   ok  - a differently-cased/whitespace twin of a real computed key is NOT an orphan
+  ok  - FIX1: a week whose Suppliers rows exist only in _archive is NOT an orphan candidate — the sweep must merge _archive
+  ok  - FIX1: a week past the purge line yields ZERO candidates, not "every row is an orphan"
+  ok  - FIX1: a SPLIT week (rows in both Suppliers and _archive) yields ZERO candidates
+  ok  - FIX2: a Labour Summary row is excluded from orphan candidates
+  ok  - FIX4: an approval older than ~1 hour is refused, not silently honored  (got 0)
+  ok  - Summary is untouched by a stale-approval refusal  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - the refusal is reported as aborted, not silently treated as success
+summary_audit.gs / staleness.gs — checkSummaryDrift() drift guard (Step 4, PRD-13)
+  ok  - auditSummaryDrift() with no args still audits a week past the purge line
+  ok  - checkSummaryDrift / summaryDriftCheck_ / raiseCalendarAlert_ / installSummaryDriftTrigger are all defined
+  ok  - checkSummaryDrift takes no declared parameters (zero-arg contract)  (got 0)
+  ok  - checkSummaryDrift(eventObject) does not throw
+  ok  - the in-window drifted week is reported
+  ok  - the past-purge-line week is excluded entirely, not merely unalerted
+  ok  - checkSummaryDrift() writes nothing (spreadsheet write log)  (got 4)
+  ok  - checkSummaryDrift() writes nothing (cross-sheet write-order log — no setValue/appendRow/deleteRow)  (got 0)
+  ok  - exactly one calendar alert is raised  (got 1)
+  ok  - ...and the report agrees  (got 1)
+  ok  - a clean window raises no alert  (got 0)
+  ok  - ...and the report agrees  (got 0)
+  ok  - ...nothing drifted  (got 0)
+  ok  - a same-day re-run creates no new event  (got 0)
+  ok  - event count is unchanged  (got 1)
+  ok  - the SPLIT-only week raises no alert  (got 0)
+  ok  - ...it is recorded as suppressed, not silently dropped
+  ok  - ...for an explicit reason naming SPLIT
+  ok  - ...and it is NOT double-counted as an alertable drift too
+  ok  - raiseCalendarAlert_ joins bodyLines (array) with newlines, not a hand-built blob  (got "line one\nline two\nline three")
+  ok  - the mixed run still alerts once, for the plain week  (got 1)
+  ok  - ...the plain week is the one reported as drifted  (got ["2026-03-23"])
+  ok  - ...the SPLIT week is suppressed, not alerted  (got ["2026-03-09"])
+  ok  - ...and the alert body still names the SPLIT week + a remediation line
+  ok  - raiseCalendarAlert_ does not throw when the calendar is unavailable
+  ok  - ...and reports that nothing was created
+  ok  - installing twice leaves exactly one checkSummaryDrift trigger  (got 1)
+  ok  - unrelated shopSpendWatchdog trigger is untouched
+  ok  - unrelated checkIngestStaleness trigger is untouched
+  ok  - trigger is MONDAY  (got 2)
+  ok  - trigger is hour 7 (after weeklySummarize 04:00, clear of staleness 11:00)  (got 7)
+  ok  - trigger is Australia/Sydney  (got "Australia/Sydney")
+  ok  - every source is stale on a cold start (unchanged post-refactor)  (got 9)
+  ok  - one orange event per stale source (unchanged post-refactor)  (got 9)
+  ok  - events are still ORANGE
+  ok  - events still carry a description
+  ok  - re-run still creates no duplicate events (idempotency unchanged)  (got 0)
+  ok  - event count still unchanged  (got 9)
+  ok  - FIX4: summaryDriftCheck_ does not throw when auditSummaryDrift_ returns an error (no Summary tab)
 
-1446 passed, 0 failed
+1497 passed, 0 failed
