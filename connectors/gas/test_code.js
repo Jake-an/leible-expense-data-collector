@@ -126,6 +126,9 @@ function makeSheet(headers, name, globalWriteLog) {
     return chain;
   }
   const frozenRowsCalls = [];
+  // Counts getDataRange() calls so a test can assert a multi-week caller
+  // filters an external source sheet once, not once per week (labourWeeklyPull_).
+  let dataRangeCallCount = 0;
   return {
     _rows: rows,
     appendRow: (a) => { rows.push(a.map(sheetCoerceOnWrite)); recordWrite('appendRow', 1); },
@@ -134,7 +137,8 @@ function makeSheet(headers, name, globalWriteLog) {
     // leaves the sheet object itself intact — a rebuilt report has no fixed
     // header, so the mock just empties the row store.
     clearContents: () => { const n = rows.length; rows.length = 0; recordWrite('clearContents', n); },
-    getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
+    getDataRange: () => { dataRangeCallCount++; return { getValues: () => rows.map((r) => r.slice()) }; },
+    getDataRangeCallCount: () => dataRangeCallCount,
     getRange: (row, col, numRows, numCols) => makeRangeChain(row, col, numRows, numCols),
     getRangeCalls: () => rangeCalls.slice(),
     getLastRow: () => rows.length,
@@ -1666,6 +1670,78 @@ freshSheets();
 })();
 
 /* ------------------------------------------------------------------ *
+ * Step 1 — labourWeeklyPull_ reports summaryUpdated and takes a week list
+ *
+ * PRD-12: the correction alert needs to see a labour correction as a real
+ * update, not a silent zero — labourWeeklyPull_ dropped rowsUpdated on the
+ * floor (Code.gs:781: `summaryAdded: summaryResult.rowsAdded` only). It also
+ * now takes a week LIST so a multi-week heal can filter the external
+ * LABOUR_COST source once instead of once per week.
+ * ------------------------------------------------------------------ */
+
+(function testLabourWeeklyPullReportsUpdatesAndWeekList() {
+  console.log('\nlabourWeeklyPull_ — summaryUpdated + week list:');
+
+  function seedLabourWeeks(weekRows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = { LABOUR_SHEET_ID: 'labour-sheet-id' };
+    var src = currentSS.insertSheet('LABOUR_COST');
+    src.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
+    weekRows.forEach(function (r) { src.appendRow(r); });
+    return src;
+  }
+
+  // Case: a one-element list behaves exactly like the old single-week call
+  // (see testLabourWeeklyPullDedup above for the values this mirrors).
+  var src1 = seedLabourWeeks([
+    ['2026-06-15', '2026-06-21', 'york', 4830.14, '2026-W25', 'x'],
+    ['2026-06-15', '2026-06-21', 'pitt', 6720.32, '2026-W25', 'x'],
+  ]);
+  var ss1 = currentSS;
+  var summSheet1 = ensureSheet(ss1, SUMMARY_TAB, SUMMARY_HEADERS);
+  var week1 = { start: '2026-06-15', end: '2026-06-21' };
+  var res1 = labourWeeklyPull_([week1], ss1, summSheet1, 'T1');
+  eq('one-element list: labourAdded matches the old single-week call', res1.labourAdded, 2);
+  eq('one-element list: summaryAdded matches the old single-week call', res1.summaryAdded, 2);
+
+  // summaryUpdated must be present (not undefined) even when nothing updated.
+  check('summaryUpdated is defined on a plain add', res1.summaryUpdated !== undefined);
+  eq('nothing to update yet -> summaryUpdated 0', res1.summaryUpdated, 0);
+
+  // A labour correction (changed total for an already-summarized week) must
+  // surface as summaryUpdated >= 1, not a silent summaryAdded:0 — the whole
+  // point of this step, since "read the returned counts" is the verification
+  // instruction for this path.
+  src1.getRange(2, 4).setValue(5200.00); // york's total, same week/location
+  var res2 = labourWeeklyPull_([week1], ss1, summSheet1, 'T2');
+  eq('correction: no new Labour tab rows (dedup by week||location)', res2.labourAdded, 0);
+  check('correction: summaryUpdated is at least 1 (not a silent zero)', res2.summaryUpdated >= 1);
+
+  // A 4-week list reads the external LABOUR_COST source exactly once, not
+  // once per week — a naive per-week loop would pay four cross-spreadsheet
+  // reads for what should be one.
+  var src4 = seedLabourWeeks([
+    ['2026-06-15', '2026-06-21', 'york', 100, '2026-W25', 'x'],
+    ['2026-06-22', '2026-06-28', 'york', 110, '2026-W26', 'x'],
+    ['2026-06-29', '2026-07-05', 'york', 120, '2026-W27', 'x'],
+    ['2026-07-06', '2026-07-12', 'york', 130, '2026-W28', 'x'],
+  ]);
+  var ss4 = currentSS;
+  var summSheet4 = ensureSheet(ss4, SUMMARY_TAB, SUMMARY_HEADERS);
+  var weeks4 = [
+    { start: '2026-06-15', end: '2026-06-21' },
+    { start: '2026-06-22', end: '2026-06-28' },
+    { start: '2026-06-29', end: '2026-07-05' },
+    { start: '2026-07-06', end: '2026-07-12' },
+  ];
+  var res4 = labourWeeklyPull_(weeks4, ss4, summSheet4, 'T4');
+  eq('4-week list: all 4 weeks land in the Labour tab', res4.labourAdded, 4);
+  eq('4-week list: all 4 weeks land in Summary', res4.summaryAdded, 4);
+  eq('4-week list reads the external source exactly once, not once per week',
+    src4.getDataRangeCallCount(), 1);
+})();
+
+/* ------------------------------------------------------------------ *
  * Step 7 — weeklySummarize(weekStartOverride)
  * ------------------------------------------------------------------ */
 
@@ -2445,6 +2521,70 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     check('rejection message names the row index', refMsg.message.indexOf('row 0') !== -1);
     check("department:'Roastry' (typo) → rejected",
       !validateIngest_({ source: 'x', extracted_at: 'TS', rows: [{ date: '2026-07-01', total: 5, invoice_ref: 'X1', department: 'Roastry' }] }).ok);
+  })();
+})();
+
+/* ------------------------------------------------------------------ *
+ * Step 1 — upsertRows_ reports which rows it actually rewrote
+ *
+ * PRD-12: the correction alert must be driven by what upsertRows_ actually
+ * wrote, not a week-age heuristic — the heuristic was blind to a genuine
+ * correction on the newest week and would have false-alerted on labour and
+ * other directly-written rows.
+ * ------------------------------------------------------------------ */
+
+(function testUpsertRowsReportsUpdates() {
+  console.log('\nupsertRows_ — updates report:');
+
+  freshSheets();
+  var sheet = currentSS.getSheetByName('Sales');
+
+  // Seed one existing row (amount 100), then, in a single batch: rewrite it
+  // (real update), and add a brand-new row — so `updates` can't accidentally
+  // pick up the new-row case too.
+  var seed = normalizeSalesRow_('2026-07-01', 'York', 100, 'square', 'T0', 'Cafe');
+  upsertRows_(sheet, [seed], SALES_KEY_COLS, 2, 4);
+
+  var changed = normalizeSalesRow_('2026-07-01', 'York', 150, 'square', 'T1', 'Cafe');
+  var freshRow = normalizeSalesRow_('2026-07-02', 'Pitt', 50, 'square', 'T1', 'Cafe');
+  var res = upsertRows_(sheet, [changed, freshRow], SALES_KEY_COLS, 2, 4);
+
+  eq('changed row → rowsUpdated 1', res.rowsUpdated, 1);
+  eq('new row → rowsAdded 1', res.rowsAdded, 1);
+  eq('nothing skipped in this batch', res.duplicatesSkipped, 0);
+  eq('updates reports exactly the one rewritten row', (res.updates || []).length, 1);
+  eq('updates entry carries key/from/to for the rewritten row',
+    (res.updates || [])[0], { key: rowKey_(changed, SALES_KEY_COLS), from: 100, to: 150 });
+  check('the brand-new row is NOT in updates',
+    !(res.updates || []).some((u) => u.key === rowKey_(freshRow, SALES_KEY_COLS)));
+
+  // Unchanged-amount re-post: duplicatesSkipped, NOT updates.
+  var again = normalizeSalesRow_('2026-07-01', 'York', 150, 'square', 'T2', 'Cafe');
+  var noop = upsertRows_(sheet, [again], SALES_KEY_COLS, 2, 4);
+  eq('unchanged amount → duplicatesSkipped 1', noop.duplicatesSkipped, 1);
+  eq('unchanged amount → rowsUpdated 0', noop.rowsUpdated, 0);
+  eq('unchanged amount → updates is empty', noop.updates, []);
+
+  // Brand-new row alone: rowsAdded, NOT updates.
+  var onlyNew = normalizeSalesRow_('2026-07-03', 'North', 30, 'square', 'T1', 'Cafe');
+  var addOnly = upsertRows_(sheet, [onlyNew], SALES_KEY_COLS, 2, 4);
+  eq('brand-new row → rowsAdded 1', addOnly.rowsAdded, 1);
+  eq('brand-new row → updates is empty', addOnly.updates, []);
+
+  // Regression: every pre-existing scenario keeps its exact rowsAdded /
+  // rowsUpdated / duplicatesSkipped values now that `updates` exists —
+  // the fields, positions and meaning documented in Code.gs:607 are
+  // unaffected for the other four callers of upsertRows_.
+  freshSheets();
+  (function () {
+    var s2 = currentSS.getSheetByName('Sales');
+    var first = normalizeSalesRow_('2026-07-01', 'York', 100, 'square', 'T1', 'Cafe');
+    upsertRows_(s2, [first], SALES_KEY_COLS, 2, 4);
+    var second = normalizeSalesRow_('2026-07-01', 'York', 150, 'square', 'T2', 'Cafe');
+    var r2 = upsertRows_(s2, [second], SALES_KEY_COLS, 2, 4);
+    eq('regression: rowsAdded unaffected by the updates addition', r2.rowsAdded, 0);
+    eq('regression: rowsUpdated unaffected by the updates addition', r2.rowsUpdated, 1);
+    eq('regression: duplicatesSkipped unaffected by the updates addition', r2.duplicatesSkipped, 0);
   })();
 })();
 
