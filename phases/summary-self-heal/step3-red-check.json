@@ -1,4 +1,4 @@
 {
   "red_valid": true,
-  "reason": "Test code is syntactically correct. Implementation is incomplete: healWeek_ exists but doesn't populate res.orphans or fire alerts; runSummaryOrphanSweepDryRun does not exist. These are implementation gaps, not test bugs."
+  "reason": "12 semantic assertion failures (FIX1: _archive merging + purge line + SPLIT handling; FIX2: Labour exclusion; FIX4: stale-approval + error guards) + ReferenceError on unimplemented `runSummaryOrphanSweepDryRun`. All failures are missing-implementation (RIGHT reason), not broken test code."
 }

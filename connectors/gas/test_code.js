@@ -7272,6 +7272,25 @@ console.log('summary_audit.gs — previewSummaryHeal() (zero-arg editor entry po
       report.projectedOverrideCost, 3 + 1);
   });
 
+  /* ---- FIX 4b (review fix 2026-08-26, MINOR) — previewSummaryHeal is
+   * documented "READ-ONLY … Writes nothing" but calls ensureSheet() for
+   * Summary/_archive/Revenue, which INSERTS a sheet and writes a header row
+   * when the tab is absent (Code.gs ensureSheet). The "writes NOTHING" test
+   * above never catches this because its seed() pre-creates every tab
+   * first. This constructs a spreadsheet where they genuinely do not exist
+   * yet — previewSummaryHeal must use getSheetByName with null-guards
+   * (the pattern summaryOrphanSweep_ already uses), not ensureSheet. */
+  currentSS = makeSpreadsheet();   // only Suppliers/Sales exist by default
+  withMockNow(NOW, function () {
+    previewSummaryHeal();
+    check('FIX4: previewSummaryHeal does not create the Summary tab',
+      currentSS.getSheetByName(SUMMARY_TAB) === null);
+    check('FIX4: previewSummaryHeal does not create the _archive tab',
+      currentSS.getSheetByName(ARCHIVE_TAB) === null);
+    check('FIX4: previewSummaryHeal does not create the Revenue tab',
+      currentSS.getSheetByName(REVENUE_TAB) === null);
+  });
+
   currentSS = savedSS;
 })();
 
@@ -8470,6 +8489,23 @@ console.log('Code.gs — healWeek_ orphan detection (Step 3: automatic, read-onl
       Array.isArray(res.orphans) && res.orphans.length === 0);
   }
 
+  /* ---- FIX 2 (review fix 2026-08-26, IMPORTANT) — a Labour Summary row is
+   * never reported as an orphan. labourWeeklyPull_ writes it from an
+   * EXTERNAL spreadsheet (LABOUR_SHEET_ID) — structurally unreachable from
+   * an aggregateSupplierRows_ recompute, exactly like shopify_orderapp.
+   * Without this exclusion, healWeeks_ (Code.gs:2263) runs healWeek_ BEFORE
+   * labourWeeklyPull_ (Code.gs:2277) on every run, so every week would raise
+   * a false orphan alert forever. */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+        sum('2026-07-06', 'Labour', 'york', 4000)]);
+  {
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('action is heal (the Kent Paper row matches)', res.action, 'heal');
+    check('FIX2: a Labour Summary row is excluded from orphan candidates',
+      Array.isArray(res.orphans) && res.orphans.length === 0);
+  }
+
   currentSS = savedSS;
   scriptProps = savedProps;
 })();
@@ -8491,7 +8527,8 @@ console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphan
   const TS = '2026-08-20T09:00:00+10:00';
   const TODAY = '2026-08-25T00:00:00Z';   // well after every week used below
 
-  function seed(supplierRows, summaryRows) {
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
     currentSS = makeSpreadsheet();
     scriptProps = {};
     const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
@@ -8499,13 +8536,26 @@ console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphan
     const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
     summaryRows.forEach((r) => summ.appendRow(r));
     ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
-    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
     return summ;
   }
   const sup = (date, supplier, total, ref, loc) =>
     [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
   const sum = (wk, supplier, loc, total, dept, kind) =>
     [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
+
+  // The purge line and the SPLIT guard (FIX 1 below) both run off
+  // todayStr_(), which reads the REAL system clock (Code.gs:1618 uses a bare
+  // `new Date()` — withMockNow only patches Date.now(), so it cannot reach
+  // this call). Built relative to today, matching the pattern already
+  // established in testSummaryDriftGuard further down this file.
+  const today = todayStr_();
+  const cutoff = auditPurgeCutoff_(today);
+  const insideDate = addDaysStr_(cutoff, 14);
+  const outsideDate = addDaysStr_(cutoff, -14);
+  const insideWeek = weekStartForDate_(insideDate);
+  const outsideWeek = weekStartForDate_(outsideDate);
 
   /* ---- 6. dry run: writes nothing, one log line PER candidate ----------- */
   seed(
@@ -8606,6 +8656,108 @@ console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphan
     const report = runSummaryOrphanSweepDryRun();
     check('a differently-cased/whitespace twin of a real computed key is NOT an orphan',
       report && Array.isArray(report.candidates) && report.candidates.length === 0);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * REVIEW FIXES 2026-08-26 — the phase-end gate found these AFTER every
+   * per-step review had already approved this step. summaryOrphanSweep_
+   * recomputed from Suppliers+Revenue only, with no _archive merge and no
+   * purge-line window, while archiveAndPurge_ DELETES Suppliers rows past
+   * ARCHIVE_RETENTION_DAYS (183). For every purged week the recompute was
+   * empty, so every non-pull-owned row read as an orphan and the gated
+   * sweep would have deleted it — ~143 of 169 weeks live. See step3.md
+   * "REVIEW FIXES 2026-08-26" for the full writeup.
+   * ------------------------------------------------------------------ */
+
+  /* ---- FIX 1a (CRITICAL) — the sweep must MERGE _archive with Suppliers,
+   * not read Suppliers alone. A week whose invoices have already been
+   * archived (but the week itself is still well inside the repair window)
+   * has ZERO Suppliers rows; a Suppliers-only recompute reads its matching
+   * Summary row as an orphan candidate. Mirrors auditSummaryDrift_'s own fix
+   * via auditDedupeSourceRows_. */
+  seed(
+    [],
+    [sum(insideWeek, 'Kent Paper', 'Leible York', 100)],
+    { archiveRows: [sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')] });
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    check('FIX1: a week whose Suppliers rows exist only in _archive is NOT an orphan candidate — the sweep must merge _archive',
+      report && Array.isArray(report.candidates) && report.candidates.length === 0);
+  });
+
+  /* ---- FIX 1b (CRITICAL) — a week past auditPurgeCutoff_ is skipped
+   * entirely, even though its recompute (no Suppliers, no _archive rows
+   * survive that far back either) is empty. Without this, every
+   * non-pull-owned Summary row for every one of the ~143 purged weeks reads
+   * as an orphan candidate — the dry-run/approve gate does not catch this
+   * because it only checks that two computations agree with each other, not
+   * that the candidate count is sane. */
+  seed(
+    [],
+    [sum(outsideWeek, 'Kent Paper', 'Leible York', 500)]);
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    check('FIX1: a week past the purge line yields ZERO candidates, not "every row is an orphan"',
+      report && Array.isArray(report.candidates) && report.candidates.length === 0);
+  });
+
+  /* ---- FIX 1c (CRITICAL) — a SPLIT week (rows in BOTH Suppliers and
+   * _archive) is skipped entirely, matching the SPLIT guard computeHealPlan_
+   * and summaryDriftCheck_ already use. Deliberately does NOT set up a case
+   * the merge alone would save: the live Summary row's key ('Kent Paper' @
+   * 'Some Shop', $999) matches neither the Suppliers row nor the _archive
+   * row for this week, so if the SPLIT guard were missing this would still
+   * read as a genuine orphan candidate even under a merged recompute — this
+   * isolates the SPLIT guard specifically, not the merge. */
+  seed(
+    [sup(insideDate, 'Kent Paper', 500, 'K2', 'New Shop')],
+    [sum(insideWeek, 'Kent Paper', 'Some Shop', 999)],
+    { archiveRows: [sup(insideDate, 'Fresh and Chill', 10, 'F9', 'Somewhere')] });
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    check('FIX1: a SPLIT week (rows in both Suppliers and _archive) yields ZERO candidates',
+      report && Array.isArray(report.candidates) && report.candidates.length === 0);
+  });
+
+  /* ---- FIX 2 (IMPORTANT) — a Labour Summary row is never an orphan
+   * candidate. labourWeeklyPull_ writes it from an EXTERNAL spreadsheet
+   * (LABOUR_SHEET_ID) — structurally unreachable from an
+   * aggregateSupplierRows_ recompute, exactly like shopify_orderapp. Without
+   * this, healWeeks_ (Code.gs:2263) runs healWeek_ BEFORE labourWeeklyPull_
+   * (Code.gs:2277) on every run, so every week raises a false orphan alert
+   * forever, and Labour rows become deletion candidates. */
+  seed(
+    [sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum(insideWeek, 'Kent Paper', 'Leible York', 100),
+     sum(insideWeek, 'Labour', 'york', 4000)]);
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    check('FIX2: a Labour Summary row is excluded from orphan candidates',
+      report && Array.isArray(report.candidates) &&
+      !report.candidates.some((c) => c.supplier === 'Labour'));
+  });
+
+  /* ---- FIX 4c (MINOR) — the approval a dry run records has no timestamp,
+   * so a stale dry run from hours ago still authorizes today's apply
+   * whenever the candidate set happens to still match. An apply must refuse
+   * an approval older than ~1 hour, not silently honor it. */
+  seed(
+    [sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+     sum('2026-07-06', 'Kent Paper', 'Old Pyrmont', 250)]);
+  withMockNow(TODAY, function () {
+    runSummaryOrphanSweepDryRun();   // approves the 1 orphan candidate
+  });
+  withMockNow('2026-08-25T01:05:00Z', function () {   // 65 minutes after TODAY — same candidate, stale approval
+    clearWriteOrderLog();
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const result = runSummaryOrphanSweep();
+    eq('FIX4: an approval older than ~1 hour is refused, not silently honored', result && result.deleted, 0);
+    eq('Summary is untouched by a stale-approval refusal',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    check('the refusal is reported as aborted, not silently treated as success',
+      !!result && (result.aborted === true || result.mode === 'aborted'));
   });
 
   currentSS = savedSS;
@@ -8848,6 +9000,18 @@ console.log('summary_audit.gs / staleness.gs — checkSummaryDrift() drift guard
   res = stalenessRun_(NOW_MS);
   eq('re-run still creates no duplicate events (idempotency unchanged)', res.eventsCreated, 0);
   eq('event count still unchanged', calendarEvents.length, countAfterStaleness);
+
+  /* ---- FIX 4a (review fix 2026-08-26, MINOR) — summaryDriftCheck_ does not
+   * check auditSummaryDrift_'s error return ({error:...}, no .weeks). With
+   * no Summary tab, report.weeks is undefined and `report.weeks.length`
+   * throws a TypeError inside the scheduled trigger handler, turning a
+   * clean "cannot audit" signal into an opaque trigger-failure email
+   * instead of a graceful no-op. */
+  currentSS = makeSpreadsheet();   // no Summary tab at all
+  let threwFix4a = false;
+  try { summaryDriftCheck_(NOW_MS); } catch (e) { threwFix4a = true; }
+  check('FIX4: summaryDriftCheck_ does not throw when auditSummaryDrift_ returns an error (no Summary tab)',
+    !threwFix4a);
 
   currentSS = savedSS;
   scriptProps = savedProps;
