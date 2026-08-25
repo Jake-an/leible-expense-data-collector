@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "Test code is syntactically correct. Implementation is incomplete: healWeek_ exists but doesn't populate res.orphans or fire alerts; runSummaryOrphanSweepDryRun does not exist. These are implementation gaps, not test bugs."
+}

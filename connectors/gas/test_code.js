@@ -69,6 +69,12 @@ function makeSheet(headers, name, globalWriteLog) {
   // shifting headers to row 2 and all data down one.
   const rows = (headers && headers.length) ? [headers.slice()] : [];
   const writeCalls = [];
+  // deleteRow call log (row numbers, in call order) — needed to assert a
+  // guarded deletion path backs up before its first delete and deletes
+  // bottom-up (descending row indices), not just that the final row count is
+  // right. Same rationale as writeOrderLog below: post-state alone cannot
+  // answer an ordering question.
+  const deleteRowCalls = [];
   // Records multi-row/whole-row write calls (appendRow, setValues) so tests
   // can assert HOW a batch was written — one setValues() block vs N
   // appendRow() calls — not just the resulting sheet state, which the two
@@ -137,7 +143,12 @@ function makeSheet(headers, name, globalWriteLog) {
   return {
     _rows: rows,
     appendRow: (a) => { rows.push(a.map(sheetCoerceOnWrite)); recordWrite('appendRow', 1); },
-    deleteRow: (rowNum) => rows.splice(rowNum - 1, 1),
+    deleteRow: (rowNum) => {
+      deleteRowCalls.push(rowNum);
+      writeOrderLog.push({ sheet: name, type: 'deleteRow', row: rowNum });
+      rows.splice(rowNum - 1, 1);
+    },
+    getDeleteRowCalls: () => deleteRowCalls.slice(),
     // Real Sheet#clearContents wipes every cell (incl. the header row) but
     // leaves the sheet object itself intact — a rebuilt report has no fixed
     // header, so the mock just empties the row store.
@@ -8312,6 +8323,276 @@ console.log('Code.gs — weeklySummarize() wired to the guarded heal path (kill 
   scriptProps = savedProps;
   globalThis.archiveAndPurge_ = savedArchive;
 })();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — healWeek_ orphan detection (Step 3, PRD-12): a heal that mints a
+// NEW Summary key (a location/supplier/department rename) leaves the OLD
+// key's row behind — upsertRows_ has no delete path, so that stale row
+// survives and doGet serves the money twice. Detection lives INSIDE the
+// guarded heal path so a mid-run death between the write and a separate
+// audit can never lose the notice; it must never itself delete (Step 2's
+// write path already forbids deletion here — this only ever REPORTS).
+console.log('Code.gs — healWeek_ orphan detection (Step 3: automatic, read-only, rides the existing alert)');
+(function testHealWeekOrphanDetection() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-25T09:00:00+10:00';
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    const rev = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    (opts.revenueRows || []).forEach((r) => rev.appendRow(r));
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total, dept, kind) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
+
+  function buildCtx(opts) {
+    opts = opts || {};
+    const suppSheet = currentSS.getSheetByName(SUPPLIERS_TAB);
+    const archSheet = currentSS.getSheetByName(ARCHIVE_TAB);
+    const summSheet = currentSS.getSheetByName(SUMMARY_TAB);
+    const revSheet = currentSS.getSheetByName(REVENUE_TAB);
+    const backupSheet = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+    const archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
+    const archiveWeeks = {};
+    archRows.forEach((r) => {
+      const d = coerceDateStr_(r[0]);
+      if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+    });
+    const backupRows = backupSheet.getDataRange().getValues().slice(1);
+    const backedUpWeeks = {};
+    backupRows.forEach((r) => { backedUpWeeks[coerceDateStr_(r[0])] = true; });
+    return {
+      archiveWeeks: archiveWeeks,
+      summaryRows: summSheet.getDataRange().getValues(),
+      supplierRows: suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [],
+      revenueRows: revSheet ? revSheet.getDataRange().getValues().slice(1) : [],
+      summSheet: summSheet,
+      backupSheet: backupSheet,
+      backedUpWeeks: backedUpWeeks,
+      runId: opts.runId || 'RUN-ORPHAN-TEST-1',
+      extractedAt: opts.extractedAt || TS
+    };
+  }
+
+  /* ---- 1. a location rename orphans the OLD key --------------------------
+   * Suppliers now carries the invoice at 'New Shop'; live Summary still
+   * holds the pre-rename row keyed on 'Old Shop'. The heal writes the NEW
+   * key (an append, not an update) and must report the OLD one as an
+   * orphan candidate — naming it, not deleting it. */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'New Shop')],
+       [sum('2026-07-06', 'Kent Paper', 'Old Shop', 100)]);
+  {
+    calendarEvents = [];
+    const summSheet = currentSS.getSheetByName(SUMMARY_TAB);
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('action is heal (a new location key is appended)', res.action, 'heal');
+    eq('exactly one row added (the new location)', res.rowsAdded, 1);
+    check('res.orphans is an array with exactly the ONE stale key',
+      Array.isArray(res.orphans) && res.orphans.length === 1);
+    if (Array.isArray(res.orphans) && res.orphans.length === 1) {
+      const orphan = res.orphans[0];
+      eq('orphan names the correct supplier', orphan.supplier, 'Kent Paper');
+      eq('orphan names the OLD location, not the new one', orphan.location, 'Old Shop');
+      eq('orphan carries the stale total', orphan.total, 100);
+      check('orphan carries a full key encoding the OLD location',
+        typeof orphan.key === 'string' && orphan.key.toLowerCase().indexOf('old shop') !== -1);
+    }
+
+    /* ---- 2. the automatic path never deletes ----------------------------- */
+    eq('zero deleteRow calls on the automatic path', summSheet.getDeleteRowCalls().length, 0);
+    check("the OLD Summary row is still there — detection didn't remove it",
+      currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()
+        .some((r) => r[2] === 'Kent Paper' && r[3] === 'Old Shop'));
+
+    /* ---- 3. the orphan rides the SAME per-week alert as corrections ------ */
+    const weekEvents = calendarEvents.filter((e) => e._title.indexOf('2026-07-06') !== -1);
+    eq('exactly one alert fires for the week — the orphan is folded into it, not a second event',
+      weekEvents.length, 1);
+    check('...and its description mentions the orphan',
+      weekEvents.length === 1 && weekEvents[0]._description.toLowerCase().indexOf('orphan') !== -1);
+  }
+
+  /* ---- 4. shopify_orderapp online revenue is NEVER reported as an orphan -
+   * It is written directly to Summary by the order-app pull and has no
+   * Revenue-tab backing at all — structurally unreachable from a
+   * Suppliers/Revenue recompute, so it would ALWAYS look like an orphan to a
+   * naive live-vs-computed sweep. Excluding it is mandatory (Prohibitions). */
+  seed([], [sum('2026-07-06', 'shopify_orderapp', 'online', 900, 'Roastery', 'revenue')],
+       { revenueRows: [] });
+  {
+    const res = healWeek_('2026-07-06', buildCtx());
+    check('shopify_orderapp online row is excluded from orphan candidates',
+      Array.isArray(res.orphans) && res.orphans.length === 0);
+  }
+
+  /* ---- 5. a derived Bennetts row (blank location) in the computed batch --
+   * is NOT an orphan. Guards specifically against matching by (week,
+   * location) alone — a blank location must not cause a false positive; it
+   * matches cleanly on the full key because it IS in the computed batch. */
+  seed([sup('2026-07-08', 'Bennetts', 14219, 'B1', '')],
+       [sum('2026-07-06', 'Bennetts', '', 14219)]);
+  {
+    const res = healWeek_('2026-07-06', buildCtx());
+    eq('action is heal (nothing changed)', res.action, 'heal');
+    check('a derived, blank-location row that matches the computed batch is NOT an orphan',
+      Array.isArray(res.orphans) && res.orphans.length === 0);
+  }
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs / Code.gs — runSummaryOrphanSweepDryRun() /
+// runSummaryOrphanSweep() (Step 3, PRD-12): the MANUAL, gated removal half of
+// orphan handling. Follows the project's established dry-run-then-gated-apply
+// shape (cleanupDuplicateSummaryRows, cleanupOnlineRevenueSummaryRows): a
+// zero-arg read-only preview, then a zero-arg apply that backs every matched
+// row up to a retained tab before its first delete, deletes bottom-up, and
+// refuses to proceed if what it finds no longer matches what the dry run
+// approved.
+console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphanSweep (Step 3: gated, backed-up, bottom-up removal)');
+(function testSummaryOrphanSweep() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-20T09:00:00+10:00';
+  const TODAY = '2026-08-25T00:00:00Z';   // well after every week used below
+
+  function seed(supplierRows, summaryRows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    return summ;
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total, dept, kind) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
+
+  /* ---- 6. dry run: writes nothing, one log line PER candidate ----------- */
+  seed(
+    [sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+     sum('2026-07-06', 'Kent Paper', 'Old Pyrmont', 250),        // orphan A
+     sum('2026-07-13', 'Fresh and Chill', 'Old Balmain', 75)]);  // orphan B, different week
+  withMockNow(TODAY, function () {
+    clearLoggedMessages();
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const report = runSummaryOrphanSweepDryRun();
+    eq('dry run writes NOTHING to Summary',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    check('dry run finds exactly the 2 orphan candidates',
+      report && Array.isArray(report.candidates) && report.candidates.length === 2);
+    const linesMentioning = (needle) => lastLoggedMessages().filter((m) => m.indexOf(needle) !== -1);
+    check('orphan A gets its own log line', linesMentioning('Old Pyrmont').length >= 1);
+    check('orphan B gets its own log line', linesMentioning('Old Balmain').length >= 1);
+    check('neither candidate is buried inside one shared blob line (one line per candidate)',
+      lastLoggedMessages().every((m) => !(m.indexOf('Old Pyrmont') !== -1 && m.indexOf('Old Balmain') !== -1)));
+  });
+
+  /* ---- 7 & 8. apply: backs up before the first delete, deletes bottom-up  */
+  withMockNow(TODAY, function () {
+    clearWriteOrderLog();
+    const summSheet = currentSS.getSheetByName(SUMMARY_TAB);
+    const applied = runSummaryOrphanSweep();
+    eq('apply matches + deletes exactly the 2 approved candidates',
+      applied && applied.deleted, 2);
+
+    const order = getWriteOrderLog();
+    const firstBackupIdx = order.findIndex((o) => o.sheet === SUMMARY_ORPHAN_BACKUP_TAB);
+    const firstDeleteIdx = order.findIndex((o) => o.sheet === SUMMARY_TAB && o.type === 'deleteRow');
+    check('a backup write happened', firstBackupIdx !== -1);
+    check('the first Summary delete happened', firstDeleteIdx !== -1);
+    check('the backup was written strictly before the first delete',
+      firstBackupIdx !== -1 && firstDeleteIdx !== -1 && firstBackupIdx < firstDeleteIdx);
+
+    const backupSheet = currentSS.getSheetByName(SUMMARY_ORPHAN_BACKUP_TAB);
+    check('the retained backup tab exists after apply', !!backupSheet);
+    if (backupSheet) {
+      const backupRows = backupSheet.getDataRange().getValues();
+      const matchingBackupRows = backupRows.filter((r) =>
+        (r[2] === 'Kent Paper' && r[3] === 'Old Pyrmont') ||
+        (r[2] === 'Fresh and Chill' && r[3] === 'Old Balmain'));
+      eq('every matched row was backed up (2 orphans -> 2 backup rows), regardless of header shape',
+        matchingBackupRows.length, 2);
+    }
+
+    const deleteRowNums = summSheet.getDeleteRowCalls();
+    check('at least 2 deleteRow calls were made against Summary', deleteRowNums.length >= 2);
+    let descending = deleteRowNums.length > 0;
+    for (let i = 1; i < deleteRowNums.length; i++) {
+      if (deleteRowNums[i] >= deleteRowNums[i - 1]) descending = false;
+    }
+    check('deleteRow calls happen bottom-up (strictly descending row indices)', descending);
+
+    const remaining = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues().slice(1);
+    check('the healthy Kent Paper / Leible York row survives the apply',
+      remaining.some((r) => r[2] === 'Kent Paper' && r[3] === 'Leible York'));
+    check('both orphans are gone from Summary',
+      !remaining.some((r) => r[3] === 'Old Pyrmont') && !remaining.some((r) => r[3] === 'Old Balmain'));
+  });
+
+  /* ---- 9. a count mismatch between dry run and apply aborts, deletes nothing */
+  const summSheet2 = seed(
+    [sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+     sum('2026-07-06', 'Kent Paper', 'Old Pyrmont', 250)]);   // exactly 1 orphan approved
+  withMockNow(TODAY, function () {
+    runSummaryOrphanSweepDryRun();   // approves count = 1
+
+    // Sheet state drifts AFTER the dry run was reviewed but BEFORE apply is
+    // clicked — a second orphan lands (e.g. another rename healed in
+    // between). The approved count (1) no longer matches reality (2).
+    summSheet2.appendRow(sum('2026-07-06', 'Kent Paper', 'Even Older Shop', 60));
+
+    clearWriteOrderLog();
+    const before = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+    const result = runSummaryOrphanSweep();
+
+    eq('a count mismatch deletes nothing', result && result.deleted, 0);
+    eq('Summary is byte-identical after an aborted apply',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()),
+      JSON.stringify(before));
+    eq('zero deleteRow calls were made on an aborted apply',
+      currentSS.getSheetByName(SUMMARY_TAB).getDeleteRowCalls().length, 0);
+    check('the abort is reported, not silently swallowed as success',
+      !!result && (result.aborted === true || result.mode === 'aborted'));
+  });
+
+  /* ---- 10. matching is case-normalized identically to rowKey_ ----------- */
+  seed(
+    [sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum('2026-07-06', '  KENT PAPER  ', '  Leible York  ', 100)]);
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    check('a differently-cased/whitespace twin of a real computed key is NOT an orphan',
+      report && Array.isArray(report.candidates) && report.candidates.length === 0);
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
