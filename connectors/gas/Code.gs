@@ -604,7 +604,10 @@ function buildKeySet_(sheet, keyCols) {
  *   place (getRange().setValue()), rowsUpdated++.
  * - A key repeated within the same batch (after being resolved once) →
  *   duplicatesSkipped++, matching the old within-batch dedup behaviour.
- * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number}}
+ * `updates` records only rows actually rewritten (amount genuinely changed) —
+ * a new row or an unchanged-amount duplicate never appears in it. This is
+ * what the correction alert (PRD-12) is driven from.
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number, updates:Array<{key:string,from:number,to:number}>}}
  */
 function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
   var values = sheet.getDataRange().getValues();
@@ -616,6 +619,7 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
   var seenInBatch = {};
   var toAppend = [];
   var rowsUpdated = 0, duplicatesSkipped = 0;
+  var updates = [];
 
   for (var i = 0; i < normalizedRows.length; i++) {
     var row = normalizedRows[i];
@@ -641,11 +645,12 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
       sheet.getRange(existingRowNum, stampCol + 1).setValue(row[stampCol]);
     }
     rowsUpdated++;
+    updates.push({ key: key, from: existingAmount, to: newAmount });
   }
 
   if (toAppend.length) appendNewRows_(sheet, toAppend);
 
-  return { rowsAdded: toAppend.length, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped };
+  return { rowsAdded: toAppend.length, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped, updates: updates };
 }
 
 function rowKey_(rowArray, keyCols) {
@@ -706,38 +711,43 @@ function getLabourSpreadsheet_() {
 }
 
 /**
- * Pull labour cost for the given week from the Onboarding app LABOUR_COST sheet.
+ * Pull labour cost for the given week(s) from the Onboarding app LABOUR_COST sheet.
  * Writes to the Labour tab (dedup week_start||location) AND to Summary (supplier='Labour').
  * Safe to call with empty/missing source — logs and returns zeros without writing garbage.
  *
- * @param {{start:string,end:string}} week  ISO date strings (week.start, week.end)
+ * @param {Array<{start:string,end:string}>} weeks  ISO date strings (week.start, week.end).
+ *   A single week is passed as a one-element array. The external LABOUR_COST
+ *   source is read exactly once for the whole list, not once per week.
  * @param {Spreadsheet}              ss     Hub spreadsheet
  * @param {Sheet}                    summSheet  Already-open Summary sheet
  * @param {string}                   pulledAt   ISO timestamp string
- * @returns {{labourAdded:number, summaryAdded:number}}
+ * @returns {{labourAdded:number, summaryAdded:number, summaryUpdated:number}}
  */
-function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
+function labourWeeklyPull_(weeks, ss, summSheet, pulledAt) {
   var labourSheet = ensureSheet(ss, LABOUR_TAB, LABOUR_HEADERS);
 
   var srcSS = getLabourSpreadsheet_();
-  if (!srcSS) return { labourAdded: 0, summaryAdded: 0 };
+  if (!srcSS) return { labourAdded: 0, summaryAdded: 0, summaryUpdated: 0 };
 
   var srcSheet = srcSS.getSheetByName('LABOUR_COST');
   if (!srcSheet) {
     Logger.log('labourWeeklyPull_: LABOUR_COST tab not found in source — skipping');
-    return { labourAdded: 0, summaryAdded: 0 };
+    return { labourAdded: 0, summaryAdded: 0, summaryUpdated: 0 };
   }
 
   var srcData = srcSheet.getDataRange().getValues();
   if (srcData.length <= 1) {
     Logger.log('labourWeeklyPull_: LABOUR_COST is empty — skipping');
-    return { labourAdded: 0, summaryAdded: 0 };
+    return { labourAdded: 0, summaryAdded: 0, summaryUpdated: 0 };
   }
 
   // Map source headers → column indexes
   var hdr = srcData[0];
   var col = {};
   for (var h = 0; h < hdr.length; h++) col[String(hdr[h])] = h;
+
+  var weekStartSet = {};
+  for (var w = 0; w < weeks.length; w++) weekStartSet[weeks[w].start] = true;
 
   // Labour tab dedup set. week_start reads back from a Sheet as a Date —
   // coerceDateStr_ before comparing or the key never matches its 'yyyy-MM-dd'
@@ -754,7 +764,7 @@ function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
   for (var i = 1; i < srcData.length; i++) {
     var row = srcData[i];
     var ws = coerceDateStr_(row[col['week_start']]);
-    if (ws !== week.start) continue;
+    if (!weekStartSet[ws]) continue;
 
     var location = String(row[col['location']] || '');
     var total    = Math.round(Number(row[col['total']] || 0) * 100) / 100;
@@ -780,9 +790,10 @@ function labourWeeklyPull_(week, ss, summSheet, pulledAt) {
 
   var summaryResult = upsertRows_(summSheet, summaryNormalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
 
-  Logger.log('labourWeeklyPull_: week=' + week.start + ' labourAdded=' + labourAdded +
+  Logger.log('labourWeeklyPull_: weeks=' + weeks.map(function (w) { return w.start; }).join(',') +
+    ' labourAdded=' + labourAdded +
     ' summaryAdded=' + summaryResult.rowsAdded + ' summaryUpdated=' + summaryResult.rowsUpdated);
-  return { labourAdded: labourAdded, summaryAdded: summaryResult.rowsAdded };
+  return { labourAdded: labourAdded, summaryAdded: summaryResult.rowsAdded, summaryUpdated: summaryResult.rowsUpdated };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1969,7 +1980,7 @@ function weeklySummarize_impl_(weekStartOverride) {
   var added = summaryResult.rowsAdded;
   var updated = summaryResult.rowsUpdated;
 
-  var labourResult = labourWeeklyPull_(week, ss, summSheet, extractedAt);
+  var labourResult = labourWeeklyPull_([week], ss, summSheet, extractedAt);
 
   var cutoffDate = new Date(today + 'T12:00:00Z');
   cutoffDate.setUTCDate(cutoffDate.getUTCDate() - ARCHIVE_RETENTION_DAYS);

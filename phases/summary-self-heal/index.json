@@ -50,7 +50,7 @@
     {
       "step": 1,
       "name": "primitives-report-what-they-did",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -69,7 +69,9 @@
           "at": "2026-08-25T11:04:16+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done",
+      "summary": "upsertRows_ now returns updates:[{key,from,to}] for genuinely rewritten rows only; labourWeeklyPull_ takes a week list (reads LABOUR_COST once) and returns summaryUpdated — 1354 passed, 0 failed.",
+      "completed_at": "2026-08-25T12:30:00+1000"
     },
     {
       "step": 2,

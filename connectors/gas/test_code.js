@@ -606,10 +606,10 @@ freshSheets();
   ];
   const r1 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
   eq('batch of 3 with 1 dup → 2 added, 1 skipped', r1,
-    { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1, archivedSkipped: 0 });
+    { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1, updates: [], archivedSkipped: 0 });
   const r2 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
   eq('re-ingest same batch → 0 added (all dup vs sheet)', r2,
-    { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3, archivedSkipped: 0 });
+    { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3, updates: [], archivedSkipped: 0 });
 })();
 
 console.log('doPost');
@@ -2503,7 +2503,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     var second = normalizeSalesRow_('2026-07-01', 'York', 150, 'square', 'T2', 'Cafe');
     var res = upsertRows_(sheet, [second], SALES_KEY_COLS, 2, 4);
     eq('upsert across a Date-valued key column still matches (updates, not appends)',
-      res, { rowsAdded: 0, rowsUpdated: 1, duplicatesSkipped: 0 });
+      res, { rowsAdded: 0, rowsUpdated: 1, duplicatesSkipped: 0,
+        updates: [{ key: rowKey_(second, SALES_KEY_COLS), from: 100, to: 150 }] });
     eq('sheet row count unchanged', sheet._rows.length, 2);
     eq('amount updated via the Date-keyed match', sheet.getDataRange().getValues()[1][2], 150);
   })();
