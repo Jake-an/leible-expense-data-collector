@@ -6288,8 +6288,13 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   calendarEvents = [];
   armFetch([{ rowNumber: 1, dateLocal: day2, supplierRaw: 'Slip Co', supplierKey: 'slip_co', invoiceNum: '', totalCostIncGst: 400, status: 'RECEIVED' }]);
   greenBeanPull_impl_();
+  // PRD-12: the queued weeklySummarize(week) for this same week now ALSO goes
+  // through the guarded heal path, which raises its own (separate) loud
+  // correction alert because the week's total genuinely moved 400 -> 800 (the
+  // double-count the orphan alert below explains) — two alerts, not one, both
+  // real signals of the same underlying stale row.
   eq('noinv date-move: the stale old row raises an orphan alert (was a silent double-count)',
-    calendarEvents.length, 1);
+    calendarEvents.length, 2);
   check('orphan alert names the stale noinv ref and the runbook',
     calendarEvents[0]._description.indexOf('slip_co/noinv-' + day1) !== -1 &&
     calendarEvents[0]._description.indexOf('weeklySummarize') !== -1);

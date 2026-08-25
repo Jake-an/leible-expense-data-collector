@@ -92,7 +92,7 @@
     {
       "step": 2,
       "name": "guarded-shared-write-path",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -109,9 +109,21 @@
             "reason": "ReferenceError: SUMMARY_HEAL_BACKUP_TAB is not defined — test correctly expects production constants for the healWeek_ backup mechanism that haven't been implemented yet"
           },
           "at": "2026-08-25T11:28:24+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "ok  - switch OFF: a SPLIT wk-1 is STILL refused, not force-written\n  ok  - switch ON: wk-1 healed  (got 175.25)\n  ok  - switch ON: wk-2 healed  (got 200)\n  ok  - switch ON: wk-3 healed  (got 300)\n  ok  - switch ON: wk-4 healed  (got 400)\n  ok  - switch ON: wk-5 is OUTSIDE the window — untouched  (got 100)\n  ok  - archiveAndPurge_ runs exactly once for a 4-week scheduled heal, not once per week  (got 1)\n  ok  - archiveAndPurge_ never runs on an override  (got 0)\n  ok  - override path: SPLIT week is refused too  (got \"skip-split\")\n  ok  - override path: Summary is byte-identical afterwards\n  ok  - override path raises the same alert the scheduled path would\n  ok  - override path: duplicate keys refuse too  (got \"refuse-duplicate-keys\")\n  ok  - override path: Summary is byte-identical afterwards\n  ok  - a labour-only correction (no Suppliers change) still raises an alert\n  ok  - ...and the labour figure actually moved  (got 4500)\n  ok  - an idempotent re-summarize of an unchanged week raises NO alert  (got 0)\n\n1412 passed, 0 failed\n",
+          "classifier": {
+            "red_valid": true,
+            "reason": "1412 passed, 0 failed — includes the full pre-existing suite plus every step-2 case. Mutation test on the SPLIT guard (short-circuited, re-ran, 15 failures, restored) confirms the guard is load-bearing, not a vacuous pass."
+          },
+          "at": "2026-08-25T11:43:27+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "green_done",
+      "summary": "healWeeks_/healWeek_ (Code.gs) is now the one guarded write path (snapshot-once backup, SPLIT guard, duplicate refusal, correction alert) shared by the scheduled run and every override incl. greenBeanPull_; see phases/summary-self-heal/step2-report.md — 1412 passed, 0 failed, SPLIT-guard mutation test confirmed load-bearing.",
+      "completed_at": "2026-08-25T11:43:27+0900"
     },
     {
       "step": 3,

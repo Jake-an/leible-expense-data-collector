@@ -66,6 +66,20 @@ var SUMMARY_KEY_COLS = [0, 6, 7, 2, 3]; // week_start||department||kind||supplie
 var SUMMARY_TOTAL_COL = 4;
 var SUMMARY_STAMP_COL = 5;
 
+// Snapshot-once backup for the guarded Summary heal path (PRD-12). Same shape
+// as SUMMARY_HEADERS plus a run_id tag, so a restore can tell which run wrote
+// which snapshot and healEarliestBackupRows_ can resolve ties to the earliest.
+var SUMMARY_HEAL_BACKUP_TAB = 'Summary_heal_backup';
+var SUMMARY_HEAL_BACKUP_HEADERS = SUMMARY_HEADERS.concat(['run_id']);
+
+// Kill switch (PRD-12): SUMMARY_HEAL_ENABLED (Script Property, default OFF)
+// controls only how many weeks a scheduled run heals — off means 1 (today's
+// single-week behaviour, now guarded), on means SUMMARY_HEAL_WEEKS_ (or the
+// SUMMARY_HEAL_WEEKS Script Property override). The gates themselves
+// (backup, SPLIT guard, duplicate refusal, correction alert) are ALWAYS
+// active in both states — the switch never bypasses them.
+var SUMMARY_HEAL_WEEKS_ = 4;
+
 // source → canonical supplier name. Ordermentum carries its name per-account in
 // the row payload (row.supplier), so it is intentionally absent here.
 var SUPPLIER_NAMES = {
@@ -1863,6 +1877,223 @@ function computeHealPlan_(weeks, ctx) {
   return plan;
 }
 
+/* ------------------------------------------------------------------ *
+ * Guarded shared write path (PRD-12) — healWeeks_/healWeek_
+ *
+ * healWeek_ is the ONE place a heal (scheduled or override, including every
+ * greenBeanPull_ override call routed through weeklySummarize) is allowed to
+ * touch Summary: snapshot-once backup, SPLIT guard, duplicate-key refusal,
+ * the actual upsert, and the correction alert all live here so no caller can
+ * write around any of them.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Pure. Given Summary_heal_backup rows (possibly holding more than one
+ * snapshot for a week, which healBackupWeek_'s write-once guard is meant to
+ * prevent but a restore must still defend against), returns only the
+ * EARLIEST snapshot's rows for that week — never a later, already-corrected
+ * one. Row shape is SUMMARY_HEAL_BACKUP_HEADERS (SUMMARY_HEADERS + run_id);
+ * "earliest" is decided by original row order (append order), not run_id
+ * content.
+ * @param {Array} backupRows  Summary_heal_backup DATA rows (no header)
+ * @param {string} week 'YYYY-MM-DD'
+ * @returns {Array} the earliest snapshot's rows for `week`, or []
+ */
+function healEarliestBackupRows_(backupRows, week) {
+  var firstRunId = null;
+  var result = [];
+  for (var i = 0; i < backupRows.length; i++) {
+    var row = backupRows[i];
+    if (coerceDateStr_(row[0]) !== week) continue;
+    var runId = row[8];
+    if (firstRunId === null) firstRunId = runId;
+    if (runId !== firstRunId) continue; // a later snapshot for the same week — ignore
+    result.push(row);
+  }
+  return result;
+}
+
+/**
+ * Snapshot-once backup of a week's LIVE Summary rows (pre-heal state) to
+ * SUMMARY_HEAL_BACKUP_TAB, tagged with ctx.runId. Refuses to overwrite an
+ * existing snapshot for the week — without that, healing the same week twice
+ * would store the POST-heal values as a later "snapshot", and a restore
+ * would restore the corruption instead of undoing it. Always runs BEFORE any
+ * guard decision or write, so a SPLIT-skipped or duplicate-refused week is
+ * backed up exactly like a healed one.
+ * @returns {boolean} true — a snapshot for `week` exists after this call.
+ */
+function healBackupWeek_(week, ctx) {
+  if (ctx.backedUpWeeks[week]) return true;
+
+  var rowsForWeek = [];
+  for (var i = 1; i < ctx.summaryRows.length; i++) { // row 0 = header
+    var row = ctx.summaryRows[i];
+    if (coerceDateStr_(row[0]) !== week) continue;
+    rowsForWeek.push(row.concat([ctx.runId]));
+  }
+  for (var r = 0; r < rowsForWeek.length; r++) {
+    ctx.backupSheet.appendRow(rowsForWeek[r]);
+  }
+  ctx.backedUpWeeks[week] = true;
+  return true;
+}
+
+/**
+ * Raise one all-day calendar alert for a heal event on `week`. Reuses
+ * stalenessCalendar_'s acquisition mechanism (staleness.gs) — never throws.
+ * @param {boolean} highSeverity RED (not ORANGE) — reserved for a SPLIT-skip
+ *   or duplicate-refusal of the NEWEST week: a silently un-summarized current
+ *   week is worse than a slightly wrong one (PRD-12).
+ */
+function healRaiseAlert_(week, kind, detail, highSeverity) {
+  try {
+    var cal = stalenessCalendar_();
+    if (!cal) {
+      Logger.log('healRaiseAlert_: no calendar available for week ' + week + ' (' + kind + ')');
+      return;
+    }
+    var title = 'LEIBLE expense Summary heal ' + week + ': ' + kind;
+    var ev = cal.createAllDayEvent(title, new Date(Date.now()));
+    ev.setColor(highSeverity ? CalendarApp.EventColor.RED : CalendarApp.EventColor.ORANGE);
+    ev.setDescription((detail || '') + '\n\nWeek: ' + week +
+      '\nSnapshot: ' + SUMMARY_HEAL_BACKUP_TAB + ' (earliest run_id per week is the pre-heal truth).');
+  } catch (err) {
+    Logger.log('healRaiseAlert_: failed for week ' + week + ' — ' + err.message);
+  }
+}
+
+/**
+ * The guarded per-week write. Every caller (the scheduled run and every
+ * override, greenBeanPull_'s included) goes through this — see healWeeks_
+ * for the shared entry point that builds `ctx` once per run and calls this
+ * per week, newest-first.
+ *
+ * Order, always: (1) backup (2) SPLIT guard (3) duplicate-key refusal
+ * (4) write via one upsertRows_ call (5) correction alert, raised
+ * immediately — never batched to the end of the run.
+ *
+ * No pull-owned filtering of any kind: a derived row (Bennetts, blank
+ * location) is healed like any other; a row structurally unreachable from
+ * Suppliers/Revenue (shopify_orderapp's online revenue) is left untouched,
+ * not orphaned, because aggregateSupplierRows_ itself never recomputes it.
+ *
+ * @param {string} week 'YYYY-MM-DD'
+ * @param {{archiveWeeks:Object, summaryRows:Array, supplierRows:Array,
+ *   revenueRows:Array, summSheet:Sheet, backupSheet:Sheet,
+ *   backedUpWeeks:Object, runId:string, extractedAt:string}} ctx built ONCE
+ *   by the caller — never per week.
+ * @param {boolean} [isNewest] — true only for the newest week in the caller's
+ *   batch; escalates a SPLIT-skip/duplicate-refusal alert to high severity.
+ * @returns {{week:string, action:string, reason:?string, rowsAdded:number,
+ *   rowsUpdated:number, updates:Array<{key:string,from:number,to:number}>,
+ *   backedUp:boolean}}
+ */
+function healWeek_(week, ctx, isNewest) {
+  healBackupWeek_(week, ctx);
+
+  var plan = computeHealPlan_([week], ctx)[0];
+
+  if (plan.action === 'skip-split' || plan.action === 'refuse-duplicate-keys') {
+    healRaiseAlert_(week,
+      plan.action === 'skip-split' ? 'SPLIT week skipped' : 'duplicate keys — refused',
+      plan.reason, !!isNewest);
+    return {
+      week: week, action: plan.action, reason: plan.reason,
+      rowsAdded: 0, rowsUpdated: 0, updates: [], backedUp: true
+    };
+  }
+
+  var weekEnd = addDaysStr_(week, 6);
+  var recomputed = aggregateSupplierRows_(ctx.supplierRows, week, weekEnd, 'spend')
+    .concat(aggregateSupplierRows_(ctx.revenueRows, week, weekEnd, 'revenue'));
+  var normalizedRows = recomputed.map(function (g) {
+    return [week, weekEnd, g.supplier, g.location, g.total, ctx.extractedAt, g.department, g.kind];
+  });
+
+  var writeRes = upsertRows_(ctx.summSheet, normalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
+
+  if (writeRes.updates.length > 0) {
+    var detail = writeRes.updates.map(function (u) {
+      return u.key + ': ' + u.from + ' -> ' + u.to;
+    }).join('\n');
+    healRaiseAlert_(week, 'Summary corrected', detail, false);
+  }
+
+  return {
+    week: week, action: 'heal', reason: null,
+    rowsAdded: writeRes.rowsAdded, rowsUpdated: writeRes.rowsUpdated,
+    updates: writeRes.updates, backedUp: true
+  };
+}
+
+/**
+ * Shared entry point for both the scheduled run and every override
+ * (greenBeanPull_'s up-to-5-per-run override calls included). Builds `ctx`
+ * ONCE for the whole batch — a per-week ctx build would add a full
+ * `_archive` read (and a Summary snapshot) per week on a path already near
+ * the 6-minute GAS ceiling, where a timeout is a partial-ingest event — then
+ * processes `weeks` NEWEST-first regardless of input order, so a mid-run
+ * death always leaves the most recent weeks done.
+ *
+ * A refused/skipped NEWEST week is a loud, run-level failure: the current
+ * week is what every report and LEIBLE_GM_COST_MONITOR reads, and a silently
+ * un-summarized current week is worse than a slightly wrong one. The same
+ * failure on an older week is not fatal — only the newest week's success
+ * gates `success`.
+ *
+ * @param {string[]} weeks 'YYYY-MM-DD' week_start strings, any order.
+ * @returns {{weeks:Array, success:boolean, newestWeekFailed:boolean}}
+ */
+function healWeeks_(weeks) {
+  var ss = getHubSpreadsheet_();
+  var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
+  var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+  var backupSheet = ensureSheet(ss, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+
+  var archRows = archSheet.getDataRange().getValues().slice(1);
+  var archiveWeeks = {};
+  archRows.forEach(function (r) {
+    var d = coerceDateStr_(r[0]);
+    if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+  });
+
+  var backupRows = backupSheet.getDataRange().getValues().slice(1);
+  var backedUpWeeks = {};
+  backupRows.forEach(function (r) { backedUpWeeks[coerceDateStr_(r[0])] = true; });
+
+  var nowStamp = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+
+  var ctx = {
+    archiveWeeks: archiveWeeks,
+    summaryRows: summSheet.getDataRange().getValues(),
+    supplierRows: suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [],
+    revenueRows: revSheet ? revSheet.getDataRange().getValues().slice(1) : [],
+    summSheet: summSheet,
+    backupSheet: backupSheet,
+    backedUpWeeks: backedUpWeeks,
+    runId: 'HEAL-' + nowStamp,
+    extractedAt: nowStamp
+  };
+
+  var sorted = weeks.slice().sort().reverse(); // 'YYYY-MM-DD' sorts lexically — newest first
+
+  var results = [];
+  var newestWeekFailed = false;
+  for (var i = 0; i < sorted.length; i++) {
+    var isNewest = (i === 0);
+    var res = healWeek_(sorted[i], ctx, isNewest);
+    results.push(res);
+    if (isNewest && (res.action === 'skip-split' || res.action === 'refuse-duplicate-keys')) {
+      newestWeekFailed = true;
+    }
+  }
+
+  return { weeks: results, success: !newestWeekFailed, newestWeekFailed: newestWeekFailed };
+}
+
 function summaryDataToObjects_(values) {
   var headers = values[0];
   var result = [];
@@ -1914,24 +2145,39 @@ function weeklySummarize(weekStartOverride) {
   return res;
 }
 
+/**
+ * How many weeks a SCHEDULED (no-override) run heals. The kill switch
+ * (SUMMARY_HEAL_ENABLED, default OFF/absent) controls ONLY this — every gate
+ * in healWeek_ stays active regardless: "off" means "today's single-week
+ * behaviour, now guarded", never "gates bypassed".
+ */
+function summaryHealWindowSize_() {
+  var props = PropertiesService.getScriptProperties();
+  var enabled = String(props.getProperty('SUMMARY_HEAL_ENABLED') || '').toLowerCase() === 'true';
+  if (!enabled) return 1;
+  var n = Number(props.getProperty('SUMMARY_HEAL_WEEKS'));
+  return (isFinite(n) && n > 0) ? Math.floor(n) : SUMMARY_HEAL_WEEKS_;
+}
+
 function weeklySummarize_impl_(weekStartOverride) {
   var ss = getHubSpreadsheet_();
   var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
   if (!suppSheet) { Logger.log('weeklySummarize: no Suppliers tab'); return; }
 
   var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
-  var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
-  var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(ss, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
 
   var today = todayStr_();                              // KEEP: still used for cutoffDate below
   var ovr = resolveDateArg_(weekStartOverride, null);   // trigger-event safe
-  var week;
+  var weeks;
   if (ovr) {
     // Snap to Monday: an unsnapped week_start writes Summary rows that overlap
     // the trigger's Monday-aligned rows -> filterSummaryByDateRange_ returns both
     // -> double-counted spend. Dedup keys on week_start, so it would NOT save us.
     var start = weekStartForDate_(ovr);
-    week = { start: start, end: addDaysStr_(start, 6) };
+    var weekEnd = addDaysStr_(start, 6);
 
     // Refuse a week that hasn't finished yet. Summary now upserts (§1h), so a
     // re-summarize CAN correct a frozen partial total in principle — but a
@@ -1939,48 +2185,50 @@ function weeklySummarize_impl_(weekStartOverride) {
     // any consumer of doGet in the meantime, and nothing guarantees a
     // re-summarize ever happens before that partial figure is read/reported
     // on. Only a completed week may be summarized.
-    if (week.end >= today) {
-      Logger.log('weeklySummarize: REFUSED incomplete week ' + week.start + ' … ' + week.end +
+    if (weekEnd >= today) {
+      Logger.log('weeklySummarize: REFUSED incomplete week ' + start + ' … ' + weekEnd +
         ' (today=' + today + ') — a partial total would be frozen by dedup. ' +
         'Re-run once the week has ended.');
       return {
-        weekStart: week.start, weekEnd: week.end,
+        weekStart: start, weekEnd: weekEnd,
         refused: 'incomplete-week',
         summariesAdded: 0, labourTabAdded: 0, labourSummaryAdded: 0
       };
     }
 
-    Logger.log('weeklySummarize: override ' + ovr + ' → week ' + week.start + ' … ' + week.end);
+    Logger.log('weeklySummarize: override ' + ovr + ' → week ' + start + ' … ' + weekEnd);
+    weeks = [start];
   } else {
-    week = getLastCompletedWeek_(today);
+    var windowSize = summaryHealWindowSize_();
+    var last = getLastCompletedWeek_(today);
+    weeks = [];
+    for (var i = 0; i < windowSize; i++) weeks.push(addDaysStr_(last.start, -7 * i));
   }
-  var extractedAt = Utilities.formatDate(new Date(), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
 
-  var allData = suppSheet.getDataRange().getValues();
-  var dataRows = allData.slice(1);
-  var spendSummaries = aggregateSupplierRows_(dataRows, week.start, week.end, 'spend');
+  // The ONE guarded write path — backup, SPLIT guard, duplicate-key refusal,
+  // upsert, correction alert — shared by the scheduled run and this override
+  // alike (Code.gs: healWeeks_/healWeek_).
+  var healRes = healWeeks_(weeks);
 
-  var revData = revSheet.getDataRange().getValues();
-  var revRows = revData.slice(1);
-  var revenueSummaries = aggregateSupplierRows_(revRows, week.start, week.end, 'revenue');
-
-  var allSummaries = spendSummaries.concat(revenueSummaries);
-
-  // Build normalized Summary rows in SUMMARY_HEADERS order and route through
-  // upsertRows_, keyed on week_start||department||kind||supplier||location.
-  // This is what makes the locked upsert decision reach Summary: an amended
-  // order corrected in Suppliers/Revenue AFTER that week was summarized must
-  // still be able to update the weekly figure on re-summarize, not just be
-  // skipped as "already done" (the old append-with-skip behaviour).
-  var normalizedSummaryRows = allSummaries.map(function (s) {
-    return [week.start, week.end, s.supplier, s.location, s.total, extractedAt, s.department, s.kind];
+  // Labour is a second, independent write against Summary (its own source,
+  // its own upsert). It respects the same guard: only weeks healWeeks_
+  // actually healed (never a SPLIT/refused one — the guard means "write
+  // nothing", full stop) are eligible, and the source is read once for the
+  // whole batch, not once per week.
+  var extractedAt = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+  var labourWeeks = [];
+  healRes.weeks.forEach(function (w) {
+    if (w.action === 'heal') labourWeeks.push({ start: w.week, end: addDaysStr_(w.week, 6) });
   });
-
-  var summaryResult = upsertRows_(summSheet, normalizedSummaryRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
-  var added = summaryResult.rowsAdded;
-  var updated = summaryResult.rowsUpdated;
-
-  var labourResult = labourWeeklyPull_([week], ss, summSheet, extractedAt);
+  var labourResult = { labourAdded: 0, summaryAdded: 0, summaryUpdated: 0 };
+  if (labourWeeks.length > 0) {
+    labourResult = labourWeeklyPull_(labourWeeks, ss, summSheet, extractedAt);
+    if (labourResult.summaryAdded + labourResult.summaryUpdated > 0) {
+      healRaiseAlert_(labourWeeks.map(function (w) { return w.start; }).join(', '), 'Labour correction',
+        'labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
+        ' summaryUpdated=' + labourResult.summaryUpdated, false);
+    }
+  }
 
   var cutoffDate = new Date(today + 'T12:00:00Z');
   cutoffDate.setUTCDate(cutoffDate.getUTCDate() - ARCHIVE_RETENTION_DAYS);
@@ -1990,26 +2238,54 @@ function weeklySummarize_impl_(weekStartOverride) {
   // On an override (backlog) run it would purge the very Suppliers rows just
   // summarized — and since a re-run then reads an empty source, it would report
   // summariesAdded:0, which reads as "already done" but actually means "the
-  // source data is gone". Manual backfills must be repeatable.
-  var archived = 0;
+  // source data is gone". Manual backfills must be repeatable. Runs exactly
+  // once per scheduled run, never once per healed week.
   if (!ovr) {
-    archived = archiveAndPurge_(suppSheet, archSheet, cutoffStr);
+    var archSheet = ss.getSheetByName(ARCHIVE_TAB);
+    archiveAndPurge_(suppSheet, archSheet, cutoffStr);
   } else {
     Logger.log('weeklySummarize: override run — skipping archive/purge (maintenance is the trigger\'s job)');
   }
 
-  Logger.log('weeklySummarize: week ' + week.start + ' → ' + week.end +
-    ', supplierSummariesAdded=' + added +
-    ', supplierSummariesUpdated=' + updated +
-    ', labourTabAdded=' + labourResult.labourAdded +
-    ', labourSummaryAdded=' + labourResult.summaryAdded +
-    ', cutoff=' + cutoffStr);
+  // A single-week run (every override, and a scheduled run with the kill
+  // switch off) keeps the pre-existing flat return shape — callers
+  // (greenBeanPull_, the older test suite) depend on weekStart/weekEnd/
+  // summariesAdded/summariesUpdated/labourTabAdded/labourSummaryAdded/
+  // refused living at the top level, not nested under `weeks`.
+  if (weeks.length === 1) {
+    var wk = healRes.weeks[0];
+    var wkEnd = addDaysStr_(wk.week, 6);
+    if (wk.action !== 'heal') {
+      return {
+        weekStart: wk.week, weekEnd: wkEnd,
+        refused: wk.action,
+        summariesAdded: 0, summariesUpdated: 0, labourTabAdded: 0, labourSummaryAdded: 0
+      };
+    }
+    Logger.log('weeklySummarize: week ' + wk.week + ' → ' + wkEnd +
+      ', supplierSummariesAdded=' + wk.rowsAdded +
+      ', supplierSummariesUpdated=' + wk.rowsUpdated +
+      ', labourTabAdded=' + labourResult.labourAdded +
+      ', labourSummaryAdded=' + labourResult.summaryAdded +
+      ', cutoff=' + cutoffStr);
+    return {
+      weekStart: wk.week, weekEnd: wkEnd,
+      summariesAdded: wk.rowsAdded,
+      summariesUpdated: wk.rowsUpdated,
+      labourTabAdded: labourResult.labourAdded,
+      labourSummaryAdded: labourResult.summaryAdded
+    };
+  }
+
+  Logger.log('weeklySummarize: healed ' +
+    healRes.weeks.map(function (w) { return w.week + ':' + w.action; }).join(', ') +
+    ', success=' + healRes.success + ', cutoff=' + cutoffStr);
   return {
-    weekStart: week.start, weekEnd: week.end,
-    summariesAdded: added,
-    summariesUpdated: updated,
-    labourTabAdded: labourResult.labourAdded,
-    labourSummaryAdded: labourResult.summaryAdded
+    weeks: healRes.weeks,
+    success: healRes.success,
+    newestWeekFailed: healRes.newestWeekFailed,
+    weekStart: healRes.weeks[0].week,
+    weekEnd: addDaysStr_(healRes.weeks[0].week, 6)
   };
 }
 
