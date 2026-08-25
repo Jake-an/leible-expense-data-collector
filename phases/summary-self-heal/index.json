@@ -134,7 +134,7 @@
     {
       "step": 3,
       "name": "orphan-detection",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -148,7 +148,7 @@
         "at": "2026-08-25T12:09:22+0900"
       },
       "resume_note": "Re-opened 2026-08-26: phase gate returned REVISE with a CRITICAL (orphan sweep ignores _archive and the purge line -> would delete ~143 weeks of Summary). Root cause was this step file's spec, not the implementation. See 'REVIEW FIXES 2026-08-26' in step3.md.",
-      "summary": "healOrphanCandidates_ (Code.gs) detects stale Summary keys per healed week and folds them into the existing alert; runSummaryOrphanSweepDryRun/runSummaryOrphanSweep (summary_audit.gs) are the gated, backed-up, bottom-up manual removal path — see phases/summary-self-heal/step3-…",
+      "summary": "FIX1 (_archive merge + purge-line + SPLIT skip in summaryOrphanSweep_), FIX2 (Labour excluded alongside shopify_orderapp in both healOrphanCandidates_ and summaryOrphanSweep_), FIX4 (previewSummaryHeal no longer creates tabs; runSummaryOrphanSweep refuses a >1h-stale approval; summaryDriftCheck_ no longer throws on auditSummaryDrift_ error) — see phases/summary-self-heal/step3-report.md — 1497 passed, 0 failed.",
       "tdd_evidence": {
         "red": {
           "command": "node connectors/gas/test_code.js",
@@ -159,9 +159,16 @@
             "reason": "12 semantic assertion failures (FIX1: _archive merging + purge line + SPLIT handling; FIX2: Labour exclusion; FIX4: stale-approval + error guards) + ReferenceError on unimplemented `runSummaryOrphanSweepDryRun`. All failures are missing-implementation (RIGHT reason), not broken test code."
           },
           "at": "2026-08-26T07:02:31+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "ok  - FIX1: a week whose Suppliers rows exist only in _archive is NOT an orphan candidate — the sweep must merge _archive\n  ok  - FIX1: a week past the purge line yields ZERO candidates, not \"every row is an orphan\"\n  ok  - FIX1: a SPLIT week (rows in both Suppliers and _archive) yields ZERO candidates\n  ok  - FIX2: a Labour Summary row is excluded from orphan candidates\n  ok  - FIX4: an approval older than ~1 hour is refused, not silently honored  (got 0)\n  ok  - Summary is untouched by a stale-approval refusal\n  ok  - the refusal is reported as aborted, not silently treated as success\n  ok  - FIX4: summaryDriftCheck_ does not throw when auditSummaryDrift_ returns an error (no Summary tab)\n\n1497 passed, 0 failed\n",
+          "at": "2026-08-26T08:20:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-08-26T08:20:00+0900"
     },
     {
       "step": 4,

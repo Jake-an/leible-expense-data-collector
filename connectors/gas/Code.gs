@@ -2053,9 +2053,13 @@ function healWeek_(week, ctx, isNewest) {
  * shopify_orderapp rows are excluded: they are written directly by the
  * order-app pull (orderapp.gs), have no Suppliers/Revenue backing, and are
  * structurally unreachable from a recompute — they would ALWAYS look like an
- * orphan otherwise. Matching is on the full SUMMARY_KEY_COLS tuple,
- * normalized exactly like rowKey_ — never (week, location) alone, since a
- * blank location is not a safe predicate.
+ * orphan otherwise. Labour rows are excluded for the same structural reason:
+ * labourWeeklyPull_ writes them from an EXTERNAL spreadsheet (LABOUR_SHEET_ID),
+ * not from Suppliers/Revenue, and healWeeks_ runs healWeek_ BEFORE
+ * labourWeeklyPull_ every run — without this exclusion every week would raise
+ * a false orphan alert forever (REVIEW FIXES 2026-08-26, FIX 2). Matching is
+ * on the full SUMMARY_KEY_COLS tuple, normalized exactly like rowKey_ — never
+ * (week, location) alone, since a blank location is not a safe predicate.
  *
  * @param {string} week 'YYYY-MM-DD'
  * @param {{summaryRows:Array}} ctx
@@ -2068,7 +2072,8 @@ function healOrphanCandidates_(week, ctx, computedKeys) {
     var row = ctx.summaryRows[i];
     if (coerceDateStr_(row[0]) !== week) continue;
     var supplier = String(row[2]);
-    if (mayersNorm_(supplier) === 'shopify_orderapp') continue;
+    var normSupplier = mayersNorm_(supplier);
+    if (normSupplier === 'shopify_orderapp' || normSupplier === 'labour') continue;
     var key = rowKey_(row, SUMMARY_KEY_COLS);
     if (computedKeys[key]) continue;
     orphans.push({

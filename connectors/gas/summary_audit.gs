@@ -422,21 +422,26 @@ function auditPad_(v, width) {
  */
 function previewSummaryHeal() {
   var ss = getHubSpreadsheet_();
+  // getSheetByName with null-guards, NOT ensureSheet — this is documented
+  // READ-ONLY / "Writes nothing", but ensureSheet INSERTS a sheet and writes
+  // a header row when the tab is absent (Code.gs ensureSheet). The earlier
+  // "writes NOTHING" test never caught this because its fixture pre-creates
+  // every tab first (REVIEW FIXES 2026-08-26, FIX 4b).
   var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
-  var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
-  var archSheet = ensureSheet(ss, ARCHIVE_TAB, SUPPLIERS_HEADERS);
-  var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+  var summSheet = ss.getSheetByName(SUMMARY_TAB);
+  var archSheet = ss.getSheetByName(ARCHIVE_TAB);
+  var revSheet = ss.getSheetByName(REVENUE_TAB);
 
-  var archRows = archSheet.getDataRange().getValues().slice(1);
+  var archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
   var archiveWeeks = {};
   for (var i = 0; i < archRows.length; i++) {
     var d = coerceDateStr_(archRows[i][0]);
     if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
   }
 
-  var summaryValues = summSheet.getDataRange().getValues();
+  var summaryValues = summSheet ? summSheet.getDataRange().getValues() : [];
   var supplierRows = suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [];
-  var revenueRows = revSheet.getDataRange().getValues().slice(1);
+  var revenueRows = revSheet ? revSheet.getDataRange().getValues().slice(1) : [];
 
   var ctx = {
     archiveWeeks: archiveWeeks,
@@ -463,7 +468,7 @@ function previewSummaryHeal() {
   // The _archive + Summary read sizes a SINGLE override call would pay —
   // feeds the same >300 batching threshold greenBeanPull_'s up-to-5-calls-
   // per-run path is measured against.
-  var projectedOverrideCost = archRows.length + (summaryValues.length - 1);
+  var projectedOverrideCost = archRows.length + (summaryValues.length ? summaryValues.length - 1 : 0);
 
   // Line-per-week — one big Logger.log(JSON.stringify(...)) gets truncated
   // by the editor (documented project gotcha).
@@ -506,13 +511,32 @@ function previewSummaryHeal() {
 var SUMMARY_ORPHAN_BACKUP_TAB = 'Summary_orphan_backup';
 var SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_ = 'SUMMARY_ORPHAN_SWEEP_APPROVED';
 
+/* REVIEW FIXES 2026-08-26 (FIX 4c, MINOR): the approval a dry run records
+ * carried no timestamp, so a stale dry run from hours ago could still
+ * authorize today's apply whenever the candidate set happened to still
+ * match. An approval older than this is refused, not silently honored. */
+var SUMMARY_ORPHAN_SWEEP_APPROVAL_MAX_AGE_MS_ = 60 * 60 * 1000;
+
 /**
  * Core sweep, read-only. For every week Summary knows about, recomputes that
  * week's batch from Suppliers/Revenue exactly as healWeek_ does and reports
  * any live Summary key absent from it — same exclusions and normalization as
- * healOrphanCandidates_ (Code.gs): shopify_orderapp is skipped (pull-owned,
- * never derived), and matching is the full SUMMARY_KEY_COLS tuple via
- * rowKey_, never (week, location) alone.
+ * healOrphanCandidates_ (Code.gs): shopify_orderapp and Labour are skipped
+ * (pull-owned, never derived), and matching is the full SUMMARY_KEY_COLS
+ * tuple via rowKey_, never (week, location) alone.
+ *
+ * REVIEW FIXES 2026-08-26 (FIX 1, CRITICAL): a Suppliers-only recompute is
+ * wrong for any week archiveAndPurge_ has touched. Two guards, mirroring
+ * auditSummaryDrift_/computeHealPlan_ exactly:
+ *  - source rows are Suppliers MERGED with _archive (auditDedupeSourceRows_),
+ *    not Suppliers alone — otherwise every week whose invoices already moved
+ *    to _archive recomputes empty and its live Summary row reads as an orphan.
+ *  - weeks past auditPurgeCutoff_ are skipped entirely — past that line
+ *    NEITHER tab holds the source rows any more, so a recompute is always
+ *    empty and every row would misread as an orphan (~143 of 169 weeks).
+ *  - SPLIT weeks (rows in both Suppliers and _archive) are skipped entirely —
+ *    a recompute of a SPLIT week understates it, the same reason
+ *    computeHealPlan_ and summaryDriftCheck_ both skip/suppress SPLIT weeks.
  * @returns {{mode:'dryRun', candidates:Array}}
  */
 function summaryOrphanSweep_() {
@@ -521,10 +545,22 @@ function summaryOrphanSweep_() {
   if (!summSheet) { Logger.log('summaryOrphanSweep_: no Summary tab'); return { error: 'no-sheet' }; }
 
   var suppSheet = ss.getSheetByName(SUPPLIERS_TAB);
+  var archSheet = ss.getSheetByName(ARCHIVE_TAB);
   var revSheet = ss.getSheetByName(REVENUE_TAB);
   var supplierRows = suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [];
+  var archiveRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
+  var sourceRows = auditDedupeSourceRows_(supplierRows, archiveRows);
   var revenueRows = revSheet ? revSheet.getDataRange().getValues().slice(1) : [];
   var data = summSheet.getDataRange().getValues();
+
+  var purgeCutoff = auditPurgeCutoff_(todayStr_());
+
+  // SPLIT guard — same "week has an _archive row" test computeHealPlan_ uses.
+  var archiveWeeks = {};
+  for (var a = 0; a < archiveRows.length; a++) {
+    var ad = coerceDateStr_(archiveRows[a][0]);
+    if (DATE_ARG_RE.test(ad)) archiveWeeks[weekStartForDate_(ad)] = true;
+  }
 
   var weeks = {};
   for (var r = 1; r < data.length; r++) {
@@ -532,13 +568,17 @@ function summaryOrphanSweep_() {
     if (DATE_ARG_RE.test(wk)) weeks[wk] = true;
   }
 
-  // Recompute each distinct week's batch once, not once per row.
+  // Recompute each distinct week's batch once, not once per row. Weeks past
+  // the purge line or SPLIT never get a computed-keys entry, so every live
+  // row for them is skipped below rather than misread as an orphan.
   var computedKeysByWeek = {};
   var weekList = Object.keys(weeks);
   for (var w = 0; w < weekList.length; w++) {
     var week = weekList[w];
+    if (week < purgeCutoff) continue;
+    if (archiveWeeks[week]) continue;
     var weekEnd = addDaysStr_(week, 6);
-    var recomputed = aggregateSupplierRows_(supplierRows, week, weekEnd, 'spend')
+    var recomputed = aggregateSupplierRows_(sourceRows, week, weekEnd, 'spend')
       .concat(aggregateSupplierRows_(revenueRows, week, weekEnd, 'revenue'));
     var keys = {};
     for (var g = 0; g < recomputed.length; g++) {
@@ -554,8 +594,11 @@ function summaryOrphanSweep_() {
     var row = data[i];
     var rowWeek = coerceDateStr_(row[0]);
     if (!DATE_ARG_RE.test(rowWeek)) continue;
+    if (rowWeek < purgeCutoff) continue;
+    if (archiveWeeks[rowWeek]) continue;
     var supplier = String(row[2]);
-    if (mayersNorm_(supplier) === 'shopify_orderapp') continue;
+    var normSupplier = mayersNorm_(supplier);
+    if (normSupplier === 'shopify_orderapp' || normSupplier === 'labour') continue;
     var key = rowKey_(row, SUMMARY_KEY_COLS);
     var keysForWeek = computedKeysByWeek[rowWeek] || {};
     if (keysForWeek[key]) continue;
@@ -593,7 +636,8 @@ function runSummaryOrphanSweepDryRun() {
 
   var approved = {
     count: report.candidates.length,
-    keys: report.candidates.map(function (cd) { return cd.key; }).sort()
+    keys: report.candidates.map(function (cd) { return cd.key; }).sort(),
+    approvedAt: Date.now()
   };
   PropertiesService.getScriptProperties().setProperty(
     SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_, JSON.stringify(approved));
@@ -619,13 +663,18 @@ function runSummaryOrphanSweep() {
   var approved = approvedRaw ? JSON.parse(approvedRaw) : null;
   var liveKeys = report.candidates.map(function (cd) { return cd.key; }).sort();
 
-  var matches = !!approved && approved.count === liveKeys.length &&
+  var stale = !!approved && typeof approved.approvedAt === 'number' &&
+    (Date.now() - approved.approvedAt) > SUMMARY_ORPHAN_SWEEP_APPROVAL_MAX_AGE_MS_;
+
+  var matches = !!approved && !stale && approved.count === liveKeys.length &&
     JSON.stringify(approved.keys) === JSON.stringify(liveKeys);
 
   if (!matches) {
-    Logger.log('runSummaryOrphanSweep: ABORTED — live orphan candidates (' + liveKeys.length +
-      ') no longer match what runSummaryOrphanSweepDryRun() approved' +
-      (approved ? ' (' + approved.count + ')' : ' (no dry run on record)') +
+    Logger.log('runSummaryOrphanSweep: ABORTED — ' +
+      (stale
+        ? 'the approved dry run is more than an hour old'
+        : 'live orphan candidates (' + liveKeys.length + ') no longer match what ' +
+          'runSummaryOrphanSweepDryRun() approved' + (approved ? ' (' + approved.count + ')' : ' (no dry run on record)')) +
       '. Re-run runSummaryOrphanSweepDryRun() and re-approve — never force this through.');
     return { mode: 'aborted', aborted: true, deleted: 0, found: liveKeys.length };
   }
@@ -678,6 +727,14 @@ function summaryDriftCheck_(nowMs) {
   var ss = getHubSpreadsheet_();
   var cutoff = auditPurgeCutoff_(todayStr_());
   var report = auditSummaryDrift_(false, cutoff);
+
+  // auditSummaryDrift_ returns {error:...} (no .weeks) when there is no
+  // Summary tab to audit — a clean "cannot audit" signal, not a failure.
+  // Reading report.weeks.length without this guard throws a TypeError inside
+  // the scheduled trigger handler (REVIEW FIXES 2026-08-26, FIX 4a).
+  if (report.error) {
+    return { weeksAudited: 0, drifted: [], splitSuppressed: [], eventsCreated: 0 };
+  }
 
   // Same "week has an _archive row" test computeHealPlan_ (Code.gs) uses to
   // decide skip-split — read-only, ARCHIVE_TAB may not exist yet.
