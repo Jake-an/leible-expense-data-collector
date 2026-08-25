@@ -6855,6 +6855,290 @@ console.log('summary_audit.gs — Summary vs Suppliers drift audit');
 
 /* ------------------------------------------------------------------ */
 
+// Code.gs — computeHealPlan_(weeks, ctx): the single source of truth for what
+// a Summary heal WOULD do. Both the read-only preview (previewSummaryHeal, below)
+// and the eventual write path call this — they must never diverge, because the
+// preview is the only look Jake gets before real money moves. Pure: `ctx` is
+// pre-built by the caller (archiveWeeks Set, summaryRows, supplierRows,
+// revenueRows), so this function touches no Sheet.
+console.log('Code.gs — computeHealPlan_ (single source of truth for what a heal would do)');
+(function testComputeHealPlan() {
+  const savedSS = currentSS;
+  const TS = '2026-08-24T13:00:00+10:00';
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    const rev = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    (opts.revenueRows || []).forEach((r) => rev.appendRow(r));
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total, dept, kind) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
+
+  // Mirrors the guarded build documented for `ctx.archiveWeeks` — this is TEST
+  // scaffolding standing in for whatever caller builds ctx (previewSummaryHeal
+  // builds it for real, and is tested separately below); computeHealPlan_ itself
+  // never touches a Sheet, so its unit tests supply ctx directly.
+  function buildCtx() {
+    const suppSheet = currentSS.getSheetByName(SUPPLIERS_TAB);
+    const archSheet = currentSS.getSheetByName(ARCHIVE_TAB);
+    const summSheet = currentSS.getSheetByName(SUMMARY_TAB);
+    const revSheet = currentSS.getSheetByName(REVENUE_TAB);
+    const archRows = archSheet ? archSheet.getDataRange().getValues().slice(1) : [];
+    const archiveWeeks = {};
+    archRows.forEach((r) => {
+      const d = coerceDateStr_(r[0]);
+      if (DATE_ARG_RE.test(d)) archiveWeeks[weekStartForDate_(d)] = true;
+    });
+    return {
+      archiveWeeks: archiveWeeks,
+      summaryRows: summSheet.getDataRange().getValues(),
+      supplierRows: suppSheet ? suppSheet.getDataRange().getValues().slice(1) : [],
+      revenueRows: revSheet ? revSheet.getDataRange().getValues().slice(1) : []
+    };
+  }
+
+  /* ---- a stale week heals with the correct delta ------------------------ */
+  seed([sup('2026-07-08', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  {
+    const plan = computeHealPlan_(['2026-07-06'], buildCtx());
+    eq('one plan entry per requested week', plan.length, 1);
+    const wk = plan[0];
+    eq('...for the requested week', wk.week, '2026-07-06');
+    eq('action is heal', wk.action, 'heal');
+    eq('exactly one row to write', wk.rows.length, 1);
+    eq('...with live/computed named', [wk.rows[0].live, wk.rows[0].computed], [100, 175.25]);
+    eq('...and the delta correctly quantified (not the whole row)', wk.rows[0].delta, 75.25);
+    check('...not flagged as a new row (it already exists in Summary)', wk.rows[0].isNew === false);
+    const expectedKey = rowKey_(
+      mayersSummaryKeyRow_('2026-07-06', 'Cafe', 'spend', 'Kent Paper', 'Leible York'),
+      SUMMARY_KEY_COLS);
+    eq('...keyed exactly as rowKey_(SUMMARY_KEY_COLS) would key it', wk.rows[0].key, expectedKey);
+    eq('an updated row costs 2 setValue calls (upsertRows_ pays amountCol + stampCol)',
+      wk.projectedSetValues, 2);
+  }
+
+  /* ---- a week with an _archive row is skipped, not healed --------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)],
+       { archiveRows: [sup('2026-07-09', 'Fresh and Chill', 50, 'F1', 'Leible North')] });
+  {
+    const plan = computeHealPlan_(['2026-07-06'], buildCtx());
+    eq('a week with an _archive row is skip-split', plan[0].action, 'skip-split');
+    check('...with NO rows to write', !plan[0].rows || plan[0].rows.length === 0);
+    eq('...and zero projected setValue calls', plan[0].projectedSetValues, 0);
+    check('...with a reason recorded', typeof plan[0].reason === 'string' && plan[0].reason.length > 0);
+  }
+
+  /* ---- duplicate keys in the live Summary refuse the week ---------------- */
+  // Case/whitespace variant, not an exact string duplicate — duplicate
+  // detection must mirror rowKey_'s trim().toLowerCase() normalization exactly.
+  seed([sup('2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100),
+        sum('2026-07-06', '  KENT PAPER  ', 'leible york', 999)]);
+  {
+    const plan = computeHealPlan_(['2026-07-06'], buildCtx());
+    eq('duplicate live keys (case/whitespace-insensitive) refuse the week',
+      plan[0].action, 'refuse-duplicate-keys');
+    check('...with NO rows to write', !plan[0].rows || plan[0].rows.length === 0);
+    eq('...and zero projected setValue calls', plan[0].projectedSetValues, 0);
+    check('...with a reason recorded', typeof plan[0].reason === 'string' && plan[0].reason.length > 0);
+  }
+
+  /* ---- Bennetts / location='' IS included — no pull-owned filtering ----- */
+  // The inverse of a defect caught in review: greenbean/Bennetts does NOT
+  // write Summary, it ingests Suppliers rows, so its vendor-named row is the
+  // DERIVED OUTPUT of aggregateSupplierRows_ and must be healed like any other.
+  seed([sup('2026-07-08', 'Bennetts', 14219, 'B1', '')], []);
+  {
+    const plan = computeHealPlan_(['2026-07-06'], buildCtx());
+    eq('action is heal', plan[0].action, 'heal');
+    eq('the Bennetts location="" row IS included, proving no pull-owned filtering',
+      plan[0].rows.length, 1);
+    eq('...as a brand-new row for the full computed amount',
+      [plan[0].rows[0].isNew, plan[0].rows[0].computed], [true, 14219]);
+    eq('a brand-new row costs 0 setValue calls — it is appended, not updated',
+      plan[0].projectedSetValues, 0);
+  }
+
+  /* ---- shopify_orderapp's online revenue row is structurally untouched -- */
+  // aggregateSupplierRows_ drops channel='online' entirely (Code.gs:1710-1714)
+  // because shopifyWeeklyPull writes that Summary row directly — so it can
+  // never appear in the computed batch, and a heal must leave it alone rather
+  // than treating it as missing/stale/orphaned.
+  seed([], [sum('2026-07-06', 'shopify_orderapp', 'online', 900, 'Roastery', 'revenue')],
+       { revenueRows: [['2026-07-08', 'Roastery', 'online', 'N/A', 900, 'O1', 'shopify_orderapp', TS]] });
+  {
+    const plan = computeHealPlan_(['2026-07-06'], buildCtx());
+    eq('action is heal (nothing computed collides with the live row)', plan[0].action, 'heal');
+    eq('the live shopify_orderapp online row produces NO write — it is untouched',
+      plan[0].rows.length, 0);
+  }
+
+  /* ---- computeHealPlan_ performs ZERO writes ----------------------------- */
+  seed([sup('2026-07-08', 'Kent Paper', 175.25, 'K1', 'Leible York')],
+       [sum('2026-07-06', 'Kent Paper', 'Leible York', 100)]);
+  {
+    const writes = currentSS._writeLog.length;
+    const rangeCallsBefore = currentSS.getSheetByName(SUMMARY_TAB).getRangeCalls().length;
+    computeHealPlan_(['2026-07-06'], buildCtx());
+    eq('zero appendRow/setValues calls', currentSS._writeLog.length, writes);
+    eq('...and zero getRange (setValue) calls against Summary either',
+      currentSS.getSheetByName(SUMMARY_TAB).getRangeCalls().length, rangeCallsBefore);
+  }
+
+  currentSS = savedSS;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — previewSummaryHeal(): zero-arg editor entry point.
+// Builds ctx (including the guarded `_archive` week Set) and calls
+// computeHealPlan_ for the last 4 completed weeks. Read-only.
+console.log('summary_audit.gs — previewSummaryHeal() (zero-arg editor entry point)');
+(function testPreviewSummaryHeal() {
+  const savedSS = currentSS;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const NOW = '2026-08-24T02:00:00Z';   // Mon 24 Aug 2026 Sydney — wk-1 = 2026-08-17
+
+  function seed(supplierRows, summaryRows, opts) {
+    opts = opts || {};
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    const rev = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    (opts.revenueRows || []).forEach((r) => rev.appendRow(r));
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (opts.archiveRows || []).forEach((r) => arch.appendRow(r));
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  /* ---- a Date-typed _archive date cell for wk-1 still triggers skip-split */
+  seed([], [], { archiveRows: [sup('2026-08-19', 'Fresh and Chill', 50, 'F1', 'Leible North')] });
+  withMockNow(NOW, function () {
+    check('the fixture really does store the archive date cell as a Date object',
+      currentSS.getSheetByName(ARCHIVE_TAB).getDataRange().getValues()[1][0] instanceof Date);
+    const report = previewSummaryHeal();
+    const wk1 = report.weeks.filter((w) => w.week === '2026-08-17')[0];
+    eq('a Date-typed _archive row for wk-1 still triggers skip-split', wk1.action, 'skip-split');
+  });
+
+  /* ---- a blank _archive date does not seed a '' key and does not throw -- */
+  seed([], [], { archiveRows: [['', 'X', 0, '', '', 'src', TS, 'Cafe']] });
+  withMockNow(NOW, function () {
+    let threw = false;
+    let report = null;
+    try { report = previewSummaryHeal(); } catch (e) { threw = true; }
+    check('previewSummaryHeal does not throw on a blank archive date', !threw);
+    check('...and no week is mis-flagged skip-split by a blank-date key collision',
+      report !== null && report.weeks.every((w) => w.action !== 'skip-split'));
+  });
+
+  /* ---- the report names both projected-cost figures --------------------- */
+  seed(
+    [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York')],   // wk-1, stale by 75.25
+    [sum('2026-08-17', 'Kent Paper', 'Leible York', 100)],
+    { archiveRows: [
+        sup('2025-01-06', 'Old Supplier', 10, 'O1', 'X'),
+        sup('2025-01-07', 'Old Supplier', 20, 'O2', 'X'),
+        sup('2025-01-08', 'Old Supplier', 30, 'O3', 'X')
+      ] });
+  withMockNow(NOW, function () {
+    const writes = currentSS._writeLog.length;
+    const report = previewSummaryHeal();
+    eq('previewSummaryHeal writes NOTHING', currentSS._writeLog.length, writes);
+
+    eq('reports exactly the 4-week window',
+      report.weeks.map((w) => w.week).sort(),
+      ['2026-07-27', '2026-08-03', '2026-08-10', '2026-08-17']);
+
+    const wk1 = report.weeks.filter((w) => w.week === '2026-08-17')[0];
+    eq('wk-1 is a heal with the one stale row', wk1.action, 'heal');
+    eq('...delta correctly quantified', wk1.rows[0].delta, 75.25);
+
+    eq('projectedSetValues sums the whole window (2 per updated row, upsertRows_-style)',
+      report.projectedSetValues, 2);
+
+    eq('projectedOverrideCost is the _archive + Summary read size a single override call pays',
+      report.projectedOverrideCost, 3 + 1);
+  });
+
+  currentSS = savedSS;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — auditSummaryDrift_(detail, minWeek): optional window.
+// null/absent must audit every week exactly as today (14 existing tests +
+// the manual auditSummaryDrift() entry point depend on the default).
+console.log('summary_audit.gs — auditSummaryDrift_ minWeek window (opt-in)');
+(function testAuditSummaryDriftWindow() {
+  const savedSS = currentSS;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const NOW = '2026-08-24T02:00:00Z';
+
+  function seed(supplierRows, summaryRows) {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  }
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+
+  /* ---- null is byte-identical to omitting the argument ------------------ */
+  seed(
+    [sup('2026-02-25', 'Kent Paper', 200, 'K1', 'X'),
+     sup('2026-07-08', 'Kent Paper', 300, 'K2', 'Y')],
+    []);
+  withMockNow(NOW, function () {
+    const unwindowed = auditSummaryDrift_(false);
+    const explicitNull = auditSummaryDrift_(false, null);
+    eq('a null minWeek is byte-identical to omitting it entirely',
+      JSON.stringify(explicitNull), JSON.stringify(unwindowed));
+  });
+
+  /* ---- a supplied minWeek excludes earlier weeks ------------------------- */
+  seed(
+    [sup('2026-02-25', 'Kent Paper', 200, 'K1', 'X'),
+     sup('2026-07-08', 'Kent Paper', 300, 'K2', 'Y')],
+    []);
+  withMockNow(NOW, function () {
+    const windowed = auditSummaryDrift_(false, '2026-03-01');
+    eq('the week before minWeek is excluded', windowed.weeks.map((w) => w.week), ['2026-07-06']);
+    eq('...and weeksAudited only counts the included week', windowed.weeksAudited, 1);
+  });
+
+  /* ---- the boundary week itself is INCLUDED (on/after, not strictly after) */
+  seed([sup('2026-03-03', 'Kent Paper', 200, 'K1', 'X')], []);
+  withMockNow(NOW, function () {
+    const boundary = weekStartForDate_('2026-03-03');
+    const windowed = auditSummaryDrift_(false, boundary);
+    eq('the boundary week itself is included', windowed.weeks.map((w) => w.week), [boundary]);
+  });
+
+  currentSS = savedSS;
+})();
+
+/* ------------------------------------------------------------------ */
+
 // summary_drift_repair.gs — TEMPORARY, goes when the file does.
 //
 // Closes the Summary drift for the weeks a re-summarize can still rebuild.
