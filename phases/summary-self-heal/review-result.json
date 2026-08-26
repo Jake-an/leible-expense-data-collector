@@ -2,34 +2,24 @@
   "verdict": "revise",
   "issues": [
     {
-      "severity": "critical",
-      "file": "connectors/gas/Code.gs",
-      "summary": "restoreWeekFromHealBackup_ (line 1933) deletes ALL live Summary rows for the week BEFORE checking the snapshot is non-empty. When Summary_heal_backup holds no snapshot for that week - the state of every week never healed, i.e. all ~169 pre-existing weeks - it destroys the week's Summary and restores nothing, then returns {restored:0} and logs 'restored 0 row(s)', which reads as a benign no-op. Proven with a probe: 2 rows / $350 in, 0 rows / $0 out. There is no delete path back (upsertRows_ only appends/setValues), and TODO.md:64-70 names this the ONLY data undo. Needs an early return when snapshotRows is empty (plus a null guard on summSheet). Also has zero test coverage and zero callers."
-    },
-    {
       "severity": "important",
       "file": "TODO.md",
-      "summary": "The 3am rollback runbook (lines 61-63) states SUMMARY_HEAL_ENABLED=false 'stops the self-heal write immediately'. It does not. summaryHealWindowSize_ (Code.gs:2253) returns 1 when the switch is off, and weeklySummarize_impl_ still routes that one week through healWeeks_ -> healWeek_ -> upsertRows_. The suite asserts the write happens ('switch OFF: wk-1 is healed', test_code.js:8231, 100 -> 175.25). Code.gs's own comment is accurate ('off means 1 - today's single-week behaviour, now guarded'); TODO.md contradicts it. An operator flipping the documented emergency switch mid-incident will still get Summary writes."
-    },
-    {
-      "severity": "important",
-      "file": "connectors/gas/test_code.js",
-      "summary": "The FIX5 regression test ('healEarliestBackupRows_ is either called by production code or removed', line ~9200) passes vacuously. Its only caller is restoreWeekFromHealBackup_, which itself has no callers, no tests and no doc reference - so the guard is satisfied by one dead function calling another and cannot detect the dead-code condition it was written to catch. The test should assert reachability from a live entry point, not mere textual reference."
+      "summary": "The documented data undo is not runnable as written. TODO.md:67-69 tells the 3am operator to \"run restoreWeekFromHealBackup_('YYYY-MM-DD') from the editor\", but that function (Code.gs:1935) takes a REQUIRED argument the editor's Run button cannot supply, and is underscore-suffixed (Apps Script treats a trailing underscore as private — excluded from the Run function picker and from google.script.run). No zero-arg wrapper exists: grep shows the only non-test references are the definition, its own Logger line, and the TODO.md sentence. Every other operator-facing repair entry point in this project is a no-underscore, zero-arg wrapper (runSummaryDriftRepair, runSummaryOrphanSweep, cleanupDuplicateSummaryRows, previewSummaryHeal, auditSummaryDrift). Failure is at least fail-closed — invoked with no arg, week is undefined, no backup row matches, and it returns {refused:'no-snapshot'} without touching live rows — but the operator must author and save a wrapper mid-incident on the ONLY path that undoes a bad heal (TODO.md:70-72 states a code rollback cannot). Step 7's FIX3 test6a (test_code.js:9281) was written for exactly this discoverability concern but only asserts the identifier string appears in TODO.md, so it passes while the function remains uncallable. Add a wrapper such as restoreSummaryWeek(week) and name that in the runbook."
     },
     {
       "severity": "minor",
       "file": "connectors/gas/Code.gs",
-      "summary": "The 'Labour correction' alert (weeklySummarize_impl_, ~line 2330) fires whenever labourResult.summaryAdded + summaryUpdated > 0. summaryAdded counts brand-new rows, so an ordinary first-time labour insert for a fresh week trips it on every scheduled run - a weekly calendar event labelled 'correction' when nothing was corrected. Gate on summaryUpdated (or upsertRows_'s new updates array) instead. 'Labour correction' has 0 references in test_code.js."
+      "summary": "restoreWeekFromHealBackup_ (Code.gs:1935) reads the live Summary range, then deletes that week's rows and appends the snapshot, with no withScriptLock_ — unlike weeklySummarize (Code.gs:2273) and every scheduled/ingest entry point. This matches sibling manual tools (cleanupDuplicateSummaryRows, runSummaryOrphanSweep are also unlocked), so it is existing convention rather than drift introduced here, and the delete-from-the-end-backwards loop is index-safe against appendRow. But this tool is explicitly documented for 3am incident use, when the 04:00 weeklySummarize trigger may fire: a concurrent heal's upsert can interleave with the restore's delete+append and be silently lost. Wrapping the restore in withScriptLock_ is cheap given it already returns a {refused:...} shape for the lock-timeout case."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/Code.gs",
+      "summary": "healEarliestBackupRows_ (Code.gs:1909) hardcodes row[8] as run_id, while its only caller restoreWeekFromHealBackup_ slices restored rows with SUMMARY_HEADERS.length (Code.gs:1963). Both are correct today (SUMMARY_HEADERS has 8 entries, SUMMARY_HEAL_BACKUP_HEADERS = SUMMARY_HEADERS.concat(['run_id'])), but the two encodings of the same fact disagree the moment a column is added: run_id would move while row[8] keeps reading a data column, so snapshot tie-breaking would silently mix two snapshots' rows and the restore would write a blended week. This is the same latent class as the project's documented 'header consts do not migrate live tabs' gotcha. Use SUMMARY_HEADERS.length (or a named SUMMARY_BACKUP_RUNID_COL) in both places."
     },
     {
       "severity": "minor",
       "file": "connectors/gas/staleness.gs",
-      "summary": "Carried step 6 concern, still unaddressed. staleness.gs:18 and :277 claim this file is 'THE ONLY SOURCE OF THE CalendarApp OAuth SCOPE' / 'the ONLY functions in the project that touch CalendarApp', but orderapp.gs:176 and :212 still call CalendarApp.EventColor.ORANGE directly. The FIX1 test7 comment says 'no file other than staleness.gs references CalendarApp' while the assertion only reads Code.gs (test_code.js:9190-9192), so orderapp.gs is never checked. No functional impact (the scope is granted either way), but the invariant comment is false and step 6's brief required a TODO.md note that was not written."
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/gas/Code.gs",
-      "summary": "healOrphanCandidates_ lacks the auditPurgeCutoff_ guard that summaryOrphanSweep_ (summary_audit.gs) applies. On a manual weeklySummarize('<old-week>') override for a week past the 183-day purge line, neither Suppliers nor _archive holds the source rows, so the recompute is empty and every live Summary row is reported as an orphan candidate - while the sweep, which is correctly windowed, will always refuse to act on them. Alert names rows the removal path cannot touch. Scheduled runs are unaffected (they only touch the last 4 weeks)."
+      "summary": "The raiseCalendarAlert_ extraction (staleness.gs:~296) moved the getEventsForDay read inside the per-alert primitive. stalenessRaiseAlerts_ previously did ONE calendar read for the whole batch and tested each title against that map; it now calls raiseCalendarAlert_ once per stale source, so the day's events are re-read once per alert. Same for healRaiseAlert_, which fires per healed week (up to SUMMARY_HEAL_WEEKS=4 per run) and per SPLIT/duplicate refusal. Behaviour is unchanged and correctness is unaffected — this is only Calendar read-quota and latency on a path that runs on a schedule. If the source list grows, hoist the day-read back to the caller or memoize it per invocation."
     }
   ]
 }
