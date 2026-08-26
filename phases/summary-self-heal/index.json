@@ -408,8 +408,59 @@
       },
       "tdd_state": "red_done",
       "summary": "Step 9 (bounded-closeout, FINAL, repair-only): FIX1 healBackupWeek_ writes an empty-baseline marker so a newly-summarized week is never falsely re-snapshotted; FIX2 previewSummaryHeal sizes off summaryHealWindowSize_ instead of a hardcoded 4; FIX3 runSummaryOrphanSweep is with…",
-      "completed_at": "2026-08-26T14:28:39+0900"
+      "completed_at": "2026-08-26T14:28:39+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/summary-self-heal/step9-review.json",
+        "checked_at": "2026-08-26T14:31:43+0900",
+        "review_model": "haiku"
+      }
     }
   ],
-  "created_at": "2026-08-25T10:39:23+0900"
+  "created_at": "2026-08-25T10:39:23+0900",
+  "review_result": {
+    "verdict": "revise",
+    "reviewed_scope": "602e2b4^..HEAD (phase scaffold -> HEAD); main is 416 commits stale and is NOT a valid review base for this repo",
+    "tests_run": {
+      "node connectors/gas/test_code.js": "1616 passed, 0 failed",
+      "python -m pytest -q": "485 passed"
+    },
+    "issues": [
+      {
+        "severity": "critical",
+        "file": "connectors/gas/Code.gs",
+        "summary": "restoreWeekFromHealBackup_ deletes EVERY live Summary row for the week (predicate is week alone, Code.gs:1979) but re-appends only the snapshot-once baseline frozen at the week's FIRST heal. Pull-owned rows written to Summary AFTER that baseline -- shopify_orderapp online revenue (orderapp.gs writes Summary directly; PRD-10) and Labour -- are in neither the snapshot nor any recompute, so the restore destroys them with no recovery path. Confirmed by probe: a $4,321.55 shopify_orderapp row went 1 -> 0 rows and restore reported success ({restored:1}). This is the same (week)-only-predicate hazard mayers.gs:505 documents as able to destroy the ~$14,219 Bennetts row permanently. Only partially mitigated: shopifyWeeklyPull re-pulls the last 4 completed weeks, so a restore of an older week is unrecoverable. Fix: exclude pull-owned rows (shopify_orderapp / Labour) from the delete loop, as healOrphanCandidates_ and summaryOrphanSweep_ already do. No test seeds a pull-owned row before a restore."
+      },
+      {
+        "severity": "important",
+        "file": "connectors/gas/Code.gs",
+        "summary": "The step9 FIX1 empty-baseline marker reintroduces the exact ambiguous signal step7's CRITICAL FIX1 was written to eliminate. A marker-only snapshot passes the non-empty/validity guards, so restoreWeekFromHealBackup_ deletes all live rows and returns {restored:0} -- indistinguishable from the benign no-op that fix banned. Confirmed by probe: 1 live row -> 0 rows, returned {\"week\":\"2026-08-03\",\"restored\":0}. Compounding it, listSummaryHealBackups() counts the marker as a restorable row and reports rows:1, total:$0, so the operator's documented pre-flight view says there IS something to restore for a week whose restore means 'delete everything'. Return a distinct outcome (e.g. restoredToEmptyBaseline) and exclude markers from the listing count."
+      },
+      {
+        "severity": "important",
+        "file": "connectors/gas/Code.gs",
+        "summary": "weeklySummarize() returns two incompatible shapes switched by the SUMMARY_HEAL_ENABLED Script Property (weeklySummarize_impl_:2437-2472). Confirmed by probe -- flag OFF: {weekStart, weekEnd, summariesAdded, summariesUpdated, labourTabAdded, labourSummaryAdded}; flag ON: {weeks, success, newestWeekFailed, weekStart, weekEnd}, where summariesAdded is undefined. Two consequences: (a) the repo's documented undefined+undefined=NaN failure class is reachable by any consumer or manual probe reading the count fields; (b) the multi-week shape omits `refused` entirely, so the established completion test used by greenBeanPull_ (orderapp.gs:947, `if (sumRes && !sumRes.refused)`) reads an all-weeks-refused run as success. Live callers pass an explicit week today so nothing breaks yet, but the flag is designed to be turned on. Carry refused/success consistently across both shapes."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/gas/staleness.gs",
+        "summary": "In raiseCalendarAlert_, setColor()/setDescription() run after createAllDayEvent() inside one try block, and stalenessResolveColor_ falls back to returning the raw string for an unknown key. An unrecognised color name therefore creates the event, throws on setColor, and returns 0 -- leaving an orphaned all-day event with no description while the caller records 'no alert raised' and the events cache is never updated. Resolve/validate the color before creating the event."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/gas/Code.gs",
+        "summary": "healWeeks_ seeds backedUpWeeks with `backedUpWeeks[coerceDateStr_(r[0])] = true` and omits the DATE_ARG_RE guard that previewSummaryHeal, summaryOrphanSweep_ and listSummaryHealBackups (step9 FIX5) all apply to the same class of read. A blank/malformed backup date seeds a '' key. Harmless today because '' cannot collide with a real week_start, but it is the one remaining instance of the pattern step9 FIX5 set out to close."
+      },
+      {
+        "severity": "minor",
+        "file": "connectors/gas/Code.gs",
+        "summary": "The Labour correction alert builds its event title from the joined list of healed weeks (weeklySummarize_impl_, `labourWeeks.map(...).join(', ')` passed as the `week` argument to healRaiseAlert_). raiseCalendarAlert_ documents the title as the within-day idempotency key and explicitly requires callers to keep it stable with no varying date in it; this title changes whenever the healed-week set changes. Low impact on a weekly trigger, but it violates the contract the same commit introduced."
+      }
+    ],
+    "checked_at": "2026-08-26T14:40:40+0900"
+  }
 }

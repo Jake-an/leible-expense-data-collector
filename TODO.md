@@ -93,6 +93,70 @@ Full drift root-cause history (why it tripled overnight, the `_archive`
 double-count fix, the $288,852.51 reconciliation, the 18-week repair receipt)
 archived to `TODO_ARCHIVE.md` — superseded by the guards above, not deleted.
 
+### ⛔ Summary self-heal phase — FROZEN 2026-08-26. DO NOT DEPLOY.
+
+Branch `feat-mayers-location-fix`, phase `summary-self-heal`, 10 steps, all
+review-approved, **1616 GAS tests / 485 pytest green**. The phase-end review gate ran
+**6 rounds** and never returned `approve`. Jake's call after round 5: one bounded
+repair-only round, then freeze regardless of verdict. Round 6 returned a new CRITICAL.
+
+**Nothing here is deployed. `Summary` on the live Sheet has not been touched by any of
+this.** The code is committed but must NOT be pushed to GAS until the CRITICAL below is
+closed. `bash scripts/deploy.sh` pushes the whole project, so deploying anything on this
+branch deploys the heal.
+
+**OPEN — CRITICAL. The restore path destroys pull-owned rows.**
+`restoreWeekFromHealBackup_` (`Code.gs:1979`) deletes every live `Summary` row for a week
+using **week alone** as the predicate, then re-appends only the snapshot-once baseline
+frozen at that week's FIRST heal. Rows written to `Summary` *after* that baseline —
+`shopify_orderapp` online revenue (written directly, PRD-10) and `Labour` (external
+source) — are in neither the snapshot nor any recompute, so the restore destroys them with
+no recovery path. Probe-confirmed: a $4,321.55 `shopify_orderapp` row went 1 → 0 rows and
+the restore reported success (`{restored:1}`). This is the same week-only-predicate hazard
+`mayers.gs:505` documents as able to permanently destroy the ~$14,219 Bennetts row.
+Only partly mitigated: `shopifyWeeklyPull` re-pulls the last 4 completed weeks, so a
+restore of an older week is unrecoverable. Fix: exclude pull-owned rows from the delete
+predicate; match the full `SUMMARY_KEY_COLS` tuple, never `(week)` alone.
+
+**OPEN — IMPORTANT ×3.**
+1. Step 9's empty-baseline marker reintroduces the ambiguous signal step 7's CRITICAL fix
+   removed: a marker-only snapshot passes the validity guards, so the restore deletes all
+   live rows and returns `{restored:0}` — indistinguishable from the benign no-op that fix
+   banned. Probe: 1 live row → 0 rows, `{"week":"2026-08-03","restored":0}`. Worse,
+   `listSummaryHealBackups()` counts the marker as restorable (`rows:1, total:$0`), so the
+   documented pre-flight view says there IS something to restore for a week whose restore
+   means "delete everything". Needs a distinct `restoredToEmptyBaseline` outcome and
+   markers excluded from the listing.
+2. `weeklySummarize()` returns **two incompatible shapes** switched by
+   `SUMMARY_HEAL_ENABLED` (`weeklySummarize_impl_:2437-2472`). Flag OFF returns
+   `summariesAdded`; flag ON returns `{weeks, success, newestWeekFailed}` with
+   `summariesAdded` undefined — reaching the documented `undefined+undefined=NaN` failure
+   class — and omits `refused` entirely, so `greenBeanPull_`'s completion test
+   (`orderapp.gs:947`, `if (sumRes && !sumRes.refused)`) reads an all-weeks-refused run as
+   success. Live callers pass an explicit week today, so nothing breaks yet — but the flag
+   exists to be turned on.
+3. (Round 5, carried) Verify the orphan sweep's in-lock identity re-check actually landed.
+
+**OPEN — MINOR ×3.** `raiseCalendarAlert_` runs `setColor`/`setDescription` after
+`createAllDayEvent` inside one try block (a partial event survives a throw);
+`healWeeks_` seeds `backedUpWeeks` without the `DATE_ARG_RE` guard; the Labour correction
+alert builds its title from the joined healed-week list.
+
+**Harness defect worth fixing separately.** The step subagents keep writing
+`tdd_state: "green_done"`, a value `scripts/execute.py` never produces (its only terminal
+write is `red_done`, `execute.py:715`). Repaired twice this session and it recurred both
+times. On retry the runner re-runs RED and silently disables GREEN's mechanical check.
+The runner should reject unknown `tdd_state` values at write time.
+
+**Also noted, pre-existing, out of scope:** `orderapp.gs:176` and `:212` call
+`CalendarApp.EventColor` directly, so `staleness.gs`'s "THE ONLY SOURCE OF THE CalendarApp
+OAuth SCOPE" comment (`:18`, `:277`) is false independently of this phase.
+
+**What the gate is worth knowing for:** the suite was green at every round —
+1292 → 1412 → 1484 → 1497 → 1517 → 1546 → 1589 → 1616, always 0 failed — and caught
+**none** of the four CRITICALs. Every one came from the phase-end review. Green tests are
+not evidence of safety on this write path.
+
 ### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
 `mayersDailyPull` only labels a thread once something parsed out of it
 (`mayers.gs`, `if (threadParsed > 0)`). A document that can **never** parse therefore
