@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "15 assertion failures across FIX1-FIX5: backup baseline not recorded (FIX1), preview window hardcoded to 4 ignoring SUMMARY_HEAL_WEEKS (FIX2), lock/stale-index guards not preventing deletes (FIX3), calendar cache not shared (FIX4), backup date validation missing (FIX5). All failures are value mismatches indicating incomplete features, not test code issues. Test infrastructure is healthy (1601 passing, proper got/expected reporting)."
+}

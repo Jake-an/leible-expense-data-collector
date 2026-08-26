@@ -9968,6 +9968,350 @@ console.log('staleness.gs / Code.gs — step8 FIX4 test8: the day\'s calendar ev
   scriptProps = savedProps;
 })();
 
+/* ------------------------------------------------------------------ *
+ * Step 9 — bounded-closeout (PRD-12, PRD-13). FINAL STEP — repair-only,
+ * no new functions/entry points/Script Properties/tabs. See step9.md.
+ *
+ *   FIX1 (IMPORTANT) — healBackupWeek_'s snapshot-once guard falsifies the
+ *     baseline for a newly-summarized week: a first heal of a week with ZERO
+ *     live Summary rows backs up 0 rows and leaves no marker, so
+ *     healWeeks_'s ctx.backedUpWeeks (seeded only from rows already present
+ *     in Summary_heal_backup) never learns the week was already handled —
+ *     the NEXT heal treats it as "first backup" again and snapshots the
+ *     already-healed (non-empty) rows as if they were the pre-heal baseline.
+ *   FIX2 (IMPORTANT) — previewSummaryHeal hardcodes a 4-week window while the
+ *     real run sizes its window from summaryHealWindowSize_ — preview and
+ *     apply can diverge on the ONE pre-flight look an operator gets before
+ *     real money moves.
+ *   FIX3 (IMPORTANT) — runSummaryOrphanSweep deletes by cached row index with
+ *     no script lock and no identity re-verification; a concurrent
+ *     row-deleting path landing in between (restoreWeekFromHealBackup_,
+ *     cleanupDuplicateSummaryRows) can shift indices and delete a live row
+ *     with no recovery copy.
+ *   FIX4 (MINOR) — the Labour correction alert (weeklySummarize_impl_) calls
+ *     healRaiseAlert_ without ctx.calendarEventsCache, so it always re-reads
+ *     the calendar day even when the batch already read it once.
+ *   FIX5 (MINOR) — listSummaryHealBackups builds its week list from
+ *     coerceDateStr_ with no DATE_ARG_RE guard, so a blank/malformed backup
+ *     date becomes a '' week entry.
+ * ------------------------------------------------------------------ */
+
+// Code.gs — step9 FIX1: the backup baseline must not be falsified for a
+// newly-summarized (zero-live-rows) week. Probe-verified in step9.md: week
+// 2026-08-17 with 0 live Summary rows → run1 heals to 175.25 and backs up 0
+// rows → run2 heals to 999.99 and (today, unfixed) backs up 175.25 as if it
+// were the baseline → healEarliestBackupRows_ resolves to 175.25 instead of
+// the true empty baseline.
+console.log('Code.gs — step9 FIX1: the backup baseline is not falsified for a newly-summarized (zero-live-rows) week');
+(function testHealBackupBaselineNotFalsifiedFix1() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS1 = '2026-08-24T13:00:00+10:00';
+  const TS2 = '2026-08-24T14:00:00+10:00';
+  const WK = '2026-08-17';
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  supp.appendRow([addDaysStr_(WK, 2), 'Kent Paper', 175.25, 'K1', 'Leible York', 'src', TS1, 'Cafe']);
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);   // zero live rows for WK
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  const backup = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+
+  withMockNow(TS1, function () {
+    const run1 = healWeeks_([WK]);
+    check('run1 setup: the first heal of an empty week genuinely wrote a Summary row',
+      run1.weeks[0].action === 'heal' && run1.weeks[0].rowsAdded === 1);
+  });
+
+  const backupRowsAfterRun1 = backup.getDataRange().getValues().slice(1);
+  const weeksSeenAfterRun1 = backupRowsAfterRun1.filter((r) => coerceDateStr_(r[0]) === WK);
+  check('FIX1 test1: the first heal of a zero-live-row week records an explicit ' +
+    'marker for that week in Summary_heal_backup, not left absent',
+    weeksSeenAfterRun1.length >= 1);
+
+  // A second invoice lands, so a second heal recomputes a DIFFERENT total —
+  // mirrors the probe: run1 heals to 175.25, run2 to 999.99.
+  supp.appendRow([addDaysStr_(WK, 3), 'Kent Paper', 824.74, 'K2', 'Leible York', 'src', TS2, 'Cafe']);
+
+  withMockNow(TS2, function () {
+    const run2 = healWeeks_([WK]);
+    check('run2 setup: the second heal genuinely corrected the total (175.25 -> 999.99)',
+      run2.weeks[0].action === 'heal' && run2.weeks[0].updates.some((u) => u.to === 999.99));
+  });
+
+  const backupRowsAfterRun2 = backup.getDataRange().getValues().slice(1);
+
+  // FIX1 test1 continued: run2 must NOT append a second, falsified "first"
+  // snapshot for the same week — still exactly one distinct run_id for WK.
+  const runIdsForWeek = new Set(
+    backupRowsAfterRun2.filter((r) => coerceDateStr_(r[0]) === WK).map((r) => r[SUMMARY_BACKUP_RUNID_COL]));
+  eq('FIX1 test1b: a later heal does not overwrite the recorded baseline with a ' +
+    'second (falsified) snapshot — still exactly one run_id for the week',
+    runIdsForWeek.size, 1);
+
+  // FIX1 test2: healEarliestBackupRows_ must resolve to the TRUE pre-heal
+  // baseline (empty, total 0) — never run1's post-heal 175.25 total.
+  const earliest = healEarliestBackupRows_(backupRowsAfterRun2, WK);
+  const earliestTotal = earliest.reduce((sum, r) => sum + Number(r[SUMMARY_TOTAL_COL]), 0);
+  eq('FIX1 test2: healEarliestBackupRows_ resolves to the EMPTY pre-heal baseline ' +
+    '(total 0), never the falsified post-run1 total (175.25)',
+    earliestTotal, 0);
+
+  // Restore contract: "restore to nothing" — not refused as no-snapshot, and
+  // not restoring the falsified 175.25 total.
+  let restoreResult;
+  withMockNow(TS2, function () { restoreResult = restoreWeekFromHealBackup_(WK); });
+  check('FIX1 test3: restoring a week whose true baseline was empty is NOT ' +
+    'refused as "no-snapshot"',
+    !(restoreResult && restoreResult.refused === 'no-snapshot'));
+  const wkRowsAfterRestore = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()
+    .slice(1).filter((r) => coerceDateStr_(r[0]) === WK);
+  eq('FIX1 test3b: restoring to the true (empty) baseline leaves ZERO live Summary rows for the week',
+    wkRowsAfterRestore.length, 0);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — step9 FIX2: previewSummaryHeal must agree with the
+// scheduled run on the week list, for every window size — today it
+// hardcodes 4 weeks while the real run sizes off summaryHealWindowSize_ (1
+// when SUMMARY_HEAL_ENABLED is off/default, SUMMARY_HEAL_WEEKS when on).
+console.log('summary_audit.gs — step9 FIX2: previewSummaryHeal agrees with the real heal window for every window size (1, 4, 12)');
+(function testPreviewMatchesApplyWindowFix2() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+
+  currentSS = makeSpreadsheet();
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+
+  // Real system clock, deliberately NOT mocked — todayStr_() uses a bare
+  // `new Date()` (project gotcha: withMockNow only patches Date.now()), and
+  // previewSummaryHeal derives its window off todayStr_() same as the real
+  // run does, so this must match whatever "today" actually is at test time.
+  const today = todayStr_();
+  const last = getLastCompletedWeek_(today);
+  function expectedWeeks(n) {
+    const weeks = [];
+    for (let i = 0; i < n; i++) weeks.unshift(addDaysStr_(last.start, -7 * i));
+    return weeks.sort();
+  }
+
+  scriptProps = {};   // SUMMARY_HEAL_ENABLED off (default) — the scheduled run heals exactly 1 week
+  eq('FIX2 setup: summaryHealWindowSize_() is 1 with the kill switch off (default)',
+    summaryHealWindowSize_(), 1);
+  let report = previewSummaryHeal();
+  eq('FIX2 test4: with the heal kill switch OFF (default), preview shows exactly the ' +
+    '1 week the scheduled run would actually heal, not a hardcoded 4',
+    report.weeks.map((w) => w.week).sort(), expectedWeeks(1));
+
+  [1, 4, 12].forEach((n) => {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true', SUMMARY_HEAL_WEEKS: String(n) };
+    report = previewSummaryHeal();
+    eq('FIX2 test3: preview agrees with the real heal window for SUMMARY_HEAL_WEEKS=' + n,
+      report.weeks.map((w) => w.week).sort(), expectedWeeks(n));
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — step9 FIX3 test1: runSummaryOrphanSweep must refuse
+// with a lock-flavoured shape (never throw, never delete) when the script
+// lock is already held — mirrors restoreWeekFromHealBackup_'s own
+// step8-FIX2 lock-timeout test. Today the function has no withScriptLock_ at
+// all, so a held lock has zero effect and the apply proceeds.
+console.log('summary_audit.gs — step9 FIX3 test1: runSummaryOrphanSweep refuses (no delete) when the script lock is held');
+(function testOrphanSweepLockTimeoutFix3() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-20T09:00:00+10:00';
+  const TODAY = '2026-08-25T00:00:00Z';
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS)
+    .appendRow(['2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York', 'src', TS, 'Cafe']);
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow(['2026-07-06', addDaysStr_('2026-07-06', 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend']);
+  summ.appendRow(['2026-07-06', addDaysStr_('2026-07-06', 6), 'Kent Paper', 'Old Pyrmont', 250, TS, 'Cafe', 'spend']); // orphan
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+
+  withMockNow(TODAY, function () {
+    runSummaryOrphanSweepDryRun(); // approves the 1 orphan candidate, lock not held yet
+  });
+
+  const before = JSON.stringify(summ.getDataRange().getValues());
+  global.__forceLockTimeout = true;
+  let res;
+  let threw = false;
+  withMockNow(TODAY, function () {
+    try { res = runSummaryOrphanSweep(); } catch (e) { threw = true; }
+  });
+  global.__forceLockTimeout = false;
+
+  check('FIX3 test1a: runSummaryOrphanSweep does not throw when the script lock is held', !threw);
+  eq('FIX3 test1b: zero deleteRow calls when the lock could not be acquired',
+    summ.getDeleteRowCalls().length, 0);
+  eq('FIX3 test1c: live Summary rows are untouched when the lock could not be acquired',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before);
+  check('FIX3 test1d: the refusal is reported, not silently treated as success',
+    !!res && (res.aborted === true || res.mode === 'aborted' || typeof res.refused === 'string'));
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — step9 FIX3 test2: a Summary row whose key no longer
+// matches its cached index must abort the WHOLE sweep, deleting nothing —
+// simulates a concurrent row-deleting path (restoreWeekFromHealBackup_,
+// cleanupDuplicateSummaryRows) landing between the sweep's own fresh
+// recompute (its first getDataRange() read, used for the approval-match
+// gate) and a from-scratch identity re-verification pass a lock-safe
+// implementation must perform (mirroring restoreWeekFromHealBackup_'s own
+// fresh in-lock re-read, Code.gs:1970) by landing a brand-new live row at
+// one candidate's cached position on the SECOND getDataRange() read.
+console.log('summary_audit.gs — step9 FIX3 test2: a stale cached row index aborts the whole sweep, deletes nothing');
+(function testOrphanSweepStaleIndexAbortsFix3() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-20T09:00:00+10:00';
+  const TODAY = '2026-08-25T00:00:00Z';
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS)
+    .appendRow(['2026-07-08', 'Kent Paper', 100, 'K1', 'Leible York', 'src', TS, 'Cafe']);
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow(['2026-07-06', addDaysStr_('2026-07-06', 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend']);      // healthy
+  summ.appendRow(['2026-07-06', addDaysStr_('2026-07-06', 6), 'Kent Paper', 'Old Pyrmont', 250, TS, 'Cafe', 'spend']);     // orphan B
+  summ.appendRow(['2026-07-13', addDaysStr_('2026-07-13', 6), 'Fresh and Chill', 'Old Balmain', 75, TS, 'Cafe', 'spend']); // orphan C
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+
+  withMockNow(TODAY, function () {
+    runSummaryOrphanSweepDryRun(); // approves the 2 orphan candidates (B, C)
+  });
+
+  let dataRangeCalls = 0;
+  const origGetDataRange = summ.getDataRange;
+  summ.getDataRange = function () {
+    dataRangeCalls++;
+    if (dataRangeCalls === 2) {
+      summ._rows.splice(2, 0,
+        ['2026-07-06', addDaysStr_('2026-07-06', 6), 'Brand New Live Row', 'Somewhere', 42, TS, 'Cafe', 'spend']);
+    }
+    return origGetDataRange();
+  };
+
+  clearWriteOrderLog();
+  let result;
+  let threw = false;
+  withMockNow(TODAY, function () {
+    try { result = runSummaryOrphanSweep(); } catch (e) { threw = true; }
+  });
+  summ.getDataRange = origGetDataRange;
+
+  check('FIX3 test2a: runSummaryOrphanSweep does not throw when a cached row index goes stale mid-sweep', !threw);
+  eq('FIX3 test2b: a stale-index mismatch aborts the WHOLE sweep — zero deleteRow calls',
+    summ.getDeleteRowCalls().length, 0);
+
+  const afterRows = summ._rows.map((r) => r.slice());
+  check('FIX3 test2c: the live row that landed mid-sweep survives untouched',
+    afterRows.some((r) => r[2] === 'Brand New Live Row'));
+  check('FIX3 test2d: both original orphan rows still exist — nothing was deleted at all',
+    afterRows.some((r) => r[3] === 'Old Pyrmont') && afterRows.some((r) => r[3] === 'Old Balmain'));
+  check('FIX3 test2e: the healthy Kent Paper / Leible York row still exists',
+    afterRows.some((r) => r[3] === 'Leible York' && r[2] === 'Kent Paper'));
+  check('FIX3 test2f: the abort is reported, not silently treated as success',
+    !!result && (result.aborted === true || result.mode === 'aborted'));
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — step9 FIX4: the Labour correction alert must share the batch
+// calendar-events cache — weeklySummarize_impl_ calls healRaiseAlert_ for a
+// genuine Labour correction WITHOUT ctx.calendarEventsCache, so it always
+// re-reads the calendar day even when healWeeks_'s own correction alert (in
+// the SAME weeklySummarize call) already read it once.
+console.log('Code.gs — step9 FIX4: the Labour correction alert shares the batch calendar-events cache (no extra getEventsForDay read)');
+(function testLabourAlertSharesCalendarCacheFix4() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WEEK = '2026-06-15';
+  const WEEK_END = addDaysStr_(WEEK, 6);
+
+  currentSS = makeSpreadsheet();
+  scriptProps = { LABOUR_SHEET_ID: 'labour-sheet-id' };
+
+  ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS)
+    .appendRow([WEEK, 'Kent Paper', 500, 'K1', 'Leible York', 'src', TS, 'Cafe']);
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow([WEEK, WEEK_END, 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend']); // stale -> corrected to 500
+  summ.appendRow([WEEK, WEEK_END, 'Labour', 'york', 1000, TS, 'Cafe', 'spend']);           // stale -> corrected below
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+
+  const src = currentSS.insertSheet('LABOUR_COST');
+  src.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
+  src.appendRow([WEEK, WEEK_END, 'york', 4830.14, '2026-W25', 'x']);
+
+  calendarEvents = [];
+  resetGetEventsForDayCallCount();
+  weeklySummarize(WEEK);
+
+  check('FIX4 setup: the Suppliers-side heal genuinely corrected Kent Paper (100 -> 500)',
+    calendarEvents.some((e) => e._title.indexOf('Summary corrected') !== -1));
+  check('FIX4 setup: the Labour pull genuinely corrected the stale total (1000 -> 4830.14)',
+    calendarEvents.some((e) => e._title.indexOf('Labour correction') !== -1));
+  eq('FIX4 test7: both the Summary correction alert and the Labour correction ' +
+    'alert share ONE getEventsForDay read for the whole weeklySummarize call, not two',
+    getEventsForDayCallCount, 1);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — step9 FIX5: listSummaryHealBackups must validate dates
+// (DATE_ARG_RE) before building its week list — today a blank/malformed
+// backup date cell becomes a '' week entry, matching the guard
+// auditSummaryDrift_/computeHealPlan_ already apply.
+console.log('summary_audit.gs — step9 FIX5: listSummaryHealBackups validates dates before building the week list');
+(function testListSummaryHealBackupsValidatesDatesFix5() {
+  const savedSS = currentSS;
+
+  currentSS = makeSpreadsheet();
+  const backup = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  backup.appendRow(['', '', '', '', 0, '', '', '', 'RUN-BLANK']);   // malformed/blank date row
+  backup.appendRow(['2026-07-06', '2026-07-12', 'Kent Paper', 'Leible York', 100, 'TS', 'Cafe', 'spend', 'RUN-1']);
+
+  const result = listSummaryHealBackups();
+  check("FIX5 test8: a blank/malformed backup date does not produce a '' week entry",
+    !result.weeks.some((w) => w.week === ''));
+  check('FIX5 test8b: the genuine week is still reported',
+    result.weeks.some((w) => w.week === '2026-07-06'));
+
+  currentSS = savedSS;
+})();
+
 /* ------------------------------------------------------------------ */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
