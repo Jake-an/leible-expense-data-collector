@@ -71,6 +71,11 @@ var SUMMARY_STAMP_COL = 5;
 // which snapshot and healEarliestBackupRows_ can resolve ties to the earliest.
 var SUMMARY_HEAL_BACKUP_TAB = 'Summary_heal_backup';
 var SUMMARY_HEAL_BACKUP_HEADERS = SUMMARY_HEADERS.concat(['run_id']);
+// ONE named source of truth for "where run_id lives" in a backup row — used
+// by both healEarliestBackupRows_ and restoreWeekFromHealBackup_ so the two
+// can never independently drift the moment a column is added to
+// SUMMARY_HEADERS (step8 FIX3).
+var SUMMARY_BACKUP_RUNID_COL = SUMMARY_HEADERS.length;
 
 // Kill switch (PRD-12): SUMMARY_HEAL_ENABLED (Script Property, default OFF)
 // controls only how many weeks a scheduled run heals — off means 1 (today's
@@ -1912,7 +1917,7 @@ function healEarliestBackupRows_(backupRows, week) {
   for (var i = 0; i < backupRows.length; i++) {
     var row = backupRows[i];
     if (coerceDateStr_(row[0]) !== week) continue;
-    var runId = row[8];
+    var runId = row[SUMMARY_BACKUP_RUNID_COL];
     if (firstRunId === null) firstRunId = runId;
     if (runId !== firstRunId) continue; // a later snapshot for the same week — ignore
     result.push(row);
@@ -1925,12 +1930,19 @@ function healEarliestBackupRows_(backupRows, week) {
  * has no delete path of its own (upsertRows_ only appends/setValue-updates),
  * so this is the only way back. Overwrites `week`'s LIVE Summary rows with
  * its EARLIEST Summary_heal_backup snapshot via healEarliestBackupRows_ —
- * never a later, already-corrected one. Manual, zero-arg-friendly: run by
- * hand from the editor; not wired to any trigger.
+ * never a later, already-corrected one. Reachable from the Run button via the
+ * zero-arg restoreSummaryWeekFromBackup() wrapper (summary_audit.gs);
+ * not wired to any trigger.
  * CRITICAL: validates the snapshot BEFORE touching any live rows.
+ *
+ * step8 FIX2: the actual delete+append is wrapped in withScriptLock_ — this
+ * is the documented 3am-incident tool, run while the 04:00 weeklySummarize
+ * trigger may be mid-run, and an unlocked delete+append could interleave with
+ * a concurrent heal's upsert and silently lose one or the other.
+ *
  * @param {string} week 'YYYY-MM-DD'
  * @returns {{week:string, refused:string} | {week:string, restored:number}}
- *   refused: refusal reason (no snapshot, malformed data, etc.)
+ *   refused: refusal reason (no snapshot, malformed data, lock timeout, etc.)
  */
 function restoreWeekFromHealBackup_(week) {
   var ss = getHubSpreadsheet_();
@@ -1954,17 +1966,24 @@ function restoreWeekFromHealBackup_(week) {
     }
   }
 
-  var liveValues = summSheet.getDataRange().getValues();
-  for (var r = liveValues.length - 1; r >= 1; r--) {
-    if (coerceDateStr_(liveValues[r][0]) === week) summSheet.deleteRow(r + 1);
-  }
-  for (var s = 0; s < snapshotRows.length; s++) {
-    summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_HEADERS.length));
+  var restoredCount = withScriptLock_(function () {
+    var liveValues = summSheet.getDataRange().getValues();
+    for (var r = liveValues.length - 1; r >= 1; r--) {
+      if (coerceDateStr_(liveValues[r][0]) === week) summSheet.deleteRow(r + 1);
+    }
+    for (var s = 0; s < snapshotRows.length; s++) {
+      summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_BACKUP_RUNID_COL));
+    }
+    return snapshotRows.length;
+  });
+
+  if (restoredCount === LOCK_TIMEOUT_) {
+    return { week: week, refused: 'locked: could not acquire the script lock for restore — retry shortly' };
   }
 
-  Logger.log('restoreWeekFromHealBackup_: week ' + week + ' — restored ' + snapshotRows.length +
+  Logger.log('restoreWeekFromHealBackup_: week ' + week + ' — restored ' + restoredCount +
     ' row(s) from the earliest ' + SUMMARY_HEAL_BACKUP_TAB + ' snapshot');
-  return { week: week, restored: snapshotRows.length };
+  return { week: week, restored: restoredCount };
 }
 
 /**
@@ -2007,11 +2026,14 @@ function healBackupWeek_(week, ctx) {
  * @param {boolean} highSeverity RED (not ORANGE) — reserved for a SPLIT-skip
  *   or duplicate-refusal of the NEWEST week: a silently un-summarized current
  *   week is worse than a slightly wrong one (PRD-12).
+ * @param {{loaded:boolean, existing:Object}} [eventsCache] step8 FIX4 — shared
+ *   across every healRaiseAlert_ call in one healWeeks_ run so the calendar
+ *   day is read ONCE for the whole batch, not once per corrected week.
  */
-function healRaiseAlert_(week, kind, bodyLines, highSeverity) {
+function healRaiseAlert_(week, kind, bodyLines, highSeverity, eventsCache) {
   try {
     var title = 'LEIBLE expense Summary heal ' + week + ': ' + kind;
-    raiseCalendarAlert_(title, bodyLines, highSeverity ? 'RED' : 'ORANGE', Date.now());
+    raiseCalendarAlert_(title, bodyLines, highSeverity ? 'RED' : 'ORANGE', Date.now(), eventsCache);
   } catch (err) {
     Logger.log('healRaiseAlert_: failed for week ' + week + ' — ' + err.message);
   }
@@ -2053,7 +2075,7 @@ function healWeek_(week, ctx, isNewest) {
   if (plan.action === 'skip-split' || plan.action === 'refuse-duplicate-keys') {
     healRaiseAlert_(week,
       plan.action === 'skip-split' ? 'SPLIT week skipped' : 'duplicate keys — refused',
-      [plan.reason], !!isNewest);
+      [plan.reason], !!isNewest, ctx.calendarEventsCache);
     return {
       week: week, action: plan.action, reason: plan.reason,
       rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 0, updates: [], orphans: [], backedUp: true
@@ -2087,7 +2109,7 @@ function healWeek_(week, ctx, isNewest) {
   if (alertDetail.length > 0) {
     healRaiseAlert_(week,
       writeRes.updates.length > 0 ? 'Summary corrected' : 'orphan candidate(s) found',
-      alertDetail, false);
+      alertDetail, false, ctx.calendarEventsCache);
   }
 
   // A non-zero duplicatesSkipped on the heal path is a reportable condition,
@@ -2208,7 +2230,10 @@ function healWeeks_(weeks) {
     backedUpWeeks: backedUpWeeks,
     runId: 'HEAL-' + nowStamp,
     extractedAt: nowStamp,
-    purgeCutoff: purgeCutoff
+    purgeCutoff: purgeCutoff,
+    // step8 FIX4: one calendar day-read for the whole batch, shared by every
+    // healWeek_'s healRaiseAlert_ call — see raiseCalendarAlert_ (staleness.gs).
+    calendarEventsCache: stalenessNewEventsCache_()
   };
 
   var sorted = weeks.slice().sort().reverse(); // 'YYYY-MM-DD' sorts lexically — newest first

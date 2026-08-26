@@ -306,6 +306,31 @@ function stalenessResolveColor_(name) {
 }
 
 /**
+ * step8 FIX4: a fresh cache scopes ONE invocation's calendar day-read — pass
+ * the SAME object to every raiseCalendarAlert_ call made within one batch
+ * (stalenessRaiseAlerts_'s stale sources, healWeeks_'s corrected weeks) so
+ * getEventsForDay is called once for the whole batch, not once per alert.
+ * A caller that raises exactly one alert (summaryDriftCheck_, the labour
+ * correction alert) can omit it — raiseCalendarAlert_ falls back to reading
+ * the day itself, unchanged from before this optimization.
+ */
+function stalenessNewEventsCache_() {
+  return { loaded: false, existing: {} };
+}
+
+/** Reads cal.getEventsForDay(now) into a title->true map. Never throws. */
+function stalenessLoadExistingTitles_(cal, now) {
+  var existing = {};
+  try {
+    var events = cal.getEventsForDay(now);
+    for (var i = 0; i < events.length; i++) existing[events[i].getTitle()] = true;
+  } catch (err) {
+    Logger.log('raiseCalendarAlert_: getEventsForDay failed — ' + err.message);
+  }
+  return existing;
+}
+
+/**
  * Shared calendar-alert primitive. Resolves the calendar via
  * stalenessCalendar_ (never throws), and is idempotent within a day: a title
  * already present among today's events is treated as "already raised" and
@@ -316,9 +341,11 @@ function stalenessResolveColor_(name) {
  * @param {string[]} bodyLines joined with '\n' here — callers must not hand-build one blob
  * @param {string} color 'ORANGE' | 'RED' (or any CalendarApp.EventColor key)
  * @param {number} nowMs injected clock
+ * @param {{loaded:boolean, existing:Object}} [eventsCache] optional, shared
+ *   across every call in one invocation — see stalenessNewEventsCache_.
  * @returns {number} 1 if a new event was created, 0 otherwise (incl. on failure)
  */
-function raiseCalendarAlert_(title, bodyLines, color, nowMs) {
+function raiseCalendarAlert_(title, bodyLines, color, nowMs, eventsCache) {
   var cal = stalenessCalendar_();
   if (!cal) {
     Logger.log('raiseCalendarAlert_: no calendar available — logging only. ' + title);
@@ -327,12 +354,15 @@ function raiseCalendarAlert_(title, bodyLines, color, nowMs) {
 
   var now = new Date(nowMs);
 
-  var existing = {};
-  try {
-    var events = cal.getEventsForDay(now);
-    for (var i = 0; i < events.length; i++) existing[events[i].getTitle()] = true;
-  } catch (err) {
-    Logger.log('raiseCalendarAlert_: getEventsForDay failed — ' + err.message);
+  var existing;
+  if (eventsCache) {
+    if (!eventsCache.loaded) {
+      eventsCache.existing = stalenessLoadExistingTitles_(cal, now);
+      eventsCache.loaded = true;
+    }
+    existing = eventsCache.existing;
+  } else {
+    existing = stalenessLoadExistingTitles_(cal, now);
   }
   if (existing[title]) return 0;
 
@@ -340,6 +370,7 @@ function raiseCalendarAlert_(title, bodyLines, color, nowMs) {
     var ev = cal.createAllDayEvent(title, now);
     ev.setColor(stalenessResolveColor_(color));
     ev.setDescription(bodyLines.join('\n'));
+    if (eventsCache) existing[title] = true; // keep the cache consistent for later calls in this same batch
     return 1;
   } catch (err2) {
     Logger.log('raiseCalendarAlert_: could not create event for ' + title + ' — ' + err2.message);
@@ -347,14 +378,16 @@ function raiseCalendarAlert_(title, bodyLines, color, nowMs) {
   }
 }
 
-/** Raise one orange all-day event per stale source; idempotent within a day. */
+/** Raise one orange all-day event per stale source; idempotent within a day.
+ *  Reads the calendar day ONCE for the whole batch (step8 FIX4). */
 function stalenessRaiseAlerts_(staleEntries, nowMs) {
   var created = 0;
+  var eventsCache = stalenessNewEventsCache_();
   for (var s = 0; s < staleEntries.length; s++) {
     var entry = staleEntries[s];
     var title = stalenessEventTitle_(entry.source);
     var bodyLines = stalenessEventBody_(entry, entry.thresholdHours || STALENESS_THRESHOLD_HOURS);
-    created += raiseCalendarAlert_(title, bodyLines, 'ORANGE', nowMs);
+    created += raiseCalendarAlert_(title, bodyLines, 'ORANGE', nowMs, eventsCache);
   }
   return created;
 }

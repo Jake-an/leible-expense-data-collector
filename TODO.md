@@ -64,10 +64,22 @@ alone are not that verification.
   The write path stays ACTIVE in both states. **The REAL emergency stop:**
   disable or delete the `weeklySummarize` trigger itself (Apps Script Triggers
   panel) — this halts the scheduled run and all one-off override calls.
-- **Data undo:** run `restoreWeekFromHealBackup_('YYYY-MM-DD')` from the
-  editor to restore the affected week from the **earliest** `Summary_heal_backup`
-  snapshot for that week — snapshot-once by design, so the first entry is
-  always the true pre-heal baseline, never a later re-heal's value.
+- **Data undo (Run-button reachable, both zero-arg):**
+  1. Run `listSummaryHealBackups()` from the editor — read-only, logs one
+     line per week that has a `Summary_heal_backup` snapshot (week, run_id,
+     row count, total), so you can see what's restorable before choosing.
+  2. Set the `SUMMARY_RESTORE_WEEK` Script Property to the target week's
+     `week_start` (`YYYY-MM-DD`, e.g. `2026-07-06`).
+  3. Run `restoreSummaryWeekFromBackup()` from the editor. It reads
+     `SUMMARY_RESTORE_WEEK`, refuses loudly (touching nothing) if it's unset
+     or unparseable, and otherwise delegates to the internal
+     `restoreWeekFromHealBackup_` — not itself Run-button reachable (trailing
+     underscore + required arg), which is exactly why step 8 added this
+     wrapper — to restore the week from the **earliest**
+     `Summary_heal_backup` snapshot for it — snapshot-once by design, so the
+     first entry is always the true pre-heal baseline, never a later
+     re-heal's value. Locked against a concurrent `weeklySummarize` run;
+     refuses with a `{refused:'locked: ...'}` shape instead of racing it.
 - **A code rollback does NOT undo a bad heal.** `upsertRows_` writes with an
   in-place `setValue` and has no delete path; `clasp redeploy … -V 39` reverts
   the code, not the data. The backup tab is the only undo.

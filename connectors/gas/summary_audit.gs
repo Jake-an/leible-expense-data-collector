@@ -844,4 +844,93 @@ function installSummaryDriftTrigger() {
 
 /* Zero-arg editor entry points — the Run button passes no arguments. */
 function auditSummaryDrift() { return auditSummaryDrift_(false); }
+
+/* ------------------------------------------------------------------ *
+ * step8 FIX1 — the documented data undo, actually reachable.
+ *
+ * restoreWeekFromHealBackup_(week) (Code.gs) is the only way back from a bad
+ * heal, but a trailing underscore hides it from the Run picker AND it takes a
+ * required argument the Run button cannot supply — the one documented
+ * recovery path for the one irreversible write path in this phase was
+ * unreachable at exactly the moment it's needed. These two follow the
+ * project's zero-arg, no-underscore operator-entry-point convention
+ * (previewSummaryHeal, runSummaryOrphanSweep, cleanupDuplicateSummaryRows):
+ *   listSummaryHealBackups()        — read-only, what CAN be restored.
+ *   restoreSummaryWeekFromBackup()  — reads the target week from a Script
+ *     Property (no arg the Run button could supply otherwise) and delegates
+ *     to restoreWeekFromHealBackup_, keeping every fail-closed guard it has.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Read-only. Logs ONE line per week with a Summary_heal_backup snapshot —
+ * the EARLIEST snapshot's row count + total (healEarliestBackupRows_'s own
+ * tie-break: a later, already-corrected snapshot for the same week is never
+ * double-counted or surfaced instead), so an operator can see what is
+ * restorable before setting SUMMARY_RESTORE_WEEK. Zero-arg for the Run
+ * button. Writes nothing.
+ * @returns {{weeks:Array<{week:string, runId:*, rows:number, total:number}>}}
+ */
+function listSummaryHealBackups() {
+  var ss = getHubSpreadsheet_();
+  var backupSheet = ss.getSheetByName(SUMMARY_HEAL_BACKUP_TAB);
+  if (!backupSheet) {
+    Logger.log('listSummaryHealBackups: no ' + SUMMARY_HEAL_BACKUP_TAB + ' tab — nothing to restore');
+    return { weeks: [] };
+  }
+
+  var backupRows = backupSheet.getDataRange().getValues().slice(1);
+  var seen = {};
+  var weekOrder = [];
+  for (var i = 0; i < backupRows.length; i++) {
+    var wk = coerceDateStr_(backupRows[i][0]);
+    if (!seen[wk]) { seen[wk] = true; weekOrder.push(wk); }
+  }
+  weekOrder.sort(); // oldest first
+
+  Logger.log('=== SUMMARY HEAL BACKUPS (earliest snapshot per week; read-only) ===');
+  var weeks = [];
+  for (var w = 0; w < weekOrder.length; w++) {
+    var week = weekOrder[w];
+    var rows = healEarliestBackupRows_(backupRows, week);
+    var total = 0;
+    for (var r = 0; r < rows.length; r++) total += Number(rows[r][SUMMARY_TOTAL_COL]);
+    var runId = rows.length ? rows[0][SUMMARY_BACKUP_RUNID_COL] : null;
+    weeks.push({ week: week, runId: runId, rows: rows.length, total: total });
+    Logger.log(week + '  run_id=' + runId + '  rows=' + rows.length + '  total=$' + total);
+  }
+  Logger.log('To restore a week: set the SUMMARY_RESTORE_WEEK script property to its week_start ' +
+    '(YYYY-MM-DD), then run restoreSummaryWeekFromBackup().');
+
+  return { weeks: weeks };
+}
+
+/**
+ * Run-button-reachable wrapper around restoreWeekFromHealBackup_ (Code.gs).
+ * Zero-arg, no trailing underscore — the two defects listSummaryHealBackups'
+ * header comment names. Reads the target week from the SUMMARY_RESTORE_WEEK
+ * script property and refuses loudly, touching nothing, when it is unset or
+ * unparseable — never silently coerced into "no week" or a garbage match.
+ * Delegates to restoreWeekFromHealBackup_ for the actual restore, so every
+ * fail-closed guard that function has (snapshot validation, script lock)
+ * applies unchanged.
+ * @returns {{week:?string, refused:string} | {week:string, restored:number}}
+ */
+function restoreSummaryWeekFromBackup() {
+  var raw = PropertiesService.getScriptProperties().getProperty('SUMMARY_RESTORE_WEEK');
+
+  if (!raw) {
+    Logger.log('restoreSummaryWeekFromBackup: SUMMARY_RESTORE_WEEK script property is not set — ' +
+      'set it to the week_start (YYYY-MM-DD) you want to restore (see listSummaryHealBackups()), ' +
+      'then re-run.');
+    return { week: null, refused: 'SUMMARY_RESTORE_WEEK not set' };
+  }
+
+  var week = resolveDateArg_(raw, null);
+  if (!week) {
+    Logger.log('restoreSummaryWeekFromBackup: SUMMARY_RESTORE_WEEK=' + raw + ' is not a valid YYYY-MM-DD date');
+    return { week: null, refused: 'SUMMARY_RESTORE_WEEK unparseable: ' + raw };
+  }
+
+  return restoreWeekFromHealBackup_(week);
+}
 function auditSummaryDriftDetail() { return auditSummaryDrift_(true); }
