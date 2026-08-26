@@ -58,13 +58,16 @@ and drift guard passes — the same rule `PRD-9`/`10`/`11` followed. Green tests
 alone are not that verification.
 
 **Rollback facts an operator needs at 3am:**
-- **Kill switch:** `SUMMARY_HEAL_ENABLED=false` (Script Property) — instant,
-  no deploy, stops the self-heal write immediately. `checkSummaryDrift()`
-  keeps running unaffected (it's read-only).
-- **Data undo:** restore the affected week from the **earliest**
-  `Summary_heal_backup` snapshot for that week — snapshot-once by design, so
-  the first entry is always the true pre-heal baseline, never a later
-  re-heal's value.
+- **Kill switch:** `SUMMARY_HEAL_ENABLED` (Script Property, default **off**) —
+  controls the WINDOW SIZE only: OFF/default = 1 week (today's single-week
+  behaviour, always guarded), ON = `SUMMARY_HEAL_WEEKS` (default 4 weeks).
+  The write path stays ACTIVE in both states. **The REAL emergency stop:**
+  disable or delete the `weeklySummarize` trigger itself (Apps Script Triggers
+  panel) — this halts the scheduled run and all one-off override calls.
+- **Data undo:** run `restoreWeekFromHealBackup_('YYYY-MM-DD')` from the
+  editor to restore the affected week from the **earliest** `Summary_heal_backup`
+  snapshot for that week — snapshot-once by design, so the first entry is
+  always the true pre-heal baseline, never a later re-heal's value.
 - **A code rollback does NOT undo a bad heal.** `upsertRows_` writes with an
   in-place `setValue` and has no delete path; `clasp redeploy … -V 39` reverts
   the code, not the data. The backup tab is the only undo.
@@ -179,6 +182,9 @@ Phase-end gate returned **approve**; these were noted, not blocking. None is a l
 - [ ] Bookkeeping only: step 6 is `done_with_concerns` because the runner was killed between
       commit and review dispatch (committed step → empty diff → cannot re-review). Its code was
       covered by the phase-end rounds; do not mistake it for a completed per-step review.
+- **CalendarApp note (step 6):** `orderapp.gs` also touches the CalendarApp OAuth scope for
+  fail-open alerts (`greenBeanRunSuccess_`, line ~280). This is a known exception, deliberately
+  out of scope for phase `summary-self-heal` CalendarApp audit (staleness.gs documents it).
 
 ### shopspend-hardening — 4 minors carried out of the approved phase (2026-08-05)
 Phase-end gate returned **approve**; these were noted, not blocking. None is a correctness bug.

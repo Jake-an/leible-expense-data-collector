@@ -9267,23 +9267,303 @@ console.log('summary_audit.gs — FIX4: a malformed/missing approvedAt on the or
 
 /* ------------------------------------------------------------------ */
 
-// Code.gs — FIX5: healEarliestBackupRows_ has no production caller today
-// (grep across connectors/ returns only its own definition). It must either
-// be wired into the documented restore path or removed entirely — dead code
-// on a restore path reads as an available recovery mechanism that nothing
-// invokes.
-console.log('Code.gs — FIX5: healEarliestBackupRows_ is either called by production code, or removed');
-(function testHealEarliestBackupRowsWiredOrGoneFix5() {
+// Code.gs — step7 FIX3: healEarliestBackupRows_'s reachability must be
+// anchored to a genuine, documented, EXERCISED entry point — not mere
+// textual reference. The round-2 FIX5 guard immediately below counted
+// call-SITE syntax in Code.gs alone, which restoreWeekFromHealBackup_
+// calling healEarliestBackupRows_ satisfies trivially even though NOTHING
+// called restoreWeekFromHealBackup_ itself and it carried zero tests — a
+// dead function calling another dead function is exactly the condition this
+// was supposed to catch, and it didn't (phase gate round 3, CRITICAL).
+console.log('Code.gs — step7 FIX3: healEarliestBackupRows_ is reachable from a documented, exercised restore entry point (not just textually referenced)');
+(function testHealEarliestBackupRowsReachableFix3() {
+  const todoSrc = fs.readFileSync(path.join(GAS_DIR, '..', '..', 'TODO.md'), 'utf8');
+  check('FIX3 test6a: restoreWeekFromHealBackup_ is named BY IDENTIFIER in TODO.md\'s ' +
+    'runbook — a documented entry point an operator can actually find, not just described in prose',
+    todoSrc.indexOf('restoreWeekFromHealBackup_') !== -1);
+
+  // The OLD (round-2 FIX5) guard, kept as a supplementary sanity check only —
+  // it is satisfied by dead code calling dead code and must never be trusted
+  // on its own again; test6a above is the real anchor.
   const codeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');
-  // Counts call-SITE syntax (name followed by an opening paren), which also
-  // matches the function's own `function healEarliestBackupRows_(...)`
-  // declaration — so a lone match means "only its own definition exists",
-  // and more than one means a real caller was added elsewhere.
   const callSites = (codeSrc.match(/healEarliestBackupRows_\s*\(/g) || []).length;
   const exists = typeof healEarliestBackupRows_ === 'function';
-  check('FIX5 test10: healEarliestBackupRows_ is either called by production code ' +
-    '(more than just its own definition) or has been removed entirely',
+  check('FIX3 test6b: healEarliestBackupRows_ still resolves (either wired in or removed)',
     !exists || callSites > 1);
+})();
+
+/* ------------------------------------------------------------------ *
+ * REVIEW FIXES 2026-08-26, round 3 (Step 7: restore-path-and-runbook-fixes)
+ *
+ * Phase gate round 3 returned 1 CRITICAL + 2 IMPORTANT + 3 MINOR. The
+ * CRITICAL was introduced by round 2's own FIX5 wiring:
+ * restoreWeekFromHealBackup_ deletes ALL live Summary rows for a week BEFORE
+ * checking its backup snapshot is non-empty, so a week that was never healed
+ * (every one of the ~169 pre-existing weeks) gets its Summary destroyed and
+ * returns {restored:0} — indistinguishable from a benign no-op.
+ *   FIX1 (CRITICAL) — restoreWeekFromHealBackup_ must be fail-closed: read
+ *     and validate the snapshot BEFORE touching any live row; refuse loudly
+ *     (never {restored:0}) when there is nothing, or nothing valid, to
+ *     restore from.
+ *   FIX2 (IMPORTANT) — TODO.md claims SUMMARY_HEAL_ENABLED=false "stops the
+ *     self-heal write immediately"; it only shrinks the window to 1 — the
+ *     runbook must say so, and name the REAL emergency stop (the trigger).
+ *   FIX3 (IMPORTANT, covered above) — the round-2 FIX5 regression test is
+ *     satisfied by one dead function calling another; anchored above to a
+ *     genuine, documented entry point instead.
+ *   FIX4 (MINOR) — the "Labour correction" alert fires on every first-time
+ *     labour insert, not just a genuine correction.
+ *   FIX5 (MINOR) — healOrphanCandidates_ needs the same auditPurgeCutoff_
+ *     guard summaryOrphanSweep_ already applies.
+ *   FIX6 (MINOR) — staleness.gs's CalendarApp-exclusivity comment is false:
+ *     orderapp.gs also touches CalendarApp directly (pre-existing, out of
+ *     scope to refactor here) — the comment and its test must record the
+ *     exception instead of asserting a false invariant.
+ * ------------------------------------------------------------------ */
+
+// Code.gs — step7 FIX1 (CRITICAL): restoreWeekFromHealBackup_ must be
+// fail-closed. It is the ONLY documented data-undo path (TODO.md "Rollback
+// facts an operator needs at 3am") and today deletes every live Summary row
+// for the week BEFORE it even looks at whether a usable snapshot exists —
+// proven with a probe: 2 rows / $350 in, 0 rows / $0 out.
+console.log('Code.gs — step7 FIX1 (CRITICAL): restoreWeekFromHealBackup_ reads + validates the snapshot BEFORE touching any live row');
+(function testRestoreWeekFromHealBackupFailClosedFix1() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+  const sumRow = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+  const backupRow = (wk, supplier, loc, total, runId) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend', runId];
+
+  /* ---- Test 1: NO snapshot for the week — the $350 -> $0 case. Must delete
+   *      NOTHING and return a loud refusal, never {restored:0}. Mutation-test:
+   *      removing the early return makes this go red. -------------------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const summ1 = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ1.appendRow(sumRow(WK, 'Kent Paper', 'Leible York', 200));
+  summ1.appendRow(sumRow(WK, 'Fresh and Chill', 'Leible North', 150));
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS); // tab exists, no snapshot for WK
+  const before1 = JSON.stringify(summ1.getDataRange().getValues());
+
+  const res1 = restoreWeekFromHealBackup_(WK);
+
+  eq('FIX1 test1: no snapshot -> a loud, distinct refusal (not {restored:0})',
+    res1 && res1.refused, 'no-snapshot');
+  check('FIX1 test1: the response does NOT carry a "restored" count at all — {restored:0} reads as success',
+    !res1 || res1.restored === undefined);
+  eq('FIX1 test1: zero deleteRow calls — nothing is touched before the snapshot is validated',
+    summ1.getDeleteRowCalls().length, 0);
+  eq('FIX1 test1: live Summary rows are byte-identical afterwards ($350 survives, not $0)',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before1);
+
+  /* ---- Test 2: no Summary sheet at all — no throw, no write ------------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  let threw2 = false;
+  let res2;
+  try { res2 = restoreWeekFromHealBackup_(WK); } catch (e) { threw2 = true; }
+  check('FIX1 test2: a missing Summary sheet does not throw', !threw2);
+  check('FIX1 test2: a missing Summary sheet is reported as a refusal', !!res2 && !!res2.refused);
+  check('FIX1 test2: no Summary sheet is created as a side effect of the (failed) restore',
+    currentSS.getSheetByName(SUMMARY_TAB) === null);
+
+  /* ---- Test 3: a malformed snapshot refuses rather than partially
+   *      restoring — total is not a usable number ------------------------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const summ3 = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ3.appendRow(sumRow(WK, 'Kent Paper', 'Leible York', 100));
+  const backup3 = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  backup3.appendRow(backupRow(WK, 'Kent Paper', 'Leible York', 'NOT_A_NUMBER', 'RUN-1'));
+  const before3 = JSON.stringify(summ3.getDataRange().getValues());
+
+  const res3 = restoreWeekFromHealBackup_(WK);
+
+  check('FIX1 test3: a malformed snapshot (non-numeric total) is refused, not partially applied',
+    !!res3 && !!res3.refused);
+  eq('FIX1 test3: zero deleteRow calls on a malformed snapshot',
+    summ3.getDeleteRowCalls().length, 0);
+  eq('FIX1 test3: live Summary rows are byte-identical after a malformed-snapshot refusal',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before3);
+
+  /* ---- Test 4: a VALID snapshot restores exactly the EARLIEST snapshot's
+   *      rows — a later (already-corrected) snapshot for the same week must
+   *      be ignored, mirroring healEarliestBackupRows_. ------------------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS)
+    .appendRow(sumRow(WK, 'Kent Paper', 'Leible York', 175.25)); // current (post-heal, wrong) value
+  const backup4 = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  backup4.appendRow(backupRow(WK, 'Kent Paper', 'Leible York', 100, 'RUN-1'));      // earliest — must win
+  backup4.appendRow(backupRow(WK, 'Kent Paper', 'Leible York', 175.25, 'RUN-2'));   // later, must be ignored
+
+  const res4 = restoreWeekFromHealBackup_(WK);
+
+  eq('FIX1 test4: restores exactly 1 row (the earliest snapshot)', res4 && res4.restored, 1);
+  const after4 = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+  const dataRows4 = after4.slice(1).filter((r) => coerceDateStr_(r[0]) === WK);
+  eq('FIX1 test4: exactly one live row for the week after restore', dataRows4.length, 1);
+  eq('FIX1 test4: restored to the EARLIEST snapshot value (100), not the later one (175.25)',
+    dataRows4[0][4], 100);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// TODO.md — step7 FIX2: the kill-switch rollback claim must be literally
+// true. Code.gs's own comment on summaryHealWindowSize_ is accurate ("off"
+// shrinks the scheduled window to 1, every gate in healWeek_ stays active);
+// TODO.md's "Rollback facts" section instead claims the switch "stops the
+// self-heal write immediately", which the guarded-integration suite
+// (test_code.js ~:8231, 100 -> 175.25) proves false — switch OFF still
+// writes wk-1 through healWeeks_ -> upsertRows_.
+console.log('TODO.md — step7 FIX2: the kill-switch rollback claim matches what the code actually does');
+(function testKillSwitchRunbookMatchesCodeFix2() {
+  const todoSrc = fs.readFileSync(path.join(GAS_DIR, '..', '..', 'TODO.md'), 'utf8');
+  const startIdx = todoSrc.indexOf('Rollback facts an operator needs at 3am:');
+  const endIdx = todoSrc.indexOf('Full drift root-cause history', startIdx);
+  check('FIX2 setup: the "Rollback facts" section exists', startIdx !== -1 && endIdx > startIdx);
+  const rollback = startIdx !== -1 ? todoSrc.slice(startIdx, endIdx === -1 ? undefined : endIdx) : '';
+
+  check('FIX2 test5a: the runbook no longer claims the switch "stops the self-heal write ' +
+    'immediately" (false — it only shrinks the window to 1)',
+    rollback.indexOf('stops the self-heal write immediately') === -1);
+  check('FIX2 test5b: the runbook documents the switch as a WINDOW SIZE control ' +
+    '(4 completed weeks -> 1), not a write stop',
+    /window/i.test(rollback) && rollback.indexOf('SUMMARY_HEAL_ENABLED') !== -1);
+  check('FIX2 test5c: the runbook names the REAL emergency stop — disabling/deleting ' +
+    'the weeklySummarize trigger',
+    /(disable|delete)[^.]*trigger/i.test(rollback) && rollback.indexOf('weeklySummarize') !== -1);
+
+  // Behavioural half: the corrected claim must be literally true.
+  const savedProps = scriptProps;
+  scriptProps = {}; // SUMMARY_HEAL_ENABLED absent — the documented default
+  eq('FIX2 test5d: switch OFF/default yields window size 1 — the write path stays ACTIVE, not disabled',
+    summaryHealWindowSize_(), 1);
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — step7 FIX4: the "Labour correction" alert must fire only on a
+// GENUINE correction (summaryUpdated > 0), never on an ordinary first-time
+// labour insert (summaryAdded > 0) — weeklySummarize_impl_ currently guards
+// on summaryAdded + summaryUpdated > 0, so every fresh week's first labour
+// write trips a calendar event labelled "correction" when nothing was
+// corrected. 'Labour correction' has 0 references in this suite today.
+console.log('Code.gs — step7 FIX4: "Labour correction" alert fires on a genuine update, never on a first-time insert');
+(function testLabourCorrectionAlertGenuineOnlyFix4() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+
+  function seedLabour() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { LABOUR_SHEET_ID: 'labour-sheet-id' };
+    const src = currentSS.insertSheet('LABOUR_COST');
+    src.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
+    src.appendRow(['2026-06-15', '2026-06-21', 'york', 4830.14, '2026-W25', 'x']);
+    return src;
+  }
+
+  /* ---- a first-time labour insert raises NO "Labour correction" alert --- */
+  const src = seedLabour();
+  calendarEvents = [];
+  const first = weeklySummarize('2026-06-15');
+  eq('FIX4 setup: the first run is a genuine first-time labour insert', first.labourSummaryAdded, 1);
+  check('FIX4 test7a: a first-time labour insert raises NO "Labour correction" alert',
+    !calendarEvents.some((e) => e._title.indexOf('Labour correction') !== -1));
+
+  /* ---- a genuine labour correction (changed total, same week/location) DOES
+   *      raise the alert ---------------------------------------------------- */
+  src.getRange(2, 4).setValue(5200.00); // york's total, same week/location
+  calendarEvents = [];
+  const second = weeklySummarize('2026-06-15');
+  eq('FIX4 setup: the re-run adds no NEW labour summary rows (it is an update, not an insert)',
+    second.labourSummaryAdded, 0);
+  const summaryAfter = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+  const labourRow = summaryAfter.find((r) => r[2] === 'Labour' && coerceDateStr_(r[0]) === '2026-06-15');
+  check('FIX4 setup: the Summary row was genuinely corrected to the new total',
+    !!labourRow && labourRow[4] === 5200);
+  check('FIX4 test7b: a genuine labour correction DOES raise a "Labour correction" alert',
+    calendarEvents.some((e) => e._title.indexOf('Labour correction') !== -1));
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — step7 FIX5: healOrphanCandidates_ needs the same
+// auditPurgeCutoff_ guard summaryOrphanSweep_ (summary_audit.gs) already
+// applies. On a manual weeklySummarize('<old-week>') override past the
+// 183-day purge line, neither Suppliers nor _archive holds the source rows,
+// the recompute is empty, and every live Summary row misreads as an orphan —
+// while summaryOrphanSweep_ will always refuse to act on it (it skips weeks
+// past the line entirely). Scheduled runs are unaffected (last 4 weeks only).
+console.log('Code.gs — step7 FIX5: healOrphanCandidates_ respects the auditPurgeCutoff_ guard (no false orphans past the purge line)');
+(function testHealOrphanCandidatesPurgeLineGuardFix5() {
+  const TS = '2026-08-24T13:00:00+10:00';
+  const OLD_WEEK = '2025-01-06'; // solidly past the 183-day purge line from "today"
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  const ctx = {
+    summaryRows: [SUMMARY_HEADERS, sum(OLD_WEEK, 'Kent Paper', 'Leible York', 100)],
+  };
+  const orphans = healOrphanCandidates_(OLD_WEEK, ctx, {}); // computedKeys empty — nothing recomputes
+
+  eq('FIX5 test8: a week past auditPurgeCutoff_ reports ZERO orphan candidates, ' +
+    "matching summaryOrphanSweep_'s own guard",
+    orphans.length, 0);
+
+  // Sanity: the SAME shape, for a RECENT (in-window) week, still reports the
+  // orphan — the guard must be windowed, not a blanket suppression.
+  const RECENT_WEEK = weekStartForDate_(todayStr_());
+  const ctx2 = {
+    summaryRows: [SUMMARY_HEADERS, sum(RECENT_WEEK, 'Kent Paper', 'Leible York', 100)],
+  };
+  const recentOrphans = healOrphanCandidates_(RECENT_WEEK, ctx2, {});
+  check('FIX5 sanity: a RECENT week (inside the purge window) still reports the orphan',
+    recentOrphans.length === 1);
+})();
+
+/* ------------------------------------------------------------------ */
+
+// connectors/gas/*.gs — step7 FIX6: the CalendarApp-exclusivity invariant is
+// checked PROJECT-WIDE, with orderapp.gs recorded as the one pre-existing,
+// out-of-scope exception. staleness.gs:18/:277 claim it is "THE ONLY SOURCE"
+// / "the ONLY functions in the project that touch CalendarApp" — false,
+// orderapp.gs:176/:212 call CalendarApp.EventColor.ORANGE directly and
+// predate this phase. The round-2 FIX1 test only ever grepped Code.gs, so
+// orderapp.gs was never checked.
+console.log('connectors/gas/*.gs — step7 FIX6: CalendarApp-exclusivity is checked project-wide, orderapp.gs recorded as the known exception');
+(function testCalendarAppInvariantProjectWideFix6() {
+  const files = fs.readdirSync(GAS_DIR).filter((f) => f.endsWith('.gs'));
+  const ALLOWED = ['staleness.gs', 'orderapp.gs']; // orderapp.gs predates this phase — see TODO.md
+  const violations = [];
+  files.forEach((f) => {
+    if (ALLOWED.indexOf(f) !== -1) return;
+    const src = fs.readFileSync(path.join(GAS_DIR, f), 'utf8');
+    if (src.indexOf('CalendarApp') !== -1) violations.push(f);
+  });
+  eq('FIX6 test9a: no .gs file outside the recorded exception (orderapp.gs) references CalendarApp directly',
+    violations, []);
+
+  const stalenessSrc = fs.readFileSync(path.join(GAS_DIR, 'staleness.gs'), 'utf8');
+  check("FIX6 test9b: staleness.gs's CalendarApp-exclusivity comment records orderapp.gs " +
+    'as the known, out-of-scope exception (today it falsely claims sole ownership)',
+    stalenessSrc.indexOf('orderapp.gs') !== -1);
+
+  const todoSrc = fs.readFileSync(path.join(GAS_DIR, '..', '..', 'TODO.md'), 'utf8');
+  check('FIX6 test9c: TODO.md records the note step 6 was supposed to deliver — that ' +
+    'orderapp.gs also touches CalendarApp and is deliberately out of scope here',
+    todoSrc.indexOf('orderapp.gs') !== -1 && /CalendarApp/i.test(todoSrc));
 })();
 
 /* ------------------------------------------------------------------ */

@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "17 legitimate implementation gaps across 6 FIX blocks: FIX1 (11 failures) — restoreWeekFromHealBackup_ missing validation and fail-closed refusal logic; FIX2 (3 failures) — TODO.md documentation contradicts code (kill-switch shrinks window, doesn't stop writes; real emergency stop is trigger deletion); FIX3 (1 failure) — function not named in runbook; FIX4 (1 failure) — labour alert fires on first insert when it should only fire on updates; FIX5 (1 failure) — healOrphanCandidates_ doesn't respect auditPurgeCutoff_ guard; FIX6 (2 failures) — CalendarApp exception not documented in staleness.gs or TODO.md. Test file is syntactically valid; 1529 tests pass; failures indicate RED-phase incomplete implementation, not test infrastructure errors."
+}

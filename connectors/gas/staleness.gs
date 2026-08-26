@@ -15,9 +15,11 @@
  * Alerts are orange all-day Google Calendar events (no popup — GAS can only fire
  * an all-day popup at midnight, which is useless).
  *
- * THIS FILE IS THE ONLY SOURCE OF THE CalendarApp OAuth SCOPE. Deploy it on its
- * own (deploy.sh --push-only → authorize → full deploy) so a scope change can
- * never take /exec down with un-consented code — /exec is the sole ingest path.
+ * THIS FILE IS THE PRIMARY SOURCE OF THE CalendarApp OAuth SCOPE. orderapp.gs is
+ * a known exception (it also touches CalendarApp for fail-open alerts, deliberately
+ * out of scope for this phase). Deploy on its own (deploy.sh --push-only →
+ * authorize → full deploy) so a scope change can never take /exec down with
+ * un-consented code — /exec is the sole ingest path.
  */
 
 var STALENESS_THRESHOLD_HOURS = 96;              // default: silent through a normal Fri→Mon (80h)

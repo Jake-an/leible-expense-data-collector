@@ -1927,22 +1927,39 @@ function healEarliestBackupRows_(backupRows, week) {
  * its EARLIEST Summary_heal_backup snapshot via healEarliestBackupRows_ —
  * never a later, already-corrected one. Manual, zero-arg-friendly: run by
  * hand from the editor; not wired to any trigger.
+ * CRITICAL: validates the snapshot BEFORE touching any live rows.
  * @param {string} week 'YYYY-MM-DD'
- * @returns {{week:string, restored:number}}
+ * @returns {{week:string, refused:string} | {week:string, restored:number}}
+ *   refused: refusal reason (no snapshot, malformed data, etc.)
  */
 function restoreWeekFromHealBackup_(week) {
   var ss = getHubSpreadsheet_();
   var summSheet = ss.getSheetByName(SUMMARY_TAB);
   var backupSheet = ss.getSheetByName(SUMMARY_HEAL_BACKUP_TAB);
-  var backupRows = backupSheet ? backupSheet.getDataRange().getValues().slice(1) : [];
+
+  if (!summSheet) return { week: week, refused: 'Summary sheet not found' };
+  if (!backupSheet) return { week: week, refused: 'Summary_heal_backup sheet not found' };
+
+  var backupRows = backupSheet.getDataRange().getValues().slice(1);
   var snapshotRows = healEarliestBackupRows_(backupRows, week);
 
+  if (snapshotRows.length === 0) {
+    return { week: week, refused: 'no-snapshot' };
+  }
+
+  for (var v = 0; v < snapshotRows.length; v++) {
+    var total = Number(snapshotRows[v][SUMMARY_TOTAL_COL]);
+    if (!isFinite(total)) {
+      return { week: week, refused: 'malformed snapshot: total is not numeric' };
+    }
+  }
+
   var liveValues = summSheet.getDataRange().getValues();
-  for (var r = liveValues.length - 1; r >= 1; r--) { // bottom-up: row numbers stay valid
+  for (var r = liveValues.length - 1; r >= 1; r--) {
     if (coerceDateStr_(liveValues[r][0]) === week) summSheet.deleteRow(r + 1);
   }
   for (var s = 0; s < snapshotRows.length; s++) {
-    summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_HEADERS.length)); // drop trailing run_id
+    summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_HEADERS.length));
   }
 
   Logger.log('restoreWeekFromHealBackup_: week ' + week + ' — restored ' + snapshotRows.length +
@@ -2109,12 +2126,20 @@ function healWeek_(week, ctx, isNewest) {
  * on the full SUMMARY_KEY_COLS tuple, normalized exactly like rowKey_ — never
  * (week, location) alone, since a blank location is not a safe predicate.
  *
+ * Weeks past auditPurgeCutoff_ are skipped: past that line NEITHER tab holds
+ * the source rows any more, so a recompute is always empty and every row
+ * would misread as an orphan.
+ *
  * @param {string} week 'YYYY-MM-DD'
- * @param {{summaryRows:Array}} ctx
+ * @param {{summaryRows:Array, purgeCutoff:string}} ctx purgeCutoff is optional;
+ *   if present uses it, otherwise computes from today
  * @param {Object} computedKeys rowKey_-shaped key -> true, this week's fresh recompute
  * @returns {Array<{key:string, supplier:string, location:string, total:number}>}
  */
 function healOrphanCandidates_(week, ctx, computedKeys) {
+  var purgeCutoff = ctx.purgeCutoff || auditPurgeCutoff_(todayStr_());
+  if (week < purgeCutoff) return [];
+
   var orphans = [];
   for (var i = 1; i < ctx.summaryRows.length; i++) { // row 0 = header
     var row = ctx.summaryRows[i];
@@ -2170,6 +2195,8 @@ function healWeeks_(weeks) {
   backupRows.forEach(function (r) { backedUpWeeks[coerceDateStr_(r[0])] = true; });
 
   var nowStamp = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+  var today = nowStamp.slice(0, 10);
+  var purgeCutoff = auditPurgeCutoff_(today);
 
   var ctx = {
     archiveWeeks: archiveWeeks,
@@ -2180,7 +2207,8 @@ function healWeeks_(weeks) {
     backupSheet: backupSheet,
     backedUpWeeks: backedUpWeeks,
     runId: 'HEAL-' + nowStamp,
-    extractedAt: nowStamp
+    extractedAt: nowStamp,
+    purgeCutoff: purgeCutoff
   };
 
   var sorted = weeks.slice().sort().reverse(); // 'YYYY-MM-DD' sorts lexically — newest first
@@ -2328,7 +2356,7 @@ function weeklySummarize_impl_(weekStartOverride) {
   var labourResult = { labourAdded: 0, summaryAdded: 0, summaryUpdated: 0 };
   if (labourWeeks.length > 0) {
     labourResult = labourWeeklyPull_(labourWeeks, ss, summSheet, extractedAt);
-    if (labourResult.summaryAdded + labourResult.summaryUpdated > 0) {
+    if (labourResult.summaryUpdated > 0) {
       healRaiseAlert_(labourWeeks.map(function (w) { return w.start; }).join(', '), 'Labour correction',
         ['labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
         ' summaryUpdated=' + labourResult.summaryUpdated], false);
