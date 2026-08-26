@@ -1,25 +1,37 @@
 {
   "verdict": "revise",
+  "reviewed_scope": "602e2b4^..HEAD (phase scaffold -> HEAD); main is 409 commits stale so main...HEAD is not the phase diff",
+  "tests_run": "node connectors/gas/test_code.js -> 1589 passed, 0 failed (exit 0)",
   "issues": [
     {
       "severity": "important",
-      "file": "TODO.md",
-      "summary": "The documented data undo is not runnable as written. TODO.md:67-69 tells the 3am operator to \"run restoreWeekFromHealBackup_('YYYY-MM-DD') from the editor\", but that function (Code.gs:1935) takes a REQUIRED argument the editor's Run button cannot supply, and is underscore-suffixed (Apps Script treats a trailing underscore as private — excluded from the Run function picker and from google.script.run). No zero-arg wrapper exists: grep shows the only non-test references are the definition, its own Logger line, and the TODO.md sentence. Every other operator-facing repair entry point in this project is a no-underscore, zero-arg wrapper (runSummaryDriftRepair, runSummaryOrphanSweep, cleanupDuplicateSummaryRows, previewSummaryHeal, auditSummaryDrift). Failure is at least fail-closed — invoked with no arg, week is undefined, no backup row matches, and it returns {refused:'no-snapshot'} without touching live rows — but the operator must author and save a wrapper mid-incident on the ONLY path that undoes a bad heal (TODO.md:70-72 states a code rollback cannot). Step 7's FIX3 test6a (test_code.js:9281) was written for exactly this discoverability concern but only asserts the identifier string appears in TODO.md, so it passes while the function remains uncallable. Add a wrapper such as restoreSummaryWeek(week) and name that in the runbook."
+      "file": "connectors/gas/Code.gs:1999",
+      "summary": "healBackupWeek_'s snapshot-once guard records POST-heal data as the pre-heal baseline for any week whose first heal had no live Summary rows -- i.e. every newly summarized week. healWeeks_ (Code.gs:2217) seeds backedUpWeeks only from rows already present in Summary_heal_backup, so a first heal of an empty week appends nothing and leaves no marker; the next run that includes that week (the 4-week window re-heals each week ~4 times) then snapshots the already-healed rows as 'the earliest snapshot'. Verified by probe: week 2026-08-17 with 0 Summary rows -> run 1 heals to 175.25 and writes 0 backup rows -> run 2 heals to 999.99 and backs up 175.25 -> healEarliestBackupRows_ returns 175.25, while the true pre-heal baseline was []. This silently falsifies the explicit promise added in summary_drift_repair.gs:33 ('the backup always stays the true pre-heal baseline') and the restorable-state list in listSummaryHealBackups. Fix: write a zero-row sentinel (or persist backedUpWeeks) so the week is marked snapshotted even when it had no rows."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/gas/summary_audit.gs:458",
+      "summary": "previewSummaryHeal hard-codes a 4-week window while the actual scheduled run sizes its window from summaryHealWindowSize_ (Code.gs:2312) -- 1 week when SUMMARY_HEAL_ENABLED is off (the default) and SUMMARY_HEAL_WEEKS (any N) when on. computeHealPlan_ is genuinely shared, but the week LIST is not, so the preview and the apply diverge exactly where the code comment claims they 'can never diverge'. In the default state the preview overstates (shows 4 weeks, heals 1); with SUMMARY_HEAL_WEEKS=12 it understates (shows 4, heals 12) -- an operator approves a 4-week blast radius and gets a 12-week one on the only pre-flight look before real money moves. Fix: have previewSummaryHeal call summaryHealWindowSize_ instead of the literal 4."
+    },
+    {
+      "severity": "important",
+      "file": "connectors/gas/summary_audit.gs:700",
+      "summary": "runSummaryOrphanSweep deletes Summary rows by cached row index with no script lock. Every other Summary write path in the project is wrapped in withScriptLock_ (weeklySummarize Code.gs:2298, doPost, greenBeanPull_, mayers, square, recurring), and step8 FIX2 added withScriptLock_ to the sibling restoreWeekFromHealBackup_ (Code.gs:1969) for precisely this hazard. summaryOrphanSweep_ captures row indexes, then the apply loop deletes them; a concurrent row-deleting path (restoreWeekFromHealBackup_, cleanupDuplicateSummaryRows) landing in between shifts those indexes and the sweep deletes live, non-orphan rows. The backup tab does not cover this: it snapshots only the rows the sweep INTENDED to delete, so a mis-indexed delete removes a live Summary row with no recovery copy. The freshness gate (approval max age 1h) and the key-match gate both run before the deletes and neither closes the window."
     },
     {
       "severity": "minor",
-      "file": "connectors/gas/Code.gs",
-      "summary": "restoreWeekFromHealBackup_ (Code.gs:1935) reads the live Summary range, then deletes that week's rows and appends the snapshot, with no withScriptLock_ — unlike weeklySummarize (Code.gs:2273) and every scheduled/ingest entry point. This matches sibling manual tools (cleanupDuplicateSummaryRows, runSummaryOrphanSweep are also unlocked), so it is existing convention rather than drift introduced here, and the delete-from-the-end-backwards loop is index-safe against appendRow. But this tool is explicitly documented for 3am incident use, when the 04:00 weeklySummarize trigger may fire: a concurrent heal's upsert can interleave with the restore's delete+append and be silently lost. Wrapping the restore in withScriptLock_ is cheap given it already returns a {refused:...} shape for the lock-timeout case."
+      "file": "connectors/gas/Code.gs:2385",
+      "summary": "The Labour correction alert calls healRaiseAlert_ without the shared eventsCache argument, so it triggers an extra CalendarApp.getEventsForDay read per run -- the exact per-alert day-read that step8 FIX4 introduced stalenessNewEventsCache_ and ctx.calendarEventsCache to eliminate. Pass ctx.calendarEventsCache (or thread the cache out of healWeeks_) to keep the one-read-per-run invariant the FIX4 tests assert for the other call sites."
     },
     {
       "severity": "minor",
-      "file": "connectors/gas/Code.gs",
-      "summary": "healEarliestBackupRows_ (Code.gs:1909) hardcodes row[8] as run_id, while its only caller restoreWeekFromHealBackup_ slices restored rows with SUMMARY_HEADERS.length (Code.gs:1963). Both are correct today (SUMMARY_HEADERS has 8 entries, SUMMARY_HEAL_BACKUP_HEADERS = SUMMARY_HEADERS.concat(['run_id'])), but the two encodings of the same fact disagree the moment a column is added: run_id would move while row[8] keeps reading a data column, so snapshot tie-breaking would silently mix two snapshots' rows and the restore would write a blended week. This is the same latent class as the project's documented 'header consts do not migrate live tabs' gotcha. Use SUMMARY_HEADERS.length (or a named SUMMARY_BACKUP_RUNID_COL) in both places."
+      "file": "connectors/gas/summary_audit.gs:463",
+      "summary": "listSummaryHealBackups builds its week list from coerceDateStr_(backupRows[i][0]) with no DATE_ARG_RE validation, unlike every sibling in this phase (previewSummaryHeal, summaryOrphanSweep_, summaryDriftCheck_, healWeeks_ all guard with DATE_ARG_RE.test). A blank or unparseable week_start cell in Summary_heal_backup becomes an empty-string week that is logged and returned as a restorable snapshot, and would then be fed to SUMMARY_RESTORE_WEEK by an operator reading the list."
     },
     {
       "severity": "minor",
-      "file": "connectors/gas/staleness.gs",
-      "summary": "The raiseCalendarAlert_ extraction (staleness.gs:~296) moved the getEventsForDay read inside the per-alert primitive. stalenessRaiseAlerts_ previously did ONE calendar read for the whole batch and tested each title against that map; it now calls raiseCalendarAlert_ once per stale source, so the day's events are re-read once per alert. Same for healRaiseAlert_, which fires per healed week (up to SUMMARY_HEAL_WEEKS=4 per run) and per SPLIT/duplicate refusal. Behaviour is unchanged and correctness is unaffected — this is only Calendar read-quota and latency on a path that runs on a schedule. If the source list grows, hoist the day-read back to the caller or memoize it per invocation."
+      "file": "phases/summary-self-heal/index.json",
+      "summary": "Step 8 carries tdd_state: \"green_done\", a value scripts/execute.py never produces (the runner's terminal value is red_done, as steps 0-7 all show). This is a known project failure mode: on a --force-retry the runner re-runs RED and the non-canonical state silently disables GREEN's mechanical check. The tdd_evidence itself is sound (red exit 1, green exit 0), so this is bookkeeping only -- repair the field to red_done rather than leaving a state the runner cannot interpret."
     }
   ]
 }
