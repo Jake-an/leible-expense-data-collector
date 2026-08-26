@@ -659,6 +659,16 @@ function runSummaryOrphanSweepDryRun() {
  * @returns {{mode:string, deleted:number, found:number, aborted:?boolean}}
  */
 function runSummaryOrphanSweep() {
+  // PHASE FREEZE (Code.gs SUMMARY_HEAL_FROZEN_): the destructive apply half
+  // is frozen. FIRST statement in the function, before any read, so there is
+  // no path — approval record, drift check or lock — that can reach a delete.
+  // runSummaryOrphanSweepDryRun() is read-only and stays available.
+  if (SUMMARY_HEAL_FROZEN_) {
+    Logger.log('runSummaryOrphanSweep: REFUSED — ' + SUMMARY_HEAL_FROZEN_MSG_ +
+      ' Use runSummaryOrphanSweepDryRun() to see the candidates.');
+    return { mode: 'refused', refused: SUMMARY_HEAL_FROZEN_MSG_, deleted: 0, found: 0 };
+  }
+
   var report = summaryOrphanSweep_();
   if (report.error) { Logger.log('runSummaryOrphanSweep: ' + report.error); return report; }
 
@@ -936,11 +946,28 @@ function listSummaryHealBackups() {
   for (var w = 0; w < weekOrder.length; w++) {
     var week = weekOrder[w];
     var rows = healEarliestBackupRows_(backupRows, week);
-    var total = 0;
-    for (var r = 0; r < rows.length; r++) total += Number(rows[r][SUMMARY_TOTAL_COL]);
     var runId = rows.length ? rows[0][SUMMARY_BACKUP_RUNID_COL] : null;
-    weeks.push({ week: week, runId: runId, rows: rows.length, total: total });
-    Logger.log(week + '  run_id=' + runId + '  rows=' + rows.length + '  total=$' + total);
+    // step10 FIX2: step9's empty-baseline MARKER is bookkeeping, not a
+    // restorable row. Counting it reported rows=1 / total=$0 for a week whose
+    // true baseline was ZERO rows — reintroducing exactly the "$0 reads as a
+    // real restorable snapshot" ambiguity step7's CRITICAL fix removed.
+    // Report the real restorable count (0) and label the week instead.
+    var restorable = [];
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r][SUMMARY_KIND_COL] === SUMMARY_HEAL_EMPTY_MARKER_KIND_) continue;
+      restorable.push(rows[r]);
+    }
+    var total = 0;
+    for (var t = 0; t < restorable.length; t++) total += Number(restorable[t][SUMMARY_TOTAL_COL]);
+    var emptyBaseline = rows.length > 0 && restorable.length === 0;
+    weeks.push({
+      week: week, runId: runId, rows: restorable.length, total: total,
+      emptyBaseline: emptyBaseline
+    });
+    Logger.log(week + '  run_id=' + runId + '  rows=' + restorable.length + '  total=$' + total +
+      (emptyBaseline
+        ? '  (EMPTY baseline — restoring this week REMOVES its healed rows, it restores nothing)'
+        : ''));
   }
   Logger.log('To restore a week: set the SUMMARY_RESTORE_WEEK script property to its week_start ' +
     '(YYYY-MM-DD), then run restoreSummaryWeekFromBackup().');
@@ -960,6 +987,17 @@ function listSummaryHealBackups() {
  * @returns {{week:?string, refused:string} | {week:string, restored:number}}
  */
 function restoreSummaryWeekFromBackup() {
+  // PHASE FREEZE (Code.gs SUMMARY_HEAL_FROZEN_): this is the only Run-button
+  // path into restoreWeekFromHealBackup_, so gating it here closes the whole
+  // surface a deploy exposes. FIRST statement — before SUMMARY_RESTORE_WEEK
+  // is even read, so a property left set from a rehearsal cannot arm it.
+  // listSummaryHealBackups() is read-only and stays available; the underscore
+  // internal remains hand-callable from the editor by design.
+  if (SUMMARY_HEAL_FROZEN_) {
+    Logger.log('restoreSummaryWeekFromBackup: REFUSED — ' + SUMMARY_HEAL_FROZEN_MSG_);
+    return { week: null, refused: SUMMARY_HEAL_FROZEN_MSG_ };
+  }
+
   var raw = PropertiesService.getScriptProperties().getProperty('SUMMARY_RESTORE_WEEK');
 
   if (!raw) {

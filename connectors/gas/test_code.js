@@ -372,6 +372,23 @@ load('Code.gs');
 // (indirect eval makes its top-level `var` declarations global properties).
 // Do NOT declare local copies — that shadowing is exactly the bug this
 // re-derivation exists to prevent (see comment near the top of this file).
+/* PHASE FREEZE (Code.gs SUMMARY_HEAL_FROZEN_, 2026-08-26). The frozen WRITE
+ * paths — the multi-week heal window, runSummaryOrphanSweep's apply half and
+ * restoreSummaryWeekFromBackup — still have to be CORRECT for the day the
+ * freeze is lifted, so every pre-existing test that exercises one runs its
+ * body with the freeze off. The freeze's own refusals are asserted separately
+ * (the step10 FIX3 block at the end of this file). Toggling works because
+ * load() uses indirect eval, so each `var` in the .gs files is a real,
+ * writable globalThis property (same mechanism the MAYERS_PARSER_VERSION
+ * tests already rely on). try/finally, never a bare reassign: a throw inside
+ * a wrapped block would otherwise leave the freeze OFF for every test after
+ * it, and the freeze tests would then pass vacuously. */
+function withHealUnfrozen(fn) {
+  const saved = globalThis.SUMMARY_HEAL_FROZEN_;
+  globalThis.SUMMARY_HEAL_FROZEN_ = false;
+  try { return fn(); } finally { globalThis.SUMMARY_HEAL_FROZEN_ = saved; }
+}
+
 const SUPPLIERS_HEADERS = globalThis.SUPPLIERS_HEADERS;
 const SALES_HEADERS = globalThis.SALES_HEADERS;
 
@@ -8195,7 +8212,7 @@ console.log('Code.gs — healWeeks_ (shared entry: ctx-once, newest-first, newes
 // shared, which is what finally brings greenBeanPull_'s override writes
 // under the same protection.
 console.log('Code.gs — weeklySummarize() wired to the guarded heal path (kill switch, archive/purge, override parity)');
-(function testWeeklySummarizeGuardedIntegration() {
+withHealUnfrozen(function testWeeklySummarizeGuardedIntegration() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const savedArchive = globalThis.archiveAndPurge_;
@@ -8370,7 +8387,7 @@ console.log('Code.gs — weeklySummarize() wired to the guarded heal path (kill 
   currentSS = savedSS;
   scriptProps = savedProps;
   globalThis.archiveAndPurge_ = savedArchive;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 
@@ -8530,7 +8547,7 @@ console.log('Code.gs — healWeek_ orphan detection (Step 3: automatic, read-onl
 // refuses to proceed if what it finds no longer matches what the dry run
 // approved.
 console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphanSweep (Step 3: gated, backed-up, bottom-up removal)');
-(function testSummaryOrphanSweep() {
+withHealUnfrozen(function testSummaryOrphanSweep() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const TS = '2026-08-20T09:00:00+10:00';
@@ -8771,7 +8788,7 @@ console.log('summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphan
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ *
  * Step 4 — drift-guard-and-calendar-helper (PRD-13)
@@ -9221,7 +9238,7 @@ console.log('Code.gs — FIX1: healRaiseAlert_ routes through raiseCalendarAlert
 // malformed/missing approvedAt — a gate that cannot read its own approval
 // must refuse, not silently proceed as if the approval were fresh.
 console.log('summary_audit.gs — FIX4: a malformed/missing approvedAt on the orphan-sweep approval fails CLOSED, not open');
-(function testOrphanSweepApprovalFailsClosedFix4() {
+withHealUnfrozen(function testOrphanSweepApprovalFailsClosedFix4() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const TS = '2026-08-20T09:00:00+10:00';
@@ -9271,7 +9288,7 @@ console.log('summary_audit.gs — FIX4: a malformed/missing approvedAt on the or
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 
@@ -9673,7 +9690,7 @@ console.log('Code.gs — step8 FIX1 test1: listSummaryHealBackups() — zero-arg
 // restoreWeekFromHealBackup_('YYYY-MM-DD') already has when invoked with no
 // arg, now on a Run-button-reachable entry point.
 console.log('Code.gs — step8 FIX1 test2: restoreSummaryWeekFromBackup() refuses loudly when SUMMARY_RESTORE_WEEK is unset');
-(function testRestoreSummaryWeekFromBackupUnsetPropertyFix1() {
+withHealUnfrozen(function testRestoreSummaryWeekFromBackupUnsetPropertyFix1() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const TS = '2026-08-24T13:00:00+10:00';
@@ -9711,7 +9728,7 @@ console.log('Code.gs — step8 FIX1 test2: restoreSummaryWeekFromBackup() refuse
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 
@@ -9759,7 +9776,7 @@ console.log('Code.gs — step8 FIX1 test3: restoreSummaryWeekFromBackup() refuse
 // guarantee restoreWeekFromHealBackup_ already gives, now reachable from the
 // Run button.
 console.log('Code.gs — step8 FIX1 test4: restoreSummaryWeekFromBackup() with a valid property restores the EARLIEST snapshot');
-(function testRestoreSummaryWeekFromBackupValidFix1() {
+withHealUnfrozen(function testRestoreSummaryWeekFromBackupValidFix1() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const TS = '2026-08-24T13:00:00+10:00';
@@ -9790,7 +9807,7 @@ console.log('Code.gs — step8 FIX1 test4: restoreSummaryWeekFromBackup() with a
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 
@@ -10085,7 +10102,7 @@ console.log('Code.gs — step9 FIX1: the backup baseline is not falsified for a 
 // hardcodes 4 weeks while the real run sizes off summaryHealWindowSize_ (1
 // when SUMMARY_HEAL_ENABLED is off/default, SUMMARY_HEAL_WEEKS when on).
 console.log('summary_audit.gs — step9 FIX2: previewSummaryHeal agrees with the real heal window for every window size (1, 4, 12)');
-(function testPreviewMatchesApplyWindowFix2() {
+withHealUnfrozen(function testPreviewMatchesApplyWindowFix2() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
 
@@ -10123,7 +10140,7 @@ console.log('summary_audit.gs — step9 FIX2: previewSummaryHeal agrees with the
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 
@@ -10186,7 +10203,7 @@ console.log('summary_audit.gs — step9 FIX3 test1: runSummaryOrphanSweep refuse
 // fresh in-lock re-read, Code.gs:1970) by landing a brand-new live row at
 // one candidate's cached position on the SECOND getDataRange() read.
 console.log('summary_audit.gs — step9 FIX3 test2: a stale cached row index aborts the whole sweep, deletes nothing');
-(function testOrphanSweepStaleIndexAbortsFix3() {
+withHealUnfrozen(function testOrphanSweepStaleIndexAbortsFix3() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const TS = '2026-08-20T09:00:00+10:00';
@@ -10242,7 +10259,7 @@ console.log('summary_audit.gs — step9 FIX3 test2: a stale cached row index abo
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 
@@ -10313,6 +10330,333 @@ console.log('summary_audit.gs — step9 FIX5: listSummaryHealBackups validates d
     result.weeks.some((w) => w.week === '2026-07-06'));
 
   currentSS = savedSS;
+})();
+
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * STEP 10 (2026-08-26) — close the open CRITICAL, then ship the safe subset.
+ *
+ * FIX1 (CRITICAL) — restoreWeekFromHealBackup_ deleted every live Summary row
+ *   for a week using (week) ALONE as the predicate, then re-appended only the
+ *   baseline frozen at that week's FIRST heal. Rows written AFTER that
+ *   baseline that no heal can produce — shopify_orderapp's directly written
+ *   online revenue (PRD-10) and Labour (an external LABOUR_SHEET_ID pull) —
+ *   are in neither the snapshot nor any recompute, so they were destroyed
+ *   with no recovery path while the restore reported success. Probe: a
+ *   $4,321.55 shopify_orderapp row went 1 -> 0 rows under {restored:1}.
+ * FIX2 (IMPORTANT) — step9's empty-baseline marker made listSummaryHealBackups
+ *   report rows=1/total=$0 for a week whose true baseline was ZERO rows,
+ *   reintroducing the "$0 reads as a real restorable snapshot" ambiguity
+ *   step7's CRITICAL fix removed.
+ * FIX3 (ship gate) — the phase froze after 6 gate rounds without approval, so
+ *   every WRITE-side entry point it added must hard-refuse: deploy.sh pushes
+ *   the WHOLE project, so the refusals ARE the deploy scope.
+ * ------------------------------------------------------------------ */
+
+// Code.gs — step10 FIX1 (CRITICAL): the restore's delete predicate must be
+// scoped to what the snapshot OWNS — the full SUMMARY_KEY_COLS tuple, never
+// (week) alone.
+console.log('Code.gs — step10 FIX1 (CRITICAL): restoreWeekFromHealBackup_ never deletes a row its snapshot does not own');
+withHealUnfrozen(function testRestoreDeletePredicateIsSnapshotScopedStep10() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+  const sumRow = (supplier, loc, total) =>
+    [WK, addDaysStr_(WK, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+  const bakRow = (supplier, loc, total, runId) =>
+    [WK, addDaysStr_(WK, 6), supplier, loc, total, TS, 'Cafe', 'spend', runId];
+
+  /* ---- Case 1: the probe. A baseline of ONE Kent Paper row; AFTER it froze,
+   *      the order-app pull wrote its online-revenue row and labourWeeklyPull_
+   *      wrote a Labour row. A restore must undo the Kent Paper row and touch
+   *      NEITHER of the other two. Mutation test: reverting the predicate to
+   *      `coerceDateStr_(row[0]) === week` makes 1c/1d/1e go red. ---------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow(sumRow('Kent Paper', 'Leible York', 175.25));          // heal-corrupted, IS in the snapshot
+  summ.appendRow(sumRow('shopify_orderapp', 'Leible York', 4321.55));   // written after the baseline
+  summ.appendRow(sumRow('Labour', 'Leible North', 2870.4));             // written after the baseline
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow(bakRow('Kent Paper', 'Leible York', 100, 'RUN-1'));
+
+  const res = restoreWeekFromHealBackup_(WK);
+
+  const live = () => currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()
+    .slice(1).filter((r) => coerceDateStr_(r[0]) === WK);
+  const totalFor = (supplier) => live()
+    .filter((r) => String(r[2]) === supplier)
+    .reduce((sum, r) => sum + Number(r[4]), 0);
+
+  eq('FIX1 test1a: the snapshot-owned row is restored to its baseline value (100, not 175.25)',
+    totalFor('Kent Paper'), 100);
+  eq('FIX1 test1b: exactly one Kent Paper row survives (delete + re-append, never a duplicate)',
+    live().filter((r) => String(r[2]) === 'Kent Paper').length, 1);
+  eq('FIX1 test1c: the shopify_orderapp row written AFTER the baseline SURVIVES ' +
+    '($4,321.55 — the probe case that went 1 -> 0 rows)', totalFor('shopify_orderapp'), 4321.55);
+  eq('FIX1 test1d: the Labour row written AFTER the baseline SURVIVES',
+    totalFor('Labour'), 2870.4);
+  eq('FIX1 test1e: exactly ONE deleteRow call — only the snapshot-owned row',
+    summ.getDeleteRowCalls().length, 1);
+  eq('FIX1 test1f: the response reports what it PRESERVED, so {restored:N} cannot be ' +
+    'read as "the whole week is back to baseline"', res && res.preserved, 2);
+  eq('FIX1 test1g: the response still reports the restored count', res && res.restored, 1);
+  check('FIX1 test1h: a successful restore carries no refusal', !res.refused);
+
+  /* ---- Case 2: a heal-MINTED key (a supplier/location rename leaves the old
+   *      key behind; upsertRows_ has no delete path). It is not in the
+   *      snapshot but a heal COULD have written it, so the undo must remove
+   *      it — the predicate must not degrade into "preserve everything
+   *      unfamiliar". --------------------------------------------------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const summ2 = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ2.appendRow(sumRow('Kent Paper', 'Leible York', 100));            // in the snapshot
+  summ2.appendRow(sumRow('Kent Paper', 'Leible York North', 55));       // minted by the bad heal
+  summ2.appendRow(sumRow('shopify_orderapp', 'Leible York', 4321.55));  // heal-foreign, must survive
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow(bakRow('Kent Paper', 'Leible York', 100, 'RUN-1'));
+
+  const res2 = restoreWeekFromHealBackup_(WK);
+  const live2 = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()
+    .slice(1).filter((r) => coerceDateStr_(r[0]) === WK);
+
+  check('FIX1 test2a: a key MINTED by the bad heal is removed by the undo',
+    !live2.some((r) => String(r[3]) === 'Leible York North'));
+  check('FIX1 test2b: the heal-foreign row still survives alongside that removal',
+    live2.some((r) => String(r[2]) === 'shopify_orderapp' && Number(r[4]) === 4321.55));
+  eq('FIX1 test2c: exactly 1 row preserved (the heal-foreign one)', res2 && res2.preserved, 1);
+
+  /* ---- Case 3: the empty-baseline marker — "restore to nothing" still
+   *      removes the heal's own output, but a heal-foreign row written after
+   *      the baseline is NOT nothing and must survive. ------------------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const summ3 = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ3.appendRow(sumRow('Kent Paper', 'Leible York', 175.25));         // healed into existence
+  summ3.appendRow(sumRow('shopify_orderapp', 'Leible York', 4321.55));  // heal-foreign
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow([WK, addDaysStr_(WK, 6), '', '', 0, TS, '', SUMMARY_HEAL_EMPTY_MARKER_KIND_, 'RUN-1']);
+
+  const res3 = restoreWeekFromHealBackup_(WK);
+  const live3 = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()
+    .slice(1).filter((r) => coerceDateStr_(r[0]) === WK);
+
+  check('FIX1 test3a: an empty baseline is not refused as "no-snapshot"',
+    !(res3 && res3.refused === 'no-snapshot'));
+  check('FIX1 test3b: restoring to an empty baseline removes the heal-created row',
+    !live3.some((r) => String(r[2]) === 'Kent Paper'));
+  eq('FIX1 test3c: the heal-foreign row survives a "restore to nothing" — it was never ' +
+    'part of the heal and has no other copy', live3.length, 1);
+  eq('FIX1 test3d: and it still carries its full amount', Number(live3[0][4]), 4321.55);
+  eq('FIX1 test3e: the marker itself is never re-inserted as a live row', res3 && res3.restored, 0);
+
+  /* ---- Case 4: the exclusion list is the NARROW one. SUMMARY_AUDIT_PULL_OWNED_
+   *      is an audit-NOISE list that also names greenbean/bennetts, whose rows
+   *      ARE derived from Suppliers and therefore ARE rebuildable by a heal —
+   *      using it as a write filter would wrongly exempt rows a heal owns. -- */
+  eq('FIX1 test4a: SUMMARY_HEAL_FOREIGN_SUPPLIERS_ is exactly the two structurally ' +
+    'un-recomputable sources', SUMMARY_HEAL_FOREIGN_SUPPLIERS_.slice().sort(),
+    ['labour', 'shopify_orderapp']);
+  check('FIX1 test4b: it is NOT summary_audit.gs\'s SUMMARY_AUDIT_PULL_OWNED_ — that list ' +
+    'also names the DERIVED, rebuildable greenbean/bennetts rows',
+    SUMMARY_HEAL_FOREIGN_SUPPLIERS_.indexOf('greenbean') === -1 &&
+    SUMMARY_HEAL_FOREIGN_SUPPLIERS_.indexOf('bennetts') === -1 &&
+    SUMMARY_AUDIT_PULL_OWNED_.indexOf('greenbean') !== -1);
+  // Both consumers must route through summaryRowIsHealForeign_ — a second
+  // hardcoded copy of the supplier names inside either body is exactly how the
+  // two predicates drift apart the next time the list changes. (Scoped to these
+  // two bodies: cleanupOnlineRevenueSummaryRows has its own, unrelated
+  // pre-existing shopify_orderapp literal.)
+  const step10CodeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');
+  const step10FnBody = (name) => {
+    const parts = step10CodeSrc.split(/^function /m);
+    for (let i = 1; i < parts.length; i++) {
+      if (parts[i].indexOf(name + '(') === 0) return parts[i];
+    }
+    return '';
+  };
+  ['healOrphanCandidates_', 'restoreWeekFromHealBackup_'].forEach((fn) => {
+    const body = step10FnBody(fn);
+    check('FIX1 test4c: ' + fn + ' routes through summaryRowIsHealForeign_, with no ' +
+      'hardcoded copy of the supplier names',
+      body.indexOf('summaryRowIsHealForeign_') !== -1 &&
+      body.indexOf("'shopify_orderapp'") === -1 && body.indexOf("'labour'") === -1);
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+});
+
+/* ------------------------------------------------------------------ */
+
+// summary_audit.gs — step10 FIX2 (IMPORTANT): listSummaryHealBackups must not
+// count step9's empty-baseline MARKER as a restorable row.
+console.log('summary_audit.gs — step10 FIX2: listSummaryHealBackups does not count the empty-baseline marker as restorable');
+withHealUnfrozen(function testListBackupsIgnoresEmptyMarkerStep10() {
+  const savedSS = currentSS;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const MARKED = '2026-07-06';
+  const REAL = '2026-07-13';
+
+  currentSS = makeSpreadsheet();
+  const backup = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  backup.appendRow([MARKED, addDaysStr_(MARKED, 6), '', '', 0, TS, '', SUMMARY_HEAL_EMPTY_MARKER_KIND_, 'RUN-1']);
+  backup.appendRow([REAL, addDaysStr_(REAL, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend', 'RUN-1']);
+
+  const result = listSummaryHealBackups();
+  const marked = result.weeks.filter((w) => w.week === MARKED)[0];
+  const real = result.weeks.filter((w) => w.week === REAL)[0];
+
+  eq('FIX2 test1a: a marker-only week reports 0 restorable rows, not 1', marked && marked.rows, 0);
+  eq('FIX2 test1b: and $0, with no phantom row behind it', marked && marked.total, 0);
+  check('FIX2 test1c: the week is LABELLED as an empty baseline, so 0/$0 is not read as ' +
+    '"nothing was ever backed up"', marked && marked.emptyBaseline === true);
+  eq('FIX2 test2a: a genuine snapshot still reports its true row count', real && real.rows, 1);
+  eq('FIX2 test2b: and its true total', real && real.total, 100);
+  check('FIX2 test2c: a genuine snapshot is not flagged as an empty baseline',
+    real && real.emptyBaseline === false);
+
+  currentSS = savedSS;
+});
+
+/* ------------------------------------------------------------------ */
+
+// step10 FIX3 (ship gate): the phase froze after 6 gate rounds without
+// approval. scripts/deploy.sh pushes the WHOLE project — there is no partial
+// deploy — so every WRITE-side entry point the phase added must hard-refuse.
+// These tests deliberately do NOT use withHealUnfrozen: they assert the
+// SHIPPED state.
+console.log('step10 FIX3 (ship gate): every frozen WRITE entry point hard-refuses; the read-only half stays live');
+(function testPhaseFreezeRefusalsStep10() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+
+  check('FIX3 test0: the committed source ships with the freeze ON — read from the FILE, ' +
+    'so a stray runtime toggle in an earlier test cannot fake this',
+    /^var SUMMARY_HEAL_FROZEN_ = true;$/m.test(
+      fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8')));
+  check('FIX3 test0b: and the loaded value agrees (no test left it flipped)',
+    globalThis.SUMMARY_HEAL_FROZEN_ === true);
+
+  /* ---- restoreSummaryWeekFromBackup: refuses even fully armed ---------- */
+  currentSS = makeSpreadsheet();
+  scriptProps = { SUMMARY_RESTORE_WEEK: WK };   // deliberately VALID and pointing at a real snapshot
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 175.25, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend', 'RUN-1']);
+  const beforeRestore = JSON.stringify(summ.getDataRange().getValues());
+
+  const restoreRes = restoreSummaryWeekFromBackup();
+
+  check('FIX3 test1a: restoreSummaryWeekFromBackup refuses while frozen, even with a valid ' +
+    'SUMMARY_RESTORE_WEEK pointing at a real snapshot',
+    !!restoreRes && typeof restoreRes.refused === 'string' && restoreRes.restored === undefined);
+  check('FIX3 test1b: the refusal names the freeze, not a missing property — an operator must ' +
+    'not go hunting for a config problem that is not there',
+    String(restoreRes && restoreRes.refused || '').indexOf('SUMMARY_HEAL_FROZEN_') !== -1);
+  eq('FIX3 test1c: zero deleteRow calls', summ.getDeleteRowCalls().length, 0);
+  eq('FIX3 test1d: live Summary rows are byte-identical afterwards',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), beforeRestore);
+
+  /* ---- runSummaryOrphanSweep: refuses even with a fresh, matching approval  */
+  currentSS = makeSpreadsheet();
+  const summ2 = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ2.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 200, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  scriptProps = {
+    SUMMARY_ORPHAN_SWEEP_APPROVED: JSON.stringify({
+      count: 1,
+      keys: [rowKey_(summ2.getDataRange().getValues()[1], SUMMARY_KEY_COLS)],
+      approvedAt: Date.now()
+    })
+  };
+  const beforeSweep = JSON.stringify(summ2.getDataRange().getValues());
+
+  const sweepRes = runSummaryOrphanSweep();
+
+  check('FIX3 test2a: runSummaryOrphanSweep refuses while frozen, even with a fresh ' +
+    'matching approval on record',
+    !!sweepRes && typeof sweepRes.refused === 'string');
+  eq('FIX3 test2b: it deletes nothing', sweepRes && sweepRes.deleted, 0);
+  eq('FIX3 test2c: zero deleteRow calls', summ2.getDeleteRowCalls().length, 0);
+  eq('FIX3 test2d: live Summary rows are byte-identical afterwards',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), beforeSweep);
+  check('FIX3 test2e: the approval record is NOT consumed by a refusal — a refused sweep must ' +
+    'not silently burn the operator\'s dry-run approval',
+    !!scriptProps.SUMMARY_ORPHAN_SWEEP_APPROVED);
+
+  /* ---- the multi-week heal window is clamped, and preview follows ------- */
+  scriptProps = { SUMMARY_HEAL_ENABLED: 'true', SUMMARY_HEAL_WEEKS: '12' };
+  eq('FIX3 test3a: SUMMARY_HEAL_ENABLED=true cannot widen the window past 1 while frozen',
+    summaryHealWindowSize_(), 1);
+
+  currentSS = makeSpreadsheet();
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  const preview = previewSummaryHeal();
+  // Captured HERE: `currentSS` is re-pointed by the dual-shape case below, and
+  // "preview writes nothing" is only meaningful against the sheet preview ran on.
+  const previewSummaryLen =
+    currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues().length;
+  eq('FIX3 test3b: previewSummaryHeal shows the CLAMPED window — the freeze is applied in ' +
+    'summaryHealWindowSize_, so preview can never diverge from what the run would heal',
+    preview.weeks.length, 1);
+
+  /* ---- the DUAL return shape is unreachable while frozen ---------------- */
+  // weeklySummarize returns TWO incompatible shapes, switched on window size.
+  // The multi-week one omits `refused`, and greenBeanPull_'s completion test
+  // (orderapp.gs: `if (sumRes && !sumRes.refused)`) reads an all-refused
+  // multi-week run as SUCCESS and drains the queue, losing the backlog.
+  // Clamping the window to 1 makes weeks.length === 1 on every path, so only
+  // the flat shape — which does carry `refused` — can be produced at all.
+  // Week derived from todayStr_(), never a hardcoded date: this must not start
+  // failing next Monday.
+  const WK10 = getLastCompletedWeek_(todayStr_()).start;
+  currentSS = makeSpreadsheet();
+  ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS)
+    .appendRow([addDaysStr_(WK10, 2), 'Kent Paper', 175.25, 'K1', 'Leible York', 'src', TS, 'Cafe']);
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS)
+    .appendRow([WK10, addDaysStr_(WK10, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  // An _archive row inside the same week makes it SPLIT, so the guarded write
+  // REFUSES — the case whose refusal greenBeanPull_ has to be able to see.
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS)
+    .appendRow([addDaysStr_(WK10, 3), 'Fresh and Chill', 50, 'F1', 'Leible North', 'src', TS, 'Cafe']);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  scriptProps = { SUMMARY_HEAL_ENABLED: 'true', SUMMARY_HEAL_WEEKS: '4' };
+
+  const sumRes10 = weeklySummarize();
+
+  check('FIX3 test5a: while frozen, weeklySummarize never returns the MULTI-week shape ' +
+    '(no `weeks` array at the top level)',
+    !!sumRes10 && sumRes10.weeks === undefined);
+  check('FIX3 test5b: a refused run carries `refused` at the top level — the field ' +
+    "greenBeanPull_'s completion test reads; the multi-week shape omits it, so an " +
+    'all-refused run would read as success and drain the queue',
+    typeof (sumRes10 || {}).refused === 'string');
+
+  /* ---- the read-only half is deliberately NOT frozen -------------------- */
+  check('FIX3 test4a: previewSummaryHeal still returns a plan while frozen (read-only, shipped)',
+    !!preview && Array.isArray(preview.weeks));
+  eq('FIX3 test4b: and writes nothing — the header row and nothing else',
+    previewSummaryLen, 1);
+  check('FIX3 test4c: the drift guard is still installed as a live entry point',
+    typeof checkSummaryDrift === 'function');
+  check('FIX3 test4d: the read-only backup listing is still a live entry point',
+    typeof listSummaryHealBackups === 'function');
+  check('FIX3 test4e: the read-only orphan DRY RUN is still a live entry point',
+    typeof runSummaryOrphanSweepDryRun === 'function');
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
 })();
 
 /* ------------------------------------------------------------------ */

@@ -92,6 +92,63 @@ var SUMMARY_BACKUP_RUNID_COL = SUMMARY_HEADERS.length;
 // active in both states — the switch never bypasses them.
 var SUMMARY_HEAL_WEEKS_ = 4;
 
+/* ------------------------------------------------------------------ *
+ * PHASE FREEZE (2026-08-26) — the summary-self-heal phase ships its
+ * READ-ONLY half only. `scripts/deploy.sh` pushes the WHOLE project (there
+ * is no partial deploy), so these refusals — not the deploy scope — are what
+ * makes the shipped subset safe.
+ *
+ * FROZEN (every one of them NEW in this phase; freezing them restores the
+ * exact pre-phase production behaviour rather than regressing anything):
+ *   - the MULTI-week heal window — SUMMARY_HEAL_ENABLED can no longer widen
+ *     it past 1 (summaryHealWindowSize_). The single-week guarded write IS
+ *     the pre-existing weeklySummarize and stays live.
+ *   - restoreSummaryWeekFromBackup()  (summary_audit.gs)
+ *   - runSummaryOrphanSweep()         (summary_audit.gs — the destructive
+ *     apply half; the dry run is read-only and stays available)
+ *
+ * NOT frozen, all read-only: previewSummaryHeal, checkSummaryDrift,
+ * auditSummaryDrift*, listSummaryHealBackups, runSummaryOrphanSweepDryRun.
+ *
+ * The gates sit on the ZERO-ARG, no-underscore operator entry points — the
+ * only surface a deploy exposes (Run picker + triggers). The underscore
+ * internals (restoreWeekFromHealBackup_) stay hand-callable from the editor
+ * on purpose: that is the documented 3am escape hatch, and invoking it is a
+ * deliberate act, not something a deploy can expose.
+ *
+ * A source constant, NOT a Script Property, deliberately: a property can be
+ * flipped from the GAS UI with no review. To unfreeze: set this false, clear
+ * the phase gate, redeploy.
+ * ------------------------------------------------------------------ */
+var SUMMARY_HEAL_FROZEN_ = true;
+var SUMMARY_HEAL_FROZEN_MSG_ = 'frozen: the summary-self-heal WRITE path is frozen ' +
+  '(SUMMARY_HEAL_FROZEN_ in Code.gs) — the phase gate ran 6 rounds without approving. ' +
+  'Read-only previewSummaryHeal() / checkSummaryDrift() / listSummaryHealBackups() ' +
+  'remain available.';
+
+/**
+ * Suppliers whose Summary rows NO heal recompute can ever produce, so a heal
+ * neither writes nor owns them:
+ *   shopify_orderapp — online revenue written DIRECTLY by the order-app pull
+ *     (orderapp.gs, PRD-10); no Suppliers/Revenue backing at all, and not
+ *     rebuildable from this project's own data.
+ *   labour — written by labourWeeklyPull_ from an EXTERNAL spreadsheet
+ *     (LABOUR_SHEET_ID), never from Suppliers/Revenue.
+ *
+ * This is deliberately NOT summary_audit.gs's SUMMARY_AUDIT_PULL_OWNED_,
+ * which is an audit-NOISE list: it also names greenbean/bennetts, whose rows
+ * ARE derived from Suppliers and therefore ARE rebuildable by a heal. Using
+ * that wider list as a write filter would wrongly exempt rows a heal owns.
+ *
+ * One named list, two consumers — healOrphanCandidates_'s exclusion and
+ * restoreWeekFromHealBackup_'s delete predicate — so they cannot drift.
+ * @param {Array} row a Summary-shaped row (supplier at index 2)
+ */
+var SUMMARY_HEAL_FOREIGN_SUPPLIERS_ = ['shopify_orderapp', 'labour'];
+function summaryRowIsHealForeign_(row) {
+  return SUMMARY_HEAL_FOREIGN_SUPPLIERS_.indexOf(mayersNorm_(String(row[2]))) !== -1;
+}
+
 // source → canonical supplier name. Ordermentum carries its name per-account in
 // the row payload (row.supplier), so it is intentionally absent here.
 var SUPPLIER_NAMES = {
@@ -1973,29 +2030,67 @@ function restoreWeekFromHealBackup_(week) {
     }
   }
 
-  var restoredCount = withScriptLock_(function () {
+  // step10 FIX1 (CRITICAL): the delete predicate is scoped to what this
+  // snapshot OWNS — never (week) alone. Rows written to the week AFTER the
+  // baseline froze that no heal can produce (shopify_orderapp's directly
+  // written online revenue, PRD-10; Labour's external LABOUR_SHEET_ID pull)
+  // are in neither the snapshot nor any recompute, so a by-week delete
+  // destroyed them with NO recovery path while the restore still reported
+  // success — probe-confirmed: a $4,321.55 shopify_orderapp row went 1 -> 0
+  // rows under {restored:1}. mayers.gs:505 documents the same hazard against
+  // the ~$14,219 Bennetts row.
+  //
+  // A live row for the week is deleted when EITHER
+  //   (a) its FULL SUMMARY_KEY_COLS tuple is in the snapshot — the baseline
+  //       owns it, so restore it by delete + re-append; or
+  //   (b) it is not heal-foreign — a heal COULD have minted it, including a
+  //       brand-new key from a supplier/location rename that upsertRows_ has
+  //       no delete path for, so undoing the heal must remove it.
+  // Otherwise it is PRESERVED. A heal-foreign row absent from the snapshot is
+  // therefore never touched, whatever the baseline was — including the
+  // "restore to nothing" empty-baseline case.
+  var snapshotKeys = {};
+  var restorable = [];
+  for (var k = 0; k < snapshotRows.length; k++) {
+    // step9 FIX1: the empty-baseline marker records "restore to nothing" — it
+    // is not itself a live row to re-insert, and carries no real key.
+    if (snapshotRows[k][SUMMARY_KIND_COL] === SUMMARY_HEAL_EMPTY_MARKER_KIND_) continue;
+    snapshotKeys[rowKey_(snapshotRows[k], SUMMARY_KEY_COLS)] = true;
+    restorable.push(snapshotRows[k]);
+  }
+
+  var applied = withScriptLock_(function () {
     var liveValues = summSheet.getDataRange().getValues();
+    var deleted = 0;
+    var preserved = 0;
     for (var r = liveValues.length - 1; r >= 1; r--) {
-      if (coerceDateStr_(liveValues[r][0]) === week) summSheet.deleteRow(r + 1);
+      var live = liveValues[r];
+      if (coerceDateStr_(live[0]) !== week) continue;
+      var owned = !!snapshotKeys[rowKey_(live, SUMMARY_KEY_COLS)] || !summaryRowIsHealForeign_(live);
+      if (!owned) { preserved++; continue; }
+      summSheet.deleteRow(r + 1);
+      deleted++;
     }
     var appended = 0;
-    for (var s = 0; s < snapshotRows.length; s++) {
-      // step9 FIX1: the empty-baseline marker records "restore to nothing" —
-      // it is not itself a live row to re-insert.
-      if (snapshotRows[s][SUMMARY_KIND_COL] === SUMMARY_HEAL_EMPTY_MARKER_KIND_) continue;
-      summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_BACKUP_RUNID_COL));
+    for (var s = 0; s < restorable.length; s++) {
+      summSheet.appendRow(restorable[s].slice(0, SUMMARY_BACKUP_RUNID_COL));
       appended++;
     }
-    return appended;
+    return { restored: appended, deleted: deleted, preserved: preserved };
   });
 
-  if (restoredCount === LOCK_TIMEOUT_) {
+  if (applied === LOCK_TIMEOUT_) {
     return { week: week, refused: 'locked: could not acquire the script lock for restore — retry shortly' };
   }
 
-  Logger.log('restoreWeekFromHealBackup_: week ' + week + ' — restored ' + restoredCount +
-    ' row(s) from the earliest ' + SUMMARY_HEAL_BACKUP_TAB + ' snapshot');
-  return { week: week, restored: restoredCount };
+  Logger.log('restoreWeekFromHealBackup_: week ' + week + ' — restored ' + applied.restored +
+    ' row(s) from the earliest ' + SUMMARY_HEAL_BACKUP_TAB + ' snapshot (deleted ' +
+    applied.deleted + ', preserved ' + applied.preserved +
+    ' row(s) written after the baseline that this snapshot does not own)');
+  return {
+    week: week, restored: applied.restored,
+    deleted: applied.deleted, preserved: applied.preserved
+  };
 }
 
 /**
@@ -2188,8 +2283,9 @@ function healOrphanCandidates_(week, ctx, computedKeys) {
     var row = ctx.summaryRows[i];
     if (coerceDateStr_(row[0]) !== week) continue;
     var supplier = String(row[2]);
-    var normSupplier = mayersNorm_(supplier);
-    if (normSupplier === 'shopify_orderapp' || normSupplier === 'labour') continue;
+    // ONE named list (SUMMARY_HEAL_FOREIGN_SUPPLIERS_), shared with
+    // restoreWeekFromHealBackup_'s delete predicate so the two cannot drift.
+    if (summaryRowIsHealForeign_(row)) continue;
     var key = rowKey_(row, SUMMARY_KEY_COLS);
     if (computedKeys[key]) continue;
     orphans.push({
@@ -2339,6 +2435,16 @@ function weeklySummarize(weekStartOverride) {
 function summaryHealWindowSize_() {
   var props = PropertiesService.getScriptProperties();
   var enabled = String(props.getProperty('SUMMARY_HEAL_ENABLED') || '').toLowerCase() === 'true';
+  // PHASE FREEZE: the multi-week window is the frozen half. Clamped HERE, not
+  // at the write site, so previewSummaryHeal (which sizes off this same
+  // function) can never diverge from what the real run actually heals.
+  if (SUMMARY_HEAL_FROZEN_) {
+    if (enabled) {
+      Logger.log('summaryHealWindowSize_: SUMMARY_HEAL_ENABLED=true IGNORED — ' + SUMMARY_HEAL_FROZEN_MSG_ +
+        ' Window clamped to 1 (the pre-phase single-week behaviour).');
+    }
+    return 1;
+  }
   if (!enabled) return 1;
   var n = Number(props.getProperty('SUMMARY_HEAL_WEEKS'));
   return (isFinite(n) && n > 0) ? Math.floor(n) : SUMMARY_HEAL_WEEKS_;
