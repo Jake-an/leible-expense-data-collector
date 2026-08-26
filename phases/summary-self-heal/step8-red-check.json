@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 12 failures are implementation gaps (missing functions, missing constants, incomplete lock handling, missing calendar-read caching). No test-code errors: 1550 tests passed, failures are all assertion failures or missing symbols in Code.gs/staleness.gs. FIX1 test setup failures confirm listSummaryHealBackups and restoreSummaryWeekFromBackup not yet defined; FIX2/FIX4 are partial implementations missing lock-timeout logic and calendar-read batching respectively."
+}

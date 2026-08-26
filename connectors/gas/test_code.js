@@ -218,6 +218,11 @@ global.PropertiesService = {
 // Calendar stub — captures created events so alert behaviour is assertable.
 let calendarEvents = [];
 let calendarFailMode = null;   // 'byId' | 'all' | null
+// step8 FIX4: counts getEventsForDay() calls so a test can assert the day's
+// events are read ONCE per invocation (raiseCalendarAlert_/its callers),
+// regardless of how many alerts are raised in that invocation.
+let getEventsForDayCallCount = 0;
+function resetGetEventsForDayCallCount() { getEventsForDayCallCount = 0; }
 function makeCalEvent(title, date) {
   const ev = {
     _title: title, _date: date, _color: null, _description: '',
@@ -241,7 +246,7 @@ global.CalendarApp = {
   },
   _cal: (id) => ({
     _id: id,
-    getEventsForDay: () => calendarEvents.slice(),
+    getEventsForDay: () => { getEventsForDayCallCount++; return calendarEvents.slice(); },
     createAllDayEvent: (title, date) => {
       const ev = makeCalEvent(title, date);
       calendarEvents.push(ev);
@@ -9564,6 +9569,403 @@ console.log('connectors/gas/*.gs — step7 FIX6: CalendarApp-exclusivity is chec
   check('FIX6 test9c: TODO.md records the note step 6 was supposed to deliver — that ' +
     'orderapp.gs also touches CalendarApp and is deliberately out of scope here',
     todoSrc.indexOf('orderapp.gs') !== -1 && /CalendarApp/i.test(todoSrc));
+})();
+
+/* ------------------------------------------------------------------ *
+ * REVIEW FIXES 2026-08-26, round 4 (Step 8: operator-entry-points-and-latents)
+ *
+ * Phase gate round 4 returned 1 IMPORTANT + 3 MINOR, no CRITICAL:
+ *   FIX1 (IMPORTANT) — TODO.md tells the 3am operator to run
+ *     restoreWeekFromHealBackup_('YYYY-MM-DD') from the editor; a trailing
+ *     underscore hides it from the Run picker/google.script.run AND it takes
+ *     a required arg the Run button cannot supply. New zero-arg, no-underscore
+ *     wrappers: listSummaryHealBackups() (read-only) and
+ *     restoreSummaryWeekFromBackup() (reads the target week from the
+ *     SUMMARY_RESTORE_WEEK Script Property, delegates to the existing
+ *     restoreWeekFromHealBackup_).
+ *   FIX2 (MINOR) — restoreWeekFromHealBackup_ has no withScriptLock_, unlike
+ *     every other entry point; documented for 3am use, when the 04:00
+ *     weeklySummarize trigger may be running concurrently.
+ *   FIX3 (MINOR) — healEarliestBackupRows_ hardcodes row[8] for run_id while
+ *     its caller separately derives SUMMARY_HEADERS.length for its slice —
+ *     two encodings of the same fact that silently disagree the moment a
+ *     column is added. One named constant, SUMMARY_BACKUP_RUNID_COL, closes it.
+ *   FIX4 (MINOR) — raiseCalendarAlert_'s getEventsForDay read is now INSIDE
+ *     the per-alert primitive, so a multi-alert invocation (stalenessRaiseAlerts_
+ *     over several stale sources, or healWeeks_ correcting several weeks) reads
+ *     the calendar day once per ALERT instead of once per INVOCATION.
+ * ------------------------------------------------------------------ */
+
+// summary_audit.gs / Code.gs — step8 FIX1 test1: listSummaryHealBackups() is
+// zero-arg, read-only, and logs exactly one line per snapshotted week (the
+// EARLIEST run's row count + total for that week — a later, already-corrected
+// snapshot for the same week must not be double-counted or override it).
+console.log('Code.gs — step8 FIX1 test1: listSummaryHealBackups() — zero-arg, read-only, one log line per snapshotted week');
+(function testListSummaryHealBackupsFix1() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const backupRow = (wk, supplier, loc, total, runId) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend', runId];
+
+  const hasFn = typeof listSummaryHealBackups === 'function';
+  check('FIX1 test1 setup: listSummaryHealBackups is defined', hasFn);
+  if (!hasFn) {
+    console.log('  (skipping listSummaryHealBackups cases — not yet implemented)');
+    return;
+  }
+
+  eq('FIX1 test1a: listSummaryHealBackups is zero-arg (Run-button friendly)',
+    listSummaryHealBackups.length, 0);
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const backup = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  // Week A: earliest snapshot (RUN-1) has 2 rows / $150; a LATER snapshot for
+  // the same week (RUN-2) must be ignored, mirroring healEarliestBackupRows_.
+  backup.appendRow(backupRow('2026-08-03', 'Kent Paper', 'Leible York', 100, 'RUN-1'));
+  backup.appendRow(backupRow('2026-08-03', 'Fresh and Chill', 'Leible North', 50, 'RUN-1'));
+  backup.appendRow(backupRow('2026-08-03', 'Kent Paper', 'Leible York', 175.25, 'RUN-2'));
+  // Week B: single-row snapshot.
+  backup.appendRow(backupRow('2026-07-27', 'Kent Paper', 'Leible York', 300, 'RUN-3'));
+
+  const summSheet = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  const writesBefore = currentSS._writeLog.length;
+  const deleteBefore = backup.getDeleteRowCalls().length;
+  loggedMessages = [];
+
+  const result = listSummaryHealBackups();
+
+  eq('FIX1 test1b: writes nothing (spreadsheet write log)', currentSS._writeLog.length, writesBefore);
+  eq('FIX1 test1c: deletes nothing from the backup sheet', backup.getDeleteRowCalls().length, deleteBefore);
+  eq('FIX1 test1d: creates no rows on the live Summary sheet',
+    summSheet.getDataRange().getValues().length, 1); // header only
+
+  const linesForA = lastLoggedMessages().filter((m) => m.indexOf('2026-08-03') !== -1);
+  const linesForB = lastLoggedMessages().filter((m) => m.indexOf('2026-07-27') !== -1);
+  eq('FIX1 test1e: exactly one log line for week A (one line PER WEEK, not per row/snapshot)',
+    linesForA.length, 1);
+  eq('FIX1 test1f: exactly one log line for week B', linesForB.length, 1);
+  check('FIX1 test1g: week A\'s line reports the EARLIEST run_id (RUN-1), never the later RUN-2',
+    linesForA[0].indexOf('RUN-1') !== -1 && linesForA[0].indexOf('RUN-2') === -1);
+  check('FIX1 test1h: week A\'s line reports row count 2 and total $150 (the earliest snapshot only)',
+    /\b2\b/.test(linesForA[0]) && /\b150\b/.test(linesForA[0]));
+  check('FIX1 test1i: week B\'s line reports row count 1 and total $300',
+    /\b1\b/.test(linesForB[0]) && /\b300\b/.test(linesForB[0]));
+  check('FIX1 test1j: a big single JSON.stringify blob is not the whole report (editor truncation) — ' +
+    'more than one Logger.log call was made for 2 weeks',
+    lastLoggedMessages().length >= 2);
+  check('FIX1 test1k: returns something (not undefined) for a caller that wants the data too',
+    result !== undefined);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs / summary_audit.gs — step8 FIX1 test2: restoreSummaryWeekFromBackup()
+// with SUMMARY_RESTORE_WEEK unset must refuse loudly and touch nothing —
+// exactly the "safe when unusable" behaviour the CURRENT unreachable
+// restoreWeekFromHealBackup_('YYYY-MM-DD') already has when invoked with no
+// arg, now on a Run-button-reachable entry point.
+console.log('Code.gs — step8 FIX1 test2: restoreSummaryWeekFromBackup() refuses loudly when SUMMARY_RESTORE_WEEK is unset');
+(function testRestoreSummaryWeekFromBackupUnsetPropertyFix1() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+
+  const hasFn = typeof restoreSummaryWeekFromBackup === 'function';
+  check('FIX1 test2 setup: restoreSummaryWeekFromBackup is defined', hasFn);
+  if (!hasFn) {
+    console.log('  (skipping restoreSummaryWeekFromBackup cases — not yet implemented)');
+    return;
+  }
+
+  eq('FIX1 test2a: restoreSummaryWeekFromBackup is zero-arg (Run-button friendly)',
+    restoreSummaryWeekFromBackup.length, 0);
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {}; // SUMMARY_RESTORE_WEEK unset
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 200, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend', 'RUN-1']);
+  const before = JSON.stringify(summ.getDataRange().getValues());
+  loggedMessages = [];
+
+  const res = restoreSummaryWeekFromBackup();
+
+  check('FIX1 test2b: an unset SUMMARY_RESTORE_WEEK refuses loudly (Logger.log names the property)',
+    lastLoggedMessages().some((m) => m.indexOf('SUMMARY_RESTORE_WEEK') !== -1));
+  check('FIX1 test2c: the return value carries a refusal, not a restore count',
+    !!res && typeof res.refused === 'string' && res.restored === undefined);
+  eq('FIX1 test2d: zero deleteRow calls — nothing is touched when the property is unset',
+    summ.getDeleteRowCalls().length, 0);
+  eq('FIX1 test2e: live Summary rows are byte-identical afterwards',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs / summary_audit.gs — step8 FIX1 test3: an unparseable
+// SUMMARY_RESTORE_WEEK (not a real date) must refuse the same way as unset —
+// never silently coerced into "no week" (undefined) or a garbage match.
+console.log('Code.gs — step8 FIX1 test3: restoreSummaryWeekFromBackup() refuses an unparseable SUMMARY_RESTORE_WEEK');
+(function testRestoreSummaryWeekFromBackupUnparseablePropertyFix1() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+
+  const hasFn = typeof restoreSummaryWeekFromBackup === 'function';
+  if (!hasFn) {
+    check('FIX1 test3 setup: restoreSummaryWeekFromBackup is defined (unparseable-property case)', false);
+    return;
+  }
+
+  currentSS = makeSpreadsheet();
+  scriptProps = { SUMMARY_RESTORE_WEEK: 'not-a-real-week' };
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 200, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend', 'RUN-1']);
+  const before = JSON.stringify(summ.getDataRange().getValues());
+
+  const res = restoreSummaryWeekFromBackup();
+
+  check('FIX1 test3a: an unparseable SUMMARY_RESTORE_WEEK is refused, not treated as a valid week',
+    !!res && typeof res.refused === 'string');
+  eq('FIX1 test3b: zero deleteRow calls on an unparseable property value',
+    summ.getDeleteRowCalls().length, 0);
+  eq('FIX1 test3c: live Summary rows are byte-identical after an unparseable-property refusal',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs / summary_audit.gs — step8 FIX1 test4: a VALID property, matched to
+// a valid snapshot, restores exactly the EARLIEST snapshot's rows — the same
+// guarantee restoreWeekFromHealBackup_ already gives, now reachable from the
+// Run button.
+console.log('Code.gs — step8 FIX1 test4: restoreSummaryWeekFromBackup() with a valid property restores the EARLIEST snapshot');
+(function testRestoreSummaryWeekFromBackupValidFix1() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+
+  const hasFn = typeof restoreSummaryWeekFromBackup === 'function';
+  if (!hasFn) {
+    check('FIX1 test4 setup: restoreSummaryWeekFromBackup is defined (valid-property restore case)', false);
+    return;
+  }
+
+  currentSS = makeSpreadsheet();
+  scriptProps = { SUMMARY_RESTORE_WEEK: WK };
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS)
+    .appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 175.25, TS, 'Cafe', 'spend']); // post-heal, wrong
+  const backup = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  backup.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend', 'RUN-1']);     // earliest — must win
+  backup.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 175.25, TS, 'Cafe', 'spend', 'RUN-2']); // later, ignored
+
+  const res = restoreSummaryWeekFromBackup();
+
+  eq('FIX1 test4a: restores exactly 1 row (the earliest snapshot)', res && res.restored, 1);
+  const after = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues();
+  const dataRows = after.slice(1).filter((r) => coerceDateStr_(r[0]) === WK);
+  eq('FIX1 test4b: exactly one live row for the week after restore', dataRows.length, 1);
+  eq('FIX1 test4c: restored to the EARLIEST snapshot value (100), not the later one (175.25)',
+    dataRows[0][4], 100);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — step8 FIX1 test5: neither new operator entry point ends in an
+// underscore. Apps Script hides an underscore-suffixed function from the Run
+// picker and google.script.run — that is the exact defect this whole FIX closes.
+console.log('Code.gs — step8 FIX1 test5: neither new operator entry point name ends in an underscore');
+(function testNewEntryPointNamesNotUnderscoredFix1() {
+  const hasFns = typeof listSummaryHealBackups === 'function' &&
+    typeof restoreSummaryWeekFromBackup === 'function';
+  check('FIX1 test5 setup: both listSummaryHealBackups and restoreSummaryWeekFromBackup are defined', hasFns);
+  if (!hasFns) {
+    console.log('  (skipping FIX1 naming checks — new entry points not yet implemented)');
+    return;
+  }
+  check('FIX1 test5a: listSummaryHealBackups does not end with an underscore',
+    !/_$/.test(listSummaryHealBackups.name));
+  check('FIX1 test5b: restoreSummaryWeekFromBackup does not end with an underscore',
+    !/_$/.test(restoreSummaryWeekFromBackup.name));
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — step8 FIX2 test6: restoreWeekFromHealBackup_ must refuse with a
+// lock-flavoured {refused:...} shape (never throw, never proceed) when the
+// script lock is already held — the documented 3am-incident use case, when
+// the 04:00 weeklySummarize trigger may be mid-run. Today the function has no
+// withScriptLock_ at all, so a held lock has zero effect and the restore
+// proceeds — this must go red on that gap.
+console.log('Code.gs — step8 FIX2 test6: restoreWeekFromHealBackup_ refuses with a lock-timeout shape when the script lock is held');
+(function testRestoreLockTimeoutFix2() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const WK = '2026-07-06';
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 175.25, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS)
+    .appendRow([WK, addDaysStr_(WK, 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend', 'RUN-1']);
+  const before = JSON.stringify(summ.getDataRange().getValues());
+
+  global.__forceLockTimeout = true;
+  let res;
+  let threw = false;
+  try { res = restoreWeekFromHealBackup_(WK); } catch (e) { threw = true; }
+  global.__forceLockTimeout = false;
+
+  check('FIX2 test6a: restoreWeekFromHealBackup_ does not throw when the script lock is held', !threw);
+  check('FIX2 test6b: a held lock refuses with a lock-flavoured {refused:...} shape',
+    !!res && typeof res.refused === 'string' && /lock/i.test(res.refused));
+  eq('FIX2 test6c: zero deleteRow calls when the lock could not be acquired',
+    summ.getDeleteRowCalls().length, 0);
+  eq('FIX2 test6d: live Summary rows are untouched when the lock could not be acquired',
+    JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+// Code.gs — step8 FIX3 test7: run_id column resolution must come from ONE
+// named constant (SUMMARY_BACKUP_RUNID_COL), used by BOTH
+// healEarliestBackupRows_ (today: bare row[8]) and restoreWeekFromHealBackup_'s
+// slice (today: a separately-derived SUMMARY_HEADERS.length) — two
+// independent encodings of "where run_id lives" that agree only by
+// coincidence today and would silently diverge the moment a column is added
+// to SUMMARY_HEADERS.
+console.log('Code.gs — step8 FIX3 test7: run_id column resolution comes from ONE named constant shared by both call sites');
+(function testRunIdColumnSingleConstantFix3() {
+  const hasConst = typeof SUMMARY_BACKUP_RUNID_COL === 'number';
+  check('FIX3 test7 setup: SUMMARY_BACKUP_RUNID_COL is defined', hasConst);
+  if (!hasConst) {
+    console.log('  (skipping FIX3 agreement checks — SUMMARY_BACKUP_RUNID_COL not yet defined)');
+    return;
+  }
+
+  eq('FIX3 test7a: SUMMARY_BACKUP_RUNID_COL equals SUMMARY_HEADERS.length',
+    SUMMARY_BACKUP_RUNID_COL, SUMMARY_HEADERS.length);
+  eq('FIX3 test7b: the run_id column in SUMMARY_HEAL_BACKUP_HEADERS sits exactly at SUMMARY_BACKUP_RUNID_COL',
+    SUMMARY_HEAL_BACKUP_HEADERS[SUMMARY_BACKUP_RUNID_COL], 'run_id');
+
+  // Source-level agreement: both named call sites must reference the SAME
+  // constant — not a bare literal 8, not an independently re-derived
+  // SUMMARY_HEADERS.length. Extracting each function's own source text (up to
+  // the next top-level `function` declaration) so this cannot be satisfied by
+  // the constant merely existing somewhere else in the file.
+  const codeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');
+  const fnBody = (name) => {
+    const start = codeSrc.indexOf('function ' + name + '(');
+    if (start === -1) return '';
+    const next = codeSrc.indexOf('\nfunction ', start + 1);
+    return codeSrc.slice(start, next === -1 ? codeSrc.length : next);
+  };
+  const earliestBody = fnBody('healEarliestBackupRows_');
+  const restoreBody = fnBody('restoreWeekFromHealBackup_');
+
+  check('FIX3 test7c: healEarliestBackupRows_ resolves run_id via SUMMARY_BACKUP_RUNID_COL, ' +
+    'not a bare row[8] literal',
+    earliestBody.indexOf('SUMMARY_BACKUP_RUNID_COL') !== -1 && !/row\[8\]/.test(earliestBody));
+  check('FIX3 test7d: restoreWeekFromHealBackup_ uses the SAME named constant for its slice',
+    restoreBody.indexOf('SUMMARY_BACKUP_RUNID_COL') !== -1);
+
+  // Behavioural sanity: the pure primitive still resolves a real fixture
+  // correctly through whatever the constant currently evaluates to.
+  const rows = [
+    ['2026-07-06', '2026-07-12', 'Kent Paper', 'Leible York', 100, 'TS', 'Cafe', 'spend', 'RUN-1'],
+  ];
+  const earliest = healEarliestBackupRows_(rows, '2026-07-06');
+  eq('FIX3 test7e sanity: healEarliestBackupRows_ still resolves the real fixture correctly',
+    earliest.length, 1);
+})();
+
+/* ------------------------------------------------------------------ */
+
+// staleness.gs / Code.gs — step8 FIX4 test8: the day's calendar events must
+// be read ONCE per invocation (per stalenessRaiseAlerts_ batch, per healWeeks_
+// run), regardless of how many individual alerts are raised within it — and
+// idempotency (an already-present title is still skipped) must survive the
+// optimization unchanged.
+console.log('staleness.gs / Code.gs — step8 FIX4 test8: the day\'s calendar events are read ONCE per invocation, not once per alert');
+(function testCalendarReadOncePerInvocationFix4() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+
+  /* ---- stalenessRaiseAlerts_: one batch, three stale sources ------------- */
+  calendarEvents = [];
+  resetGetEventsForDayCallCount();
+  const staleEntries = [
+    { source: 'square', ageHours: 30, thresholdHours: 24 },
+    { source: 'mayers', ageHours: 40, thresholdHours: 24 },
+    { source: 'kent_paper', ageHours: 50, thresholdHours: 24 },
+  ];
+  const created = stalenessRaiseAlerts_(staleEntries, Date.parse('2026-08-24T00:00:00Z'));
+  eq('FIX4 test8 setup: all three stale sources raised a NEW event', created, 3);
+  eq('FIX4 test8a: getEventsForDay is called exactly ONCE for a 3-entry staleness batch, not 3 times',
+    getEventsForDayCallCount, 1);
+
+  /* ---- idempotency must survive the optimization ------------------------- */
+  calendarEvents = [makeCalEvent(stalenessEventTitle_('square'), new Date())];
+  resetGetEventsForDayCallCount();
+  const created2 = stalenessRaiseAlerts_(staleEntries, Date.parse('2026-08-24T00:00:00Z'));
+  eq('FIX4 test8b: the already-present title is still skipped — only 2 of 3 are newly created',
+    created2, 2);
+  eq('FIX4 test8c: still exactly ONE getEventsForDay call for the batch',
+    getEventsForDayCallCount, 1);
+
+  /* ---- healWeeks_: a batch correcting TWO weeks raises two healRaiseAlert_
+   *      calls, but must still read the calendar day ONCE for the run ------ */
+  const TS = '2026-08-24T13:00:00+10:00';
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  supp.appendRow(['2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York', 'src', TS, 'Cafe']);
+  supp.appendRow(['2026-08-12', 'Fresh and Chill', 200, 'F2', 'Leible North', 'src', TS, 'Cafe']);
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  summ.appendRow(['2026-08-17', addDaysStr_('2026-08-17', 6), 'Kent Paper', 'Leible York', 100, TS, 'Cafe', 'spend']);
+  summ.appendRow(['2026-08-10', addDaysStr_('2026-08-10', 6), 'Fresh and Chill', 'Leible North', 100, TS, 'Cafe', 'spend']);
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+
+  calendarEvents = [];
+  resetGetEventsForDayCallCount();
+  healWeeks_(['2026-08-17', '2026-08-10']);
+  const correctionEvents = calendarEvents.filter((e) =>
+    e._title.indexOf('2026-08-17') !== -1 || e._title.indexOf('2026-08-10') !== -1);
+  check('FIX4 test8 setup: both weeks raised a distinct correction alert in this single healWeeks_ call',
+    correctionEvents.length === 2);
+  eq('FIX4 test8d: healWeeks_ reads the calendar day ONCE for the whole run, even though ' +
+    '2 separate weeks each raised their own alert',
+    getEventsForDayCallCount, 1);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
 })();
 
 /* ------------------------------------------------------------------ */
