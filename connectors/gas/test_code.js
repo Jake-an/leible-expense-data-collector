@@ -7263,9 +7263,12 @@ console.log('summary_audit.gs — previewSummaryHeal() (zero-arg editor entry po
     const report = previewSummaryHeal();
     eq('previewSummaryHeal writes NOTHING', currentSS._writeLog.length, writes);
 
-    eq('reports exactly the 4-week window',
+    // step9 FIX2: the window is sized off summaryHealWindowSize_ (1 with the
+    // kill switch off, the default here — no SUMMARY_HEAL_ENABLED set), not a
+    // literal 4 — this used to hardcode the pre-fix (divergent) behavior.
+    eq('reports exactly the heal window (1 week — kill switch off by default)',
       report.weeks.map((w) => w.week).sort(),
-      ['2026-07-27', '2026-08-03', '2026-08-10', '2026-08-17']);
+      ['2026-08-17']);
 
     const wk1 = report.weeks.filter((w) => w.week === '2026-08-17')[0];
     eq('wk-1 is a heal with the one stale row', wk1.action, 'heal');

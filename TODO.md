@@ -51,6 +51,11 @@ plan at `C:/Users/mioja/.claude/plans/graceful-brewing-piglet.md`:
 - [ ] The **24 SPLIT weeks — $92,885.74** — still NOT repairable by
       `weeklySummarize` (reads `Suppliers` only, would understate them);
       needs an archive-aware aggregate, blocked on the `_archive` cleanup above.
+- [ ] **known open (step 9, FIX6):** step 8's `tdd_evidence.tdd_state` had recurred
+      as `"green_done"` — a value `scripts/execute.py` never writes (its only
+      terminal write is `red_done`); step subagents keep emitting it by hand. A
+      future harness change should reject unknown `tdd_state` values at write
+      time instead of letting them persist silently.
 
 **Post-verification action:** flip `PRD-12`/`PRD-13` to `built` in
 `docs/PRD.md` **only after Jake's live verification** of the self-heal window

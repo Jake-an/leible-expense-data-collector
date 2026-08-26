@@ -65,6 +65,13 @@ var REVENUE_KEY_COLS = [6, 5];   // source + order_ref
 var SUMMARY_KEY_COLS = [0, 6, 7, 2, 3]; // week_start||department||kind||supplier||location
 var SUMMARY_TOTAL_COL = 4;
 var SUMMARY_STAMP_COL = 5;
+var SUMMARY_KIND_COL = 7;
+
+// step9 FIX1: sentinel `kind` value for a healBackupWeek_ marker row that
+// records "the true pre-heal baseline for this week was ZERO live rows" —
+// distinct from every real kind ('spend'/'revenue') so restoreWeekFromHealBackup_
+// can recognize it and restore to nothing instead of re-inserting the marker.
+var SUMMARY_HEAL_EMPTY_MARKER_KIND_ = 'empty-baseline';
 
 // Snapshot-once backup for the guarded Summary heal path (PRD-12). Same shape
 // as SUMMARY_HEADERS plus a run_id tag, so a restore can tell which run wrote
@@ -1971,10 +1978,15 @@ function restoreWeekFromHealBackup_(week) {
     for (var r = liveValues.length - 1; r >= 1; r--) {
       if (coerceDateStr_(liveValues[r][0]) === week) summSheet.deleteRow(r + 1);
     }
+    var appended = 0;
     for (var s = 0; s < snapshotRows.length; s++) {
+      // step9 FIX1: the empty-baseline marker records "restore to nothing" —
+      // it is not itself a live row to re-insert.
+      if (snapshotRows[s][SUMMARY_KIND_COL] === SUMMARY_HEAL_EMPTY_MARKER_KIND_) continue;
       summSheet.appendRow(snapshotRows[s].slice(0, SUMMARY_BACKUP_RUNID_COL));
+      appended++;
     }
-    return snapshotRows.length;
+    return appended;
   });
 
   if (restoredCount === LOCK_TIMEOUT_) {
@@ -2004,6 +2016,15 @@ function healBackupWeek_(week, ctx) {
     var row = ctx.summaryRows[i];
     if (coerceDateStr_(row[0]) !== week) continue;
     rowsForWeek.push(row.concat([ctx.runId]));
+  }
+  if (rowsForWeek.length === 0) {
+    // step9 FIX1: a newly-summarized week has ZERO live rows to snapshot —
+    // without an explicit marker, ctx.backedUpWeeks (seeded in healWeeks_
+    // only from rows actually present in Summary_heal_backup) never learns
+    // this week was already handled, and the NEXT heal falsifies the
+    // baseline by snapshotting its own (by-then non-empty) output.
+    var weekEnd = addDaysStr_(week, 6);
+    rowsForWeek.push([week, weekEnd, '', '', 0, ctx.extractedAt, '', SUMMARY_HEAL_EMPTY_MARKER_KIND_, ctx.runId]);
   }
   for (var r = 0; r < rowsForWeek.length; r++) {
     ctx.backupSheet.appendRow(rowsForWeek[r]);
@@ -2249,7 +2270,13 @@ function healWeeks_(weeks) {
     }
   }
 
-  return { weeks: results, success: !newestWeekFailed, newestWeekFailed: newestWeekFailed };
+  return {
+    weeks: results, success: !newestWeekFailed, newestWeekFailed: newestWeekFailed,
+    // step9 FIX4: exposed so weeklySummarize_impl_'s Labour correction alert
+    // (a second, independent Summary write in the SAME batch) can share this
+    // run's calendar-events cache instead of paying its own getEventsForDay read.
+    calendarEventsCache: ctx.calendarEventsCache
+  };
 }
 
 function summaryDataToObjects_(values) {
@@ -2384,7 +2411,7 @@ function weeklySummarize_impl_(weekStartOverride) {
     if (labourResult.summaryUpdated > 0) {
       healRaiseAlert_(labourWeeks.map(function (w) { return w.start; }).join(', '), 'Labour correction',
         ['labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
-        ' summaryUpdated=' + labourResult.summaryUpdated], false);
+        ' summaryUpdated=' + labourResult.summaryUpdated], false, healRes.calendarEventsCache);
     }
   }
 

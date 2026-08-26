@@ -450,12 +450,15 @@ function previewSummaryHeal() {
     revenueRows: revenueRows
   };
 
-  // The last 4 completed weeks, oldest first — the same "last completed
+  // The heal window, oldest first — sized off summaryHealWindowSize_ (step9
+  // FIX2), the SAME function the real run uses, so preview can never diverge
+  // from what weeklySummarize_impl_ actually heals. Same "last completed
   // week" anchor weeklySummarize_impl_/auditSummaryDrift_ already use.
   var lastCompleted = getLastCompletedWeek_(todayStr_());
+  var windowSize = summaryHealWindowSize_();
   var weeks = [];
   var wk = lastCompleted.start;
-  for (var n = 0; n < 4; n++) {
+  for (var n = 0; n < windowSize; n++) {
     weeks.unshift(wk);
     wk = addDaysStr_(wk, -7);
   }
@@ -479,7 +482,7 @@ function previewSummaryHeal() {
     out.push(wp.week + '  ' + wp.action + '  rows=' + wp.rows.length +
       (wp.reason ? '  (' + wp.reason + ')' : ''));
   }
-  out.push('projected setValue calls (whole 4-week window): ' + projectedSetValues);
+  out.push('projected setValue calls (whole ' + windowSize + '-week window): ' + projectedSetValues);
   out.push('projected override read cost (_archive + Summary): ' + projectedOverrideCost);
   for (var L = 0; L < out.length; L++) Logger.log(out[L]);
 
@@ -687,23 +690,60 @@ function runSummaryOrphanSweep() {
     return { mode: 'aborted', aborted: true, deleted: 0, found: liveKeys.length };
   }
 
-  var ss = getHubSpreadsheet_();
-  var summSheet = ss.getSheetByName(SUMMARY_TAB);
-  var backup = ensureSheet(ss, SUMMARY_ORPHAN_BACKUP_TAB, SUMMARY_HEADERS);
+  var candidates = report.candidates;
 
-  for (var b = 0; b < report.candidates.length; b++) backup.appendRow(report.candidates[b].raw);
-  Logger.log('runSummaryOrphanSweep: backed up ' + report.candidates.length +
-    ' row(s) to ' + SUMMARY_ORPHAN_BACKUP_TAB);
+  // step9 FIX3: the backup+delete is the one destructive half of this sweep —
+  // wrapped in withScriptLock_ like every other Summary write path
+  // (weeklySummarize, restoreWeekFromHealBackup_'s step8 FIX2). Deleting by
+  // the cached row index alone is unsafe: a concurrent row-deleting path
+  // (restoreWeekFromHealBackup_, cleanupDuplicateSummaryRows) landing between
+  // summaryOrphanSweep_'s recompute above and this lock could shift indices,
+  // and a mis-indexed delete has no recovery copy (the backup only snapshots
+  // rows the sweep INTENDED to delete). So every candidate's identity — the
+  // full SUMMARY_KEY_COLS tuple, never the index alone — is re-verified fresh
+  // against a NEW getDataRange() read taken inside the lock; any mismatch
+  // aborts the whole sweep before a single backup row or delete happens.
+  var applyResult = withScriptLock_(function () {
+    var ss = getHubSpreadsheet_();
+    var summSheet = ss.getSheetByName(SUMMARY_TAB);
+    var freshValues = summSheet.getDataRange().getValues();
 
-  var deleted = 0;
-  for (var m = report.candidates.length - 1; m >= 0; m--) {
-    summSheet.deleteRow(report.candidates[m].row + 1);
-    deleted++;
+    for (var v = 0; v < candidates.length; v++) {
+      var cand = candidates[v];
+      var freshRow = freshValues[cand.row];
+      var freshKey = freshRow ? rowKey_(freshRow, SUMMARY_KEY_COLS) : null;
+      if (freshKey !== cand.key) {
+        return { aborted: true, reason: 'row ' + (cand.row + 1) + ' no longer matches its cached identity' };
+      }
+    }
+
+    var backup = ensureSheet(ss, SUMMARY_ORPHAN_BACKUP_TAB, SUMMARY_HEADERS);
+    for (var b = 0; b < candidates.length; b++) backup.appendRow(candidates[b].raw);
+    Logger.log('runSummaryOrphanSweep: backed up ' + candidates.length +
+      ' row(s) to ' + SUMMARY_ORPHAN_BACKUP_TAB);
+
+    var deleted = 0;
+    for (var m = candidates.length - 1; m >= 0; m--) {
+      summSheet.deleteRow(candidates[m].row + 1);
+      deleted++;
+    }
+    return { deleted: deleted };
+  });
+
+  if (applyResult === LOCK_TIMEOUT_) {
+    Logger.log('runSummaryOrphanSweep: ABORTED — could not acquire the script lock — retry shortly');
+    return { mode: 'aborted', aborted: true, deleted: 0, found: liveKeys.length, refused: 'locked' };
+  }
+
+  if (applyResult.aborted) {
+    Logger.log('runSummaryOrphanSweep: ABORTED — ' + applyResult.reason +
+      '. Re-run runSummaryOrphanSweepDryRun() and re-approve — never force this through.');
+    return { mode: 'aborted', aborted: true, deleted: 0, found: liveKeys.length };
   }
 
   PropertiesService.getScriptProperties().deleteProperty(SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_);
-  Logger.log('runSummaryOrphanSweep: APPLIED — deleted=' + deleted);
-  return { mode: 'apply', deleted: deleted, found: report.candidates.length };
+  Logger.log('runSummaryOrphanSweep: APPLIED — deleted=' + applyResult.deleted);
+  return { mode: 'apply', deleted: applyResult.deleted, found: candidates.length };
 }
 
 /* ------------------------------------------------------------------ *
@@ -883,6 +923,10 @@ function listSummaryHealBackups() {
   var weekOrder = [];
   for (var i = 0; i < backupRows.length; i++) {
     var wk = coerceDateStr_(backupRows[i][0]);
+    // step9 FIX5: guard against a blank/malformed backup date the same way
+    // auditSummaryDrift_/computeHealPlan_ already do — a '' week entry is
+    // not a real, restorable week.
+    if (!DATE_ARG_RE.test(wk)) continue;
     if (!seen[wk]) { seen[wk] = true; weekOrder.push(wk); }
   }
   weekOrder.sort(); // oldest first
