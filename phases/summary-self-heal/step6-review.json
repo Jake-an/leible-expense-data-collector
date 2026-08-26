@@ -1,0 +1,12 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "TODO.md",
+      "line": 0,
+      "summary": "Pre-existing orderapp.gs CalendarApp issue not documented as required",
+      "suggestion": "Step 6's brief (lines 45-46) directs: 'note it in TODO.md instead' when explicitly NOT refactoring pre-existing orderapp.gs:176/212 CalendarApp references. Add a brief TODO entry documenting that orderapp.gs retains pre-existing CalendarApp.EventColor references outside staleness.gs, and should be addressed in a separate refactor, not this phase."
+    }
+  ]
+}
