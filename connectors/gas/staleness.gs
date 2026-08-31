@@ -366,16 +366,29 @@ function raiseCalendarAlert_(title, bodyLines, color, nowMs, eventsCache) {
   }
   if (existing[title]) return 0;
 
+  var ev;
   try {
-    var ev = cal.createAllDayEvent(title, now);
-    ev.setColor(stalenessResolveColor_(color));
-    ev.setDescription(bodyLines.join('\n'));
-    if (eventsCache) existing[title] = true; // keep the cache consistent for later calls in this same batch
-    return 1;
+    ev = cal.createAllDayEvent(title, now);
   } catch (err2) {
     Logger.log('raiseCalendarAlert_: could not create event for ' + title + ' — ' + err2.message);
     return 0;
   }
+
+  // CREATION is the success point; decoration is best-effort. These used to
+  // share ONE try: a setColor/setDescription throw returned 0 and left the
+  // dedup cache unmarked while the event was ALREADY on the calendar — so the
+  // same batch created a duplicate, and the next day's title scan found the
+  // phantom and suppressed the real alert. A bare-titled event still names the
+  // source and the condition, which is the part that has to reach Jake.
+  if (eventsCache) existing[title] = true; // keep the cache consistent for later calls in this same batch
+  try {
+    ev.setColor(stalenessResolveColor_(color));
+    ev.setDescription(bodyLines.join('\n'));
+  } catch (err3) {
+    Logger.log('raiseCalendarAlert_: created "' + title + '" but could not decorate it — ' +
+      err3.message + ' — the alert stands, without colour/detail');
+  }
+  return 1;
 }
 
 /** Raise one orange all-day event per stale source; idempotent within a day.

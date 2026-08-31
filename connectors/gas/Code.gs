@@ -2339,7 +2339,14 @@ function healWeeks_(weeks) {
 
   var backupRows = backupSheet.getDataRange().getValues().slice(1);
   var backedUpWeeks = {};
-  backupRows.forEach(function (r) { backedUpWeeks[coerceDateStr_(r[0])] = true; });
+  backupRows.forEach(function (r) {
+    // The same DATE_ARG_RE guard archiveWeeks gets six lines up. backedUpWeeks
+    // decides whether a DESTRUCTIVE heal takes its backup first (healWeek_:
+    // `if (ctx.backedUpWeeks[week]) return true`), so a blank row or a note
+    // somebody typed into the tab has no business entering it.
+    var w = coerceDateStr_(r[0]);
+    if (DATE_ARG_RE.test(w)) backedUpWeeks[w] = true;
+  });
 
   var nowStamp = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
   var today = nowStamp.slice(0, 10);
@@ -2523,9 +2530,20 @@ function weeklySummarize_impl_(weekStartOverride) {
   if (labourWeeks.length > 0) {
     labourResult = labourWeeklyPull_(labourWeeks, ss, summSheet, extractedAt);
     if (labourResult.summaryUpdated > 0) {
-      healRaiseAlert_(labourWeeks.map(function (w) { return w.start; }).join(', '), 'Labour correction',
-        ['labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
-        ' summaryUpdated=' + labourResult.summaryUpdated], false, healRes.calendarEventsCache);
+      // Calendar alerts dedup on the EXACT title, so a title must be bounded
+      // and stable. This one was built from the JOINED healed-week list: it
+      // grew with the heal window and re-alerted for the same condition
+      // whenever the week set shifted. Invisible while the window was clamped
+      // to 1 — which is precisely why it is unfreeze work. Anchor on the
+      // newest healed week (labourWeeks is newest-first, inherited from
+      // healRes.weeks) plus a count; the full list costs nothing in the body.
+      var labourWeekList = labourWeeks.map(function (w) { return w.start; });
+      healRaiseAlert_(labourWeekList[0],
+        'Labour correction (' + labourWeekList.length +
+          ' week' + (labourWeekList.length === 1 ? '' : 's') + ')',
+        ['weeks: ' + labourWeekList.join(', '),
+         'labourAdded=' + labourResult.labourAdded + ' summaryAdded=' + labourResult.summaryAdded +
+         ' summaryUpdated=' + labourResult.summaryUpdated], false, healRes.calendarEventsCache);
     }
   }
 

@@ -10857,5 +10857,180 @@ withHealUnfrozen(function testWeeklySummarizeReturnShapeUnfreeze() {
 })();
 
 
+/* ------------------------------------------------------------------ *
+ * UNFREEZE step 2 — the three MINORs left open by the phase gate.
+ * ------------------------------------------------------------------ */
+
+/* MINOR 1 (staleness.gs) — raiseCalendarAlert_ creates the event, THEN
+ * decorates it, all inside one try. If setColor/setDescription throws the
+ * catch reports 0 ("nothing raised") and never marks the dedup cache — but
+ * the event is already on the calendar. Two consequences, both bad: the same
+ * batch creates a DUPLICATE event for the same title, and tomorrow's
+ * stalenessLoadExistingTitles_ sees the phantom and suppresses the real
+ * alert. Creation is the success point; decoration is best-effort.
+ * ------------------------------------------------------------------ */
+(function testRaiseCalendarAlertPartialEventMinor1() {
+  console.log('\nunfreeze MINOR1 (staleness.gs): a decoration throw must not leave an uncounted phantom event:');
+  const REAL_CAL = global.CalendarApp._cal;
+
+  // A calendar whose createAllDayEvent SUCCEEDS but whose returned event
+  // throws on setDescription — the real-world Calendar API partial failure.
+  global.CalendarApp._cal = (id) => ({
+    _id: id,
+    getEventsForDay: () => calendarEvents.slice(),
+    createAllDayEvent: (title, date) => {
+      const ev = makeCalEvent(title, date);
+      calendarEvents.push(ev);
+      ev.setDescription = () => { throw new Error('simulated Calendar API failure'); };
+      return ev;
+    },
+  });
+
+  calendarEvents = [];
+  calendarFailMode = null;
+  clearLoggedMessages();
+
+  const cache = stalenessNewEventsCache_();
+  const n1 = raiseCalendarAlert_('LEIBLE partial-event probe', ['line one'], 'ORANGE', Date.now(), cache);
+
+  eq('MINOR1 test1a setup: the event really WAS created on the calendar', calendarEvents.length, 1);
+  eq('MINOR1 test1b: a created-but-undecorated event is REPORTED as raised, not 0',
+    n1, 1);
+
+  const n2 = raiseCalendarAlert_('LEIBLE partial-event probe', ['line one'], 'ORANGE', Date.now(), cache);
+  eq('MINOR1 test1c: a second call for the same title creates NO duplicate event',
+    calendarEvents.length, 1);
+  eq('MINOR1 test1d: ...and reports 0, because the alert already exists', n2, 0);
+  check('MINOR1 test1e: the decoration failure is logged in its own right',
+    lastLoggedMessages().some((m) => m.indexOf('decorate') !== -1));
+
+  global.CalendarApp._cal = REAL_CAL;
+  calendarEvents = [];
+})();
+
+/* MINOR 2 (Code.gs) — healWeeks_ seeds `backedUpWeeks` straight from the
+ * backup tab with no DATE_ARG_RE guard, three lines after seeding
+ * `archiveWeeks` WITH one. `backedUpWeeks` gates whether a destructive heal
+ * takes its backup first (healWeek_: `if (ctx.backedUpWeeks[week]) return
+ * true`), so junk keys have no business being in it. Asserted on the ctx the
+ * driver actually hands healWeek_.
+ * ------------------------------------------------------------------ */
+withHealUnfrozen(function testHealWeeksBackedUpWeeksGuardMinor2() {
+  console.log('\nunfreeze MINOR2 (Code.gs): only real week keys may enter healWeeks_ backedUpWeeks:');
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const savedHealWeek = globalThis.healWeek_;
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  const backup = ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+
+  const pad = (first) => {
+    const r = new Array(SUMMARY_HEAL_BACKUP_HEADERS.length).fill('');
+    r[0] = first;
+    return r;
+  };
+  backup.appendRow(pad('2026-08-10'));   // the one genuine week
+  backup.appendRow(pad(''));             // a blank row
+  backup.appendRow(pad('not a date'));   // a note somebody typed in
+  backup.appendRow(pad('2026-8-3'));     // unpadded — NOT the canonical form
+
+  // Stubbed so the assertion is on the ctx the DRIVER builds, with no write
+  // of any kind — this is about what healWeeks_ puts in the map, nothing else.
+  let seenCtx = null;
+  globalThis.healWeek_ = function (week, ctx) {
+    seenCtx = ctx;
+    return { week: week, action: 'skip-split', reason: 'stubbed', rowsAdded: 0,
+      rowsUpdated: 0, duplicatesSkipped: 0, updates: [], orphans: [], backedUp: true };
+  };
+
+  healWeeks_(['2026-08-17']);
+
+  const keys = Object.keys(seenCtx.backedUpWeeks);
+  check('MINOR2 test2a setup: the driver really did hand healWeek_ a ctx', !!seenCtx);
+  eq('MINOR2 test2b: every backedUpWeeks key is a canonical YYYY-MM-DD week',
+    keys.filter((k) => !DATE_ARG_RE.test(k)), []);
+  check('MINOR2 test2c: the one genuine backup week is still recognised',
+    seenCtx.backedUpWeeks['2026-08-10'] === true);
+
+  globalThis.healWeek_ = savedHealWeek;
+  currentSS = savedSS;
+  scriptProps = savedProps;
+});
+
+/* MINOR 3 (Code.gs) — the Labour correction alert builds its calendar TITLE
+ * from the joined healed-week list. Calendar alerts dedup on exact title, so
+ * the title must be stable and bounded: a joined list grows with the heal
+ * window (invisible while the window is clamped to 1, which is exactly why
+ * this is unfreeze work) and a different week set re-alerts for the same
+ * condition. The week list belongs in the description.
+ * ------------------------------------------------------------------ */
+withHealUnfrozen(function testLabourAlertTitleMinor3() {
+  console.log('\nunfreeze MINOR3 (Code.gs): the Labour correction alert title is bounded and stable:');
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const savedLabour = globalThis.labourWeeklyPull_;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const NOW = '2026-08-24T02:00:00Z';
+  const WK1 = '2026-08-17', WK2 = '2026-08-10', WK3 = '2026-08-03', WK4 = '2026-07-27';
+
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  currentSS = makeSpreadsheet();
+  scriptProps = {};
+  const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  [sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York'),
+   sup('2026-08-12', 'Kent Paper', 200, 'K2', 'Leible York'),
+   sup('2026-08-05', 'Kent Paper', 300, 'K3', 'Leible York'),
+   sup('2026-07-29', 'Kent Paper', 400, 'K4', 'Leible York')].forEach((r) => supp.appendRow(r));
+  const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+  [sum(WK1, 'Kent Paper', 'Leible York', 100),
+   sum(WK2, 'Kent Paper', 'Leible York', 100),
+   sum(WK3, 'Kent Paper', 'Leible York', 100),
+   sum(WK4, 'Kent Paper', 'Leible York', 100)].forEach((r) => summ.appendRow(r));
+  ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+
+  // A genuine correction across the whole batch — summaryUpdated > 0 is what
+  // arms the alert (step7 FIX4: never on a first-time insert).
+  globalThis.labourWeeklyPull_ = function () {
+    return { labourAdded: 1, summaryAdded: 0, summaryUpdated: 2 };
+  };
+
+  calendarEvents = [];
+  withMockNow(NOW, function () {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true' };
+    weeklySummarize();
+  });
+
+  const labourEv = calendarEvents.filter((e) => e.getTitle().indexOf('Labour correction') !== -1)[0];
+  check('MINOR3 test3a setup: a Labour correction alert was raised at all', !!labourEv);
+  if (labourEv) {
+    const title = labourEv.getTitle();
+    check('MINOR3 test3b: the TITLE does not embed the joined week list',
+      title.indexOf(WK2) === -1 && title.indexOf(WK3) === -1 && title.indexOf(WK4) === -1);
+    check('MINOR3 test3c: it anchors on the NEWEST healed week, like every other heal alert',
+      title.indexOf(WK1) !== -1);
+    check('MINOR3 test3d: and states how many weeks it covers',
+      title.indexOf('4 week') !== -1);
+    check('MINOR3 test3e: every healed week is still recorded, in the DESCRIPTION',
+      [WK1, WK2, WK3, WK4].every((w) => labourEv._description.indexOf(w) !== -1));
+  }
+
+  globalThis.labourWeeklyPull_ = savedLabour;
+  calendarEvents = [];
+  currentSS = savedSS;
+  scriptProps = savedProps;
+});
+
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
