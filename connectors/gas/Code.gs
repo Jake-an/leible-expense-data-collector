@@ -1683,8 +1683,16 @@ function checkReadToken_(params) {
   return { ok: true };
 }
 
+// new Date(Date.now()), not bare new Date(): todayStr_ is the single "what
+// week is it" anchor for weeklySummarize_impl_, healWeeks_ and the drift
+// audit, so it must be observable under the test suite's withMockNow (which
+// patches Date.now() only). With a bare new Date() every withMockNow block
+// silently read the REAL clock, and the audit's in-flight-week test passed
+// only while the real date happened to agree with the pinned one — it began
+// crashing on 2026-08-31 when the pinned week completed. Same convention as
+// recurring.gs/square.gs/orderapp.gs.
 function todayStr_() {
-  return Utilities.formatDate(new Date(), 'Australia/Sydney', 'yyyy-MM-dd');
+  return Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', 'yyyy-MM-dd');
 }
 
 /* ------------------------------------------------------------------ *
@@ -2571,13 +2579,32 @@ function weeklySummarize_impl_(weekStartOverride) {
   Logger.log('weeklySummarize: healed ' +
     healRes.weeks.map(function (w) { return w.week + ':' + w.action; }).join(', ') +
     ', success=' + healRes.success + ', cutoff=' + cutoffStr);
-  return {
+
+  // The multi-week shape is a strict SUPERSET of the single-week one above.
+  // It used to be a DIFFERENT shape — no `refused`, no counters — so a caller
+  // could not tell a fully-refused multi-week run from a successful one, and
+  // any completion test written as `!res.refused` (greenBeanPull_) read it as
+  // success and dropped the week from its resum queue. A caller must never
+  // have to know which window size produced its result.
+  var out = {
     weeks: healRes.weeks,
     success: healRes.success,
     newestWeekFailed: healRes.newestWeekFailed,
     weekStart: healRes.weeks[0].week,
-    weekEnd: addDaysStr_(healRes.weeks[0].week, 6)
+    weekEnd: addDaysStr_(healRes.weeks[0].week, 6),
+    summariesAdded: healRes.weeks.reduce(function (n, w) { return n + (w.rowsAdded || 0); }, 0),
+    summariesUpdated: healRes.weeks.reduce(function (n, w) { return n + (w.rowsUpdated || 0); }, 0),
+    labourTabAdded: labourResult.labourAdded,
+    labourSummaryAdded: labourResult.summaryAdded
   };
+  // `refused` appears iff ZERO weeks healed. A PARTIAL heal is real work and
+  // must NOT be reported as a refusal — a caller would discard a week that
+  // genuinely completed. The value is the NEWEST week's action (healWeeks_
+  // returns newest-first), so it means exactly what it means single-week.
+  if (healRes.weeks.every(function (w) { return w.action !== 'heal'; })) {
+    out.refused = healRes.weeks[0].action;
+  }
+  return out;
 }
 
 function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {

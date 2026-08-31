@@ -303,10 +303,15 @@ global.Utilities = {
 // Freeze Date.now() for the duration of fn. squareDailyPull derives 'yesterday'
 // from Date.now(), so this is what makes the Fault 3 regression deterministic.
 const REAL_DATE_NOW = Date.now;
+// Re-entrant: restores the PREVIOUS Date.now, not the real one. A nested
+// withMockNow used to hand the real clock back to its enclosing block, so a
+// suite-wide pin silently expired at the first inner mock — which matters now
+// that todayStr_ is mock-observable (Code.gs: new Date(Date.now())).
 function withMockNow(isoInstant, fn) {
   const ms = new Date(isoInstant).getTime();
+  const prev = Date.now;
   Date.now = () => ms;
-  try { return fn(); } finally { Date.now = REAL_DATE_NOW; }
+  try { return fn(); } finally { Date.now = prev; }
 }
 global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp not mocked'); } };
 // Trigger store: newTrigger(handler) now records the chain calls made on it
@@ -5003,7 +5008,10 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
  * orderapp-pulls step 2 — shopifyWeeklyPull / shopifyWeeklyPull_impl_
  * ------------------------------------------------------------------ */
 
-(function testShopifyWeeklyPull() {
+// Pinned suite-wide: weeks4 is derived from PINNED_TODAY below, and every
+// shopifyWeeklyPull_impl_ call must request that SAME 4-week set. Cases 1/2
+// re-pin to distinct instants inside for their stamp assertions.
+withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   console.log('\norderapp: shopifyWeeklyPull_impl_ / shopifyWeeklyPull:');
 
   const REAL_URL_FETCH = global.UrlFetchApp;
@@ -5060,10 +5068,13 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     return null;
   }
 
-  // The 4 requested weeks are derived from todayStr_() — genuinely "today" in
-  // this environment (todayStr_ reads a bare `new Date()`, which withMockNow
-  // cannot pin — see the top-of-file note on Date.now()/new Date() convention).
-  const weeks4 = lastCompletedWeeks_(todayStr_(), 4);
+  // todayStr_ is now mock-observable (Code.gs: new Date(Date.now())), so the
+  // 4 requested weeks must be derived from the SAME date every withMockNow
+  // block below pins — not from the real clock. All three pinned instants
+  // (2026-08-06, 2026-08-07) fall in the week of Mon 2026-08-03, so they
+  // resolve to one identical 4-week set.
+  const PINNED_TODAY = '2026-08-06';
+  const weeks4 = lastCompletedWeeks_(PINNED_TODAY, 4);
 
   eq('SHOPIFY_REPULL_WEEKS is 4', SHOPIFY_REPULL_WEEKS, 4);
 
@@ -5284,7 +5295,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     lastLoggedMessages().some((m) => m.indexOf('does not echo') !== -1));
 
   global.UrlFetchApp = REAL_URL_FETCH;
-})();
+});
 
 /* ------------------------------------------------------------------ *
  * orderapp-pulls step 3 — greenBeanInvoices_
@@ -10660,6 +10671,191 @@ console.log('step10 FIX3 (ship gate): every frozen WRITE entry point hard-refuse
 })();
 
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * UNFREEZE step 1 — weeklySummarize's TWO return shapes are incompatible.
+ *
+ * weeklySummarize_impl_ returns a flat shape for a single week
+ * (weekStart/weekEnd/refused/summariesAdded/summariesUpdated/labourTabAdded/
+ * labourSummaryAdded) and a completely different nested shape for a
+ * multi-week heal ({weeks, success, newestWeekFailed, weekStart, weekEnd}) —
+ * with NO `refused` key and NO counters at all.
+ *
+ * The freeze hides this by clamping summaryHealWindowSize_ to 1, so the
+ * multi-week shape is currently unreachable in production. Lifting the
+ * freeze re-exposes it, and every caller that asks "did this complete?" by
+ * testing `!res.refused` (greenBeanPull_, orderapp.gs) then reads an
+ * all-refused multi-week run as SUCCESS and drops the week from the resum
+ * queue — Summary stays stale forever with no alert.
+ *
+ * The fix: the multi-week shape becomes a strict SUPERSET of the single-week
+ * one. `refused` is present exactly when ZERO weeks healed (a PARTIAL heal is
+ * not a refusal), and carries the newest week's action so it means the same
+ * thing it means today. greenBeanPull_'s completion test becomes POSITIVE —
+ * the returned weekStart must be the week it asked for.
+ * ------------------------------------------------------------------ */
+withHealUnfrozen(function testWeeklySummarizeReturnShapeUnfreeze() {
+  console.log('\nunfreeze step1 (Code.gs): the multi-week return is a superset of the single-week shape:');
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-08-24T13:00:00+10:00';
+  const NOW = '2026-08-24T02:00:00Z';   // Mon 24 Aug 2026 Sydney — wk-1 = 2026-08-17
+  const WK1 = '2026-08-17', WK2 = '2026-08-10', WK3 = '2026-08-03', WK4 = '2026-07-27';
+
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  function seed(supplierRows, summaryRows, archiveRows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    supplierRows.forEach((r) => supp.appendRow(r));
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    summaryRows.forEach((r) => summ.appendRow(r));
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (archiveRows || []).forEach((r) => arch.appendRow(r));
+    ensureSheet(currentSS, SUMMARY_HEAL_BACKUP_TAB, SUMMARY_HEAL_BACKUP_HEADERS);
+  }
+
+  const FOUR_SUPPLIERS = [
+    sup('2026-08-19', 'Kent Paper', 175.25, 'K1', 'Leible York'),
+    sup('2026-08-12', 'Kent Paper', 200, 'K2', 'Leible York'),
+    sup('2026-08-05', 'Kent Paper', 300, 'K3', 'Leible York'),
+    sup('2026-07-29', 'Kent Paper', 400, 'K4', 'Leible York')];
+  const FOUR_SUMMARY = [
+    sum(WK1, 'Kent Paper', 'Leible York', 100),
+    sum(WK2, 'Kent Paper', 'Leible York', 100),
+    sum(WK3, 'Kent Paper', 'Leible York', 100),
+    sum(WK4, 'Kent Paper', 'Leible York', 100)];
+
+  /* ---- test1: a 4-week heal reports the SAME counters a 1-week heal does -- */
+  seed(FOUR_SUPPLIERS, FOUR_SUMMARY);
+  withMockNow(NOW, function () {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true' };
+    calendarEvents = [];
+    const res = weeklySummarize();
+    eq('unfreeze test1a: the multi-week detail is still reported', res.weeks.length, 4);
+    check('unfreeze test1b: summariesAdded is a number, not undefined (callers do arithmetic on it)',
+      typeof res.summariesAdded === 'number');
+    check('unfreeze test1c: summariesUpdated is a number, not undefined',
+      typeof res.summariesUpdated === 'number');
+    check('unfreeze test1d: labourTabAdded is a number, not undefined',
+      typeof res.labourTabAdded === 'number');
+    check('unfreeze test1e: labourSummaryAdded is a number, not undefined',
+      typeof res.labourSummaryAdded === 'number');
+    eq('unfreeze test1f: summariesUpdated is the SUM across the whole window, not one week',
+      res.summariesUpdated,
+      res.weeks.reduce((n, w) => n + (w.rowsUpdated || 0), 0));
+    eq('unfreeze test1g: summariesAdded is the SUM across the whole window',
+      res.summariesAdded,
+      res.weeks.reduce((n, w) => n + (w.rowsAdded || 0), 0));
+    check('unfreeze test1h: a fully successful heal reports NO refusal', !res.refused);
+  });
+
+  /* ---- test2: every week refused -> the run says so at the TOP level ----- */
+  // Suppliers rows AND _archive rows in all four weeks => every week SPLIT =>
+  // healWeek_ writes nothing for any of them. Today the caller cannot tell.
+  seed(FOUR_SUPPLIERS, FOUR_SUMMARY, [
+    sup('2026-08-20', 'Fresh and Chill', 50, 'F1', 'Leible North'),
+    sup('2026-08-13', 'Fresh and Chill', 50, 'F2', 'Leible North'),
+    sup('2026-08-06', 'Fresh and Chill', 50, 'F3', 'Leible North'),
+    sup('2026-07-30', 'Fresh and Chill', 50, 'F4', 'Leible North')]);
+  withMockNow(NOW, function () {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true' };
+    calendarEvents = [];
+    const before = JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues());
+    const res = weeklySummarize();
+    eq('unfreeze test2a setup: all four weeks really were refused',
+      res.weeks.filter((w) => w.action === 'heal').length, 0);
+    eq('unfreeze test2b setup: Summary is byte-identical — nothing was written',
+      JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues()), before);
+    eq('unfreeze test2c: a run that healed NOTHING reports refused at the top level, ' +
+      'carrying the newest week action exactly as the single-week shape does',
+      res.refused, 'skip-split');
+    eq('unfreeze test2d: and reports zero counters, never undefined', res.summariesUpdated, 0);
+  });
+
+  /* ---- test3: a PARTIAL heal is not a refusal --------------------------- */
+  // Newest week healable, the three older ones SPLIT. Real work happened, so
+  // `refused` must stay absent or a caller would discard a completed week.
+  seed(FOUR_SUPPLIERS, FOUR_SUMMARY, [
+    sup('2026-08-13', 'Fresh and Chill', 50, 'F2', 'Leible North'),
+    sup('2026-08-06', 'Fresh and Chill', 50, 'F3', 'Leible North'),
+    sup('2026-07-30', 'Fresh and Chill', 50, 'F4', 'Leible North')]);
+  withMockNow(NOW, function () {
+    scriptProps = { SUMMARY_HEAL_ENABLED: 'true' };
+    calendarEvents = [];
+    const res = weeklySummarize();
+    eq('unfreeze test3a setup: exactly one week healed',
+      res.weeks.filter((w) => w.action === 'heal').length, 1);
+    check('unfreeze test3b: a PARTIAL heal is NOT reported as a refusal', !res.refused);
+    check('unfreeze test3c: and its counters reflect the week that did heal',
+      res.summariesUpdated > 0 || res.summariesAdded > 0);
+  });
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+});
+
+/* ------------------------------------------------------------------ *
+ * UNFREEZE step 1 (orderapp.gs) — greenBeanPull_'s completion test must be
+ * POSITIVE. `!sumRes.refused` is a negative test: it passes for any return
+ * shape that simply lacks the key, including the multi-week shape and any
+ * future one. The queue is the SOLE record of pending weeks, so a false
+ * "completed" silently drops the week and Summary stays stale forever.
+ * ------------------------------------------------------------------ */
+(function testGreenBeanCompletionTestUnfreeze() {
+  console.log('\nunfreeze step1 (orderapp.gs): greenBeanPull_ requires a POSITIVE completion signal:');
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const REAL_WEEKLY_SUMMARIZE = global.weeklySummarize;
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+
+  const weeks = lastCompletedWeeks_(todayStr_(), 4);
+  currentSS = makeSpreadsheet();
+  scriptProps = { ORDER_APP_COST_TOKEN: 'gb-token' };
+  clearLoggedMessages();
+
+  const rows = [{ rowNumber: 1, dateLocal: weeks[0].start, supplierRaw: 'Z1', supplierKey: 'z1',
+    invoiceNum: 'Z-1', totalCostIncGst: 10, status: 'RECEIVED' }];
+  global.UrlFetchApp = {
+    fetch: () => ({
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: true,
+        meta: { paging: { truncated: false, rowsIncluded: true, returned: rows.length } }, rows: rows })
+    }),
+  };
+
+  // The multi-week shape EXACTLY as weeklySummarize_impl_ returns it once the
+  // freeze is lifted: no `refused` key at all, every week refused, and a
+  // weekStart that is not the week greenBeanPull_ asked for.
+  global.weeklySummarize = function () {
+    return {
+      weeks: [{ week: '2020-01-06', action: 'skip-split' }],
+      success: false, newestWeekFailed: true,
+      weekStart: '2020-01-06', weekEnd: '2020-01-12'
+    };
+  };
+
+  const res = greenBeanPull_impl_();
+  const raw = scriptProps[GREENBEAN_RESUM_QUEUE_PROP];
+  const queue = raw ? JSON.parse(raw) : [];
+
+  check('unfreeze test4a: a return that healed a DIFFERENT week leaves the requested week QUEUED',
+    queue.indexOf(weeks[0].start) !== -1);
+  eq('unfreeze test4b: and is not counted as resummarized', res.weeksResummarized, 0);
+  check('unfreeze test4c: the non-completion is logged, not silently swallowed',
+    lastLoggedMessages().some((m) => m.indexOf('did not complete for ' + weeks[0].start) !== -1));
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

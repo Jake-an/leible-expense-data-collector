@@ -944,11 +944,20 @@ function greenBeanPull_impl_() {
     // actually completed may remove its week — a {refused:...} or empty
     // return stays queued and is logged, never silently dropped.
     var sumRes = weeklySummarize(toSummarize[s]);
-    if (sumRes && !sumRes.refused) {
+    // POSITIVE completion test, never `!sumRes.refused`. A negative test
+    // passes for ANY return shape that merely lacks the key — including the
+    // multi-week heal shape, whose weekStart is not even the week we asked
+    // for. Require both: no refusal, AND the run reports back the requested
+    // week. Anything else stays queued and is logged.
+    var reported = sumRes && sumRes.weekStart ? coerceDateStr_(sumRes.weekStart) : null;
+    if (sumRes && !sumRes.refused && reported === toSummarize[s]) {
       summarizedOk[toSummarize[s]] = true;
     } else {
       Logger.log('greenBeanPull: weeklySummarize did not complete for ' + toSummarize[s] +
-        ' (' + (sumRes && sumRes.refused ? sumRes.refused : 'no result') + ') — week stays queued');
+        ' (' + (!sumRes ? 'no result'
+                : sumRes.refused ? sumRes.refused
+                : reported ? 'reported week ' + reported + ', not the one requested'
+                : 'no weekStart in the return') + ') — week stays queued');
     }
   }
   var remainingQueue = mergedUnique.filter(function (w) { return !summarizedOk[w]; });
