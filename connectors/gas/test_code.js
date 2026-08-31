@@ -394,6 +394,18 @@ function withHealUnfrozen(fn) {
   try { return fn(); } finally { globalThis.SUMMARY_HEAL_FROZEN_ = saved; }
 }
 
+/* The inverse, added when the freeze was LIFTED (2026-08-31). The refusal
+ * machinery is not deleted with the freeze — SUMMARY_HEAL_FROZEN_ is the
+ * documented way to re-freeze the write half in one line if the heal ever
+ * misbehaves in production, so it has to keep working. Every refusal
+ * assertion now runs with the constant forced ON, exactly as the pre-existing
+ * write-path tests run it forced OFF. */
+function withHealFrozen(fn) {
+  const saved = globalThis.SUMMARY_HEAL_FROZEN_;
+  globalThis.SUMMARY_HEAL_FROZEN_ = true;
+  try { return fn(); } finally { globalThis.SUMMARY_HEAL_FROZEN_ = saved; }
+}
+
 const SUPPLIERS_HEADERS = globalThis.SUPPLIERS_HEADERS;
 const SALES_HEADERS = globalThis.SALES_HEADERS;
 
@@ -10540,19 +10552,26 @@ withHealUnfrozen(function testListBackupsIgnoresEmptyMarkerStep10() {
 // deploy — so every WRITE-side entry point the phase added must hard-refuse.
 // These tests deliberately do NOT use withHealUnfrozen: they assert the
 // SHIPPED state.
-console.log('step10 FIX3 (ship gate): every frozen WRITE entry point hard-refuses; the read-only half stays live');
-(function testPhaseFreezeRefusalsStep10() {
+console.log('step10 FIX3 (ship gate): the freeze is LIFTED in the shipped source; its refusal machinery still works when re-armed');
+
+// The shipped-state gate. Read from the FILE, outside withHealFrozen, so a
+// stray runtime toggle in an earlier test cannot fake it either way.
+(function testPhaseFreezeShippedState() {
+  check('FIX3 test0: the committed source ships with the freeze OFF (unfrozen 2026-08-31 ' +
+    'after the return-shape fix and the 3 MINORs closed) — read from the FILE',
+    /^var SUMMARY_HEAL_FROZEN_ = false;$/m.test(
+      fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8')));
+  check('FIX3 test0b: and the loaded value agrees (no test left it flipped)',
+    globalThis.SUMMARY_HEAL_FROZEN_ === false);
+})();
+
+// Everything below asserts the REFUSAL machinery, with the constant forced
+// back ON — re-freezing is a one-line operation and must keep working.
+withHealFrozen(function testPhaseFreezeRefusalsStep10() {
   const savedSS = currentSS;
   const savedProps = scriptProps;
   const TS = '2026-08-24T13:00:00+10:00';
   const WK = '2026-07-06';
-
-  check('FIX3 test0: the committed source ships with the freeze ON — read from the FILE, ' +
-    'so a stray runtime toggle in an earlier test cannot fake this',
-    /^var SUMMARY_HEAL_FROZEN_ = true;$/m.test(
-      fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8')));
-  check('FIX3 test0b: and the loaded value agrees (no test left it flipped)',
-    globalThis.SUMMARY_HEAL_FROZEN_ === true);
 
   /* ---- restoreSummaryWeekFromBackup: refuses even fully armed ---------- */
   currentSS = makeSpreadsheet();
@@ -10668,7 +10687,7 @@ console.log('step10 FIX3 (ship gate): every frozen WRITE entry point hard-refuse
 
   currentSS = savedSS;
   scriptProps = savedProps;
-})();
+});
 
 /* ------------------------------------------------------------------ */
 

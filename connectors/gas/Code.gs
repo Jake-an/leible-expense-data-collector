@@ -93,13 +93,30 @@ var SUMMARY_BACKUP_RUNID_COL = SUMMARY_HEADERS.length;
 var SUMMARY_HEAL_WEEKS_ = 4;
 
 /* ------------------------------------------------------------------ *
- * PHASE FREEZE (2026-08-26) — the summary-self-heal phase ships its
- * READ-ONLY half only. `scripts/deploy.sh` pushes the WHOLE project (there
- * is no partial deploy), so these refusals — not the deploy scope — are what
- * makes the shipped subset safe.
+ * PHASE FREEZE — LIFTED 2026-08-31. Kept as a live, one-line re-freeze
+ * switch, not as history: flip this constant back to true and redeploy and
+ * the whole write half hard-refuses again. Its refusal machinery is still
+ * asserted by the test suite (test_code.js: withHealFrozen), so re-arming it
+ * is a tested operation, not a hope.
  *
- * FROZEN (every one of them NEW in this phase; freezing them restores the
- * exact pre-phase production behaviour rather than regressing anything):
+ * Why it was frozen (2026-08-26): the phase-end gate ran 6 rounds and never
+ * approved, and `scripts/deploy.sh` pushes the WHOLE project (there is no
+ * partial deploy), so in-source refusals — not the deploy scope — were what
+ * made the shipped subset safe.
+ *
+ * Why it was lifted: the blocker the freeze existed to hide was
+ * weeklySummarize's two incompatible return shapes (the multi-week shape
+ * omitted `refused`, so greenBeanPull_'s `!sumRes.refused` completion test
+ * read an all-refused run as success and drained the resum queue). That is
+ * fixed — the multi-week shape is now a strict superset — along with the
+ * three MINORs the gate left open. Note the window still does NOT widen on
+ * its own: with SUMMARY_HEAL_ENABLED absent, summaryHealWindowSize_ returns
+ * 1, exactly as it did while frozen. Unfreezing removes the clamp; an
+ * operator still has to set the Script Property to widen anything.
+ *
+ * WAS FROZEN, now live (every one of them NEW in this phase, so the freeze
+ * restored the exact pre-phase production behaviour rather than regressing
+ * anything):
  *   - the MULTI-week heal window — SUMMARY_HEAL_ENABLED can no longer widen
  *     it past 1 (summaryHealWindowSize_). The single-week guarded write IS
  *     the pre-existing weeklySummarize and stays live.
@@ -117,12 +134,12 @@ var SUMMARY_HEAL_WEEKS_ = 4;
  * deliberate act, not something a deploy can expose.
  *
  * A source constant, NOT a Script Property, deliberately: a property can be
- * flipped from the GAS UI with no review. To unfreeze: set this false, clear
- * the phase gate, redeploy.
+ * flipped from the GAS UI with no review. To RE-freeze: set this true and
+ * redeploy.
  * ------------------------------------------------------------------ */
-var SUMMARY_HEAL_FROZEN_ = true;
+var SUMMARY_HEAL_FROZEN_ = false;
 var SUMMARY_HEAL_FROZEN_MSG_ = 'frozen: the summary-self-heal WRITE path is frozen ' +
-  '(SUMMARY_HEAL_FROZEN_ in Code.gs) — the phase gate ran 6 rounds without approving. ' +
+  '(SUMMARY_HEAL_FROZEN_ in Code.gs has been set back to true). ' +
   'Read-only previewSummaryHeal() / checkSummaryDrift() / listSummaryHealBackups() ' +
   'remain available.';
 

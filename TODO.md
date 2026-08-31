@@ -93,81 +93,119 @@ Full drift root-cause history (why it tripled overnight, the `_archive`
 double-count fix, the $288,852.51 reconciliation, the 18-week repair receipt)
 archived to `TODO_ARCHIVE.md` — superseded by the guards above, not deleted.
 
-### ⚠ Summary self-heal phase — WRITE HALF FROZEN IN SOURCE, read-only half shipped 2026-08-26
+### ✅ Summary self-heal phase — FREEZE LIFTED 2026-08-31, full write half live
 
-Branch `feat-summary-self-heal`, phase `summary-self-heal`, 10 steps, all
-review-approved. The phase-end review gate ran **6 rounds** and never returned
-`approve`. Jake's call after round 5: one bounded repair-only round, then freeze
-regardless of verdict. Round 6 returned a CRITICAL — now **CLOSED** (below).
+Branch `feat-summary-self-heal`, phase `summary-self-heal`, 10 steps. The phase-end
+review gate ran **6 rounds** and never returned `approve`; Jake's call after round 5 was
+one bounded repair-only round, then freeze regardless of verdict. The write half shipped
+frozen on 2026-08-26 and was **unfrozen on 2026-08-31** once the blocker the freeze
+existed to hide was actually fixed. `phases/index.json` still reads `error` for this
+phase and that stays correct — the gate never approved it; the unfreeze was Jake's
+decision, not a gate verdict.
 
-**Shipped = the read-only half only.** `scripts/deploy.sh` pushes the WHOLE project;
-there is no partial deploy, so the **refusals are the deploy scope**, not the file list.
+**The unfreeze is a two-key arrangement.** `SUMMARY_HEAL_FROZEN_ = false` removes the
+clamp; it does **not** widen anything by itself. Probed on the shipped source:
 
-| Entry point | State | Why |
-|---|---|---|
-| `previewSummaryHeal()` | **live** | read-only, writes nothing |
-| `checkSummaryDrift()` / `auditSummaryDrift*()` | **live** | read-only drift guard |
-| `listSummaryHealBackups()` | **live** | read-only |
-| `runSummaryOrphanSweepDryRun()` | **live** | read-only |
-| single-week guarded `weeklySummarize()` | **live** | this IS the pre-phase behaviour |
-| multi-week heal window | **frozen** | `SUMMARY_HEAL_ENABLED` can no longer widen past 1 |
-| `restoreSummaryWeekFromBackup()` | **frozen** | hard refusal, first statement |
-| `runSummaryOrphanSweep()` (apply) | **frozen** | hard refusal, first statement |
+| State | `summaryHealWindowSize_()` |
+|---|---|
+| freeze off, no `SUMMARY_HEAL_ENABLED` property — **production today** | **1** (identical to frozen) |
+| freeze off, `SUMMARY_HEAL_ENABLED=false` | 1 |
+| freeze off, `SUMMARY_HEAL_ENABLED=true` | 4 (`SUMMARY_HEAL_WEEKS_`) |
+| freeze off, `+ SUMMARY_HEAL_WEEKS=12` | 12 |
 
-The freeze is one source constant, `SUMMARY_HEAL_FROZEN_` (`Code.gs`), **not** a Script
-Property — a property can be flipped from the GAS UI with no review. Everything frozen
-is NEW in this phase, so freezing restores the exact pre-phase production behaviour
-rather than regressing anything. Gates sit on the **zero-arg, no-underscore operator
-entry points** — the only surface a deploy exposes (Run picker + triggers). The
-underscore internals (`restoreWeekFromHealBackup_`) stay hand-callable from the editor
-on purpose: that is the documented 3am escape hatch, and calling it is a deliberate act.
-**To unfreeze:** set the constant false, clear the phase gate, redeploy.
+So the scheduled Monday run is **unchanged** by the unfreeze until someone sets the
+Script Property. The two destructive entry points now fall through to their own guards
+instead of the freeze refusal — `restoreSummaryWeekFromBackup()` →
+`{refused:'SUMMARY_RESTORE_WEEK not set'}`, `runSummaryOrphanSweep()` →
+`{mode:'aborted', deleted:0}` with no approval record.
 
-**CLOSED — the CRITICAL (restore destroyed pull-owned rows).**
+| Entry point | State |
+|---|---|
+| `previewSummaryHeal()` · `checkSummaryDrift()` · `auditSummaryDrift*()` | live (read-only) |
+| `listSummaryHealBackups()` · `runSummaryOrphanSweepDryRun()` | live (read-only) |
+| single-week guarded `weeklySummarize()` | live — this IS the pre-phase behaviour |
+| multi-week heal window | **live**, gated on `SUMMARY_HEAL_ENABLED` |
+| `restoreSummaryWeekFromBackup()` | **live**, gated on `SUMMARY_RESTORE_WEEK` |
+| `runSummaryOrphanSweep()` (apply) | **live**, gated on a matching dry-run approval |
+
+**To re-freeze:** set `SUMMARY_HEAL_FROZEN_ = true` in `Code.gs` and redeploy. The
+refusal machinery was not deleted — it is still asserted by the suite under
+`withHealFrozen(...)` (`test_code.js`), the mirror of the `withHealUnfrozen(...)` wrapper
+the write-path tests use. Re-arming it is a tested operation.
+
+**CLOSED — the CRITICAL (restore destroyed pull-owned rows), 2026-08-26.**
 `restoreWeekFromHealBackup_` deleted every live `Summary` row for a week using **week
 alone** as the predicate, then re-appended only the baseline frozen at that week's FIRST
 heal. Rows written *after* that baseline that no heal can produce — `shopify_orderapp`
 online revenue (written directly, PRD-10) and `Labour` (external `LABOUR_SHEET_ID` pull)
 — were destroyed with no recovery path while the restore reported success
 (probe: $4,321.55 row, 1 → 0 rows, `{restored:1}`).
-**Fix:** the delete predicate is now scoped to what the snapshot OWNS. A live row is
-deleted only when *either* its full `SUMMARY_KEY_COLS` tuple is in the snapshot (restore
-it to baseline) *or* it is not heal-foreign (a heal could have minted it, so the undo must
+**Fix:** the delete predicate is scoped to what the snapshot OWNS. A live row is deleted
+only when *either* its full `SUMMARY_KEY_COLS` tuple is in the snapshot (restore it to
+baseline) *or* it is not heal-foreign (a heal could have minted it, so the undo must
 remove it — including a rename's orphaned old key). Everything else is **preserved**, and
-the return value now reports `{restored, deleted, preserved}` so `{restored:N}` can never
-be read as "the whole week is back to baseline".
+the return reports `{restored, deleted, preserved}` so `{restored:N}` can never be read as
+"the whole week is back to baseline".
 `SUMMARY_HEAL_FOREIGN_SUPPLIERS_` (`Code.gs`) is the ONE list, shared with
-`healOrphanCandidates_`. It is deliberately **not** `SUMMARY_AUDIT_PULL_OWNED_`, which is
-an audit-*noise* list that also names greenbean/bennetts — those rows ARE derived from
-`Suppliers` and ARE rebuildable by a heal, so using the wider list as a write filter would
-wrongly exempt rows a heal owns.
-Mutation-tested: reverting the predicate to `(week)` alone reds 7 assertions, including
-the exact probe figure.
+`healOrphanCandidates_`. Deliberately **not** `SUMMARY_AUDIT_PULL_OWNED_`, an audit-*noise*
+list that also names greenbean/bennetts — those rows ARE derived from `Suppliers` and ARE
+rebuildable by a heal, so the wider list as a write filter would wrongly exempt rows a
+heal owns. Mutation-tested: reverting the predicate to `(week)` alone reds 7 assertions,
+including the exact probe figure.
+⚠ **Still proven by tests only** — this path has never run against live data.
 
-**CLOSED — IMPORTANT 1 (empty-baseline marker ambiguity).** `listSummaryHealBackups()`
-no longer counts step 9's marker as restorable: a marker-only week now reports
-`rows:0, total:0, emptyBaseline:true` and is labelled in the log as "restoring this week
-REMOVES its healed rows". The restore itself handles the marker correctly under the new
-predicate — heal-created rows go, heal-foreign rows written after the baseline stay.
+**CLOSED — IMPORTANT 1 (empty-baseline marker ambiguity), 2026-08-26.**
+`listSummaryHealBackups()` no longer counts step 9's marker as restorable: a marker-only
+week reports `rows:0, total:0, emptyBaseline:true` and is labelled "restoring this week
+REMOVES its healed rows".
 
-**CLOSED — IMPORTANT 2 (two incompatible `weeklySummarize` return shapes).** The
-multi-week shape omits `refused`, so `greenBeanPull_`'s completion test
-(`orderapp.gs:947`, `if (sumRes && !sumRes.refused)`) would read an all-refused run as
-success and drain the queue. Clamping the window to 1 makes `weeks.length === 1` on every
-path, so only the flat shape — which carries `refused` — can be produced at all. Asserted
-behaviourally, and it goes red the moment the freeze is lifted, which is exactly when this
-becomes live again. **Fix the shape before unfreezing.**
+**CLOSED — IMPORTANT 2 (two incompatible `weeklySummarize` return shapes), 2026-08-31.**
+This was *the* unfreeze blocker. The multi-week shape omitted `refused` and every counter,
+so `greenBeanPull_`'s completion test (`orderapp.gs`, `if (sumRes && !sumRes.refused)`)
+read an all-refused multi-week run as SUCCESS and drained the resum queue — Summary stale
+forever, no alert. Two fixes:
+- The multi-week return is now a strict **superset** of the single-week one:
+  `summariesAdded` / `summariesUpdated` / `labourTabAdded` / `labourSummaryAdded` always
+  present, and `refused` set **iff ZERO weeks healed** (a PARTIAL heal is real work, not a
+  refusal), carrying the newest week's action so it means what it means single-week.
+- `greenBeanPull_`'s completion test is now **positive**: no refusal AND the run reports
+  back the week it was asked for. A negative test passes for any shape that merely lacks
+  the key.
+Mutation-tested: dropping the `refused` assignment → 1 red; reverting to the negative
+completion test → 3 red.
 
-**CLOSED — IMPORTANT 3 (orphan sweep in-lock identity re-check).** Verified landed:
+**CLOSED — IMPORTANT 3 (orphan sweep in-lock identity re-check), 2026-08-26.**
 `summary_audit.gs` re-verifies every candidate's full `SUMMARY_KEY_COLS` tuple against a
 fresh `getDataRange()` read taken *inside* the lock and aborts the whole sweep on any
 mismatch, before a single backup row or delete. Covered by
 `testOrphanSweepStaleIndexAbortsFix3`.
 
-**STILL OPEN — MINOR ×3.** `raiseCalendarAlert_` runs `setColor`/`setDescription` after
-`createAllDayEvent` inside one try block (a partial event survives a throw);
-`healWeeks_` seeds `backedUpWeeks` without the `DATE_ARG_RE` guard; the Labour correction
-alert builds its title from the joined healed-week list.
+**CLOSED — MINOR ×3, 2026-08-31.**
+- `raiseCalendarAlert_` (`staleness.gs`) created the event and decorated it inside ONE
+  try. A `setColor`/`setDescription` throw returned 0 and left the dedup cache unmarked
+  while the event was already on the calendar — so the same batch created a **duplicate**,
+  and the next day's title scan found the phantom and suppressed the real alert. Creation
+  is now the success point; decoration is best-effort and logged separately.
+- `healWeeks_` seeded `backedUpWeeks` with no `DATE_ARG_RE` guard, six lines after seeding
+  `archiveWeeks` **with** one. That map gates whether a destructive heal takes its backup
+  first. Junk observed in the RED run: `["", "not a date", "2026-8-3"]`.
+- The Labour correction alert built its calendar **title** from the joined healed-week
+  list. Alerts dedup on exact title, so it grew with the heal window and re-alerted
+  whenever the week set shifted — invisible while the window was clamped to 1, which is
+  exactly why it was unfreeze work. Now anchored on the newest healed week plus a count,
+  with the full list in the description.
+All three mutation-tested (2 / 1 / 2 red respectively).
+
+**CLOSED — the suite went red by the CALENDAR, 2026-08-31.** `todayStr_` used a bare
+`new Date()`, which the suite's `withMockNow` (which patches `Date.now()` only) cannot
+pin. Every `withMockNow` block silently read the real clock, and
+`testSummaryDriftAudit`'s in-flight-week fixture (pinned to wk 2026-08-24…08-30) passed
+only while the real date agreed with it. On Mon 2026-08-31 that week completed,
+`r.skipped[0]` came back undefined and the **whole file aborted with a TypeError** — every
+test after line 7042 stopped running, with no commit involved. `todayStr_` is now
+`new Date(Date.now())`; `withMockNow` was made re-entrant (it was handing the real clock
+back to an enclosing pin); `testShopifyWeeklyPull` is pinned instead of clock-dependent.
+**Lesson: never trust an inherited green count — re-run the suite.**
 
 **STILL OPEN — harness defect.** Step subagents keep writing `tdd_state: "green_done"`, a
 value `scripts/execute.py` never produces (its only terminal write is `red_done`,
@@ -175,21 +213,22 @@ value `scripts/execute.py` never produces (its only terminal write is `red_done`
 RED and silently disables GREEN's mechanical check. The runner should reject unknown
 `tdd_state` values at write time.
 
-**Also noted, pre-existing, out of scope:** `orderapp.gs:176` and `:212` call
+**STILL OPEN — pre-existing, out of scope:** `orderapp.gs:176` and `:212` call
 `CalendarApp.EventColor` directly, so `staleness.gs`'s "THE ONLY SOURCE OF THE CalendarApp
 OAuth SCOPE" comment (`:18`, `:277`) is false independently of this phase.
+Also still bare `new Date()` and unmocked, each a latent version of the calendar bug
+above: `mayers.gs:81,272`, `orderapp.gs:175,211`, `roastery_email.gs:55`, `square.gs:64`,
+`staleness.gs:120`.
 
 **What the gate is worth knowing for:** the suite was green at every round —
 1292 → 1412 → 1484 → 1497 → 1517 → 1546 → 1589 → 1616, always 0 failed — and caught
 **none** of the four CRITICALs. Every one came from the phase-end review. Green tests are
-not evidence of safety on this write path. The tests that now cover the closed CRITICAL
-were written *after* the review found it, and are mutation-tested for exactly that reason.
+not evidence of safety on this write path.
 
-**Test discipline note.** Every pre-existing test that exercises a now-frozen write path
-runs its body inside `withHealUnfrozen(...)` (`test_code.js`) — the frozen code still has
-to be correct for the day it is unfrozen. The freeze's own refusals are asserted
-separately, and `FIX3 test0` reads `SUMMARY_HEAL_FROZEN_ = true` **from the file on disk**,
-so a stray runtime toggle in an earlier test cannot fake the ship gate.
+**Test discipline note.** Every test that exercises a write path runs its body inside
+`withHealUnfrozen(...)`; every refusal assertion runs inside `withHealFrozen(...)`. The
+shipped-state gate (`FIX3 test0`) reads the constant from the **file on disk**, so a stray
+runtime toggle in an earlier test cannot fake it in either direction.
 
 ### Mayers statement re-OCR'd every day forever — FIXED 2026-08-15
 `mayersDailyPull` only labels a thread once something parsed out of it
