@@ -4,7 +4,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/block-dangerous.js" },
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-dangerous.js\"" },
           { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/verify_gate.sh\"" }
         ]
       }
@@ -13,7 +13,7 @@
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/session-audit.js" }
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-audit.js\"" }
         ]
       },
       {
@@ -27,7 +27,7 @@
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/sync-from-remote.js" }
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-from-remote.js\"" }
         ]
       }
     ]
