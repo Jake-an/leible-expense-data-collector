@@ -11186,5 +11186,85 @@ console.log('\narchiveAndPurge_ — batched writes:');
 })();
 
 
+
+/* ------------------------------------------------------------------ *
+ * FDCo outage backfill — runFdcoBackfillResummarize / weeksWithArchivedRows_
+ * ------------------------------------------------------------------ */
+(function () {
+  const savedSS = currentSS;
+
+  // --- the guard is clean when _archive holds nothing for the target weeks ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    // well behind the 183-day purge line, so in _archive but NOT a target week
+    arch.appendRow(['2025-11-17', 'Food and Dairy Co', 100, 'OLD-1', 'Leible North', 'food_dairy_co', 'TS', 'Cafe']);
+    eq('clean archive -> no split weeks', JSON.stringify(weeksWithArchivedRows_(['2026-07-20', '2026-08-24'])), '[]');
+  })();
+
+  // --- a week with rows in BOTH tabs is reported, so the caller can refuse ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    arch.appendRow(['2026-07-22', 'Food and Dairy Co', 100, 'SPLIT-1', 'Leible North', 'food_dairy_co', 'TS', 'Cafe']);
+    // 2026-07-22 is a Wednesday -> snaps back to Monday 2026-07-20
+    eq('archived row snaps to its Monday and is flagged',
+      JSON.stringify(weeksWithArchivedRows_(['2026-07-20', '2026-08-24'])), '["2026-07-20"]');
+  })();
+
+  // --- fail closed: an archive tab with no readable date column ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, ['when', 'supplier', 'total']);
+    arch.appendRow(['2026-07-22', 'Food and Dairy Co', 100]);
+    eq('unreadable archive header reports every week as split (fails closed)',
+      JSON.stringify(weeksWithArchivedRows_(['2026-07-20', '2026-08-24'])),
+      '["2026-07-20","2026-08-24"]');
+  })();
+
+  // --- the week list: six complete weeks, and NOT the incomplete 2026-08-31 ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS); // empty -> guard passes
+    const savedFn = resummarizeWeeks_;
+    let seen = null;
+    try {
+      resummarizeWeeks_ = function (weeks) { seen = weeks.slice(); return []; };
+      runFdcoBackfillResummarize();
+    } finally {
+      resummarizeWeeks_ = savedFn;
+    }
+    check('backfill calls resummarizeWeeks_ (got ' + (seen === null ? 'null' : 'array') + ')', seen !== null);
+    if (seen !== null) {
+      eq('...with the six complete outage weeks', seen.length, 6);
+      eq('...oldest first', seen[0], '2026-07-20');
+      eq('...newest is the last COMPLETED week', seen[seen.length - 1], '2026-08-24');
+      check('...and never the incomplete week 2026-08-31', seen.indexOf('2026-08-31') === -1);
+    }
+  })();
+
+  // --- a split week refuses, and summarizes NOTHING ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    arch.appendRow(['2026-08-05', 'Food and Dairy Co', 100, 'SPLIT-2', 'Leible North', 'food_dairy_co', 'TS', 'Cafe']);
+    const savedFn = resummarizeWeeks_;
+    let called = false;
+    let res = null;
+    try {
+      resummarizeWeeks_ = function () { called = true; return []; };
+      res = runFdcoBackfillResummarize();
+    } finally {
+      resummarizeWeeks_ = savedFn;
+    }
+    eq('a split week refuses', res && res.refused, 'archived_rows');
+    eq('...naming the week', JSON.stringify(res && res.weeks), '["2026-08-03"]');
+    check('...and rebuilds nothing (a partial total would understate it)', called === false);
+  })();
+
+  currentSS = savedSS;
+})();
+
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

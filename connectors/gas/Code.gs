@@ -1587,6 +1587,91 @@ function runOnlineRevenueResummarize() {
   return { weeks: weeks.length, results: results };
 }
 
+/**
+ * runFdcoBackfillResummarize — one-time runbook step for the Food and Dairy Co
+ * outage of 2026-07-18 → 2026-09-02.
+ *
+ * The connector's AWS Cognito session expired on 2026-07-18 and the attended
+ * re-login path could not recover it: base_connector loaded the dead session
+ * into the browser, and is_logged_in read the stale refreshToken as "logged
+ * in", so the login prompt never fired. 46 scheduled runs exited BLOCKED, and
+ * 22 invoices totalling $3,025.34 reached `Suppliers` only on 2026-09-02.
+ *
+ * weeklySummarize writes ONE week per call, and the Monday trigger only ever
+ * summarizes the week that just ended — so those back-weeks stay absent from
+ * `Summary`. doGet (the weekly report, and LEIBLE_GM_COST_MONITOR's
+ * ExpenseAPI.gs) reads `Summary`, not `Suppliers`: until this runs, the money
+ * is ingested but invisible.
+ *
+ * Week 2026-08-31 is deliberately NOT in the list. It had not ended on
+ * 2026-09-02, and weeklySummarize refuses an incomplete week rather than
+ * freezing a partial total; the Monday 2026-09-07 trigger covers it.
+ *
+ * REFUSES if any target week still has rows in `_archive`. weeklySummarize
+ * rebuilds a week from `Suppliers` alone, so a week split across both tabs has
+ * its Summary row overwritten with a partial total — understating it instead
+ * of repairing it. Every week here post-dates the 183-day purge line, so the
+ * guard should not trip; it exists so that if it ever does, the run stops
+ * rather than quietly writing wrong numbers.
+ */
+function runFdcoBackfillResummarize() {
+  var weeks = [
+    '2026-07-20', '2026-07-27', '2026-08-03',
+    '2026-08-10', '2026-08-17', '2026-08-24'
+  ];
+  var split = weeksWithArchivedRows_(weeks);
+  if (split.length) {
+    Logger.log('runFdcoBackfillResummarize: REFUSED — week(s) split across _archive ' +
+      'would be understated by a Suppliers-only rebuild: ' + split.join(', '));
+    return { refused: 'archived_rows', weeks: split };
+  }
+  Logger.log('runFdcoBackfillResummarize: rebuilding ' + weeks.length +
+    ' week(s): ' + weeks.join(', '));
+  // resummarizeWeeks_ logs one line per week — the editor log truncates a
+  // single large JSON blob mid-report, which would hide the tail of the run.
+  return { weeks: weeks.length, results: resummarizeWeeks_(weeks) };
+}
+
+/**
+ * Which of `weekStarts` (Mondays, 'yyyy-MM-dd') have at least one row sitting
+ * in `_archive`.
+ *
+ * Reads the LIVE header row rather than SUPPLIERS_HEADERS: editing a *_HEADERS
+ * constant does not migrate an existing tab, so trusting the constant can read
+ * the wrong column on a tab created under an older schema.
+ *
+ * @param {string[]} weekStarts
+ * @returns {string[]} affected week starts, sorted; [] when every week is clean
+ */
+function weeksWithArchivedRows_(weekStarts) {
+  var ss = getHubSpreadsheet_();
+  var arch = ss.getSheetByName(ARCHIVE_TAB);
+  if (!arch || arch.getLastRow() < 2) return [];
+
+  var values = arch.getDataRange().getValues();
+  var dateCol = values[0].indexOf('date');
+  if (dateCol < 0) {
+    // Fail closed: an unreadable archive cannot rule out a split week, and a
+    // silent [] here would green-light exactly the partial rebuild the caller
+    // is guarding against.
+    Logger.log('weeksWithArchivedRows_: no "date" column in ' + ARCHIVE_TAB +
+      ' — cannot rule out a split week; reporting every week as split.');
+    return weekStarts.slice().sort();
+  }
+
+  var want = {};
+  for (var i = 0; i < weekStarts.length; i++) want[weekStarts[i]] = true;
+
+  var hit = {};
+  for (var r = 1; r < values.length; r++) {
+    var d = coerceDateStr_(values[r][dateCol]);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) continue;
+    var wk = weekStartForDate_(d);
+    if (want[wk] === true) hit[wk] = true;
+  }
+  return Object.keys(hit).sort();
+}
+
 /* ------------------------------------------------------------------ *
  * Read API (doGet) — token-gated, serves weekly summaries
  * ------------------------------------------------------------------ */
