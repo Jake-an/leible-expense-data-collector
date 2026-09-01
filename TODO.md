@@ -18,6 +18,61 @@
 
 ## Active
 
+### ⚠ NEXT SESSION — PLAN FIRST (Jake, 2026-09-01)
+
+Jake's instruction: **plan before touching any of this.** Three threads, and the
+first two are probably the same bug.
+
+**1. Roastery income figure looks wrong (Jake's report, unverified).**
+Expected **$10k+/week** from the wholesale account; the reported figure is lower.
+Not yet investigated — no probe run, no figure captured. Start by getting the
+actual number out of `doGet` for a few weeks rather than trusting any single
+window (a bounded probe window is a LOWER BOUND, never a census).
+
+**2. `roastery` is one of 3 STALE ingest feeds — and this is the lead for #1.**
+`checkIngestStaleness()` on 2026-09-01 11:42: `checked=9, stale=3, eventsCreated=0`.
+Stale: **`food_dairy_co`**, **`roastery`**, **`recurring`**.
+`roastery` being stale is the obvious candidate cause of the missing roastery
+income — a feed that has not ingested cannot contribute revenue. **Hypothesis,
+not a finding**: confirm the staleness window and whether `roastery_email.gs` has
+actually stopped producing before assuming causation. Note the roastery income may
+also come via the order-app/Revenue path rather than the email path — trace which
+producer owns the wholesale figure BEFORE debugging the wrong connector
+(`docs/api.md`; Summary is what `doGet` serves).
+
+**3. Calendar OAuth scope is missing → EVERY alert is blind.**
+`raiseCalendarAlert_` fires correctly and then dies at the calendar boundary:
+`stalenessCalendar_: getCalendarById/getDefaultCalendar failed — script does not
+have permission … Required permissions: …/auth/calendar`. So `eventsCreated=0`
+above: three stale-feed alerts were raised and reached nobody. A clean run logs
+nothing, so silence has been reading as health.
+**Diagnosed 2026-09-01:** running `checkIngestStaleness()` threw the permission
+error with **no authorization prompt** — if consent were merely outstanding, Apps
+Script would have asked. Calendar is therefore NOT in the statically-inferred
+scope set. Running `installStalenessTrigger()` does NOT grant it either: that
+function only calls `ScriptApp.*` and never touches `CalendarApp`, so the comment
+at `staleness.gs:421` ("Run this from the editor to grant the Calendar scope") is
+**wrong** — fix that comment as part of this work.
+**Fix:** declare `oauthScopes` explicitly in `connectors/gas/appsscript.json`,
+which currently declares NONE. Risk to plan around: the list must cover every
+scope the project uses — Sheets, Gmail (read + label), Drive **plus** the Drive
+advanced service, `script.external_request`, `script.scriptapp`, Calendar — and a
+single omission silently breaks a working connector. It also forces a
+re-authorization on the next run. Related: `orderapp.gs:176,212` call
+`CalendarApp.EventColor` directly, so `staleness.gs` is not the sole source of
+that scope despite its comment at `:18`/`:277`.
+
+**4. Minor, carried: $1.87 stale Summary row in week 2026-08-24.**
+`checkSummaryDrift()` 2026-09-01: 26 weeks audited, 25 clean, 1 drifted, net
+under-reported **−$1.87**, `rows missing: 0`, `srcInSuppliers: yes`.
+`previewSummaryHeal()` confirms it is exactly ONE updated row
+(`projectedSetValues: 2`). Closing it is a single
+`weeklySummarize('2026-08-24')`. **But note:** with the heal window at 1, a
+scheduled run only ever touches the week that just ended, so week 2026-08-24 will
+never be revisited on its own — it needs the override, or
+`SUMMARY_HEAL_ENABLED=true` to widen the window.
+
+
 ### Summary drift — SELF-HEALING GUARDS LIVE (phase `summary-self-heal`, 2026-08-26)
 
 **Policy (Jake, 2026-08-25):** everything past the 183-day purge line —
