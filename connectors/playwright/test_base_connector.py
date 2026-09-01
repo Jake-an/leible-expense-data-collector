@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import base_connector as b
+import food_dairy_co
 import fresh_and_chill
 import ordermentum
 import pytest
@@ -1249,3 +1250,228 @@ def test_since_composes_with_dry_run(monkeypatch, tmp_path, capsys):
     )
     assert [r["invoice_ref"] for r in dump] == ["EDGE1", "NEW1"]
     assert "700.00" in capsys.readouterr().out
+
+
+# ---- attended login must RECOVER a dead session (2026-09-02 FDCo outage) --- #
+#
+# _new_context loads sessions/<name>.json unconditionally, so an expired
+# session is already in the browser by the time the attended branch runs. Two
+# defects compounded there: the branch gated on is_logged_in (presence, not
+# validity) so the login prompt never fired, and nobody cleared the dead
+# tokens, so the SPA booted against them and rendered a blank page with no
+# login form. 46 scheduled runs and ~45 days of invoices were lost behind it.
+
+
+class _FakeAttendedContext:
+    def __init__(self):
+        self.storage_state = _FakeStorageState()
+        self.cleared_cookies = 0
+        self.closed = False
+        self.page = None
+
+    def new_page(self):
+        self.page = _FakeAttendedPage(self)
+        return self.page
+
+    def clear_cookies(self):
+        self.cleared_cookies += 1
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeAttendedPage:
+    def __init__(self, context):
+        self.context = context
+        self.gotos: list[str] = []
+        self.evaluated: list[str] = []
+
+    def goto(self, url, wait_until=None):
+        self.gotos.append(url)
+
+    def evaluate(self, script, *args):
+        self.evaluated.append(script)
+        return None
+
+
+class _FakeAttendedBrowser:
+    def __init__(self):
+        self.context = _FakeAttendedContext()
+        self.headless = None
+
+    def new_context(self, storage_state=None):
+        return self.context
+
+
+class _FakeAttendedChromium:
+    def __init__(self):
+        self.browser = _FakeAttendedBrowser()
+
+    def launch(self, headless=True):
+        self.browser.headless = headless
+        return self.browser
+
+
+class _FakeAttendedPw:
+    def __init__(self):
+        self.chromium = _FakeAttendedChromium()
+
+
+class _FakeAttendedCM:
+    def __init__(self, pw):
+        self._pw = pw
+
+    def __enter__(self):
+        return self._pw
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _AttendedProbeConnector(b.BaseConnector):
+    """Reports a caller-chosen auth_state; records whether the human login
+    prompt fired. post() is stubbed so run() needs no live exec URL."""
+
+    NAME = "attended_probe"
+    SOURCE = "attended_probe"
+    LOGIN_URL = "https://portal.invalid/"
+
+    def __init__(self, state):
+        super().__init__("https://example.invalid/exec")
+        self._state = state
+        self.login_prompts = 0
+
+    def auth_state(self, page):
+        return self._state
+
+    def is_logged_in(self, page):  # must NOT be what the attended branch gates on
+        raise AssertionError("attended branch must gate on auth_state, not is_logged_in")
+
+    def _attended_login(self, page):
+        self.login_prompts += 1
+
+    def read_invoices(self, page):
+        return []
+
+    def post(self, rows):
+        return {"result": "ok", "rowsAdded": 0}
+
+
+def _run_attended(monkeypatch, tmp_path, state):
+    pw = _FakeAttendedPw()
+    monkeypatch.setattr(b, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(b, "sync_playwright", lambda: _FakeAttendedCM(pw))
+    conn = _AttendedProbeConnector(state)
+    conn.run(attended=True)
+    return conn, pw.chromium.browser.context
+
+
+def test_attended_dead_session_is_cleared_before_the_login_prompt(monkeypatch, tmp_path):
+    """A dead session must be wiped out of the live context AND the page
+    reloaded, so the portal shows its real login form instead of a blank SPA."""
+    _conn, ctx = _run_attended(monkeypatch, tmp_path, "dead")
+    assert ctx.cleared_cookies == 1
+    assert any("localStorage" in s for s in ctx.page.evaluated)
+    assert len(ctx.page.gotos) == 2  # initial load + reload after the wipe
+
+
+def test_attended_dead_session_still_prompts_the_human(monkeypatch, tmp_path):
+    """The prompt is the whole point of --attended: it must fire on a dead
+    session. A stale refreshToken used to suppress it entirely."""
+    conn, _ctx = _run_attended(monkeypatch, tmp_path, "dead")
+    assert conn.login_prompts == 1
+
+
+def test_attended_live_session_is_never_destroyed(monkeypatch, tmp_path):
+    """A healthy session must not be wiped or re-prompted — --attended stays
+    a no-op re-save when the saved session is still good."""
+    conn, ctx = _run_attended(monkeypatch, tmp_path, "ok")
+    assert ctx.cleared_cookies == 0
+    assert conn.login_prompts == 0
+    assert len(ctx.page.gotos) == 1
+
+
+def test_attended_transient_prompts_but_does_not_wipe(monkeypatch, tmp_path):
+    """A 5xx/network blip is not proof the session is dead. Prompt (the human
+    is right there) but never destroy a session that may still be valid."""
+    conn, ctx = _run_attended(monkeypatch, tmp_path, "transient")
+    assert conn.login_prompts == 1
+    assert ctx.cleared_cookies == 0
+
+
+# ---- FDCo is_logged_in must prove the token WORKS, not that it exists ----- #
+
+
+def _jwt(exp_epoch):
+    import base64 as _b64
+
+    body = _b64.urlsafe_b64encode(json.dumps({"exp": exp_epoch}).encode()).decode().rstrip("=")
+    return "header." + body + ".signature"
+
+
+class _FakeCognitoResponse:
+    def __init__(self, status, id_token=None):
+        self.status = status
+        self._id_token = id_token
+
+    def json(self):
+        if self._id_token is None:
+            return {"message": "Refresh Token has expired"}
+        return {"AuthenticationResult": {"IdToken": self._id_token}}
+
+
+class _FakeFDCoPage:
+    def __init__(self, id_token=None, refresh_token=None, refresh_response=None):
+        self._ls = {".idToken": id_token, ".refreshToken": refresh_token}
+        self._refresh_response = refresh_response
+        self.refresh_calls = 0
+        self.request = self
+
+    def evaluate(self, script, suffix):
+        return self._ls.get(suffix)
+
+    def post(self, url, headers=None, data=None):
+        self.refresh_calls += 1
+        return self._refresh_response
+
+
+def _fdco():
+    return food_dairy_co.FoodDairyCoConnector(exec_url="https://example.invalid/exec")
+
+
+def test_fdco_expired_token_with_stale_refresh_token_is_not_logged_in():
+    """The exact 2026-07-18 state: both keys present, both dead. Reading
+    presence alone returned True here and suppressed the login prompt."""
+    page = _FakeFDCoPage(
+        id_token=_jwt(int(time.time()) - 3600),
+        refresh_token="stale-refresh-token",
+        refresh_response=_FakeCognitoResponse(400),
+    )
+    assert _fdco().is_logged_in(page) is False
+
+
+def test_fdco_expired_token_and_no_refresh_token_is_not_logged_in():
+    page = _FakeFDCoPage(id_token=_jwt(int(time.time()) - 3600), refresh_token=None)
+    assert _fdco().is_logged_in(page) is False
+
+
+def test_fdco_valid_id_token_is_logged_in_without_calling_cognito():
+    """A still-valid IdToken needs no network round trip."""
+    page = _FakeFDCoPage(id_token=_jwt(int(time.time()) + 3600), refresh_token=None)
+    assert _fdco().is_logged_in(page) is True
+    assert page.refresh_calls == 0
+
+
+def test_fdco_expired_token_but_working_refresh_is_logged_in():
+    """Expired IdToken + a refresh token Cognito still honours = a live
+    session. Must NOT force a needless attended re-login."""
+    fresh_token = _jwt(int(time.time()) + 3600)
+    page = _FakeFDCoPage(
+        id_token=_jwt(int(time.time()) - 3600),
+        refresh_token="good-refresh-token",
+        refresh_response=_FakeCognitoResponse(200, id_token=fresh_token),
+    )
+    conn = _fdco()
+    assert conn.is_logged_in(page) is True
+    assert page.refresh_calls == 1
+    assert conn._token == fresh_token  # cached, so the read path does not refetch

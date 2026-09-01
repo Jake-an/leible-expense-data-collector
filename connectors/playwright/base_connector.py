@@ -297,7 +297,22 @@ class BaseConnector:
             page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
 
             if attended:
-                if not self.is_logged_in(page):
+                # Gate on auth_state, NOT is_logged_in. In several connectors
+                # is_logged_in is a presence check ("a refreshToken exists"),
+                # and an expired session still has one — so gating on it
+                # suppressed this prompt entirely through a 46-day Food and
+                # Dairy Co outage: the run silently re-saved the dead state
+                # and failed later, deep in the read.
+                state = self.auth_state(page)
+                if state == "dead":
+                    # _new_context has ALREADY loaded the dead session into
+                    # this context. Leaving it there is not merely useless: an
+                    # SPA that boots against expired tokens can render nothing
+                    # at all, leaving no login form for the human to use.
+                    # Wipe only on 'dead' — a transient blip is not proof the
+                    # saved session is bad, and wiping would destroy a good one.
+                    self._reset_session_state(page)
+                if state != "ok":
                     self._attended_login(page)
                 _clear_breaker_with_warning(
                     self.NAME,
@@ -418,6 +433,30 @@ class BaseConnector:
         if self.session_path.exists():
             return browser.new_context(storage_state=str(self.session_path))
         return browser.new_context()
+
+    def _reset_session_state(self, page: Page) -> None:
+        """Wipe an expired session out of the LIVE browser context, then
+        reload so the portal renders its real login screen.
+
+        Cookies and localStorage are cleared separately because they fail
+        separately: Cognito/Firebase-style SPAs keep their tokens in
+        localStorage, classic portals in cookies, and a connector may use
+        either. Failure here is reported but never fatal — a browser that
+        refuses to clear still leaves the human a working login flow more
+        often than not, and aborting would turn a recoverable session death
+        into a hard stop.
+        """
+        try:
+            page.context.clear_cookies()
+        except Exception as err:  # noqa: BLE001 - diagnostic only, never fatal
+            print(f"[{self.NAME}] WARNING: could not clear cookies: {err}")
+        try:
+            page.evaluate(
+                "() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} }"
+            )
+        except Exception as err:  # noqa: BLE001 - diagnostic only, never fatal
+            print(f"[{self.NAME}] WARNING: could not clear web storage: {err}")
+        page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
 
     def _attended_login(self, page: Page) -> None:
         print(

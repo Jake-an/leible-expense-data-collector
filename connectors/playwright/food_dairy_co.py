@@ -101,8 +101,23 @@ class FoodDairyCoConnector(BaseConnector):
     # Auth — AWS Cognito tokens live in localStorage (restored by storage_state)
     # ------------------------------------------------------------------ #
     def is_logged_in(self, page: Page) -> bool:
-        """A session exists if Cognito left a refresh token in localStorage."""
-        return bool(self._ls_value(page, ".refreshToken"))
+        """True only when a USABLE Cognito token can be obtained.
+
+        The presence of a refreshToken proves nothing: one that Cognito has
+        expired or revoked sits in localStorage looking exactly like a live
+        one. Checking presence alone is what let 46 scheduled runs sail past
+        the auth gate and then fail deep in the read, and what made
+        `--attended` skip the login prompt on a 46-day-dead session.
+
+        Cheap path first: a still-valid IdToken needs no network round trip.
+        Otherwise ask Cognito to honour the refresh token — the only answer
+        that actually distinguishes a live session from a dead one.
+        """
+        tok = self._ls_value(page, ".idToken")
+        if self._valid(tok):
+            self._token = tok
+            return True
+        return self._refresh_id_token(page) is not None
 
     def _ls_value(self, page: Page, suffix: str) -> str | None:
         return page.evaluate(
@@ -123,6 +138,41 @@ class FoodDairyCoConnector(BaseConnector):
         except Exception:
             return False
 
+    def _refresh_id_token(self, page: Page) -> str | None:
+        """Exchange the stored refreshToken for a fresh IdToken.
+
+        Returns None when there is no refresh token, when Cognito rejects it
+        (an expired/revoked token answers 400 NotAuthorizedException), or when
+        the token that comes back is not itself valid. Shared by is_logged_in
+        (which needs the yes/no) and _id_token (which needs the token), so the
+        auth gate and the read path can never disagree about what "logged in"
+        means.
+        """
+        rt = self._ls_value(page, ".refreshToken")
+        if not rt:
+            return None
+        resp = page.request.post(
+            COGNITO_URL,
+            headers={
+                "content-type": "application/x-amz-json-1.1",
+                "x-amz-target": "AWSCognitoIdentityProviderService.InitiateAuth",
+            },
+            data=json.dumps(
+                {
+                    "AuthFlow": "REFRESH_TOKEN_AUTH",
+                    "ClientId": COGNITO_CLIENT_ID,
+                    "AuthParameters": {"REFRESH_TOKEN": rt},
+                }
+            ),
+        )
+        if resp.status != 200:
+            return None
+        tok = (resp.json().get("AuthenticationResult") or {}).get("IdToken")
+        if self._valid(tok):
+            self._token = tok
+            return tok
+        return None
+
     def _id_token(self, page: Page) -> str:
         """Return a fresh IdToken: reuse if valid → direct Cognito refresh →
         fall back to letting the app refresh it. Block if none can be obtained."""
@@ -136,27 +186,9 @@ class FoodDairyCoConnector(BaseConnector):
             return tok
 
         # 2. Direct Cognito REFRESH_TOKEN_AUTH (public SPA client, no secret).
-        rt = self._ls_value(page, ".refreshToken")
-        if rt:
-            resp = page.request.post(
-                COGNITO_URL,
-                headers={
-                    "content-type": "application/x-amz-json-1.1",
-                    "x-amz-target": "AWSCognitoIdentityProviderService.InitiateAuth",
-                },
-                data=json.dumps(
-                    {
-                        "AuthFlow": "REFRESH_TOKEN_AUTH",
-                        "ClientId": COGNITO_CLIENT_ID,
-                        "AuthParameters": {"REFRESH_TOKEN": rt},
-                    }
-                ),
-            )
-            if resp.status == 200:
-                tok = (resp.json().get("AuthenticationResult") or {}).get("IdToken")
-                if self._valid(tok):
-                    self._token = tok
-                    return tok
+        tok = self._refresh_id_token(page)
+        if tok:
+            return tok
 
         # 3. Fall back: the app refreshes on boot — poll localStorage briefly.
         deadline = time.time() + 30
