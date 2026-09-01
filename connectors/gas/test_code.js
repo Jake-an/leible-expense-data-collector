@@ -75,6 +75,11 @@ function makeSheet(headers, name, globalWriteLog) {
   // right. Same rationale as writeOrderLog below: post-state alone cannot
   // answer an ordering question.
   const deleteRowCalls = [];
+  // deleteRows(start, howMany) call log. Real Sheet has this batched sibling of
+  // deleteRow; the mock did not, so a batched purge could not be expressed or
+  // asserted at all. Each call also fans out into deleteRowCalls so existing
+  // "zero deleteRow calls" assertions stay honest.
+  const deleteRowsCalls = [];
   // Records multi-row/whole-row write calls (appendRow, setValues) so tests
   // can assert HOW a batch was written — one setValues() block vs N
   // appendRow() calls — not just the resulting sheet state, which the two
@@ -148,7 +153,15 @@ function makeSheet(headers, name, globalWriteLog) {
       writeOrderLog.push({ sheet: name, type: 'deleteRow', row: rowNum });
       rows.splice(rowNum - 1, 1);
     },
+    deleteRows: (startRow, numRows) => {
+      if (!(numRows >= 1)) throw new Error('deleteRows: howMany must be at least 1');
+      deleteRowsCalls.push({ start: startRow, count: numRows });
+      for (let k = 0; k < numRows; k++) deleteRowCalls.push(startRow + k);
+      writeOrderLog.push({ sheet: name, type: 'deleteRows', row: startRow, count: numRows });
+      rows.splice(startRow - 1, numRows);
+    },
     getDeleteRowCalls: () => deleteRowCalls.slice(),
+    getDeleteRowsCalls: () => deleteRowsCalls.slice(),
     // Real Sheet#clearContents wipes every cell (incl. the header row) but
     // leaves the sheet object itself intact — a rebuilt report has no fixed
     // header, so the mock just empties the row store.
@@ -11069,6 +11082,108 @@ withHealUnfrozen(function testLabourAlertTitleMinor3() {
   currentSS = savedSS;
   scriptProps = savedProps;
 });
+
+
+/* ------------------------------------------------------------------ *
+ * archiveAndPurge_ batching (2026-09-01)
+ *
+ * Root cause of a 100% scheduled-weeklySummarize failure rate: the purge
+ * archived row-by-row with appendRow + deleteRow inside a loop, measured at
+ * 172 s for 484 rows (~0.36 s/row) against a 360 s ceiling. The ~1,000-row
+ * cliff was structural — and self-reinforcing, since a timeout leaves the
+ * backlog for the next run to grow.
+ *
+ * These assert the SHAPE of the writes (one setValues, contiguous deleteRows),
+ * not the wall-clock, because post-state alone is identical either way. The
+ * behavioural contract (archive order, dedup, blank-row guard, return count)
+ * is pinned by the pre-existing tests above and must stay green unchanged.
+ * ------------------------------------------------------------------ */
+console.log('\narchiveAndPurge_ — batched writes:');
+(function testArchiveAndPurgeBatches() {
+  const savedSS = currentSS;
+
+  // --- one contiguous block of old rows ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    for (let i = 0; i < 25; i++) {
+      supp.appendRow(['2025-01-06', 'Butterboy', 100 + i, 'INV-' + i, 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    }
+    supp.appendRow(['2026-08-31', 'Recent Co', 999, 'NEW-1', 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    arch.clearWriteCalls(); supp.clearWriteCalls();
+
+    const n = archiveAndPurge_(supp, arch, '2026-02-23');
+    eq('25 old rows archived', n, 25);
+
+    const archWrites = arch.getWriteCalls();
+    eq('archive written with exactly ONE batched call', archWrites.length, 1);
+    eq('...and that call is setValues, not appendRow', archWrites[0] && archWrites[0].type, 'setValues');
+    eq('...carrying all 25 rows in one block', archWrites[0] && archWrites[0].numRows, 25);
+
+    eq('source purged with exactly ONE contiguous deleteRows call',
+      supp.getDeleteRowsCalls().length, 1);
+    eq('...covering all 25 rows', (supp.getDeleteRowsCalls()[0] || {}).count, 25);
+
+    eq('the recent row survives', supp.getDataRange().getValues().length, 2);
+    eq('...and it is the right one', cellDate(supp.getDataRange().getValues()[1][0]), '2026-08-31');
+    eq('archive holds header + 25', arch.getDataRange().getValues().length, 26);
+  })();
+
+  // --- old rows split by a recent row: one deleteRows per contiguous run ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    supp.appendRow(['2025-01-06', 'A', 1, 'OLD-1', 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    supp.appendRow(['2025-01-07', 'A', 2, 'OLD-2', 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    supp.appendRow(['2026-08-31', 'B', 3, 'KEEP-1', 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    supp.appendRow(['2025-01-08', 'A', 4, 'OLD-3', 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+
+    const n = archiveAndPurge_(supp, arch, '2026-02-23');
+    eq('3 old rows archived across 2 runs', n, 3);
+    eq('still ONE setValues for the archive', arch.getWriteCalls().filter((w) => w.type === 'setValues').length, 1);
+    eq('two contiguous runs → exactly 2 deleteRows calls, not 3',
+      supp.getDeleteRowsCalls().length, 2);
+    eq('the keeper survives', supp.getDataRange().getValues().length, 2);
+    eq('...and is the recent row', cellDate(supp.getDataRange().getValues()[1][0]), '2026-08-31');
+  })();
+
+  // --- nothing to purge: must not emit a zero-height getRange (real GAS throws) ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    supp.appendRow(['2026-08-31', 'Recent Co', 10, 'NEW-1', 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    arch.clearWriteCalls();
+
+    let threw = null;
+    let n = null;
+    try { n = archiveAndPurge_(supp, arch, '2026-02-23'); } catch (e) { threw = e.message; }
+    eq('a no-op purge does not throw on an empty batch', threw, null);
+    eq('...archives nothing', n, 0);
+    eq('...writes nothing to the archive', arch.getWriteCalls().length, 0);
+    eq('...deletes nothing', supp.getDeleteRowsCalls().length, 0);
+    eq('...and leaves the row alone', supp.getDataRange().getValues().length, 2);
+  })();
+
+  // --- the cliff: write calls must be O(1) in row count, not O(n) ---
+  (function () {
+    currentSS = makeSpreadsheet();
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    for (let i = 0; i < 1000; i++) {
+      supp.appendRow(['2025-01-06', 'Butterboy', i, 'BIG-' + i, 'Leible York', 'ordermentum', 'TS', 'Cafe']);
+    }
+    arch.clearWriteCalls();
+    const n = archiveAndPurge_(supp, arch, '2026-02-23');
+    eq('1000 rows archived', n, 1000);
+    const totalCalls = arch.getWriteCalls().length + supp.getDeleteRowsCalls().length;
+    check('1000 rows cost 2 write calls, not 2000 (got ' + totalCalls + ')', totalCalls === 2);
+  })();
+
+  currentSS = savedSS;
+})();
 
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

@@ -2658,6 +2658,22 @@ function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
    * row either way, only append when the archive does not already hold it. */
   var archivedKeys = buildKeySet_(archiveSheet, SUPPLIERS_KEY_COLS);
 
+  /* This used to appendRow + deleteRow PER ROW. Measured at 172 s for 484 rows
+   * (~0.36 s/row) against the 360 s ceiling, which is why every SCHEDULED
+   * weeklySummarize failed — and self-reinforcing, because a timeout leaves the
+   * backlog for the next run to grow. It only ever ran on scheduled runs
+   * (`if (!ovr)`), so manual overrides always looked healthy. Now: ONE decision
+   * pass, ONE setValues, and one deleteRows per contiguous run — O(1) API calls
+   * in the common case instead of O(n).
+   *
+   * Iterating BOTTOM-UP is load-bearing twice over: it preserves the existing
+   * _archive row order (asserted by the archiveAndPurge_ test), and it yields
+   * row indices already in descending order, so contiguous runs collapse
+   * directly and deleting from the bottom keeps every lower index valid. */
+  var numCols = data[0].length;
+  var toArchive = [];
+  var toDelete = [];
+
   for (var r = data.length - 1; r >= 1; r--) {
     var rowDate = coerceDateStr_(data[r][0]);
     // A blank date coerces to '' and '' <= any cutoff is TRUE, which would
@@ -2668,12 +2684,33 @@ function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
       if (key !== '||' && archivedKeys[key] === true) {
         alreadyArchived++;                 // already preserved — do not duplicate it
       } else {
-        archiveSheet.appendRow(data[r]);
+        // Pad to the header width: setValues demands a strict rectangle, where
+        // appendRow tolerated a short row.
+        var out = data[r].slice();
+        while (out.length < numCols) out.push('');
+        toArchive.push(out);
         if (key !== '||') archivedKeys[key] = true;   // guard within this run too
         archived++;
       }
-      sourceSheet.deleteRow(r + 1);
+      toDelete.push(r + 1);                // 1-indexed sheet row, descending
     }
+  }
+
+  // Guard the empty batch: real GAS rejects a zero-height getRange outright.
+  if (toArchive.length) {
+    archiveSheet
+      .getRange(archiveSheet.getLastRow() + 1, 1, toArchive.length, numCols)
+      .setValues(toArchive);
+  }
+
+  // toDelete is descending; collapse each contiguous run into one deleteRows.
+  for (var i = 0; i < toDelete.length;) {
+    var end = toDelete[i];                 // highest row in this run
+    var j = i;
+    while (j + 1 < toDelete.length && toDelete[j + 1] === toDelete[j] - 1) j++;
+    var start = toDelete[j];               // lowest row in this run
+    sourceSheet.deleteRows(start, end - start + 1);
+    i = j + 1;
   }
 
   Logger.log('archiveAndPurge_: archived=' + archived +
