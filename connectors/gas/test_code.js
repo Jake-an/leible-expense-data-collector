@@ -3010,11 +3010,31 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     shopspend: 'has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls'
   };
 
+  // Third bucket — feeds that genuinely stamp but are NOT ARMED yet, so watching
+  // them would alert daily about a feed that was never switched on. Neither
+  // escape route was acceptable: dropping them from STAMPS_HEARTBEAT would be
+  // factually false (roastery_email.gs:110 and recurring.gs:115 both stamp) and
+  // would blind this guard the moment they arm; adding them to EXEMPT would
+  // violate that list's docstring above, which demands a REAL alternative
+  // watchdog — neither feed has one. So they are asserted !watched, AND each
+  // re-add condition must appear VERBATIM in staleness.gs. That is the bit the
+  // old hand-maintained literal could not do: arming a feed without re-adding it
+  // to STALENESS_SOURCES now reds this test instead of passing silently.
+  var NOT_YET_ARMED = {
+    roastery: "RE-ADD 'roastery' when the roastery/invoices Gmail label exists, installRoasteryTrigger() has run, and a real vendor parser ships",
+    recurring: "RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run"
+  };
+  var stalenessArmSrc = fs.readFileSync(path.join(GAS_DIR, 'staleness.gs'), 'utf8');
+
   for (var i = 0; i < STAMPS_HEARTBEAT.length; i++) {
     var src = STAMPS_HEARTBEAT[i];
     var watched = STALENESS_SOURCES.indexOf(src) !== -1;
     if (EXEMPT[src]) {
       check(src + ' is deliberately NOT watched (' + EXEMPT[src] + ')', !watched);
+    } else if (NOT_YET_ARMED[src]) {
+      check(src + ' stamps a heartbeat but is NOT YET ARMED, so deliberately not watched', !watched);
+      check(src + ' re-add condition is recorded VERBATIM in staleness.gs',
+        stalenessArmSrc.indexOf(NOT_YET_ARMED[src]) !== -1);
     } else {
       check(src + ' stamps a heartbeat and is watched', watched);
     }
@@ -3027,9 +3047,9 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq("shopify_orderapp override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.shopify_orderapp, 168);
   eq("greenbean override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.greenbean, 168);
   eq("recurring override = 31 days (744h)", STALENESS_THRESHOLD_OVERRIDES.recurring, 744);
-  check('every override belongs to a watched source (no dead config)',
+  check('every override belongs to a watched or not-yet-armed source (no dead config)',
     Object.keys(STALENESS_THRESHOLD_OVERRIDES).every(function (s) {
-      return STALENESS_SOURCES.indexOf(s) !== -1;
+      return STALENESS_SOURCES.indexOf(s) !== -1 || !!NOT_YET_ARMED[s];
     }));
 
   // --- Registration guards: retired/never-watched sources must never be

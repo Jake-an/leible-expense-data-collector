@@ -457,9 +457,14 @@ live hub Sheet; `/exec` moved v22 → **v23** on the same deployment id (URL unc
 - [ ] **(Jake) Gmail label `roastery/invoices`** + filter, then install the roastery trigger.
 - [x] **Per-source staleness thresholds — DONE (orderapp-pulls phase-end round 9).**
       `STALENESS_THRESHOLD_OVERRIDES` in `staleness.gs` (168h for `shopify_orderapp` +
-      `greenbean`, 744h/31d for `recurring`); all three re-added to `STALENESS_SOURCES`, so a
-      deleted or never-installed trigger now alerts at the first daily check after its missed
-      run. `shopspend` stays exempt — its own `shopSpendWatchdog` trigger covers it.
+      `greenbean`, 744h/31d for `recurring`); `shopify_orderapp` + `greenbean` are watched in
+      `STALENESS_SOURCES`, so a deleted or never-installed trigger now alerts at the first daily
+      check after its missed run. `shopspend` stays exempt — its own `shopSpendWatchdog` trigger
+      covers it. **Amended 2026-09-01:** `recurring` was subsequently REMOVED from
+      `STALENESS_SOURCES` (with `roastery`) — both are unarmed and `recurring.gs:115` stamps only
+      `if (rawRows.length)`, so watching them alerts forever by construction. The 744h override
+      stays as pre-staged config; re-add conditions + the `NOT_YET_ARMED` test guard are in
+      `staleness.gs` / `test_code.js`.
 - [ ] `mayers.gs` entry point (`mayersPull`) was never wrapped in `withScriptLock_` — it fell
       outside every phase's declared `Files:` list. Every other entry point is wrapped.
 - [ ] Decide: `validateIngest_` accepts a numeric-string `amount` (`"340.00"`) via

@@ -15,11 +15,16 @@
  * Alerts are orange all-day Google Calendar events (no popup — GAS can only fire
  * an all-day popup at midnight, which is useless).
  *
- * THIS FILE IS THE PRIMARY SOURCE OF THE CalendarApp OAuth SCOPE. orderapp.gs is
- * a known exception (it also touches CalendarApp for fail-open alerts, deliberately
- * out of scope for this phase). Deploy on its own (deploy.sh --push-only →
- * authorize → full deploy) so a scope change can never take /exec down with
- * un-consented code — /exec is the sole ingest path.
+ * CalendarApp OAuth SCOPE — this file is ONE OF TWO sources, not the sole one:
+ * orderapp.gs:176,212 call CalendarApp.EventColor directly for its fail-open
+ * alerts. The scope is AUTO-INFERRED from those call sites; appsscript.json
+ * declares no oauthScopes block. That inference is exactly how the 17 Jun grant
+ * came to hold only 6 of the 8 scopes the code needs, silently killing every
+ * Calendar alert — fixed 2026-09-01 by revoking the grant and re-consenting
+ * (no code change, no deploy). If alerts go quiet again, re-consent FIRST.
+ * Deploy on its own (deploy.sh --push-only → authorize → full deploy) so a scope
+ * change can never take /exec down with un-consented code — /exec is the sole
+ * ingest path.
  */
 
 var STALENESS_THRESHOLD_HOURS = 96;              // default: silent through a normal Fri→Mon (80h)
@@ -53,8 +58,24 @@ var STALENESS_THRESHOLD_OVERRIDES = {
 //   sanctioned in docs/ingest-contract.md and doPost stamps body.source
 //   generically — so the moment that writer ships, RE-ADD 'coffee_order_app'
 //   here (and to STAMPS_HEARTBEAT in test_code.js) or it runs unwatched.
-var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers', 'roastery',
-  'shopify_orderapp', 'greenbean', 'recurring'];
+//   'roastery' — NOT YET ARMED. The feed has no roastery/invoices Gmail label,
+//   no installed trigger, and exactly one synthetic vendor parser, so it has
+//   never produced a run: watching it alerts every single day about a feed that
+//   was never switched on. It DOES stamp (roastery_email.gs:110), so this is a
+//   not-yet-armed exclusion, not a never-watch one.
+//   RE-ADD 'roastery' when the roastery/invoices Gmail label exists, installRoasteryTrigger() has run, and a real vendor parser ships
+//   'recurring' — NOT YET ARMED, and it cannot simply be left watched:
+//   recurring.gs:115 stamps only `if (rawRows.length)`, so with
+//   RECUR_RENT_ROASTERY / RECUR_SHOPIFY unset every run resolves nothing, never
+//   stamps, and the source is stale FOREVER BY CONSTRUCTION. Its 744h override
+//   above is deliberately kept as pre-staged config (not dead config) so
+//   re-arming cannot trade "unwatched" for "cries wolf daily".
+//   RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run
+//   Both stay in STAMPS_HEARTBEAT (test_code.js) under NOT_YET_ARMED, whose
+//   guard requires each RE-ADD line above to appear here VERBATIM — so arming
+//   either feed without re-adding it to this array reds the suite.
+var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers',
+  'shopify_orderapp', 'greenbean'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *
@@ -275,9 +296,9 @@ function stalenessEventBody_(entry, thresholdHours) {
 }
 
 /* ------------------------------------------------------------------ *
- * Calendar alerting — the ONLY functions in the project that touch
- * CalendarApp. Every other file raises an alert by calling
- * raiseCalendarAlert_(title, bodyLines, color, nowMs) below.
+ * Calendar alerting. Every file EXCEPT orderapp.gs raises an alert by calling
+ * raiseCalendarAlert_(title, bodyLines, color, nowMs) below; orderapp.gs:176,212
+ * are the one recorded exception that touches CalendarApp directly.
  * ------------------------------------------------------------------ */
 
 /** Primary calendar (its id IS the account address), else the default. Never throws. */
@@ -418,7 +439,10 @@ function stalenessRaiseAlerts_(staleEntries, nowMs) {
  * succeed. Worked example — Fri 03:00 → Mon 11:00 = 80h < 96 → silent;
  * Thu 03:00 → Mon 11:00 = 104h > 96 → alerts.
  *
- * Run this from the editor to grant the Calendar scope (Jake only).
+ * Running this does NOT grant the Calendar scope: the body below touches only
+ * ScriptApp (getProjectTriggers / deleteTrigger / newTrigger). The CalendarApp
+ * scope is auto-inferred from the alerting section above and granted at consent
+ * — see the file header for the revoke + re-consent fix. (Jake only.)
  */
 function installStalenessTrigger() {
   var triggers = ScriptApp.getProjectTriggers();

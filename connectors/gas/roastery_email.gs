@@ -104,8 +104,10 @@ function roasteryDailyPull_impl_() {
   // nothing is a normal quiet day for one high-volume vendor. Here, threads
   // can be non-empty while EVERY attachment fails to parse — that is a real
   // failure, not a quiet day, so it must not look healthy to the staleness
-  // watchdog. ('roastery' is in STALENESS_SOURCES, so a withheld heartbeat
-  // raises a real Calendar alert after STALENESS_THRESHOLD_HOURS.)
+  // watchdog. ('roastery' is NOT YET in STALENESS_SOURCES — the feed is unarmed
+  // (no Gmail label, no trigger, one synthetic parser), so a withheld heartbeat
+  // raises NO alert today. This gate is pre-staged for the re-add; the exact
+  // re-add condition is in the NOT YET ARMED block in staleness.gs.)
   if (threads.length === 0 || res.rowsAdded > 0 || res.duplicatesSkipped > 0) {
     stalenessStampHeartbeat_('roastery');
   } else {
