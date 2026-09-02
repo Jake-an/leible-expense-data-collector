@@ -18,60 +18,61 @@
 
 ## Active
 
-### ⚠ NEXT SESSION — PLAN FIRST (Jake, 2026-09-01)
+### ⚠ NEXT SESSION — build the roastery wholesale income connector (Jake, 2026-09-02)
 
-Jake's instruction: **plan before touching any of this.** Three threads, and the
-first two are probably the same bug.
+Jake's call at close of 2026-09-02: **fix the connector next session.**
 
-**1. Roastery income figure looks wrong (Jake's report, unverified).**
-Expected **$10k+/week** from the wholesale account; the reported figure is lower.
-Not yet investigated — no probe run, no figure captured. Start by getting the
-actual number out of `doGet` for a few weeks rather than trusting any single
-window (a bounded probe window is a LOWER BOUND, never a census).
+**1. Roastery wholesale income has NO PRODUCER — this is a BUILD, not a bug hunt.**
+The **$10k+/week** wholesale money has no ingest path at all: `ingestRevenueRows`
+has a single caller and `coffee_order_app` has no live writer, so the hub can only
+ever report `shopify_orderapp` ONLINE revenue (~$1.5k/wk). The gap between the two
+is the whole of the reported shortfall.
 
-**2. `roastery` is one of 3 STALE ingest feeds — and this is the lead for #1.**
-`checkIngestStaleness()` on 2026-09-01 11:42: `checked=9, stale=3, eventsCreated=0`.
-Stale: **`food_dairy_co`**, **`roastery`**, **`recurring`**.
-`roastery` being stale is the obvious candidate cause of the missing roastery
-income — a feed that has not ingested cannot contribute revenue. **Hypothesis,
-not a finding**: confirm the staleness window and whether `roastery_email.gs` has
-actually stopped producing before assuming causation. Note the roastery income may
-also come via the order-app/Revenue path rather than the email path — trace which
-producer owns the wholesale figure BEFORE debugging the wrong connector
-(`docs/api.md`; Summary is what `doGet` serves).
+⚠ **The previous version of this block sent the next session to debug the stale
+`roastery` feed. That is the wrong connector** — the `roastery` feed writes
+**SPEND**, not income, so no amount of fixing it can produce wholesale revenue.
 
-**3. Calendar OAuth scope is missing → EVERY alert is blind.**
+**Blocked on:** the upstream API key. Start by confirming which system owns the
+wholesale figure and whether its key is obtainable — the write path
+(`ingestRevenueRows` → `Revenue` → `Summary` → `doGet`) already exists, so this is
+a connector to build, not a schema change. Note `shopify_orderapp` writes `Summary`
+directly and is the one exception to "Summary is always derived".
+
+**2. Calendar OAuth scope is missing → EVERY alert is blind.** (carried, unchanged)
 `raiseCalendarAlert_` fires correctly and then dies at the calendar boundary:
 `stalenessCalendar_: getCalendarById/getDefaultCalendar failed — script does not
-have permission … Required permissions: …/auth/calendar`. So `eventsCreated=0`
-above: three stale-feed alerts were raised and reached nobody. A clean run logs
-nothing, so silence has been reading as health.
+have permission … Required permissions: …/auth/calendar`. A clean run logs nothing,
+so silence has been reading as health.
 **Diagnosed 2026-09-01:** running `checkIngestStaleness()` threw the permission
 error with **no authorization prompt** — if consent were merely outstanding, Apps
-Script would have asked. Calendar is therefore NOT in the statically-inferred
-scope set. Running `installStalenessTrigger()` does NOT grant it either: that
-function only calls `ScriptApp.*` and never touches `CalendarApp`, so the comment
-at `staleness.gs:421` ("Run this from the editor to grant the Calendar scope") is
-**wrong** — fix that comment as part of this work.
+Script would have asked. Calendar is therefore NOT in the statically-inferred scope
+set. `installStalenessTrigger()` does NOT grant it either (it only calls
+`ScriptApp.*`), so the comment at `staleness.gs:421` is **wrong** — fix it as part
+of this work.
 **Fix:** declare `oauthScopes` explicitly in `connectors/gas/appsscript.json`,
-which currently declares NONE. Risk to plan around: the list must cover every
-scope the project uses — Sheets, Gmail (read + label), Drive **plus** the Drive
-advanced service, `script.external_request`, `script.scriptapp`, Calendar — and a
-single omission silently breaks a working connector. It also forces a
-re-authorization on the next run. Related: `orderapp.gs:176,212` call
-`CalendarApp.EventColor` directly, so `staleness.gs` is not the sole source of
-that scope despite its comment at `:18`/`:277`.
+which currently declares NONE. Risk to plan around: the list must cover every scope
+the project uses — Sheets, Gmail (read + label), Drive **plus** the Drive advanced
+service, `script.external_request`, `script.scriptapp`, Calendar — and a single
+omission silently breaks a working connector. It also forces a re-authorization on
+the next run. Related: `orderapp.gs:176,212` call `CalendarApp.EventColor` directly,
+so `staleness.gs` is not the sole source of that scope despite its comment at
+`:18`/`:277`.
 
-**4. Minor, carried: $1.87 stale Summary row in week 2026-08-24.**
-`checkSummaryDrift()` 2026-09-01: 26 weeks audited, 25 clean, 1 drifted, net
-under-reported **−$1.87**, `rows missing: 0`, `srcInSuppliers: yes`.
-`previewSummaryHeal()` confirms it is exactly ONE updated row
-(`projectedSetValues: 2`). Closing it is a single
-`weeklySummarize('2026-08-24')`. **But note:** with the heal window at 1, a
-scheduled run only ever touches the week that just ended, so week 2026-08-24 will
-never be revisited on its own — it needs the override, or
-`SUMMARY_HEAL_ENABLED=true` to widen the window.
+**3. Stale ingest feeds — closed, no longer 3.**
+- `food_dairy_co` — **RESOLVED 2026-09-02.** Cognito session died 2026-07-18; 46
+  runs exited BLOCKED. Re-authed, 22 invoices ($3,025.34) ingested, 6 weeks
+  re-summarized and reconciled against the portal to the cent. The two bugs that
+  made `--attended` a no-op are fixed (`b2110a9`).
+- `roastery` + `recurring` — **unwatched 2026-09-01** (`59bee04`), with a
+  NOT_YET_ARMED test bucket pinning their re-add conditions. `checked` went 9 → 7.
+  Neither is a live alert; do not re-open them as "3 stale feeds".
 
+**4. Minor, carried: $1.87 stale Summary row in week 2026-08-24 — verify, don't assume.**
+`checkSummaryDrift()` 2026-09-01 reported 1 drifted week, net **−$1.87**.
+Week 2026-08-24 was re-summarized on 2026-09-02 as part of the FDCo backfill, and
+that run logged `duplicatesSkipped=8, summariesUpdated=0` — i.e. every pre-existing
+row already matched, which is **consistent with the drift being gone but does not
+prove it**. Re-run `checkSummaryDrift()` to confirm before spending time on it.
 
 ### Summary drift — SELF-HEALING GUARDS LIVE (phase `summary-self-heal`, 2026-08-26)
 
