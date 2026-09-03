@@ -224,13 +224,20 @@
     {
       "step": 7,
       "name": "oauth-scopes",
-      "status": "pending",
+      "status": "blocked",
+      "blocked_reason": "Requires Jake at the keyboard - the re-consent window makes the /exec web app unavailable to every connector until a human completes it. See step7.md. Set to pending when Jake is ready, and not Mon 03:00-10:00 Australia/Sydney.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-14"
       ],
-      "started_at": "2026-09-04T07:49:03+0900"
+      "started_at": "2026-09-04T07:49:03+0900",
+      "blocked_at": "2026-09-04T07:49:32+0900",
+      "last_failure": {
+        "step_file_sha256": "fd257ba1042dafeb58f8ef51159ddbf31040ec1e88b16b1fa98f984476449e0e",
+        "model": "sonnet",
+        "at": "2026-09-04T07:49:32+0900"
+      }
     },
     {
       "step": 8,

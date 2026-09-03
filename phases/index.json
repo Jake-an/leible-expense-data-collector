@@ -41,8 +41,9 @@
     },
     {
       "dir": "roastery-wholesale",
-      "status": "needs_context",
-      "needs_context_at": "2026-09-03T21:55:24+0900"
+      "status": "blocked",
+      "needs_context_at": "2026-09-03T21:55:24+0900",
+      "blocked_at": "2026-09-04T07:49:32+0900"
     }
   ]
 }
