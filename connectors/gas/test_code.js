@@ -3018,7 +3018,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 (function testEveryHeartbeatSourceIsWatched() {
   console.log('\nstaleness — every heartbeat source is watched:');
 
-  var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean'];
+  var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean',
+    'coffee_order_app'];
   var EXEMPT = {
     shopspend: 'has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls'
   };
@@ -3060,6 +3061,10 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq("shopify_orderapp override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.shopify_orderapp, 168);
   eq("greenbean override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.greenbean, 168);
   eq("recurring override = 31 days (744h)", STALENESS_THRESHOLD_OVERRIDES.recurring, 744);
+  // roastery-wholesale step 5 (PRD-14): coffee_order_app's writer shipped
+  // (wholesalePull, step 4) and stamps via orderAppRunSuccess_ — weekly
+  // cadence, same override rationale as shopify_orderapp/greenbean above.
+  eq("coffee_order_app override = weekly cadence (168h)", STALENESS_THRESHOLD_OVERRIDES.coffee_order_app, 168);
   check('every override belongs to a watched or not-yet-armed source (no dead config)',
     Object.keys(STALENESS_THRESHOLD_OVERRIDES).every(function (s) {
       return STALENESS_SOURCES.indexOf(s) !== -1 || !!NOT_YET_ARMED[s];
@@ -3069,15 +3074,28 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // re-added to STALENESS_SOURCES (mirrors the shopspend guard above) ---
   check("'shopify' is NOT in STALENESS_SOURCES (shopify.gs deleted, superseded by shopify_orderapp)",
     STALENESS_SOURCES.indexOf('shopify') === -1);
-  check("'coffee_order_app' is NOT in STALENESS_SOURCES (never stamps a heartbeat; exclusivity mechanically enforced)",
-    STALENESS_SOURCES.indexOf('coffee_order_app') === -1);
+  // step 5 flips this from an exclusion guard to a shipped-state assertion:
+  // coffee_order_app now HAS a live writer (wholesalePull) and must be watched.
+  check("'coffee_order_app' IS in STALENESS_SOURCES (writer shipped in phase roastery-wholesale, PRD-14)",
+    STALENESS_SOURCES.indexOf('coffee_order_app') !== -1);
+
+  // --- Shipped-state gate, read from the file on disk (mirrors stalenessArmSrc
+  // above): the old exclusion comment must be gone, not just contradicted by
+  // STALENESS_SOURCES — a stale comment left in place makes the file lie. ---
+  check("staleness.gs no longer carries the 'NO LIVE WRITER today' exclusion comment for coffee_order_app",
+    stalenessArmSrc.indexOf('NO LIVE WRITER today') === -1);
+  check("staleness.gs no longer carries the coffee_order_app RE-ADD line",
+    stalenessArmSrc.indexOf("RE-ADD 'coffee_order_app'") === -1);
+
+  // --- NOT_YET_ARMED must be untouched by this step — exactly roastery and
+  // recurring, both RE-ADD lines still verbatim in staleness.gs (asserted per-
+  // source in the loop above; this is the "exactly these two" complement). ---
+  eq('NOT_YET_ARMED still contains exactly roastery and recurring',
+    Object.keys(NOT_YET_ARMED).sort(), ['recurring', 'roastery']);
 })();
 
 (function testCoffeeOrderAppContract() {
   console.log('\ncoffee order app — ingest contract:');
-
-  check('coffee_order_app is NOT a staleness watchdog source (never stamps a heartbeat today)',
-    STALENESS_SOURCES.indexOf('coffee_order_app') === -1);
 
   // Wholesale revenue payload, verbatim shape from docs/ingest-contract.md /
   // the plan's Phase 4 example.
@@ -6520,7 +6538,7 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   }
 
   // Unrelated trigger present before install — the installer must only ever
-  // touch its own two handler names, never sweep the whole trigger list.
+  // touch its own handler names, never sweep the whole trigger list.
   scriptTriggers = [];
   ScriptApp.newTrigger('shopSpendWatchdog')
     .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(14)
@@ -6533,13 +6551,23 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
     .filter(function (t) { return t.getHandlerFunction() === 'shopifyWeeklyPull'; });
   var greenBeanTriggers = ScriptApp.getProjectTriggers()
     .filter(function (t) { return t.getHandlerFunction() === 'greenBeanPull'; });
+  // roastery-wholesale step 5 (PRD-14): two new handlers, code-only — see the
+  // step file for why Mon 06/07, not installed by this step (step 8 does that).
+  var wholesalePullTriggers = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'wholesalePull'; });
+  var wholesalePullRetryTriggers = ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'wholesalePullRetry'; });
   var watchdogTriggers = ScriptApp.getProjectTriggers()
     .filter(function (t) { return t.getHandlerFunction() === 'shopSpendWatchdog'; });
 
   eq('installing twice leaves exactly one trigger for shopifyWeeklyPull', shopifyTriggers.length, 1);
   eq('installing twice leaves exactly one trigger for greenBeanPull', greenBeanTriggers.length, 1);
+  eq('installing twice leaves exactly one trigger for wholesalePull', wholesalePullTriggers.length, 1);
+  eq('installing twice leaves exactly one trigger for wholesalePullRetry', wholesalePullRetryTriggers.length, 1);
   check('installer does not delete the unrelated shopSpendWatchdog trigger',
     watchdogTriggers.length === 1);
+  eq('installing twice leaves exactly 4 of the installer\'s own triggers, not 8',
+    ScriptApp.getProjectTriggers().length - watchdogTriggers.length, 4);
 
   if (shopifyTriggers.length === 1) {
     var shopifyCfg = shopifyTriggers[0]._cfg;
@@ -6553,6 +6581,20 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
     eq('greenbean trigger is TUESDAY', greenBeanCfg.weekDay, ScriptApp.WeekDay.TUESDAY);
     eq('greenbean trigger is hour 5', greenBeanCfg.hour, 5);
     eq('greenbean trigger is Australia/Sydney', greenBeanCfg.timezone, 'Australia/Sydney');
+  }
+
+  if (wholesalePullTriggers.length === 1) {
+    var wholesalePullCfg = wholesalePullTriggers[0]._cfg;
+    eq('wholesalePull trigger is MONDAY', wholesalePullCfg.weekDay, ScriptApp.WeekDay.MONDAY);
+    eq('wholesalePull trigger is hour 6', wholesalePullCfg.hour, 6);
+    eq('wholesalePull trigger is Australia/Sydney', wholesalePullCfg.timezone, 'Australia/Sydney');
+  }
+
+  if (wholesalePullRetryTriggers.length === 1) {
+    var wholesalePullRetryCfg = wholesalePullRetryTriggers[0]._cfg;
+    eq('wholesalePullRetry trigger is MONDAY', wholesalePullRetryCfg.weekDay, ScriptApp.WeekDay.MONDAY);
+    eq('wholesalePullRetry trigger is hour 7', wholesalePullRetryCfg.hour, 7);
+    eq('wholesalePullRetry trigger is Australia/Sydney', wholesalePullRetryCfg.timezone, 'Australia/Sydney');
   }
 
   scriptTriggers = [];
@@ -12371,6 +12413,65 @@ console.log('\narchiveAndPurge_ — batched writes:');
   globalThis.wholesaleFetchWeekOrders_ = REAL_FETCH_WEEK_ORDERS;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
   global.installOrderAppTriggers = REAL_INSTALL_TRIGGERS;
+})();
+
+/* ------------------------------------------------------------------ *
+ * roastery-wholesale step 5 — wholesalePullRetry (PRD-14): the Mon 07:00
+ * second-chance handler. No-ops (without calling wholesalePull) when the
+ * coffee_order_app heartbeat was stamped inside the last 6 hours (the
+ * Mon 06:00 run already succeeded); calls through otherwise — an older
+ * heartbeat means the 06:00 run either never fired or aborted, and an
+ * absent heartbeat means it has never run at all.
+ * ------------------------------------------------------------------ */
+(function testWholesalePullRetry() {
+  console.log('\norderapp: wholesalePullRetry (step 5, PRD-14):');
+
+  var hasFn = typeof wholesalePullRetry === 'function';
+  check('wholesalePullRetry is defined', hasFn);
+
+  if (!hasFn) {
+    console.log('  (skipping wholesalePullRetry cases — function not defined)');
+    return;
+  }
+
+  const REAL_WHOLESALE_PULL = global.wholesalePull;
+  const HEARTBEAT_KEY = 'LAST_INGEST_' + WHOLESALE_SOURCE;
+
+  function reset() {
+    scriptProps = {};
+    clearLoggedMessages();
+  }
+
+  // --- heartbeat stamped 3h ago (< 6h): no-op, wholesalePull is NOT called ---
+  reset();
+  var calledFresh = false;
+  global.wholesalePull = function () { calledFresh = true; };
+  withMockNow('2026-08-24T06:00:00Z', function () {
+    scriptProps[HEARTBEAT_KEY] = new Date(Date.now() - 3 * 3600000).toISOString();
+    wholesalePullRetry();
+  });
+  check('heartbeat stamped 3h ago: wholesalePull was NOT called', !calledFresh);
+
+  // --- heartbeat stamped 9h ago (> 6h): calls through ---
+  reset();
+  var calledStale = false;
+  global.wholesalePull = function () { calledStale = true; };
+  withMockNow('2026-08-24T06:00:00Z', function () {
+    scriptProps[HEARTBEAT_KEY] = new Date(Date.now() - 9 * 3600000).toISOString();
+    wholesalePullRetry();
+  });
+  check('heartbeat stamped 9h ago: wholesalePull WAS called', calledStale);
+
+  // --- no heartbeat at all (never run): calls through ---
+  reset();
+  var calledAbsent = false;
+  global.wholesalePull = function () { calledAbsent = true; };
+  withMockNow('2026-08-24T06:00:00Z', function () {
+    wholesalePullRetry();
+  });
+  check('no heartbeat recorded: wholesalePull WAS called', calledAbsent);
+
+  global.wholesalePull = REAL_WHOLESALE_PULL;
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

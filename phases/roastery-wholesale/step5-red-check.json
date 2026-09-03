@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "wholesalePullRetry function is not defined in the implementation; test cases skipped as expected in RED phase. Implementation is incomplete."
+}
