@@ -1,5 +1,20 @@
 # Step 7: oauth-scopes
 
+## STOP - DO NOT PERFORM THIS STEP IN THIS RUN
+
+Jake is **not** at the keyboard for this run, and this step cannot be done unattended.
+Your ONLY action is to set this step's status in
+`phases/roastery-wholesale/index.json` to `"blocked"` with:
+
+```
+"blocked_reason": "Requires Jake at the keyboard - the re-consent window makes the /exec web app unavailable to every connector until a human completes it. See step7.md. Set to pending when Jake is ready, and not Mon 03:00-10:00 Australia/Sydney."
+```
+
+Then finish. Change no other file. Do not edit `appsscript.json`, do not upload code, do
+not run the project's deployment script. The rest of this file is the procedure for when
+Jake IS present - read it, act on none of it.
+
+---
 ## Requirements Covered
 
 - `PRD-14` — the new connector's failure alerts are worthless while every `CalendarApp`

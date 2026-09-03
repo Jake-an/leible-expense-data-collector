@@ -1,0 +1,9 @@
+
+============================================================
+  Harness Step Executor
+  Phase: roastery-wholesale | Steps: 9
+============================================================
+
+  ⏸ Step 8 (live-bring-up) blocked.
+  Reason: Requires Jake: Apps Script editor runs, hub Sheet tab snapshots, and Triggers-page verification. This is the one-way door - upsertRows_ has no delete path. Depends on step 7.
+  Resolve and reset status to 'pending' to retry.
