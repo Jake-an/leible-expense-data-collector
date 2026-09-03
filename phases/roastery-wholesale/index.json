@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "roastery-wholesale",
+  "steps": [
+    {
+      "step": 0,
+      "name": "prod-contract-probe",
+      "status": "completed",
+      "summary": "PROD ?api=wholesaleSales probed over 8 completed weeks (2026-W28..W35): all ok:true, all five diagnostics.*Ok true. The plan's $7,000 external gate FAILED 0-of-4 - external wholesale is ~$2,364/wk, not $10k+; 84.2% of the 'all' bucket is internal cafe transfers. Jake's call 2026-09-03: proceed on the corrected premise, design unchanged. Evidence: phases/roastery-wholesale/prod-probe.md. Run in-session before scaffolding, not by the runner.",
+      "tdd": false,
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 1,
+      "name": "wholesale-fetch-gate",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-14"
+      ],
+      "started_at": "2026-09-03T20:37:02+0900"
+    },
+    {
+      "step": 2,
+      "name": "wholesale-paging",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "wholesale-row-mapping",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "wholesale-pull",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 5,
+      "name": "staleness-and-trigger",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 6,
+      "name": "silo-check-and-docs",
+      "status": "pending",
+      "tdd": false,
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 7,
+      "name": "oauth-scopes",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-14"
+      ]
+    },
+    {
+      "step": 8,
+      "name": "live-bring-up",
+      "status": "pending",
+      "tdd": false,
+      "covers": [
+        "PRD-14"
+      ]
+    }
+  ],
+  "created_at": "2026-09-03T20:37:02+0900"
+}

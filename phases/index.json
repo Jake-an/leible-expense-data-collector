@@ -38,6 +38,10 @@
       "status": "error",
       "needs_context_at": "2026-08-25T12:09:22+0900",
       "failed_at": "2026-08-26T14:40:40+0900"
+    },
+    {
+      "dir": "roastery-wholesale",
+      "status": "pending"
     }
   ]
 }
