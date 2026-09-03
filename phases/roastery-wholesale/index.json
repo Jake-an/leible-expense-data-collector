@@ -80,7 +80,8 @@
     {
       "step": 3,
       "name": "wholesale-row-mapping",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Added WHOLESALE_SHOPTYPE_MAP_ and the pure wholesaleRevenueRows_(orders) row-mapping/validator to orderapp.gs (only validator on this GAS-native path; never defaults an unrecognised shopType); 1870/1870 tests pass, purity + 'online'-whitelist grep + mutation check verified.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -97,9 +98,16 @@
             "reason": "WHOLESALE_SHOPTYPE_MAP_ constant is not defined in the module under test; test correctly expects it to exist with keys ['AMBIGUOUS', 'INTERNAL', 'UNKNOWN', 'WHOLESALE']"
           },
           "at": "2026-09-03T21:01:00+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "ok  - 50 dropped orders: byReason capped at 20 entries  (got 20)\n  ok  - 50 dropped orders: unknownShopType still counts all 50  (got 50)\n  ok  - byReason entries carry {orderId, reason}\n\n1870 passed, 0 failed\n",
+          "at": "2026-09-03T22:10:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-09-03T22:10:00+0900"
     },
     {
       "step": 4,

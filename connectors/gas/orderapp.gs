@@ -290,6 +290,96 @@ function wholesaleFetchWeekOrders_(week) {
   return { ok: true, orders: collected, summary: summary, meta: meta };
 }
 
+/**
+ * Explicit shopType -> {bucket, channel} map. wholesaleRevenueRows_ maps
+ * ONLY through this table, never a default — a fallback in either direction
+ * would misclassify real money (see roastery-wholesale step 3 Prohibitions).
+ * Exported so step 4's cross-foot can index the producer's own summary
+ * bucket from an emitted channel without re-deriving the mapping.
+ */
+var WHOLESALE_SHOPTYPE_MAP_ = {
+  WHOLESALE: { bucket: 'external', channel: 'wholesale' },
+  INTERNAL: { bucket: 'internal', channel: 'internal' },
+  AMBIGUOUS: { bucket: 'ambiguous', channel: 'ambiguous' },
+  UNKNOWN: { bucket: 'unknown', channel: 'unknown' }
+};
+
+var WHOLESALE_DROP_REASON_CAP_ = 20;
+var WHOLESALE_DATE_RE_ = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Pure. Maps raw wholesaleSales orders onto Revenue-tab rows. This is the
+ * ONLY validator on this GAS-native path — doPost's validateIngest_ is never
+ * reached here, so every rejection it would normally do has to happen right
+ * here instead. Never throws: a malformed order is dropped and counted, not
+ * allowed to abort the whole week.
+ *
+ * amount is gated on typeof, not Number() coercion: Number(null) === 0 (a
+ * finite "valid" amount) and Number('342.10') would silently accept a string
+ * the producer never sends — see docs/schema.md and the mutation check in
+ * this step's Verification Procedure.
+ * @param {Array} orders — raw order objects from wholesaleFetchWeekOrders_.
+ * @returns {{rows:Array, drops:Object, grossCentsByChannel:Object}}
+ */
+function wholesaleRevenueRows_(orders) {
+  var rows = [];
+  var drops = { unknownShopType: 0, badAmount: 0, badDate: 0, badOrderRef: 0, byReason: [] };
+  var grossCentsByChannel = { wholesale: 0, internal: 0, ambiguous: 0, unknown: 0 };
+
+  function drop(orderId, reason, counterKey) {
+    drops[counterKey]++;
+    if (drops.byReason.length < WHOLESALE_DROP_REASON_CAP_) {
+      drops.byReason.push({ orderId: orderId, reason: reason });
+    }
+  }
+
+  for (var i = 0; i < orders.length; i++) {
+    var order = orders[i];
+
+    var mapping = Object.prototype.hasOwnProperty.call(WHOLESALE_SHOPTYPE_MAP_, order.shopType)
+      ? WHOLESALE_SHOPTYPE_MAP_[order.shopType]
+      : null;
+    if (!mapping) {
+      drop(order.orderId, 'unrecognised shopType: ' + order.shopType, 'unknownShopType');
+      continue;
+    }
+
+    var orderRef = String(order.orderId).trim();
+    if (!orderRef) {
+      drop(order.orderId, 'blank orderId', 'badOrderRef');
+      continue;
+    }
+
+    var amount = order.amount;
+    if (typeof amount !== 'number' || !isFinite(amount)) {
+      drop(orderRef, 'bad amount: ' + amount, 'badAmount');
+      continue;
+    }
+
+    var date = String(order.date).trim();
+    if (!WHOLESALE_DATE_RE_.test(date)) {
+      drop(orderRef, 'bad date: ' + date, 'badDate');
+      continue;
+    }
+
+    var shopId = String(order.shopId).trim();
+    var customer = shopId || '(blank shop id)';
+
+    rows.push({
+      date: date,
+      department: 'Roastery',
+      channel: mapping.channel,
+      customer: customer,
+      amount: amount,
+      order_ref: orderRef
+    });
+
+    grossCentsByChannel[mapping.channel] += Math.round(amount * 100);
+  }
+
+  return { rows: rows, drops: drops, grossCentsByChannel: grossCentsByChannel };
+}
+
 /* ------------------------------------------------------------------ *
  * Failure accounting — fail-open (a crash/timeout must still count)
  * ------------------------------------------------------------------ */
