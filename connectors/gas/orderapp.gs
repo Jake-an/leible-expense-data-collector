@@ -209,6 +209,87 @@ function orderAppFetch_(params) {
   return orderAppClassifyResponse_(response.getResponseCode(), response.getContentText());
 }
 
+/**
+ * Offset-paginates ?api=wholesaleSales across one week, re-gating EVERY page
+ * with wholesaleValidWeekBody_ — the sheet is read live per request, so a
+ * later page can go bad while the first was clean. Only page 0's summary and
+ * meta ever leave this function: paging covers orders[] alone, and summary/
+ * diagnostics are computed by the producer over its full unpaged scan, so a
+ * later page's copy must never overwrite or be summed into page 0's.
+ * @param {{label:string, start:string, end:string}} week — a
+ *   lastCompletedWeeks_ entry.
+ * @returns {{ok:true, orders:Array, summary:Object, meta:Object}|{ok:false, reason:string}}
+ */
+function wholesaleFetchWeekOrders_(week) {
+  var offset = 0;
+  var collected = [];
+  var seen = {};
+  var pages = 0;
+  var matched = null;
+  var summary = null;
+  var meta = null;
+
+  while (true) {
+    var res = orderAppFetch_({
+      api: 'wholesaleSales',
+      week: week.label,
+      limit: WHOLESALE_PAGE_LIMIT,
+      offset: offset
+    });
+    if (!res.ok) {
+      return { ok: false, reason: 'fetch: ' + res.reason };
+    }
+
+    var gate = wholesaleValidWeekBody_(res.body, week);
+    if (!gate.ok) {
+      return { ok: false, reason: 'page ' + pages + ': ' + gate.reason };
+    }
+
+    // Snapshot-shift guard: the producer recomputes matched over the LIVE
+    // sheet on every request, so a row inserted/deleted between pages would
+    // otherwise silently resize the target mid-scan.
+    var pageMatched = Number(gate.paging.matched);
+    if (pages === 0) {
+      summary = res.body.summary;
+      meta = res.body.meta;
+      matched = pageMatched;
+    } else if (pageMatched !== matched) {
+      return { ok: false, reason: 'matched shifted mid-scan: ' + matched + ' -> ' + pageMatched };
+    }
+
+    // Offset paging is not snapshot-stable — dedup on orderId the same way
+    // greenBeanFetchAllRows_ dedups on rowNumber.
+    var pageOrders = res.body.orders;
+    for (var i = 0; i < pageOrders.length; i++) {
+      var order = pageOrders[i];
+      if (seen[order.orderId]) continue;
+      seen[order.orderId] = true;
+      collected.push(order);
+    }
+
+    offset += pageOrders.length;
+    if (pageOrders.length === 0 && collected.length < matched) {
+      return {
+        ok: false,
+        reason: 'short page ' + pages + ': 0 orders returned with ' + collected.length + ' of ' + matched + ' collected'
+      };
+    }
+
+    pages++;
+    if (pages > WHOLESALE_MAX_PAGES) {
+      return { ok: false, reason: 'exceeded ' + WHOLESALE_MAX_PAGES + ' pages — aborting (suspect non-advancing paging)' };
+    }
+
+    if (collected.length >= matched) break;
+  }
+
+  if (collected.length !== matched) {
+    return { ok: false, reason: 'collected ' + collected.length + ' !== matched ' + matched };
+  }
+
+  return { ok: true, orders: collected, summary: summary, meta: meta };
+}
+
 /* ------------------------------------------------------------------ *
  * Failure accounting — fail-open (a crash/timeout must still count)
  * ------------------------------------------------------------------ */

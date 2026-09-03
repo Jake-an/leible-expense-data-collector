@@ -48,7 +48,8 @@
     {
       "step": 2,
       "name": "wholesale-paging",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Added wholesaleFetchWeekOrders_ to orderapp.gs (offset-paginates wholesaleSales, re-gates every page, dedups by orderId, only page 0's summary/meta leave the function); 1801/1801 tests pass.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -65,9 +66,16 @@
             "reason": "ReferenceError: wholesaleFetchWeekOrders_ is not defined — function is missing from implementation. Test structure is sound (earlier cases all pass); this is a proper missing-symbol failure."
           },
           "at": "2026-09-03T20:52:21+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "1801 passed, 0 failed",
+          "at": "2026-09-03T22:05:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-09-03T22:05:00+0900"
     },
     {
       "step": 3,
