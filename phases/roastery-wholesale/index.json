@@ -107,7 +107,17 @@
         }
       },
       "tdd_state": "red_done",
-      "completed_at": "2026-09-03T21:03:16+0900"
+      "completed_at": "2026-09-03T21:03:16+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/roastery-wholesale/step3-review.json",
+        "checked_at": "2026-09-03T21:05:30+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 4,
@@ -117,7 +127,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-14"
-      ]
+      ],
+      "started_at": "2026-09-03T21:05:30+0900"
     },
     {
       "step": 5,
