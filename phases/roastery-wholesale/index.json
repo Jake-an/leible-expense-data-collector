@@ -16,7 +16,8 @@
     {
       "step": 1,
       "name": "wholesale-fetch-gate",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Added WHOLESALE_* constants, wholesaleRepullWeeks_ and the pure wholesaleValidWeekBody_ shape gate to orderapp.gs (sibling to shopifyValidWeekBody_); 1767/1767 tests pass, purity + mutation checks verified.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [

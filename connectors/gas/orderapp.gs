@@ -19,6 +19,114 @@ var SHOPIFY_REPULL_WEEKS = 4;
 // signal). See docs/schema.md's shopify_orderapp note.
 var SHOPIFY_ORDERAPP_SOURCE = 'shopify_orderapp';
 
+// Reserved in docs/ingest-contract.md §1 for exactly this writer — the
+// PRD-14 roastery wholesale pull.
+var WHOLESALE_SOURCE = 'coffee_order_app';
+
+// 8, not SHOPIFY_REPULL_WEEKS's 4: an order enters the wholesaleSales window
+// only once Invoice_Status reaches Finalized/Archived, which lags the
+// order-entry date, and Invoice_Total stays editable after that. The step-0
+// PROD probe saw non-zero `excluded` (in-week but not yet Finalized) in 2 of
+// 8 weeks — the lag is real, not theoretical, so the repull window has to
+// reach back far enough to self-heal it.
+var WHOLESALE_REPULL_WEEKS_ = 8;
+var WHOLESALE_REPULL_WEEKS_PROP = 'WHOLESALE_REPULL_WEEKS';
+
+// The producer's own default page size. It silently CLAMPS an over-cap
+// request (Math.min(reqLimit, 500)) instead of returning BAD_REQUEST, so a
+// mis-set value here would give no error signal — just a smaller page.
+var WHOLESALE_PAGE_LIMIT = 200;
+var WHOLESALE_MAX_PAGES = 20; // page-cap backstop, mirrors GREENBEAN_MAX_PAGES
+
+// Heartbeat low-water mark, NOT the median: the worst observed external week
+// was $1,200.30 and a median floor (~$1,934) would suppress the heartbeat
+// about half the time.
+var WHOLESALE_GROSS_FLOOR = 800;
+
+var WHOLESALE_DIAGNOSTIC_FLAGS_ = ['rowsOk', 'crossFootOk', 'moneyOk', 'partitionOk', 'byShopOk'];
+
+/**
+ * @returns {number} WHOLESALE_REPULL_WEEKS Script Property, or the constant
+ * fallback when unset or unparseable.
+ */
+function wholesaleRepullWeeks_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(WHOLESALE_REPULL_WEEKS_PROP);
+  var parsed = Number(raw);
+  return (raw && isFinite(parsed)) ? parsed : WHOLESALE_REPULL_WEEKS_;
+}
+
+/**
+ * Pure shape gate for one ?api=wholesaleSales week body, sibling to
+ * shopifyValidWeekBody_. Rejects unless the five diagnostics flags are all
+ * STRICTLY true (never a loose/truthy check — the producer computes them
+ * over its own internal identities, and they are the only signal that the
+ * money is real rather than a getCol() miss zeroing every gross while row
+ * counts still balance).
+ * @param {Object} body — the parsed ?api=wholesaleSales response.
+ * @param {{label:string, start:string, end:string}} requestedWeek — a
+ *   lastCompletedWeeks_ entry.
+ * @returns {{ok:true, weekStart:string, summary:Object, paging:Object}|{ok:false, reason:string}}
+ */
+function wholesaleValidWeekBody_(body, requestedWeek) {
+  if (!body || typeof body !== 'object' || !body.meta || typeof body.meta !== 'object') {
+    return { ok: false, reason: 'missing meta' };
+  }
+  if (body.meta.week !== requestedWeek.label) {
+    return { ok: false, reason: 'meta.week ' + body.meta.week + ' does not echo requested ' + requestedWeek.label };
+  }
+  if (typeof body.meta.weekStart !== 'string') {
+    return { ok: false, reason: 'meta.weekStart is not a string' };
+  }
+  var weekStart = body.meta.weekStart.slice(0, 10);
+  if (weekStart !== requestedWeek.start) {
+    return { ok: false, reason: 'meta.weekStart ' + weekStart + ' does not echo requested ' + requestedWeek.start };
+  }
+
+  if (!body.summary || typeof body.summary !== 'object') {
+    return { ok: false, reason: 'missing summary' };
+  }
+  var buckets = ['all', 'internal', 'external', 'ambiguous', 'unknown'];
+  for (var b = 0; b < buckets.length; b++) {
+    var bucketName = buckets[b];
+    var bucket = body.summary[bucketName];
+    if (!bucket || typeof bucket !== 'object') {
+      return { ok: false, reason: 'summary.' + bucketName + ' is missing' };
+    }
+    if (typeof bucket.orderCount !== 'number' || !isFinite(bucket.orderCount)) {
+      return { ok: false, reason: 'summary.' + bucketName + '.orderCount is not a finite number: ' + bucket.orderCount };
+    }
+    if (typeof bucket.gross !== 'number' || !isFinite(bucket.gross)) {
+      return { ok: false, reason: 'summary.' + bucketName + '.gross is not a finite number: ' + bucket.gross };
+    }
+  }
+
+  if (!body.diagnostics || typeof body.diagnostics !== 'object') {
+    return { ok: false, reason: 'missing diagnostics' };
+  }
+  for (var f = 0; f < WHOLESALE_DIAGNOSTIC_FLAGS_.length; f++) {
+    var flag = WHOLESALE_DIAGNOSTIC_FLAGS_[f];
+    if (body.diagnostics[flag] !== true) {
+      return { ok: false, reason: 'diagnostics.' + flag + ' is not true' };
+    }
+  }
+
+  if (!body.meta.paging || typeof body.meta.paging !== 'object') {
+    return { ok: false, reason: 'missing meta.paging' };
+  }
+  var pagingFields = ['matched', 'returned', 'limit', 'offset'];
+  for (var p = 0; p < pagingFields.length; p++) {
+    if (!isFinite(Number(body.meta.paging[pagingFields[p]]))) {
+      return { ok: false, reason: 'meta.paging.' + pagingFields[p] + ' is not a finite number: ' + body.meta.paging[pagingFields[p]] };
+    }
+  }
+
+  if (!Array.isArray(body.orders)) {
+    return { ok: false, reason: 'orders is not an array' };
+  }
+
+  return { ok: true, weekStart: weekStart, summary: body.summary, paging: body.meta.paging };
+}
+
 /* ------------------------------------------------------------------ *
  * Fetch / auth / classify
  * ------------------------------------------------------------------ */
