@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "WHOLESALE_SHOPTYPE_MAP_ constant is not defined in the module under test; test correctly expects it to exist with keys ['AMBIGUOUS', 'INTERNAL', 'UNKNOWN', 'WHOLESALE']"
+}

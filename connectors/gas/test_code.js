@@ -11671,5 +11671,159 @@ console.log('\narchiveAndPurge_ — batched writes:');
   }
 })();
 
+/* ------------------------------------------------------------------ *
+ * roastery-wholesale step 3 — wholesaleRevenueRows_ row mapping,
+ * WHOLESALE_SHOPTYPE_MAP_ (PRD-14). This function is the ONLY validator on
+ * this GAS-native path — validateIngest_ is never reached here.
+ * ------------------------------------------------------------------ */
+(function testWholesaleShopTypeMap() {
+  console.log('\norderapp: WHOLESALE_SHOPTYPE_MAP_ table:');
+  eq('WHOLESALE_SHOPTYPE_MAP_ has exactly the four producer shopTypes',
+    Object.keys(WHOLESALE_SHOPTYPE_MAP_).sort(), ['AMBIGUOUS', 'INTERNAL', 'UNKNOWN', 'WHOLESALE']);
+  eq('WHOLESALE -> external bucket, wholesale channel',
+    WHOLESALE_SHOPTYPE_MAP_.WHOLESALE, { bucket: 'external', channel: 'wholesale' });
+  eq('INTERNAL -> internal bucket, internal channel',
+    WHOLESALE_SHOPTYPE_MAP_.INTERNAL, { bucket: 'internal', channel: 'internal' });
+  eq('AMBIGUOUS -> ambiguous bucket, ambiguous channel',
+    WHOLESALE_SHOPTYPE_MAP_.AMBIGUOUS, { bucket: 'ambiguous', channel: 'ambiguous' });
+  eq('UNKNOWN -> unknown bucket, unknown channel',
+    WHOLESALE_SHOPTYPE_MAP_.UNKNOWN, { bucket: 'unknown', channel: 'unknown' });
+})();
+
+(function testWholesaleRevenueRows() {
+  console.log('\norderapp: wholesaleRevenueRows_ mapping:');
+
+  function order(overrides) {
+    return Object.assign({
+      orderId: 'ORD-1',
+      date: '2026-08-04',
+      shopId: 'Wholesale Co',
+      shopType: 'WHOLESALE',
+      amount: 100
+    }, overrides);
+  }
+
+  /* --- empty input --- */
+  const rEmpty = wholesaleRevenueRows_([]);
+  eq('empty input: rows []', rEmpty.rows, []);
+  eq('empty input: drops all zero', rEmpty.drops,
+    { unknownShopType: 0, badAmount: 0, badDate: 0, badOrderRef: 0, byReason: [] });
+  eq('empty input: grossCentsByChannel all zero', rEmpty.grossCentsByChannel,
+    { wholesale: 0, internal: 0, ambiguous: 0, unknown: 0 });
+
+  /* --- four shopType -> channel mappings --- */
+  const shopTypes = [
+    { shopType: 'WHOLESALE', channel: 'wholesale' },
+    { shopType: 'INTERNAL', channel: 'internal' },
+    { shopType: 'AMBIGUOUS', channel: 'ambiguous' },
+    { shopType: 'UNKNOWN', channel: 'unknown' }
+  ];
+  shopTypes.forEach(function (st, i) {
+    const o = order({ orderId: 'ORD-' + i, shopId: 'Shop-' + i, shopType: st.shopType, amount: 50 + i });
+    const r = wholesaleRevenueRows_([o]);
+    eq(st.shopType + ' -> exactly one row', r.rows.length, 1);
+    eq(st.shopType + ' row channel', r.rows[0].channel, st.channel);
+    eq(st.shopType + ' row department is Roastery', r.rows[0].department, 'Roastery');
+    eq(st.shopType + ' row order_ref is orderId', r.rows[0].order_ref, 'ORD-' + i);
+    eq(st.shopType + ' row customer is shopId', r.rows[0].customer, 'Shop-' + i);
+  });
+
+  /* --- unrecognised shopType: dropped, counted, no row emitted --- */
+  [['RETAIL', 0], ['', 1], [undefined, 2], ['wholesale', 3]].forEach(function (pair) {
+    const badType = pair[0], i = pair[1];
+    const o = order({ orderId: 'BAD-' + i, shopType: badType });
+    const r = wholesaleRevenueRows_([o]);
+    eq('unrecognised shopType ' + JSON.stringify(badType) + ': no row emitted', r.rows.length, 0);
+    eq('unrecognised shopType ' + JSON.stringify(badType) + ': unknownShopType counted', r.drops.unknownShopType, 1);
+  });
+
+  /* --- bad amounts: dropped, badAmount counted. A numeric STRING is a drop —
+   * the producer emits numbers, so Number()-coercing a string would wrongly
+   * accept it; null must also drop, so the gate can't be Number()-coercion
+   * (Number(null) === 0, a finite "valid" amount) — it must check typeof. */
+  [[null, 0], ['342.10', 1], [NaN, 2], [undefined, 3]].forEach(function (pair) {
+    const badAmount = pair[0], i = pair[1];
+    const o = order({ orderId: 'AMT-' + i, amount: badAmount });
+    const r = wholesaleRevenueRows_([o]);
+    eq('bad amount ' + JSON.stringify(badAmount) + ': no row emitted', r.rows.length, 0);
+    eq('bad amount ' + JSON.stringify(badAmount) + ': badAmount counted', r.drops.badAmount, 1);
+  });
+
+  /* --- amount 0 is kept, not dropped --- */
+  const rZero = wholesaleRevenueRows_([order({ orderId: 'Z1', amount: 0 })]);
+  eq('amount 0 is kept', rZero.rows.length, 1);
+  eq('amount 0: badAmount not incremented', rZero.drops.badAmount, 0);
+
+  /* --- negative amount is kept and counted into grossCentsByChannel --- */
+  const rNeg = wholesaleRevenueRows_([order({ orderId: 'N1', shopType: 'WHOLESALE', amount: -50.25 })]);
+  eq('negative amount is kept', rNeg.rows.length, 1);
+  eq('negative amount accumulates into grossCentsByChannel.wholesale', rNeg.grossCentsByChannel.wholesale, -5025);
+
+  /* --- bad dates: dropped, badDate counted --- */
+  [['2026-8-3', 0], ['03/08/2026', 1], ['', 2], [new Date(2026, 7, 3), 3]].forEach(function (pair) {
+    const badDate = pair[0], i = pair[1];
+    const o = order({ orderId: 'DATE-' + i, date: badDate });
+    const r = wholesaleRevenueRows_([o]);
+    eq('bad date ' + JSON.stringify(String(badDate)) + ': no row emitted', r.rows.length, 0);
+    eq('bad date ' + JSON.stringify(String(badDate)) + ': badDate counted', r.drops.badDate, 1);
+  });
+
+  /* --- blank / whitespace-only shopId -> literal '(blank shop id)' --- */
+  const rBlankShop = wholesaleRevenueRows_([order({ orderId: 'BS-1', shopId: '   ' })]);
+  eq('whitespace-only shopId -> row emitted', rBlankShop.rows.length, 1);
+  eq('whitespace-only shopId -> customer is the literal placeholder', rBlankShop.rows[0].customer, '(blank shop id)');
+
+  /* --- blank orderId: dropped, badOrderRef counted --- */
+  const rBlankOrder = wholesaleRevenueRows_([order({ orderId: '   ' })]);
+  eq('blank orderId: no row emitted', rBlankOrder.rows.length, 0);
+  eq('blank orderId: badOrderRef counted', rBlankOrder.drops.badOrderRef, 1);
+
+  /* --- no input can ever produce channel:'online' --- */
+  const rOnline = wholesaleRevenueRows_([
+    order({ orderId: 'ON-1', shopType: 'ONLINE', shopId: 'online' }),
+    order({ orderId: 'ON-2', shopType: 'WHOLESALE', shopId: 'online' })
+  ]);
+  const CHANNEL_WHITELIST = ['wholesale', 'internal', 'ambiguous', 'unknown'];
+  check('every emitted channel is in the whitelist (never online)',
+    rOnline.rows.every(function (row) { return CHANNEL_WHITELIST.indexOf(row.channel) !== -1; }));
+  eq('shopType ONLINE is dropped as unknownShopType, not mapped to a channel', rOnline.drops.unknownShopType, 1);
+  eq('only the WHOLESALE order survives', rOnline.rows.length, 1);
+
+  /* --- grossCentsByChannel is integer cents: 12 x 342.10 -> exactly 410520 --- */
+  const twelveOrders = [];
+  for (let i12 = 0; i12 < 12; i12++) {
+    twelveOrders.push(order({ orderId: 'C-' + i12, shopType: 'WHOLESALE', amount: 342.10 }));
+  }
+  const r12 = wholesaleRevenueRows_(twelveOrders);
+  eq('12 x 342.10 -> grossCentsByChannel.wholesale is exactly 410520', r12.grossCentsByChannel.wholesale, 410520);
+  check('grossCentsByChannel.wholesale is an integer (no float drift)', Number.isInteger(r12.grossCentsByChannel.wholesale));
+
+  /* --- 250-order mixed fixture: wholesale cents match an independent sum --- */
+  const mixed = [];
+  let expectedWholesaleCents = 0;
+  const TYPES = ['WHOLESALE', 'INTERNAL', 'AMBIGUOUS', 'UNKNOWN'];
+  for (let i250 = 0; i250 < 250; i250++) {
+    const cents = (i250 * 37 + 13) % 10000; // varied, deterministic cents pattern
+    const amt = cents / 100;
+    const shopType = TYPES[i250 % TYPES.length];
+    if (shopType === 'WHOLESALE') expectedWholesaleCents += cents;
+    mixed.push(order({ orderId: 'MX-' + i250, shopType: shopType, amount: amt }));
+  }
+  const rMixed = wholesaleRevenueRows_(mixed);
+  eq('250-order mixed fixture: wholesale cents match the independently computed sum',
+    rMixed.grossCentsByChannel.wholesale, expectedWholesaleCents);
+
+  /* --- drops.byReason caps at 20 while the numeric counters report all 50 --- */
+  const fiftyBad = [];
+  for (let i50 = 0; i50 < 50; i50++) {
+    fiftyBad.push(order({ orderId: 'DROP-' + i50, shopType: 'NOPE' }));
+  }
+  const r50 = wholesaleRevenueRows_(fiftyBad);
+  eq('50 dropped orders: byReason capped at 20 entries', r50.drops.byReason.length, 20);
+  eq('50 dropped orders: unknownShopType still counts all 50', r50.drops.unknownShopType, 50);
+  check('byReason entries carry {orderId, reason}',
+    typeof r50.drops.byReason[0].orderId !== 'undefined' && typeof r50.drops.byReason[0].reason === 'string');
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
