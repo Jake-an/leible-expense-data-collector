@@ -187,7 +187,17 @@
       },
       "tdd_state": "red_done",
       "completed_at": "2026-09-04T07:38:29+0900",
-      "summary": "Armed coffee_order_app in STALENESS_SOURCES with a 168h override, deleted the stale exclusion comment, added wholesalePull/wholesalePullRetry to installOrderAppTriggers (Mon 06:00/07:00 Sydney, code-only, not invoked), and wholesalePullRetry itself (no-ops when the coffee_orde…"
+      "summary": "Armed coffee_order_app in STALENESS_SOURCES with a 168h override, deleted the stale exclusion comment, added wholesalePull/wholesalePullRetry to installOrderAppTriggers (Mon 06:00/07:00 Sydney, code-only, not invoked), and wholesalePullRetry itself (no-ops when the coffee_orde…",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/roastery-wholesale/step5-review.json",
+        "checked_at": "2026-09-04T07:40:38+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 6,
@@ -196,7 +206,8 @@
       "tdd": false,
       "covers": [
         "PRD-14"
-      ]
+      ],
+      "started_at": "2026-09-04T07:40:38+0900"
     },
     {
       "step": 7,
