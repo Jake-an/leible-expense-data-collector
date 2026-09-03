@@ -11939,7 +11939,7 @@ console.log('\narchiveAndPurge_ — batched writes:');
     triggersCalledDuringPull = true;
     return REAL_INSTALL_TRIGGERS.apply(this, arguments);
   };
-  const byLabel1 = cleanFixtureSet('c', 100);
+  const byLabel1 = cleanFixtureSet('c', 900);
   armFetchWeekOrders(byLabel1);
   armWeeklySummarizeSpy();
   var res1;
@@ -11975,14 +11975,14 @@ console.log('\narchiveAndPurge_ — batched writes:');
     eq('case1: row ' + i + ' date', cellDate(row[0]), w.start);
     eq('case1: row ' + i + ' department', row[1], 'Roastery');
     eq('case1: row ' + i + ' channel', row[2], 'wholesale');
-    eq('case1: row ' + i + ' amount', row[4], 100 + i);
+    eq('case1: row ' + i + ' amount', row[4], 900 + i);
     eq('case1: row ' + i + ' source', row[6], WHOLESALE_SOURCE);
   });
 
   /* --- case 2: dryRun:true on the SAME fixture -> identical counts, ZERO
    *     rows written, no weeklySummarize call, no heartbeat. --- */
   reset();
-  armFetchWeekOrders(cleanFixtureSet('c', 100));
+  armFetchWeekOrders(cleanFixtureSet('c', 900));
   armWeeklySummarizeSpy();
   var resDry;
   withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resDry = wholesalePull({ dryRun: true }); });
@@ -12111,7 +12111,11 @@ console.log('\narchiveAndPurge_ — batched writes:');
    *     say which of the two cases (genuine split vs fail-closed) this is. --- */
   reset();
   armFetchWeekOrders(cleanFixtureSet('fc', 900));
-  ensureSheet(currentSS, ARCHIVE_TAB, ['when', 'supplier', 'total']); // no 'date' column -> unreadable
+  var archFC = ensureSheet(currentSS, ARCHIVE_TAB, ['when', 'supplier', 'total']); // no 'date' column -> unreadable
+  // A header-ONLY tab short-circuits at Code.gs:1649 (`getLastRow() < 2`) BEFORE the
+  // fail-closed `dateCol < 0` branch can run, so without a data row this case would
+  // silently assert nothing. The sibling test at :11217 appends a row for this reason.
+  archFC.appendRow(['2026-07-22', 'Food and Dairy Co', 100]);
   armWeeklySummarizeSpy();
   var resFC;
   withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resFC = wholesalePull(); });
