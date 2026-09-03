@@ -23,9 +23,13 @@ other connector; the read side, `doGet`, is the one that's token-gated — see
 
 ### 1. Wholesale revenue (orders the app itself takes)
 
-**Status: LIVE — but not via this doc's path.** `source='coffee_order_app'` `Revenue`
-rows (`channel` = `wholesale`/`internal`/`ambiguous`/`unknown`) are written in production
-today by the GAS-native `wholesalePull` (`connectors/gas/orderapp.gs`, PRD-14), which pulls
+**Status: BUILT, NOT YET LIVE — and when it does go live, not via this doc's path.**
+⚠ As of 2026-09-04 nothing is deployed and no trigger is installed: `wholesalePull` has
+never run against the live Sheet, and PRD-14 is still `planned` in `docs/PRD.md`. Step 8
+of the `roastery-wholesale` phase is the supervised first run that flips this to LIVE.
+Once it does, `source='coffee_order_app'` `Revenue` rows
+(`channel` = `wholesale`/`internal`/`ambiguous`/`unknown`) will be written by the
+GAS-native `wholesalePull` (`connectors/gas/orderapp.gs`, PRD-14), which pulls
 the Order app's own `?api=wholesaleSales` read endpoint on a time trigger — **not** by the
 coffee order app POSTing this shape to `doPost`. The payload shape below remains the
 contract for if the app itself ever POSTs wholesale revenue directly, but nothing does
@@ -62,11 +66,11 @@ Order-app read API is the sole producer for that channel, and a POSTed online
 row would flow through `weeklySummarize` into a second source-keyed Summary
 row and double-count the week. This wholesale-revenue shape is unaffected:
 `channel: "wholesale"` (or any non-`"online"` channel) from
-`coffee_order_app` remains valid. **This wholesale-revenue writer has now
-shipped** (`wholesalePull`, PRD-14, step 5 of the `roastery-wholesale` phase,
-2026-09-04) — `coffee_order_app` was added to `STALENESS_SOURCES`
-(staleness.gs) with a 168h override at that point; see the staleness bullet
-below.
+`coffee_order_app` remains valid. **This wholesale-revenue writer has been
+BUILT but is not yet deployed** (`wholesalePull`, PRD-14, `roastery-wholesale`
+phase, 2026-09-04) — `coffee_order_app` was added to `STALENESS_SOURCES`
+(staleness.gs) with a 168h override in step 5; see the staleness bullet below,
+including the never-seen false-alarm this opens until step 8 runs.
 
 **`channel` is an open enum (aside from the `"online"` rejection above), and
 the weekly rollup treats one value specially.** `channel: "online"` rows are
@@ -177,14 +181,21 @@ malformed and will fail again identically.
   through `doPost`, plus the three rejection cases named by the plan:
   missing `order_ref`, an invalid `department`, and a non-numeric `amount`
   string.
-- **Staleness watchdog: LIVE, watched.** `coffee_order_app` is now armed in
+- **Staleness watchdog: ARMED IN CODE, not yet earning its keep.** `coffee_order_app` is armed in
   `STALENESS_SOURCES` (`connectors/gas/staleness.gs`) with a 168h
   `STALENESS_THRESHOLD_OVERRIDES` entry — added in step 5 of the
-  `roastery-wholesale` phase (2026-09-04) once `wholesalePull` gave it a real
-  heartbeat to watch. The historical reasoning above (never stamped, would
-  only false-alarm) no longer applies; §2's rejection is unrelated to this —
-  §1 (`wholesalePull`, GAS-native) is what stamps the heartbeat, not any
-  `doPost` path.
+  `roastery-wholesale` phase (2026-09-04) ahead of the writer actually running.
+  §2's rejection is unrelated to this — §1 (`wholesalePull`, GAS-native) is what
+  stamps the heartbeat, not any `doPost` path.
+
+  ⚠ **The historical false-alarm reasoning has NOT stopped applying yet — it is
+  live again for the duration of the gap.** `stalenessEntries_` short-circuits on
+  a never-seen source (`staleness.gs:259`: `if (seen === null) { ... stale: true }`)
+  **before** any threshold is consulted, so the 168h override gives a source with
+  no heartbeat zero protection. From the moment this code is deployed until step 8's
+  wet run stamps the first heartbeat, `checkIngestStaleness` alerts
+  `coffee_order_app` as "never seen since the watchdog was installed" on every run.
+  Deploy (step 7) and bring-up (step 8) should happen in the same sitting.
 
 ## Rollback
 

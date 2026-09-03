@@ -110,7 +110,9 @@ Sydney day never overwrites itself mid-day — see `appendSalesRow_`.
 **Dedup key:** `source + order_ref`, same upsert semantics as `Suppliers`. An
 amended wholesale order (same key, changed amount) updates in place.
 
-**`coffee_order_app` source — LIVE** (`connectors/gas/orderapp.gs`, `wholesalePull` /
+**`coffee_order_app` source — BUILT, NOT YET LIVE** (nothing deployed, no trigger
+installed, never run against the live Sheet as of 2026-09-04; step 8 of the
+`roastery-wholesale` phase is the first supervised run) (`connectors/gas/orderapp.gs`, `wholesalePull` /
 `wholesaleRevenueRows_`, PRD-14): a GAS-native time-triggered pull of the Order app's
 `?api=wholesaleSales` endpoint, last `WHOLESALE_REPULL_WEEKS` (8) completed ISO weeks,
 `department='Roastery'`. The producer's four shop-classification buckets map 1:1 onto

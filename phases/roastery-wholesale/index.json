@@ -225,7 +225,7 @@
       "step": 7,
       "name": "oauth-scopes",
       "status": "blocked",
-      "blocked_reason": "Requires Jake at the keyboard - the re-consent window makes the /exec web app unavailable to every connector until a human completes it. See step7.md. Set to pending when Jake is ready, and not Mon 03:00-10:00 Australia/Sydney.",
+      "blocked_reason": "Requires Jake at the keyboard - the re-consent window makes the /exec web app unavailable to every connector until a human completes it. See step7.md. Set to pending when Jake is ready, and not Mon 03:00-10:00 Australia/Sydney. PREP IS DONE (2026-09-04, out of band): task 1 (enumerate) + task 2 (declare oauthScopes in appsscript.json) + task 3 (test_code.js coverage gate, 17 assertions, suite 1993->2010, mutation-checked) are COMPLETE and committed. Only task 4 (push -> re-authorize -> full deploy -> 6 live checks) remains, and it is attended. Follow phases/roastery-wholesale/step7-runbook.md. Two blockers found during prep: (1) scripts/deploy.sh is blocked by the security-deploy-gate hook until /security-audit records a verdict - run it BEFORE opening the window; (2) staleness.gs:259 flags a never-seen source stale immediately (no threshold applied), so coffee_order_app false-alarms every run between this push and step 8's first heartbeat - run step 8 in the same sitting.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -237,7 +237,8 @@
         "step_file_sha256": "fd257ba1042dafeb58f8ef51159ddbf31040ec1e88b16b1fa98f984476449e0e",
         "model": "sonnet",
         "at": "2026-09-04T07:49:32+0900"
-      }
+      },
+      "prep_complete": true
     },
     {
       "step": 8,

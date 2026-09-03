@@ -16,12 +16,18 @@
  * an all-day popup at midnight, which is useless).
  *
  * CalendarApp OAuth SCOPE — this file is ONE OF TWO sources, not the sole one:
- * orderapp.gs:176,212 call CalendarApp.EventColor directly for its fail-open
- * alerts. The scope is AUTO-INFERRED from those call sites; appsscript.json
- * declares no oauthScopes block. That inference is exactly how the 17 Jun grant
- * came to hold only 6 of the 8 scopes the code needs, silently killing every
- * Calendar alert — fixed 2026-09-01 by revoking the grant and re-consenting
- * (no code change, no deploy). If alerts go quiet again, re-consent FIRST.
+ * orderapp.gs:455,491 call CalendarApp.EventColor directly for its fail-open
+ * alerts.
+ *
+ * Scopes are NO LONGER auto-inferred: as of step 7 (PRD-14) appsscript.json
+ * declares an explicit oauthScopes array, and test_code.js gates it — every
+ * service symbol used in any *.gs must have its scope declared, and no scope
+ * may be declared that no call site justifies. Inference is what let the
+ * 17 Jun grant hold only 6 of the 8 scopes the code needed, silently killing
+ * every Calendar alert (fixed 2026-09-01 by revoking and re-consenting, no
+ * code change). An explicit list turns that silent runtime failure into a red
+ * suite — but it also means a scope ADDED here now requires re-consent.
+ * If alerts go quiet again, re-consent FIRST.
  * Deploy on its own (deploy.sh --push-only → authorize → full deploy) so a scope
  * change can never take /exec down with un-consented code — /exec is the sole
  * ingest path.
@@ -439,8 +445,8 @@ function stalenessRaiseAlerts_(staleEntries, nowMs) {
  *
  * Running this does NOT grant the Calendar scope: the body below touches only
  * ScriptApp (getProjectTriggers / deleteTrigger / newTrigger). The CalendarApp
- * scope is auto-inferred from the alerting section above and granted at consent
- * — see the file header for the revoke + re-consent fix. (Jake only.)
+ * scope is declared explicitly in appsscript.json (step 7, PRD-14) and granted
+ * at consent — see the file header for the revoke + re-consent fix. (Jake only.)
  */
 function installStalenessTrigger() {
   var triggers = ScriptApp.getProjectTriggers();

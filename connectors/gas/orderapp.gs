@@ -113,10 +113,18 @@ function wholesaleValidWeekBody_(body, requestedWeek) {
   if (!body.meta.paging || typeof body.meta.paging !== 'object') {
     return { ok: false, reason: 'missing meta.paging' };
   }
+  // typeof, NOT isFinite(Number(x)) — Number(null), Number('') and Number([])
+  // are all 0, a "finite" value that would pass. `matched` sizes the paging
+  // loop, so a null reading as 0 means the scan believes it has collected
+  // everything after page 0. The collected-vs-matched check downstream does
+  // catch it, but the gate is the layer that is supposed to reject a
+  // malformed body — and this is the same strictness the money fields above
+  // already use.
   var pagingFields = ['matched', 'returned', 'limit', 'offset'];
   for (var p = 0; p < pagingFields.length; p++) {
-    if (!isFinite(Number(body.meta.paging[pagingFields[p]]))) {
-      return { ok: false, reason: 'meta.paging.' + pagingFields[p] + ' is not a finite number: ' + body.meta.paging[pagingFields[p]] };
+    var pagingVal = body.meta.paging[pagingFields[p]];
+    if (typeof pagingVal !== 'number' || !isFinite(pagingVal)) {
+      return { ok: false, reason: 'meta.paging.' + pagingFields[p] + ' is not a finite number: ' + pagingVal };
     }
   }
 
@@ -1402,6 +1410,13 @@ function wholesalePull_impl_(opts) {
   var conflictList = [];
   var ambiguousTotal = 0, unknownTotal = 0;
   var zeroRowCompletedWeek = false;
+  // weeksFetched counts weeks that fetched AND passed the shape gate (same
+  // point its shopifyWeeklyPull sibling increments). It deliberately says
+  // nothing about whether the money landed: a week can fetch cleanly and
+  // still be dropped by the cross-foot or the archive-split guard. This is
+  // the end-to-end counter — weeks that passed every guard and reached the
+  // write path.
+  var weeksWritten = 0;
 
   var affectedSet = {};
   var affected = [];
@@ -1519,6 +1534,13 @@ function wholesalePull_impl_(opts) {
         addAffectedWeek(weekStartForDate_(snap.storedDate));
         addAffectedWeek(weekStartForDate_(mrow.date));
         weekDatesHealed++;
+        // Keep the snapshot consistent with what the sheet now holds. The
+        // same order_ref CAN surface in more than one weekly response (the
+        // producer's week filter and the row's own date are different
+        // fields), and a stale storedDate would re-fire this heal on the
+        // later week — an idempotent write, but it double-counts datesHealed
+        // and re-queues both weeks for no reason.
+        snap.storedDate = mrow.date;
         Logger.log('wholesalePull: ' + mrow.order_ref + ' date moved ' + snap.storedDate + ' -> ' + mrow.date +
           ' upstream — Revenue row updated, both weeks resummarized');
       }
@@ -1535,14 +1557,18 @@ function wholesalePull_impl_(opts) {
     rowsAdded += ingestRes.rowsAdded;
     rowsUpdated += ingestRes.rowsUpdated;
     duplicatesSkipped += ingestRes.duplicatesSkipped;
+    weeksWritten++;
 
-    // Assert the return: any duplicatesSkipped must be explained. A key that
-    // recurs within THIS week's mapped rows is, by upsertRows_'s own
-    // short-circuit (Code.gs:728), ALWAYS skipped with no amount comparison
-    // — never explained by a pre-existing sheet row. Treated exactly like a
-    // cross-foot mismatch: recorded, heartbeat suppressed — but the row(s)
-    // already written stay written (the collision is discovered only after
-    // the ingest call resolves it).
+    // Within-batch order_ref collision detection. NOTE: this does NOT
+    // reconcile ingestRes.duplicatesSkipped — it is derived from mapped.rows
+    // alone, independently of what ingest reported. A legitimate skip (a
+    // pre-existing sheet row with an identical amount) is invisible here by
+    // design; what this catches is the one case upsertRows_ resolves
+    // silently: a key that recurs within THIS week's batch is, by its own
+    // short-circuit (Code.gs:728), ALWAYS dropped with no amount comparison
+    // and never summed. Treated exactly like a cross-foot mismatch:
+    // recorded, heartbeat suppressed — but the row(s) already written stay
+    // written (the collision is discovered only after ingest resolves it).
     var batchSeen = {};
     var unexplainedSkips = 0;
     for (var br = 0; br < mapped.rows.length; br++) {
@@ -1602,6 +1628,19 @@ function wholesalePull_impl_(opts) {
     }
     remainingQueue = mergedUnique.filter(function (w) { return !resummarizedWeeksOk[w]; });
     wholesaleWriteQueue_(remainingQueue);
+    if (remainingQueue.length > 0) {
+      // A trigger-invoked run has no reader for the return value, so an
+      // undrained backlog must say so itself (same as greenBeanPull).
+      // Read the OLDEST entry first: toSummarize takes mergedUnique's first
+      // GREENBEAN_RESUM_CAP in chronological order, and a week that is split
+      // across _archive is refused ('skip-split') by weeklySummarize on EVERY
+      // run — so it never clears. Enough stuck old weeks would consume the
+      // whole per-run cap and starve newer weeks indefinitely. A run where
+      // the oldest entry never changes is that condition, not a slow drain.
+      Logger.log('wholesalePull: ' + remainingQueue.length + ' affected week(s) still queued beyond the ' +
+        GREENBEAN_RESUM_CAP + '/run cap (oldest: ' + remainingQueue[0] + ') — drained over coming runs; ' +
+        'an oldest entry that never advances is a permanently-refused week, not a backlog');
+    }
   }
 
   // Heartbeat — Prohibition 10, all five conditions on the NEWEST week only
@@ -1658,6 +1697,7 @@ function wholesalePull_impl_(opts) {
   return {
     weeksRequested: weeks.length,
     weeksFetched: weeks.length - failedWeeks.length,
+    weeksWritten: weeksWritten,
     failedWeeks: failedWeeks,
     crossFootFailures: crossFootFailures,
     splitWeeks: splitWeeks,

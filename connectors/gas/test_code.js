@@ -11460,6 +11460,28 @@ console.log('\narchiveAndPurge_ — batched writes:');
   b8b.meta.paging.matched = NaN;
   check('meta.paging.matched non-finite -> ok:false', wholesaleValidWeekBody_(b8b, requestedWeek).ok === false);
 
+  /* --- paging fields are gated on typeof, NOT isFinite(Number(x)). Every
+   *     value below coerces to 0 — a "finite number" — so a Number()-based
+   *     gate ACCEPTS them. `matched` sizes the paging loop, so a null read
+   *     as 0 means the scan believes page 0 already collected everything.
+   *     Same strictness the summary.*.gross money fields already use. --- */
+  [null, '', [], false, '200'].forEach(function (bad) {
+    const bBad = clone(validBody());
+    bBad.meta.paging.matched = bad;
+    check('meta.paging.matched = ' + JSON.stringify(bad) + ' (coerces to a finite number) -> ok:false',
+      wholesaleValidWeekBody_(bBad, requestedWeek).ok === false);
+  });
+
+  const b8c = clone(validBody());
+  b8c.meta.paging.offset = null;
+  check('meta.paging.offset = null -> ok:false', wholesaleValidWeekBody_(b8c, requestedWeek).ok === false);
+
+  // Guard against over-tightening: a real zero must still pass.
+  const b8d = clone(validBody());
+  b8d.meta.paging.offset = 0;
+  check('meta.paging.offset = 0 (a real number) -> still ok:true',
+    wholesaleValidWeekBody_(b8d, requestedWeek).ok === true);
+
   /* --- zero-activity week: every bucket zeroed, orders empty, flags all
    *     true -> MUST still pass. Zero is finite; refusing an empty week is
    *     step 4's heartbeat rule, not this gate's job. --- */
@@ -11989,6 +12011,11 @@ console.log('\narchiveAndPurge_ — batched writes:');
 
   eq('case1: weeksRequested', res1.weeksRequested, 3);
   eq('case1: weeksFetched', res1.weeksFetched, 3);
+  // weeksFetched counts weeks that fetched AND passed the shape gate; it says
+  // nothing about whether the money landed. weeksWritten is the end-to-end
+  // counter — on 3 clean weeks the two agree, and the cross-foot/split cases
+  // below are where they diverge.
+  eq('case1: weeksWritten (all 3 reached the write path)', res1.weeksWritten, 3);
   eq('case1: ordersFetched', res1.ordersFetched, 3);
   eq('case1: rowsAdded', res1.rowsAdded, 3);
   eq('case1: rowsUpdated', res1.rowsUpdated, 0);
@@ -12197,6 +12224,31 @@ console.log('\narchiveAndPurge_ — batched writes:');
   eq('case9: datesHealed is 1', resDM.datesHealed, 1);
   check('case9: BOTH the old (2026-08-03) and new (2026-08-10) week-starts are queued',
     weeklySummarizeCalls.indexOf('2026-08-03') !== -1 && weeklySummarizeCalls.indexOf('2026-08-10') !== -1);
+
+  /* --- case 9b: the SAME order_ref surfaces in TWO weekly responses, both
+   *     reporting the same moved date (the producer's week filter and the
+   *     row's own date are different fields, so this is not hypothetical).
+   *     The heal must fire ONCE. The snapshot is read once per run, before
+   *     the week loop, so after a heal writes the cell it has to track what
+   *     the sheet now holds — otherwise the second week compares against a
+   *     stale storedDate, re-heals an already-correct row, double-counts
+   *     datesHealed and re-queues both weeks for nothing. --- */
+  reset();
+  const byLabelDM2 = cleanFixtureSet('dm2', 300);
+  const revSheetDM2 = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  revSheetDM2.appendRow(['2026-08-03', 'Roastery', 'wholesale', 'Some Shop', 100, 'ORD-Y', WHOLESALE_SOURCE, 'OLD-STAMP']);
+  byLabelDM2[weeks3[1].label] = weekFixtureFromOrders([order({ orderId: 'ORD-Y', date: '2026-08-11', amount: 100 })]);
+  byLabelDM2[weeks3[2].label] = weekFixtureFromOrders([order({ orderId: 'ORD-Y', date: '2026-08-11', amount: 100 })]);
+  armFetchWeekOrders(byLabelDM2);
+  armWeeklySummarizeSpy();
+  var resDM2;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resDM2 = wholesalePull(); });
+
+  eq('case9b: the same ref in two weekly responses heals ONCE, not once per week',
+    resDM2.datesHealed, 1);
+  var ordYRow = findRevenueRow(revenueRows(), 'ORD-Y');
+  check('case9b: ORD-Y still holds the corrected date',
+    !!ordYRow && cellDate(ordYRow[0]) === '2026-08-11');
 
   /* --- case 10: within-batch key collision (two mapped rows share an
    *     order_ref) -> Code.gs:728 silently drops the second one; an
@@ -12410,6 +12462,26 @@ console.log('\narchiveAndPurge_ — batched writes:');
       JSON.parse(wholesaleQueueRaw), weeks7.slice(GREENBEAN_RESUM_CAP).map(function (w) { return w.start; }));
   }
 
+  /* --- case 20b: the cap drains OLDEST-first, so when affected weeks exceed
+   *     it the NEWEST week lands in the overflow — and the heartbeat's
+   *     newestResumOk condition then cannot be satisfied. Every other
+   *     heartbeat condition passes here (week fetched, cross-footed, not
+   *     split, wrote rows, gross 906 >= the 800 floor), so this isolates
+   *     the resummarize condition alone.
+   *
+   *     This is REAL first-run behaviour, not a corner case: a first live
+   *     bring-up has all 8 window weeks affected at once, so run 1 writes
+   *     every week but stamps NO heartbeat. It self-corrects on run 2, once
+   *     the queue drains. Asserted so nobody reads it as a failed pull. --- */
+  var newestWeek7 = weeks7[weeks7.length - 1];
+  check('case20b: the newest week is in the overflow, not the summarized set',
+    weeklySummarizeCalls.indexOf(newestWeek7.start) === -1);
+  check('case20b: heartbeat NOT stamped — the newest week could not be resummarized',
+    !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+  check('case20b: ...and that is the ONLY reason — the week itself wrote rows cleanly',
+    resCap.failedWeeks.length === 0 && resCap.crossFootFailures.length === 0 &&
+    resCap.splitWeeks.length === 0 && resCap.heartbeatStamped === false);
+
   globalThis.wholesaleFetchWeekOrders_ = REAL_FETCH_WEEK_ORDERS;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
   global.installOrderAppTriggers = REAL_INSTALL_TRIGGERS;
@@ -12472,6 +12544,73 @@ console.log('\narchiveAndPurge_ — batched writes:');
   check('no heartbeat recorded: wholesalePull WAS called', calledAbsent);
 
   global.wholesalePull = REAL_WHOLESALE_PULL;
+})();
+
+/* ------------------------------------------------------------------ *
+ * appsscript.json oauthScopes coverage (step 7, PRD-14)
+ *
+ * appsscript.json used to declare NO oauthScopes key, so scopes were
+ * inferred statically at each authorization. Declaring them explicitly makes
+ * the list a shipped artifact that can now drift from the code: a newly-used
+ * service whose scope nobody added fails at the permission boundary AT
+ * RUNTIME, and a clean run in this project logs nothing — so the failure is
+ * silent. This gate reads BOTH sides from disk and reds the suite instead.
+ * ------------------------------------------------------------------ */
+(function () {
+  var SYMBOL_SCOPES = {
+    SpreadsheetApp: 'https://www.googleapis.com/auth/spreadsheets',
+    GmailApp: 'https://www.googleapis.com/auth/gmail.modify',
+    DriveApp: 'https://www.googleapis.com/auth/drive',
+    Drive: 'https://www.googleapis.com/auth/drive',
+    CalendarApp: 'https://www.googleapis.com/auth/calendar',
+    UrlFetchApp: 'https://www.googleapis.com/auth/script.external_request',
+    ScriptApp: 'https://www.googleapis.com/auth/script.scriptapp',
+    MailApp: 'https://www.googleapis.com/auth/script.send_mail',
+    Session: 'https://www.googleapis.com/auth/userinfo.email'
+  };
+
+  var manifest = JSON.parse(fs.readFileSync(path.join(GAS_DIR, 'appsscript.json'), 'utf8'));
+  var declared = manifest.oauthScopes || [];
+
+  var gsFiles = fs.readdirSync(GAS_DIR).filter(function (f) { return /\.gs$/.test(f); });
+  var usedSymbols = {};
+  gsFiles.forEach(function (f) {
+    var src = fs.readFileSync(path.join(GAS_DIR, f), 'utf8');
+    Object.keys(SYMBOL_SCOPES).forEach(function (sym) {
+      // `\bDrive\.` cannot match `DriveApp.` — the char after Drive is 'A',
+      // not '.', so the advanced service and DriveApp stay distinguishable.
+      if (new RegExp('\\b' + sym + '\\.').test(src)) usedSymbols[sym] = true;
+    });
+  });
+
+  check('oauthScopes: the manifest declares an oauthScopes array', Array.isArray(manifest.oauthScopes));
+  check('oauthScopes: at least one .gs file was actually scanned', gsFiles.length > 0);
+
+  // Direction 1 — every service symbol the code calls must have its scope
+  // declared. This is the one that prevents a silent runtime auth failure.
+  Object.keys(SYMBOL_SCOPES).forEach(function (sym) {
+    if (!usedSymbols[sym]) return;
+    check('oauthScopes: ' + sym + ' is used, so ' + SYMBOL_SCOPES[sym] + ' must be declared',
+      declared.indexOf(SYMBOL_SCOPES[sym]) !== -1);
+  });
+
+  // Direction 2 — no scope beyond what a used symbol justifies. Catches a
+  // typo'd or copy-pasted scope, and keeps the anonymous web-app deployment
+  // from carrying more authority than its code can account for.
+  var justified = {};
+  Object.keys(usedSymbols).forEach(function (sym) { justified[SYMBOL_SCOPES[sym]] = true; });
+  declared.forEach(function (scope) {
+    check('oauthScopes: declared scope ' + scope + ' is justified by a call site',
+      justified[scope] === true);
+  });
+
+  // MailApp / Session are the two step 7 calls out as easy to miss: neither
+  // is used today, so neither scope may be declared. If either ever ships,
+  // Direction 1 above starts requiring its scope.
+  check('oauthScopes: MailApp unused, so script.send_mail is NOT declared',
+    !usedSymbols.MailApp && declared.indexOf(SYMBOL_SCOPES.MailApp) === -1);
+  check('oauthScopes: Session unused, so userinfo.email is NOT declared',
+    !usedSymbols.Session && declared.indexOf(SYMBOL_SCOPES.Session) === -1);
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
