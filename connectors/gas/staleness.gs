@@ -45,19 +45,17 @@ var STALENESS_CALENDAR_ID = 'mio.jake@gmail.com';
 var STALENESS_THRESHOLD_OVERRIDES = {
   shopify_orderapp: 168,
   greenbean: 168,
-  recurring: 744
+  recurring: 744,
+  coffee_order_app: 168
 };
 // Every source that stamps a heartbeat is watched — at the 96h default or a
 // per-source override above. Deliberately excluded:
 //   'shopspend' — has its OWN dedicated weekly watchdog (shopSpendWatchdog,
 //   Mon 14:00 Sydney, shopspend.gs) reading the ShopSpendPulls coverage tab;
 //   watching its heartbeat here too would double-alert every incident.
-//   'coffee_order_app' — NO LIVE WRITER today, so watching it would false-alarm
-//   daily as a never-seen source. Its suppliers-kind path is mechanically
-//   rejected (validateIngest_), but its wholesale-REVENUE path is still
-//   sanctioned in docs/ingest-contract.md and doPost stamps body.source
-//   generically — so the moment that writer ships, RE-ADD 'coffee_order_app'
-//   here (and to STAMPS_HEARTBEAT in test_code.js) or it runs unwatched.
+//   'coffee_order_app' — writer shipped in phase roastery-wholesale (PRD-14):
+//   wholesalePull stamps a heartbeat via orderAppRunSuccess_, so it is watched
+//   below with a weekly-cadence override, same as shopify_orderapp/greenbean.
 //   'roastery' — NOT YET ARMED. The feed has no roastery/invoices Gmail label,
 //   no installed trigger, and exactly one synthetic vendor parser, so it has
 //   never produced a run: watching it alerts every single day about a feed that
@@ -75,7 +73,7 @@ var STALENESS_THRESHOLD_OVERRIDES = {
 //   guard requires each RE-ADD line above to appear here VERBATIM — so arming
 //   either feed without re-adding it to this array reds the suite.
 var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers',
-  'shopify_orderapp', 'greenbean'];
+  'shopify_orderapp', 'greenbean', 'coffee_order_app'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *

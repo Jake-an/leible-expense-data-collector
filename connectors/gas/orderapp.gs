@@ -1682,13 +1682,23 @@ function wholesalePull_impl_(opts) {
  * shopifyWeeklyPull: Monday 05:00 Sydney — one hour after the 04:00
  * weeklySummarize, so a lock collision is rare; if it happens it's
  * loud-logged, counted, and self-heals next run via the 4-week repull
- * window. greenBeanPull: Tuesday 05:00 Sydney. Idempotent: deletes only
- * triggers for these two handler names before recreating them, mirroring
- * installShopSpendWatchdogTrigger_ (shopspend.gs) — never sweeps unrelated
- * triggers.
+ * window. greenBeanPull: Tuesday 05:00 Sydney.
+ *
+ * wholesalePull: Monday 06:00 Sydney — after weeklySummarize (04:00) and
+ * shopifyWeeklyPull (05:00). The slot is not arbitrary: LEIBLE_GM_COST_MONITOR
+ * reads doGet at Monday 08:00 (Main.gs:270), so a pull landing after that
+ * misses the read by six days and permanently understates the company
+ * headline by the newest week's wholesale revenue. GAS weekly triggers fire
+ * at a random minute inside the named hour, so the real margin is ~50
+ * minutes, and a withScriptLock_ timeout aborts with no retry — hence
+ * wholesalePullRetry at 07:00 as a second chance.
+ *
+ * Idempotent: deletes only triggers for these four handler names before
+ * recreating them, mirroring installShopSpendWatchdogTrigger_ (shopspend.gs)
+ * — never sweeps unrelated triggers.
  */
 function installOrderAppTriggers() {
-  var handlers = ['shopifyWeeklyPull', 'greenBeanPull'];
+  var handlers = ['shopifyWeeklyPull', 'greenBeanPull', 'wholesalePull', 'wholesalePullRetry'];
   var triggers = ScriptApp.getProjectTriggers();
   for (var i = 0; i < triggers.length; i++) {
     if (handlers.indexOf(triggers[i].getHandlerFunction()) !== -1) {
@@ -1701,5 +1711,29 @@ function installOrderAppTriggers() {
   ScriptApp.newTrigger('greenBeanPull')
     .timeBased().onWeekDay(ScriptApp.WeekDay.TUESDAY).atHour(5)
     .inTimezone('Australia/Sydney').create();
-  Logger.log('installOrderAppTriggers: shopifyWeeklyPull Monday 05:00 + greenBeanPull Tuesday 05:00 (Australia/Sydney) installed');
+  ScriptApp.newTrigger('wholesalePull')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(6)
+    .inTimezone('Australia/Sydney').create();
+  ScriptApp.newTrigger('wholesalePullRetry')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(7)
+    .inTimezone('Australia/Sydney').create();
+  Logger.log('installOrderAppTriggers: shopifyWeeklyPull Monday 05:00 + greenBeanPull Tuesday 05:00 + ' +
+    'wholesalePull Monday 06:00 + wholesalePullRetry Monday 07:00 (Australia/Sydney) installed');
+}
+
+/**
+ * Mon 07:00 second chance for wholesalePull's Mon 06:00 slot. No-ops
+ * (logged) when the coffee_order_app heartbeat was already stamped within
+ * the last 6 hours — the 06:00 run succeeded and a re-pull would be
+ * redundant. An older or absent heartbeat means that run never fired or
+ * aborted (e.g. a withScriptLock_ timeout), so this calls through.
+ */
+function wholesalePullRetry() {
+  var raw = PropertiesService.getScriptProperties().getProperty(STALENESS_HEARTBEAT_PREFIX + WHOLESALE_SOURCE);
+  var lastMs = stalenessParseTs_(raw);
+  if (lastMs !== null && (Date.now() - lastMs) < 6 * 3600000) {
+    Logger.log('wholesalePullRetry: coffee_order_app heartbeat is fresh (<6h) — Mon 06:00 run already succeeded, no-op');
+    return;
+  }
+  wholesalePull();
 }

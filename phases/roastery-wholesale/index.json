@@ -160,7 +160,7 @@
     {
       "step": 5,
       "name": "staleness-and-trigger",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -177,9 +177,17 @@
             "reason": "wholesalePullRetry function is not defined in the implementation; test cases skipped as expected in RED phase. Implementation is incomplete."
           },
           "at": "2026-09-04T07:35:52+0900"
+        },
+        "green": {
+          "command": "node connectors/gas/test_code.js",
+          "exit_code": 0,
+          "output_tail": "orderapp: wholesalePullRetry (step 5, PRD-14):\n  ok  - wholesalePullRetry is defined\n  ok  - heartbeat stamped 3h ago: wholesalePull was NOT called\n  ok  - heartbeat stamped 9h ago: wholesalePull WAS called\n  ok  - no heartbeat recorded: wholesalePull WAS called\n\n1993 passed, 0 failed\n",
+          "at": "2026-09-04T08:00:00+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-09-04T08:00:00+0900",
+      "summary": "Armed coffee_order_app in STALENESS_SOURCES with a 168h override, deleted the stale exclusion comment, added wholesalePull/wholesalePullRetry to installOrderAppTriggers (Mon 06:00/07:00 Sydney, code-only, not invoked), and wholesalePullRetry itself (no-ops when the coffee_order_app heartbeat is <6h old); 1993/1993 tests pass."
     },
     {
       "step": 6,
