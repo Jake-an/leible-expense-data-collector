@@ -1274,6 +1274,407 @@ function greenBeanPull_impl_() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Coffee Order App wholesale revenue — PRD-14 weekly pull
+ * ------------------------------------------------------------------ */
+
+var WHOLESALE_RESUM_QUEUE_PROP = 'WHOLESALE_RESUM_QUEUE';
+
+function wholesaleReadQueue_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(WHOLESALE_RESUM_QUEUE_PROP);
+  if (!raw) return [];
+  try {
+    var parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function wholesaleWriteQueue_(weekStarts) {
+  PropertiesService.getScriptProperties().setProperty(WHOLESALE_RESUM_QUEUE_PROP, JSON.stringify(weekStarts));
+}
+
+/**
+ * Pure. Simulates upsertRows_'s dedup/compare logic against a working copy of
+ * the pre-run Revenue snapshot, WITHOUT touching the sheet — used only for
+ * dryRun, so a preview run reports the exact counts a real run would produce.
+ * Mutates `simSnapshot` in place (adds/updates entries) so a later week in
+ * the same dry run sees an earlier week's simulated write, mirroring how
+ * sequential real ingestRevenueRows calls would.
+ */
+function wholesaleSimulateUpsert_(rows, simSnapshot) {
+  var seenInBatch = {};
+  var rowsAdded = 0, rowsUpdated = 0, duplicatesSkipped = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var key = WHOLESALE_SOURCE + '||' + String(row.order_ref).trim().toLowerCase();
+    if (seenInBatch[key]) { duplicatesSkipped++; continue; }
+    seenInBatch[key] = true;
+
+    var existing = simSnapshot[key];
+    var newAmount = Number(row.amount);
+    if (!existing) {
+      simSnapshot[key] = { amount: newAmount };
+      rowsAdded++;
+      continue;
+    }
+    if (Number(existing.amount) === newAmount) {
+      duplicatesSkipped++;
+    } else {
+      existing.amount = newAmount;
+      rowsUpdated++;
+    }
+  }
+  return { rowsAdded: rowsAdded, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped };
+}
+
+/**
+ * Entry point: orderAppRunStart_ runs BEFORE the lock so a lock-timeout skip
+ * still counts as a non-completion (same convention as shopifyWeeklyPull /
+ * greenBeanPull).
+ * @param {{dryRun?:boolean}} [opts]
+ * @returns {Object} wholesalePull_impl_'s result, or {locked:true}.
+ */
+function wholesalePull(opts) {
+  orderAppRunStart_(WHOLESALE_SOURCE);
+  var res = withScriptLock_(function () { return wholesalePull_impl_(opts); });
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('wholesalePull: could not acquire script lock — skipped this run');
+    return { locked: true };
+  }
+  return res;
+}
+
+/**
+ * PRD-14 — fetch, cross-foot, guard, self-heal, ingest, re-summarize and
+ * decide the heartbeat for the roastery wholesale revenue pull.
+ * `opts.dryRun === true` builds and logs everything but writes NOTHING —
+ * no ingest, no date-move cell writes, no weeklySummarize, no heartbeat, no
+ * data-quality alert.
+ * @param {{dryRun?:boolean}} [opts]
+ */
+function wholesalePull_impl_(opts) {
+  opts = opts || {};
+  var dryRun = opts.dryRun === true;
+
+  var token = getOrderAppToken_();
+  if (!token) {
+    orderAppRunSkipped_(WHOLESALE_SOURCE);
+    return { noToken: true };
+  }
+
+  var weeks = lastCompletedWeeks_(todayStr_(), wholesaleRepullWeeks_());
+  var extractedAt = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+
+  var ss = getHubSpreadsheet_();
+  var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
+
+  // Pre-ingest snapshot — read Revenue ONCE per run. Keys mirror rowKey_'s
+  // normalization (source+order_ref, lowercased) so the date-move self-heal
+  // and the dry-run simulation both key against exactly what upsertRows_
+  // would see.
+  var snapshot = {};
+  var existingValues = revSheet.getDataRange().getValues();
+  for (var er = 1; er < existingValues.length; er++) {
+    var existingRow = existingValues[er];
+    if (String(existingRow[6]) !== WHOLESALE_SOURCE) continue;
+    snapshot[WHOLESALE_SOURCE + '||' + String(existingRow[5]).trim().toLowerCase()] = {
+      storedDate: coerceDateStr_(existingRow[0]),
+      amount: Number(existingRow[4]),
+      rowIndex: er + 1
+    };
+  }
+  var simSnapshot = null;
+  if (dryRun) {
+    simSnapshot = {};
+    for (var sk in snapshot) {
+      if (Object.prototype.hasOwnProperty.call(snapshot, sk)) simSnapshot[sk] = { amount: snapshot[sk].amount };
+    }
+  }
+
+  var failedWeeks = [];
+  var crossFootFailures = [];
+  var splitWeeks = [];
+  var ordersFetched = 0;
+  var rowsAdded = 0, rowsUpdated = 0, duplicatesSkipped = 0;
+  var datesHealed = 0;
+  var byBucket = { wholesale: 0, internal: 0, ambiguous: 0, unknown: 0 };
+  var conflictList = [];
+  var ambiguousTotal = 0, unknownTotal = 0;
+  var zeroRowCompletedWeek = false;
+
+  var affectedSet = {};
+  var affected = [];
+  function addAffectedWeek(weekStart) {
+    if (affectedSet[weekStart]) return;
+    affectedSet[weekStart] = true;
+    affected.push(weekStart);
+  }
+
+  var weekWroteRows = {};      // week.label -> boolean (mapped.rows.length > 0)
+  var weekWholesaleCents = {}; // week.label -> grossCentsByChannel.wholesale
+
+  for (var wi = 0; wi < weeks.length; wi++) {
+    var week = weeks[wi];
+
+    var fetched = wholesaleFetchWeekOrders_(week);
+    if (!fetched.ok) {
+      failedWeeks.push({ week: week.label, reason: fetched.reason });
+      continue;
+    }
+    ordersFetched += fetched.orders.length;
+
+    // Per-scan diagnostics: NEVER week-scoped, NEVER ingested — the step-0
+    // probe measured orphanRows at a constant $2,703 in every weekly
+    // response and outOfWeekRows at ~$241k; summing them across weekly
+    // pulls would invent six figures of revenue.
+    var diagKeys = ['orphanRows', 'undatedRows', 'outOfWeekRows', 'excluded'];
+    for (var dk = 0; dk < diagKeys.length; dk++) {
+      var diag = fetched.meta && fetched.meta[diagKeys[dk]];
+      if (diag && Number(diag.count) > 0) {
+        Logger.log('wholesalePull: ' + week.label + ' ' + diagKeys[dk] + ' count=' + diag.count +
+          ' gross=$' + diag.gross + ' — diagnostic only — never ingested');
+      }
+    }
+
+    var conflicts = (fetched.meta && fetched.meta.classificationConflicts) || [];
+    for (var cci = 0; cci < conflicts.length; cci++) conflictList.push(conflicts[cci]);
+
+    if (fetched.summary.ambiguous) ambiguousTotal += Number(fetched.summary.ambiguous.orderCount) || 0;
+    if (fetched.summary.unknown) unknownTotal += Number(fetched.summary.unknown.orderCount) || 0;
+
+    var mapped = wholesaleRevenueRows_(fetched.orders);
+    Logger.log('wholesalePull: ' + week.label + ' wholesale=$' + (mapped.grossCentsByChannel.wholesale / 100).toFixed(2) +
+      ' internal=$' + (mapped.grossCentsByChannel.internal / 100).toFixed(2) +
+      ' ambiguous=$' + (mapped.grossCentsByChannel.ambiguous / 100).toFixed(2) +
+      ' unknown=$' + (mapped.grossCentsByChannel.unknown / 100).toFixed(2));
+
+    // Cross-foot, integer cents: an order the PRODUCER counted (its shopType
+    // classifies to a channel, and its amount reads as a real number even
+    // though our stricter row-validator rejected it) must be subtracted from
+    // that channel's producer gross before comparing — never as floats.
+    var rowOrderRefs = {};
+    for (var ri = 0; ri < mapped.rows.length; ri++) rowOrderRefs[mapped.rows[ri].order_ref] = true;
+    var droppedCentsByChannel = { wholesale: 0, internal: 0, ambiguous: 0, unknown: 0 };
+    for (var oi = 0; oi < fetched.orders.length; oi++) {
+      var ord = fetched.orders[oi];
+      var oRef = String(ord.orderId).trim();
+      if (rowOrderRefs[oRef]) continue;
+      var dropMapping = Object.prototype.hasOwnProperty.call(WHOLESALE_SHOPTYPE_MAP_, ord.shopType)
+        ? WHOLESALE_SHOPTYPE_MAP_[ord.shopType] : null;
+      if (!dropMapping) continue;
+      var dropAmt = Number(ord.amount);
+      if (!isFinite(dropAmt)) continue;
+      droppedCentsByChannel[dropMapping.channel] += Math.round(dropAmt * 100);
+    }
+
+    var crossFootOk = true;
+    var crossFootDetail = [];
+    for (var mk in WHOLESALE_SHOPTYPE_MAP_) {
+      if (!Object.prototype.hasOwnProperty.call(WHOLESALE_SHOPTYPE_MAP_, mk)) continue;
+      var chMap = WHOLESALE_SHOPTYPE_MAP_[mk];
+      var bucketObj = fetched.summary[chMap.bucket];
+      var producerCents = Math.round(Number(bucketObj.gross) * 100);
+      var expectedCents = producerCents - droppedCentsByChannel[chMap.channel];
+      var mappedCents = mapped.grossCentsByChannel[chMap.channel];
+      if (mappedCents !== expectedCents) {
+        crossFootOk = false;
+        crossFootDetail.push(chMap.channel + ': mapped=' + mappedCents + ' expected=' + expectedCents);
+      }
+    }
+    if (!crossFootOk) {
+      crossFootFailures.push({ week: week.label, reason: crossFootDetail.join('; ') });
+      continue;
+    }
+
+    // Archive-split guard, BEFORE the write. weeksWithArchivedRows_ itself
+    // fails CLOSED (unreadable _archive header -> every requested week
+    // reported split) and logs that condition; called per-week (a single-
+    // element array) so a genuine split is never conflated with the whole
+    // run's fail-closed sweep.
+    var split = weeksWithArchivedRows_([week.start]);
+    if (split.indexOf(week.start) !== -1) {
+      splitWeeks.push(week.start);
+      Logger.log('wholesalePull: ' + week.start + ' has rows already in ' + ARCHIVE_TAB +
+        ' — split week, writing nothing this run (see docs/schema.md)');
+      continue;
+    }
+
+    // Date-move self-heal (ported from greenBeanPull_impl_, orderapp.gs:842-858):
+    // upsertRows_/ingestRevenueRows never rewrite the date column, so an
+    // upstream date correction (same ref, possibly same amount) would
+    // otherwise leave the money in the wrong ISO week forever, invisible to
+    // both duplicatesSkipped and the cross-foot (the API and mapped rows
+    // agree; the disagreement is with what is already in the Sheet).
+    var weekDatesHealed = 0;
+    for (var mi = 0; mi < mapped.rows.length; mi++) {
+      var mrow = mapped.rows[mi];
+      var key = WHOLESALE_SOURCE + '||' + String(mrow.order_ref).trim().toLowerCase();
+      var snap = snapshot[key];
+      if (snap && mrow.date !== snap.storedDate) {
+        if (!dryRun) {
+          revSheet.getRange(snap.rowIndex, 1).setValue(mrow.date);
+          revSheet.getRange(snap.rowIndex, 8).setValue(extractedAt);
+        }
+        addAffectedWeek(weekStartForDate_(snap.storedDate));
+        addAffectedWeek(weekStartForDate_(mrow.date));
+        weekDatesHealed++;
+        Logger.log('wholesalePull: ' + mrow.order_ref + ' date moved ' + snap.storedDate + ' -> ' + mrow.date +
+          ' upstream — Revenue row updated, both weeks resummarized');
+      }
+    }
+    datesHealed += weekDatesHealed;
+
+    var ingestRes;
+    if (dryRun) {
+      ingestRes = wholesaleSimulateUpsert_(mapped.rows, simSnapshot);
+    } else {
+      ingestRes = ingestRevenueRows(WHOLESALE_SOURCE, mapped.rows, extractedAt, revSheet);
+    }
+
+    rowsAdded += ingestRes.rowsAdded;
+    rowsUpdated += ingestRes.rowsUpdated;
+    duplicatesSkipped += ingestRes.duplicatesSkipped;
+
+    // Assert the return: any duplicatesSkipped must be explained. A key that
+    // recurs within THIS week's mapped rows is, by upsertRows_'s own
+    // short-circuit (Code.gs:728), ALWAYS skipped with no amount comparison
+    // — never explained by a pre-existing sheet row. Treated exactly like a
+    // cross-foot mismatch: recorded, heartbeat suppressed — but the row(s)
+    // already written stay written (the collision is discovered only after
+    // the ingest call resolves it).
+    var batchSeen = {};
+    var unexplainedSkips = 0;
+    for (var br = 0; br < mapped.rows.length; br++) {
+      var bkey = WHOLESALE_SOURCE + '||' + String(mapped.rows[br].order_ref).trim().toLowerCase();
+      if (batchSeen[bkey]) { unexplainedSkips++; continue; }
+      batchSeen[bkey] = true;
+    }
+    if (unexplainedSkips > 0) {
+      crossFootFailures.push({
+        week: week.label,
+        reason: unexplainedSkips + ' unexplained duplicatesSkipped — within-batch order_ref collision'
+      });
+      Logger.log('wholesalePull: ' + week.label + ' — ' + unexplainedSkips +
+        ' unexplained duplicatesSkipped (within-batch order_ref collision) — recorded, heartbeat suppressed');
+    }
+
+    if (ingestRes.rowsAdded + ingestRes.rowsUpdated > 0) addAffectedWeek(week.start);
+
+    weekWroteRows[week.label] = mapped.rows.length > 0;
+    weekWholesaleCents[week.label] = mapped.grossCentsByChannel.wholesale;
+    if (mapped.rows.length === 0) zeroRowCompletedWeek = true;
+
+    byBucket.wholesale += mapped.grossCentsByChannel.wholesale / 100;
+    byBucket.internal += mapped.grossCentsByChannel.internal / 100;
+    byBucket.ambiguous += mapped.grossCentsByChannel.ambiguous / 100;
+    byBucket.unknown += mapped.grossCentsByChannel.unknown / 100;
+  }
+
+  // Resummarize: same cap + persisted overflow queue as greenBeanPull_impl_
+  // (crash safety: the full affected list is persisted BEFORE the loop).
+  var merged = wholesaleReadQueue_().concat(affected);
+  var mergedSet = {};
+  var mergedUnique = [];
+  for (var m = 0; m < merged.length; m++) {
+    if (mergedSet[merged[m]]) continue;
+    mergedSet[merged[m]] = true;
+    mergedUnique.push(merged[m]);
+  }
+  mergedUnique.sort();
+
+  var resummarizedWeeksOk = {};
+  var remainingQueue = mergedUnique;
+  if (!dryRun) {
+    var toSummarize = mergedUnique.slice(0, GREENBEAN_RESUM_CAP);
+    wholesaleWriteQueue_(mergedUnique);
+    for (var s = 0; s < toSummarize.length; s++) {
+      var sumRes = weeklySummarize(toSummarize[s]);
+      var reported = sumRes && sumRes.weekStart ? coerceDateStr_(sumRes.weekStart) : null;
+      if (sumRes && !sumRes.refused && reported === toSummarize[s]) {
+        resummarizedWeeksOk[toSummarize[s]] = true;
+      } else {
+        Logger.log('wholesalePull: weeklySummarize did not complete for ' + toSummarize[s] + ' (' +
+          (!sumRes ? 'no result' : sumRes.refused ? sumRes.refused :
+            reported ? 'reported week ' + reported + ', not the one requested' : 'no weekStart in the return') +
+          ') — week stays queued');
+      }
+    }
+    remainingQueue = mergedUnique.filter(function (w) { return !resummarizedWeeksOk[w]; });
+    wholesaleWriteQueue_(remainingQueue);
+  }
+
+  // Heartbeat — Prohibition 10, all five conditions on the NEWEST week only
+  // (the 8-week-window rule: an older week failing must never block it).
+  var newestWeek = weeks.length ? weeks[weeks.length - 1] : null;
+  var heartbeatStamped = false;
+  if (newestWeek && !dryRun) {
+    var newestFailed = failedWeeks.some(function (f) { return f.week === newestWeek.label; });
+    var newestCrossFootBad = crossFootFailures.some(function (f) { return f.week === newestWeek.label; });
+    var newestSplit = splitWeeks.indexOf(newestWeek.start) !== -1;
+    var newestWroteRows = !!weekWroteRows[newestWeek.label];
+    var newestGrossOk = (weekWholesaleCents[newestWeek.label] || 0) >= Math.round(WHOLESALE_GROSS_FLOOR * 100);
+    // A week that needed no resummarize (nothing new/updated, no date move)
+    // cannot fail one — only a week that DID need it must have completed.
+    var newestNeededResum = !!affectedSet[newestWeek.start];
+    var newestResumOk = !newestNeededResum || !!resummarizedWeeksOk[newestWeek.start];
+
+    heartbeatStamped = !newestFailed && !newestCrossFootBad && !newestSplit &&
+      newestWroteRows && newestGrossOk && newestResumOk;
+  }
+
+  // Data-quality alert — never auto-resolve a conflict; a human fixes SHOPS
+  // in the Order app. Signature-gated so an unchanged condition doesn't
+  // re-alert every run for ~13 weeks straight (same convention as
+  // greenBeanPull's upstream-warning alert).
+  var dqTriggered = failedWeeks.length > 0 || crossFootFailures.length > 0 || splitWeeks.length > 0 ||
+    zeroRowCompletedWeek || ambiguousTotal > 0 || unknownTotal > 0 || conflictList.length > 0;
+
+  if (!dryRun) {
+    if (dqTriggered) {
+      var sigParts = conflictList.slice().sort()
+        .concat(failedWeeks.map(function (f) { return f.week; }).sort())
+        .concat(splitWeeks.slice().sort());
+      var message = [
+        'wholesalePull data-quality conditions this run:',
+        failedWeeks.length ? ('- failed weeks: ' + failedWeeks.map(function (f) { return f.week + ' (' + f.reason + ')'; }).join(', ')) : null,
+        crossFootFailures.length ? ('- cross-foot/collision issues: ' + crossFootFailures.map(function (f) { return f.week + ' (' + f.reason + ')'; }).join(', ')) : null,
+        splitWeeks.length ? ('- split weeks (rows already archived): ' + splitWeeks.join(', ')) : null,
+        zeroRowCompletedWeek ? '- a completed week produced zero rows' : null,
+        ambiguousTotal > 0 ? ('- ' + ambiguousTotal + ' AMBIGUOUS order(s) — a human resolves SHOPS in the Order app') : null,
+        unknownTotal > 0 ? ('- ' + unknownTotal + ' UNKNOWN order(s)') : null,
+        conflictList.length ? ('- classification conflicts: ' + conflictList.join('; ')) : null
+      ].filter(Boolean).join('\n');
+      orderAppRaiseDataQualityAlert_(WHOLESALE_SOURCE, message, orderAppSignatureHash_(sigParts.join('|')));
+    } else {
+      orderAppClearDataQualitySignature_(WHOLESALE_SOURCE);
+    }
+  }
+
+  if (!dryRun && heartbeatStamped) {
+    orderAppRunSuccess_(WHOLESALE_SOURCE);
+  }
+
+  return {
+    weeksRequested: weeks.length,
+    weeksFetched: weeks.length - failedWeeks.length,
+    failedWeeks: failedWeeks,
+    crossFootFailures: crossFootFailures,
+    splitWeeks: splitWeeks,
+    ordersFetched: ordersFetched,
+    rowsAdded: rowsAdded,
+    rowsUpdated: rowsUpdated,
+    duplicatesSkipped: duplicatesSkipped,
+    datesHealed: datesHealed,
+    weeksResummarized: Object.keys(resummarizedWeeksOk).length,
+    weeksQueued: remainingQueue.length,
+    byBucket: byBucket,
+    heartbeatStamped: heartbeatStamped,
+    dryRun: dryRun
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * Triggers
  * ------------------------------------------------------------------ */
 

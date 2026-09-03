@@ -122,7 +122,8 @@
     {
       "step": 4,
       "name": "wholesale-pull",
-      "status": "pending",
+      "status": "needs_context",
+      "needs_context_detail": "Implementation (wholesalePull/wholesalePull_impl_) is complete and passes 1968/1976 assertions. The remaining 8 failures trace to two proven defects in the committed RED test fixture, not the implementation: (1) case1 uses cleanFixtureSet('c', 100), giving the newest week a wholesale gross of $102 while asserting heartbeatStamped===true; this is mathematically incompatible with case12's explicit WHOLESALE_GROSS_FLOOR=800 boundary test (799=>false, 801=>true) applied to the same 'newest week gross' quantity — both $102 and $799 are below the $800 floor yet must produce opposite booleans, which no monotonic threshold check can satisfy. Every other heartbeat-true case (case4a, case12b, case17) uses a base >= 900; case1 is the sole outlier. (2) case8 (fail-closed archive test) creates the _archive tab with a bad header via ensureSheet but never appends a data row, so the existing Code.gs weeksWithArchivedRows_'s `if (!arch || arch.getLastRow() < 2) return [];` short-circuit fires before the 'no date column' fail-closed branch is ever reached (getLastRow()===1 for a header-only sheet) — the sibling passing test at test_code.js:11216-11223 appends a row first and case8 is missing the equivalent call. Full evidence, empirical confirmation, and suggested one-line fixture fixes in phases/roastery-wholesale/step4-report.md. Do not weaken/rewrite the RED tests myself per protocol; recommend a human or a dispatch with test-file authority apply the two fixture fixes and re-run.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
