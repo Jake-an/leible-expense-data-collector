@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "ReferenceError: wholesaleFetchWeekOrders_ is not defined — function is missing from implementation. Test structure is sound (earlier cases all pass); this is a proper missing-symbol failure."
+}

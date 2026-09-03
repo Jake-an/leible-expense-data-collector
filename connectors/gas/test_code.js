@@ -11434,5 +11434,242 @@ console.log('\narchiveAndPurge_ — batched writes:');
   check('zero-activity week (all buckets 0, orders:[]) -> ok:true', r9.ok === true);
 })();
 
+/* ------------------------------------------------------------------ *
+ * roastery-wholesale step 2 — wholesaleFetchWeekOrders_ paging
+ * ------------------------------------------------------------------ */
+(function testWholesaleFetchWeekOrders() {
+  console.log('\norderapp: wholesaleFetchWeekOrders_ paging:');
+
+  const week = { label: '2026-W32', start: '2026-08-03', end: '2026-08-09' };
+
+  function reset() {
+    currentSS = makeSpreadsheet();
+    clearLoggedMessages();
+  }
+
+  function summaryWithGross(externalGross) {
+    return {
+      all: { orderCount: 1, gross: externalGross },
+      internal: { orderCount: 0, gross: 0 },
+      external: { orderCount: 1, gross: externalGross },
+      ambiguous: { orderCount: 0, gross: 0 },
+      unknown: { orderCount: 0, gross: 0 }
+    };
+  }
+
+  function makeOrders(prefix, n) {
+    const arr = [];
+    for (let i = 0; i < n; i++) {
+      arr.push({ orderId: prefix + i, date: '2026-08-04', shopId: 'Wholesale Co', amount: 10 });
+    }
+    return arr;
+  }
+
+  // Mirrors the PROD shape from testWholesaleValidWeekBody's validBody() —
+  // every field the shape gate requires, with orders/matched/offset/summary/
+  // diagnostics overridable per page.
+  function makeWholesaleBody(opts) {
+    opts = opts || {};
+    const orders = opts.orders || [];
+    const matched = opts.matched !== undefined ? opts.matched : orders.length;
+    return {
+      ok: true,
+      schemaVersion: 1,
+      meta: {
+        environment: 'PROD',
+        week: week.label,
+        weekStart: week.start + 'T00:00:00+10:00',
+        weekEndExclusive: week.end + 'T00:00:00+10:00',
+        paging: {
+          limit: WHOLESALE_PAGE_LIMIT,
+          offset: opts.offset || 0,
+          matched: matched,
+          returned: orders.length,
+          rowsIncluded: true,
+          truncated: !!opts.truncated
+        }
+      },
+      summary: opts.summary || summaryWithGross(100),
+      diagnostics: opts.diagnostics || { rowsOk: true, crossFootOk: true, moneyOk: true, partitionOk: true, byShopOk: true },
+      orders: orders
+    };
+  }
+
+  const savedOrderAppFetch = globalThis.orderAppFetch_;
+  try {
+
+    /* --- single page: matched:6, 6 orders -> ok:true, summary/meta are
+     *     page 0's, and the request shape carries the fixed params --- */
+    reset();
+    const singleOrders = makeOrders('S-', 6);
+    const body0 = makeWholesaleBody({ orders: singleOrders, matched: 6, offset: 0 });
+    let singleFetches = 0;
+    let capturedParams = null;
+    globalThis.orderAppFetch_ = function (params) {
+      singleFetches++;
+      capturedParams = params;
+      return { ok: true, body: body0 };
+    };
+    const resSingle = wholesaleFetchWeekOrders_(week);
+    check('single page: ok:true', resSingle.ok === true);
+    eq('single page: 6 orders returned', resSingle.orders.length, 6);
+    eq('single page: orders match the page verbatim', resSingle.orders, singleOrders);
+    check('single page: summary is page 0\'s exact object', resSingle.summary === body0.summary);
+    check('single page: meta is page 0\'s exact object', resSingle.meta === body0.meta);
+    eq('single page: exactly one fetch made', singleFetches, 1);
+    eq('single page: request carries api=wholesaleSales', capturedParams.api, 'wholesaleSales');
+    eq('single page: request carries week=<label>', capturedParams.week, week.label);
+    eq('single page: request carries limit=WHOLESALE_PAGE_LIMIT', capturedParams.limit, WHOLESALE_PAGE_LIMIT);
+    eq('single page: request carries offset=0', capturedParams.offset, 0);
+
+    /* --- three pages: matched:450 at limit:200 -> 200/200/50; offsets
+     *     requested are 0, 200, 400. Each page carries a DIFFERENT summary
+     *     object — proves the paged loop never sums or overwrites page 0's
+     *     figure with a later page's. --- */
+    reset();
+    const p0 = makeOrders('P0-', 200);
+    const p1 = makeOrders('P1-', 200);
+    const p2 = makeOrders('P2-', 50);
+    const bodyP0 = makeWholesaleBody({ orders: p0, matched: 450, offset: 0, summary: summaryWithGross(111.11) });
+    const bodyP1 = makeWholesaleBody({ orders: p1, matched: 450, offset: 200, summary: summaryWithGross(222.22) });
+    const bodyP2 = makeWholesaleBody({ orders: p2, matched: 450, offset: 400, summary: summaryWithGross(333.33) });
+    const offsetsP = [];
+    globalThis.orderAppFetch_ = function (params) {
+      offsetsP.push(params.offset);
+      if (params.offset === 0) return { ok: true, body: bodyP0 };
+      if (params.offset === 200) return { ok: true, body: bodyP1 };
+      return { ok: true, body: bodyP2 };
+    };
+    const resThree = wholesaleFetchWeekOrders_(week);
+    check('three pages: ok:true', resThree.ok === true);
+    eq('three pages: 450 orders collected', resThree.orders.length, 450);
+    eq('three pages: requested offsets are 0, 200, 400', offsetsP, [0, 200, 400]);
+    check('three pages: summary is page 0\'s exact object',
+      resThree.summary === bodyP0.summary && resThree.summary !== bodyP1.summary && resThree.summary !== bodyP2.summary);
+
+    /* --- matched shifts from 450 to 400 on the third fetch (pages=2 at gate
+     *     time) -> ok:false, reason names the shift --- */
+    reset();
+    const q0 = makeOrders('Q0-', 200);
+    const q1 = makeOrders('Q1-', 200);
+    const bodyQ0 = makeWholesaleBody({ orders: q0, matched: 450, offset: 0 });
+    const bodyQ1 = makeWholesaleBody({ orders: q1, matched: 450, offset: 200 });
+    const bodyQ2 = makeWholesaleBody({ orders: [], matched: 400, offset: 400 });
+    globalThis.orderAppFetch_ = function (params) {
+      if (params.offset === 0) return { ok: true, body: bodyQ0 };
+      if (params.offset === 200) return { ok: true, body: bodyQ1 };
+      return { ok: true, body: bodyQ2 };
+    };
+    const resShift = wholesaleFetchWeekOrders_(week);
+    check('matched shift mid-scan: ok:false', resShift.ok === false);
+    check('...reason names the shift (mentions both 450 and 400)',
+      !!resShift.reason && resShift.reason.indexOf('450') !== -1 && resShift.reason.indexOf('400') !== -1);
+
+    /* --- a page repeats an orderId already seen -> counted once; since the
+     *     dedup leaves collected short of matched, the NEXT page returning
+     *     orders:[] must trip the short-page guard rather than silently
+     *     completing with fewer orders than matched. --- */
+    reset();
+    const orderA = { orderId: 'ORD-A', date: '2026-08-04', shopId: 'X', amount: 1 };
+    const orderB = { orderId: 'ORD-B', date: '2026-08-05', shopId: 'X', amount: 1 };
+    const bodyR0 = makeWholesaleBody({ orders: [orderA, orderB], matched: 3, offset: 0 });
+    const bodyR1 = makeWholesaleBody({ orders: [orderB], matched: 3, offset: 2 }); // repeat of B
+    const bodyR2 = makeWholesaleBody({ orders: [], matched: 3, offset: 3 });
+    const offsetsR = [];
+    globalThis.orderAppFetch_ = function (params) {
+      offsetsR.push(params.offset);
+      if (params.offset === 0) return { ok: true, body: bodyR0 };
+      if (params.offset === 2) return { ok: true, body: bodyR1 };
+      return { ok: true, body: bodyR2 };
+    };
+    const resDup = wholesaleFetchWeekOrders_(week);
+    check('duplicate orderId across pages: ok:false (short-count guard fires, not a silent 2-of-3)', resDup.ok === false);
+    check('...reason names short page', !!resDup.reason && resDup.reason.indexOf('short page') !== -1);
+    eq('...three fetches made (0, 2, 3 — dedup did not stall the offset)', offsetsR, [0, 2, 3]);
+
+    /* --- a page returns orders:[] while collected < matched -> ok:false,
+     *     reason 'short page' --- */
+    reset();
+    const bodyEmpty = makeWholesaleBody({ orders: [], matched: 5, offset: 0 });
+    globalThis.orderAppFetch_ = function () {
+      return { ok: true, body: bodyEmpty };
+    };
+    const resEmpty = wholesaleFetchWeekOrders_(week);
+    check('empty page with matched:5 > collected:0: ok:false', resEmpty.ok === false);
+    check('...reason names short page', !!resEmpty.reason && resEmpty.reason.indexOf('short page') !== -1);
+
+    /* --- more than WHOLESALE_MAX_PAGES pages -> ok:false, reason names the
+     *     cap. Each page returns exactly 1 NEW order (never zero, so the
+     *     short-page guard never fires first) and matched is set high enough
+     *     that the natural stop condition is never reached. --- */
+    reset();
+    const capMatched = WHOLESALE_MAX_PAGES + 10;
+    let capFetches = 0;
+    globalThis.orderAppFetch_ = function (params) {
+      capFetches++;
+      const ord = { orderId: 'CAP-' + params.offset, date: '2026-08-04', shopId: 'X', amount: 1 };
+      return { ok: true, body: makeWholesaleBody({ orders: [ord], matched: capMatched, offset: params.offset }) };
+    };
+    const resCap = wholesaleFetchWeekOrders_(week);
+    check('runaway paging: ok:false at the page cap', resCap.ok === false);
+    check('...reason names the cap', !!resCap.reason && resCap.reason.indexOf(String(WHOLESALE_MAX_PAGES)) !== -1);
+    check('...fetch count is bounded, not runaway', capFetches <= WHOLESALE_MAX_PAGES + 1);
+
+    /* --- page 0 and page 1 pass the gate, page 2 fails on
+     *     diagnostics.moneyOk:false -> ok:false, reason names the failing
+     *     page index — proves every page is re-gated, not just the first. --- */
+    reset();
+    const m0 = makeOrders('M0-', 2);
+    const m1 = makeOrders('M1-', 2);
+    const m2 = makeOrders('M2-', 2);
+    const bodyM0 = makeWholesaleBody({ orders: m0, matched: 6, offset: 0 });
+    const bodyM1 = makeWholesaleBody({ orders: m1, matched: 6, offset: 2 });
+    const bodyM2 = makeWholesaleBody({
+      orders: m2, matched: 6, offset: 4,
+      diagnostics: { rowsOk: true, crossFootOk: true, moneyOk: false, partitionOk: true, byShopOk: true }
+    });
+    const offsetsM = [];
+    globalThis.orderAppFetch_ = function (params) {
+      offsetsM.push(params.offset);
+      if (params.offset === 0) return { ok: true, body: bodyM0 };
+      if (params.offset === 2) return { ok: true, body: bodyM1 };
+      return { ok: true, body: bodyM2 };
+    };
+    const resGateLater = wholesaleFetchWeekOrders_(week);
+    check('every page re-gated: ok:false when a LATER page fails', resGateLater.ok === false);
+    check('...reason names the failing page index (2)', !!resGateLater.reason && resGateLater.reason.indexOf('page 2') !== -1);
+    check('...reason carries the gate\'s own reason (moneyOk)', !!resGateLater.reason && resGateLater.reason.indexOf('moneyOk') !== -1);
+    eq('...three fetches made (page 0 and 1 passed before page 2 failed)', offsetsM, [0, 2, 4]);
+
+    /* --- orderAppFetch_ itself fails (e.g. no-token) -> ok:false, reason
+     *     carries it through --- */
+    reset();
+    globalThis.orderAppFetch_ = function () {
+      return { ok: false, reason: 'no-token' };
+    };
+    const resNoToken = wholesaleFetchWeekOrders_(week);
+    check('fetch failure: ok:false', resNoToken.ok === false);
+    check('...reason carries the underlying fetch reason', !!resNoToken.reason && resNoToken.reason.indexOf('no-token') !== -1);
+
+    /* --- zero-activity week: matched:0, orders:[] -> ok:true, orders:[],
+     *     and no second fetch is ever issued --- */
+    reset();
+    const bodyZero = makeWholesaleBody({ orders: [], matched: 0, offset: 0 });
+    let zeroFetches = 0;
+    globalThis.orderAppFetch_ = function () {
+      zeroFetches++;
+      return { ok: true, body: bodyZero };
+    };
+    const resZero = wholesaleFetchWeekOrders_(week);
+    check('zero-activity week: ok:true', resZero.ok === true);
+    eq('...orders is []', resZero.orders, []);
+    eq('...exactly one fetch (no second page requested)', zeroFetches, 1);
+    check('...summary is page 0\'s exact object', resZero.summary === bodyZero.summary);
+
+  } finally {
+    globalThis.orderAppFetch_ = savedOrderAppFetch;
+  }
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
