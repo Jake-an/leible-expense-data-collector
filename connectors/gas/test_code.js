@@ -11825,5 +11825,549 @@ console.log('\narchiveAndPurge_ — batched writes:');
     typeof r50.drops.byReason[0].orderId !== 'undefined' && typeof r50.drops.byReason[0].reason === 'string');
 })();
 
+/* ------------------------------------------------------------------ *
+ * roastery-wholesale step 4 — wholesalePull / wholesalePull_impl_
+ * (PRD-14): fetch, cross-foot, archive guard, self-heal, ingest,
+ * re-summarize, heartbeat. Mocks wholesaleFetchWeekOrders_ directly (its own
+ * paging/gate contract is exhausted by the step 2 suite above) so this suite
+ * can focus purely on step 4's own logic.
+ * ------------------------------------------------------------------ */
+(function testWholesalePull() {
+  console.log('\norderapp: wholesalePull / wholesalePull_impl_ (PRD-14):');
+
+  const REAL_FETCH_WEEK_ORDERS = globalThis.wholesaleFetchWeekOrders_;
+  const REAL_WEEKLY_SUMMARIZE = global.weeklySummarize;
+  const REAL_INSTALL_TRIGGERS = global.installOrderAppTriggers;
+  let weeklySummarizeCalls;
+
+  // Spies on weeklySummarize while still running the REAL implementation —
+  // mirrors greenBeanPull's armWeeklySummarizeSpy (this run is lock-wrapped,
+  // so a nested weeklySummarize call must actually succeed, not be a no-op).
+  function armWeeklySummarizeSpy() {
+    weeklySummarizeCalls = [];
+    global.weeklySummarize = function (weekStartOverride) {
+      weeklySummarizeCalls.push(weekStartOverride);
+      return REAL_WEEKLY_SUMMARIZE(weekStartOverride);
+    };
+  }
+
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: 'wholesale-token', WHOLESALE_REPULL_WEEKS: '3' };
+    calendarEvents = [];
+    calendarFailMode = null;
+    clearLoggedMessages();
+    global.__forceLockTimeout = false;
+  }
+
+  // 2026-08-24 is a Monday (same reference frame as the step 2/3 fixtures,
+  // whose 2026-W32 starts 2026-08-03) -> lastCompletedWeeks_(_, 3) resolves
+  // to [2026-08-03, 2026-08-10, 2026-08-17], oldest-first.
+  const PINNED_TODAY = '2026-08-24';
+  const weeks3 = lastCompletedWeeks_(PINNED_TODAY, 3);
+
+  function order(overrides) {
+    return Object.assign({
+      orderId: 'ORD-1', date: '2026-08-04', shopId: 'Wholesale Co', shopType: 'WHOLESALE', amount: 100
+    }, overrides);
+  }
+
+  // Builds a wholesaleFetchWeekOrders_-shaped {ok:true, orders, summary, meta}
+  // whose summary buckets are derived FROM the given orders via
+  // WHOLESALE_SHOPTYPE_MAP_ — so a clean (no-drop) fixture cross-foots by
+  // construction, and only the drop/mismatch tests below hand-craft summary.
+  function weekFixtureFromOrders(orders, metaOverrides) {
+    var sums = { internal: 0, external: 0, ambiguous: 0, unknown: 0 };
+    var counts = { internal: 0, external: 0, ambiguous: 0, unknown: 0 };
+    orders.forEach(function (o) {
+      var mapping = WHOLESALE_SHOPTYPE_MAP_[o.shopType];
+      var bucket = mapping ? mapping.bucket : null;
+      if (bucket && Object.prototype.hasOwnProperty.call(sums, bucket)) {
+        sums[bucket] += o.amount;
+        counts[bucket]++;
+      }
+    });
+    var allGross = sums.internal + sums.external + sums.ambiguous + sums.unknown;
+    var allCount = counts.internal + counts.external + counts.ambiguous + counts.unknown;
+    return {
+      ok: true,
+      orders: orders,
+      summary: {
+        all: { orderCount: allCount, gross: allGross },
+        internal: { orderCount: counts.internal, gross: sums.internal },
+        external: { orderCount: counts.external, gross: sums.external },
+        ambiguous: { orderCount: counts.ambiguous, gross: sums.ambiguous },
+        unknown: { orderCount: counts.unknown, gross: sums.unknown }
+      },
+      meta: Object.assign({ classificationConflicts: [] }, metaOverrides || {})
+    };
+  }
+
+  function armFetchWeekOrders(byLabel) {
+    globalThis.wholesaleFetchWeekOrders_ = function (week) {
+      var f = byLabel[week.label];
+      if (!f) throw new Error('armFetchWeekOrders: no scripted response for week ' + week.label);
+      return f;
+    };
+  }
+
+  function revenueRows() {
+    var sheet = currentSS.getSheetByName(REVENUE_TAB);
+    return sheet ? sheet.getDataRange().getValues() : null;
+  }
+  function findRevenueRow(rows, orderRef) {
+    if (!rows) return null;
+    for (var i = 1; i < rows.length; i++) {
+      if (String(rows[i][5]) === orderRef) return rows[i];
+    }
+    return null;
+  }
+  function cleanFixtureSet(prefix, amountBase) {
+    var byLabel = {};
+    weeks3.forEach(function (w, i) {
+      byLabel[w.label] = weekFixtureFromOrders([order({ orderId: 'W-' + prefix + i, date: w.start, amount: amountBase + i })]);
+    });
+    return byLabel;
+  }
+
+  /* --- case 1 (happy path): 3 clean weeks -> rows land in Revenue in
+   *     REVENUE_HEADERS order, source='coffee_order_app'; heartbeat stamped;
+   *     installOrderAppTriggers is never called from this step. --- */
+  reset();
+  let triggersCalledDuringPull = false;
+  global.installOrderAppTriggers = function () {
+    triggersCalledDuringPull = true;
+    return REAL_INSTALL_TRIGGERS.apply(this, arguments);
+  };
+  const byLabel1 = cleanFixtureSet('c', 100);
+  armFetchWeekOrders(byLabel1);
+  armWeeklySummarizeSpy();
+  var res1;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { res1 = wholesalePull(); });
+
+  eq('case1: weeksRequested', res1.weeksRequested, 3);
+  eq('case1: weeksFetched', res1.weeksFetched, 3);
+  eq('case1: ordersFetched', res1.ordersFetched, 3);
+  eq('case1: rowsAdded', res1.rowsAdded, 3);
+  eq('case1: rowsUpdated', res1.rowsUpdated, 0);
+  eq('case1: duplicatesSkipped', res1.duplicatesSkipped, 0);
+  eq('case1: failedWeeks empty', res1.failedWeeks, []);
+  eq('case1: crossFootFailures empty', res1.crossFootFailures, []);
+  eq('case1: splitWeeks empty', res1.splitWeeks, []);
+  eq('case1: datesHealed', res1.datesHealed, 0);
+  eq('case1: weeksResummarized (all 3, under any cap)', res1.weeksResummarized, 3);
+  eq('case1: weeksQueued', res1.weeksQueued, 0);
+  check('case1: byBucket present with a finite wholesale figure',
+    res1.byBucket && typeof res1.byBucket.wholesale === 'number' && isFinite(res1.byBucket.wholesale));
+  check('case1: heartbeatStamped true', res1.heartbeatStamped === true);
+  check('case1: dryRun false', res1.dryRun === false);
+  check('case1: heartbeat actually stamped', ('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps);
+  check('case1: installOrderAppTriggers is never called by this step', !triggersCalledDuringPull);
+  global.installOrderAppTriggers = REAL_INSTALL_TRIGGERS;
+
+  var rev1 = revenueRows();
+  eq('case1: header matches REVENUE_HEADERS', rev1[0], REVENUE_HEADERS);
+  eq('case1: header + 3 rows', rev1.length, 4);
+  weeks3.forEach(function (w, i) {
+    var row = findRevenueRow(rev1, 'W-c' + i);
+    check('case1: row exists for W-c' + i, !!row);
+    if (!row) return;
+    eq('case1: row ' + i + ' date', cellDate(row[0]), w.start);
+    eq('case1: row ' + i + ' department', row[1], 'Roastery');
+    eq('case1: row ' + i + ' channel', row[2], 'wholesale');
+    eq('case1: row ' + i + ' amount', row[4], 100 + i);
+    eq('case1: row ' + i + ' source', row[6], WHOLESALE_SOURCE);
+  });
+
+  /* --- case 2: dryRun:true on the SAME fixture -> identical counts, ZERO
+   *     rows written, no weeklySummarize call, no heartbeat. --- */
+  reset();
+  armFetchWeekOrders(cleanFixtureSet('c', 100));
+  armWeeklySummarizeSpy();
+  var resDry;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resDry = wholesalePull({ dryRun: true }); });
+
+  eq('dryRun: rowsAdded matches the non-dry-run figure', resDry.rowsAdded, 3);
+  eq('dryRun: rowsUpdated', resDry.rowsUpdated, 0);
+  eq('dryRun: duplicatesSkipped', resDry.duplicatesSkipped, 0);
+  check('dryRun: dryRun echoed true', resDry.dryRun === true);
+  check('dryRun: zero rows written to Revenue',
+    !currentSS.getSheetByName(REVENUE_TAB) || currentSS.getSheetByName(REVENUE_TAB).getDataRange().getValues().length <= 1);
+  eq('dryRun: weeklySummarize never called', weeklySummarizeCalls, []);
+  check('dryRun: no heartbeat stamped', !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+
+  /* --- case 3: one week fails its gate -> it writes nothing, the other two
+   *     DO write, failedWeeks names it, a DQ alert is raised. --- */
+  reset();
+  const byLabelFail = cleanFixtureSet('f', 100);
+  byLabelFail[weeks3[1].label] = { ok: false, reason: 'fetch: http-500' };
+  armFetchWeekOrders(byLabelFail);
+  armWeeklySummarizeSpy();
+  var resFail;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resFail = wholesalePull(); });
+
+  eq('case3: failedWeeks names the failing week + reason', resFail.failedWeeks,
+    [{ week: weeks3[1].label, reason: 'fetch: http-500' }]);
+  eq('case3: the other two weeks still wrote', resFail.rowsAdded, 2);
+  var revFail = revenueRows();
+  check('case3: the failed week wrote nothing', !findRevenueRow(revFail, 'W-f1'));
+  check('case3: the other weeks did write', !!findRevenueRow(revFail, 'W-f0') && !!findRevenueRow(revFail, 'W-f2'));
+  check('case3: a DQ alert was raised', calendarEvents.length > 0);
+
+  /* --- case 4: the 8-week-window rule — an OLDER week failing still lets a
+   *     clean NEWEST week stamp the heartbeat; the NEWEST week failing never
+   *     stamps it even though the older weeks succeeded. --- */
+  reset();
+  const byLabelOlderFail = cleanFixtureSet('of', 900);
+  byLabelOlderFail[weeks3[0].label] = { ok: false, reason: 'fetch: http-500' };
+  armFetchWeekOrders(byLabelOlderFail);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case4a: an OLDER week failing still stamps the heartbeat (newest is clean)',
+    ('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps);
+
+  reset();
+  const byLabelNewestFail = cleanFixtureSet('nf', 900);
+  byLabelNewestFail[weeks3[2].label] = { ok: false, reason: 'fetch: http-500' };
+  armFetchWeekOrders(byLabelNewestFail);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case4b: the NEWEST week failing NEVER stamps the heartbeat',
+    !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+
+  /* --- case 5: cross-foot mismatch of exactly 1 cent -> that week writes
+   *     NOTHING and is recorded; never compared as floats. --- */
+  reset();
+  const byLabelCF = cleanFixtureSet('cf', 100);
+  const mismatchWeek = weeks3[1];
+  const mismatchFixture = weekFixtureFromOrders([order({ orderId: 'W-cfmismatch', date: mismatchWeek.start, amount: 100 })]);
+  mismatchFixture.summary.all.gross = 100.01;
+  mismatchFixture.summary.external.gross = 100.01; // off by exactly 1 cent from the mapped 100.00
+  byLabelCF[mismatchWeek.label] = mismatchFixture;
+  armFetchWeekOrders(byLabelCF);
+  armWeeklySummarizeSpy();
+  var resCF;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resCF = wholesalePull(); });
+
+  eq('case5: exactly one crossFootFailure', resCF.crossFootFailures.length, 1);
+  eq('case5: it names the mismatched week', resCF.crossFootFailures[0].week, mismatchWeek.label);
+  var revCF = revenueRows();
+  check('case5: the mismatched week wrote nothing', !findRevenueRow(revCF, 'W-cfmismatch'));
+  check('case5: the other two weeks still wrote', !!findRevenueRow(revCF, 'W-cf0') && !!findRevenueRow(revCF, 'W-cf2'));
+
+  /* --- case 6: cross-foot PASSES when a dropped bad-amount order's dollars
+   *     are correctly subtracted from the producer's own bucket gross —
+   *     the producer counted it as real money (its own sheet cell holds it),
+   *     wholesaleRevenueRows_ drops it (a numeric-STRING amount is invalid
+   *     per the typeof gate), so the two disagree by exactly that order's
+   *     value unless the drop is subtracted. --- */
+  reset();
+  const byLabelDrop = cleanFixtureSet('d', 100);
+  const dropWeek = weeks3[0];
+  const validOrder = order({ orderId: 'W-dropvalid', date: dropWeek.start, amount: 100 });
+  const badAmountOrder = order({ orderId: 'W-dropbad', date: dropWeek.start, amount: '25.00' });
+  byLabelDrop[dropWeek.label] = {
+    ok: true,
+    orders: [validOrder, badAmountOrder],
+    summary: {
+      all: { orderCount: 2, gross: 125 }, internal: { orderCount: 0, gross: 0 },
+      external: { orderCount: 2, gross: 125 }, ambiguous: { orderCount: 0, gross: 0 }, unknown: { orderCount: 0, gross: 0 }
+    },
+    meta: { classificationConflicts: [] }
+  };
+  armFetchWeekOrders(byLabelDrop);
+  armWeeklySummarizeSpy();
+  var resDrop;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resDrop = wholesalePull(); });
+
+  eq('case6: no crossFootFailures once the drop is subtracted correctly', resDrop.crossFootFailures, []);
+  var revDrop = revenueRows();
+  check('case6: the valid order landed', !!findRevenueRow(revDrop, 'W-dropvalid'));
+  check('case6: the bad-amount order never landed', !findRevenueRow(revDrop, 'W-dropbad'));
+
+  /* --- case 7: a week with rows already in _archive -> nothing written,
+   *     splitWeeks names it, weeklySummarize NOT called for it. --- */
+  reset();
+  const byLabelSplit = cleanFixtureSet('s', 100);
+  armFetchWeekOrders(byLabelSplit);
+  const archSplit = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+  const splitWeek = weeks3[1];
+  archSplit.appendRow([splitWeek.start, 'Some Supplier', 50, 'ARCH-1', '', 'food_dairy_co', 'TS', 'Cafe']);
+  armWeeklySummarizeSpy();
+  var resSplit;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resSplit = wholesalePull(); });
+
+  eq('case7: splitWeeks names the archived week', resSplit.splitWeeks, [splitWeek.start]);
+  check('case7: weeklySummarize is never called for the split week', weeklySummarizeCalls.indexOf(splitWeek.start) === -1);
+  var revSplit = revenueRows();
+  check('case7: the split week wrote nothing', !findRevenueRow(revSplit, 'W-s1'));
+  check('case7: the other two weeks did write', !!findRevenueRow(revSplit, 'W-s0') && !!findRevenueRow(revSplit, 'W-s2'));
+  check('case7: the log names a genuine split (distinct from the fail-closed case)',
+    lastLoggedMessages().some(function (m) { return /split/i.test(m); }));
+
+  /* --- case 8: weeksWithArchivedRows_ fails CLOSED (unreadable _archive
+   *     header) -> reports EVERY requested week as split; the whole run
+   *     writes nothing, alerts, and never stamps the heartbeat. The log must
+   *     say which of the two cases (genuine split vs fail-closed) this is. --- */
+  reset();
+  armFetchWeekOrders(cleanFixtureSet('fc', 900));
+  ensureSheet(currentSS, ARCHIVE_TAB, ['when', 'supplier', 'total']); // no 'date' column -> unreadable
+  armWeeklySummarizeSpy();
+  var resFC;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resFC = wholesalePull(); });
+
+  eq('case8: every requested week is reported split (fail-closed)', resFC.splitWeeks.length, 3);
+  eq('case8: nothing written at all', resFC.rowsAdded, 0);
+  check('case8: a DQ alert was raised', calendarEvents.length > 0);
+  check('case8: heartbeat NOT stamped', !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+  var revFC = currentSS.getSheetByName(REVENUE_TAB);
+  check('case8: Revenue has no data rows', !revFC || revFC.getDataRange().getValues().length <= 1);
+  check('case8: the log distinguishes the fail-closed case from a genuine split',
+    lastLoggedMessages().some(function (m) { return /fail.?closed|unreadable|cannot rule out/i.test(m); }));
+
+  /* --- case 9: date-move self-heal (ported from orderapp.gs:842-858) — an
+   *     existing Revenue row for ORD-X stored at 2026-08-03, upstream now
+   *     reports it dated 2026-08-11 (same amount) -> the date cell is
+   *     rewritten in place, extracted_at refreshed, and BOTH the OLD
+   *     (2026-08-03) and NEW (2026-08-10) week-starts are queued for
+   *     resummarize. Mutation-check: removing the self-heal must red this. --- */
+  reset();
+  const byLabelDM = cleanFixtureSet('dm', 100);
+  const revSheetDM = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  revSheetDM.appendRow(['2026-08-03', 'Roastery', 'wholesale', 'Some Shop', 100, 'ORD-X', WHOLESALE_SOURCE, 'OLD-STAMP']);
+  byLabelDM[weeks3[1].label] = weekFixtureFromOrders([order({ orderId: 'ORD-X', date: '2026-08-11', amount: 100 })]);
+  armFetchWeekOrders(byLabelDM);
+  armWeeklySummarizeSpy();
+  var resDM;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resDM = wholesalePull(); });
+
+  var revDMRows = revenueRows();
+  var ordXRow = findRevenueRow(revDMRows, 'ORD-X');
+  check('case9: ORD-X row exists', !!ordXRow);
+  if (ordXRow) {
+    eq('case9: date cell rewritten to the NEW upstream date', cellDate(ordXRow[0]), '2026-08-11');
+    check('case9: extracted_at refreshed (no longer the old stamp)', ordXRow[7] !== 'OLD-STAMP');
+  }
+  eq('case9: datesHealed is 1', resDM.datesHealed, 1);
+  check('case9: BOTH the old (2026-08-03) and new (2026-08-10) week-starts are queued',
+    weeklySummarizeCalls.indexOf('2026-08-03') !== -1 && weeklySummarizeCalls.indexOf('2026-08-10') !== -1);
+
+  /* --- case 10: within-batch key collision (two mapped rows share an
+   *     order_ref) -> Code.gs:728 silently drops the second one; an
+   *     unexplained duplicatesSkipped (no snapshot entry backs it) must be
+   *     treated exactly like a cross-foot mismatch: recorded, heartbeat
+   *     suppressed. --- */
+  reset();
+  const byLabelDup = cleanFixtureSet('dup', 900);
+  const dupWeek = weeks3[2]; // newest week, so heartbeat suppression is unambiguous
+  byLabelDup[dupWeek.label] = weekFixtureFromOrders([
+    order({ orderId: 'DUP-1', date: dupWeek.start, amount: 50 }),
+    order({ orderId: 'DUP-1', date: dupWeek.start, amount: 50 })
+  ]);
+  armFetchWeekOrders(byLabelDup);
+  armWeeklySummarizeSpy();
+  var resDup;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resDup = wholesalePull(); });
+
+  check('case10: the unexplained collision is recorded (treated like a cross-foot mismatch)',
+    resDup.crossFootFailures.length >= 1);
+  check('case10: heartbeat suppressed', !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+  check('case10: a DQ alert was raised', calendarEvents.length > 0);
+
+  /* --- case 11: zero-activity NEWEST week (gate passes, orders:[]) -> no
+   *     heartbeat, DQ alert raised (a live roastery with a truly empty week
+   *     is alert-worthy, not silently accepted). --- */
+  reset();
+  const byLabelZero = cleanFixtureSet('z', 900);
+  byLabelZero[weeks3[2].label] = weekFixtureFromOrders([]);
+  armFetchWeekOrders(byLabelZero);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case11: zero-activity newest week -> heartbeat NOT stamped',
+    !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+  check('case11: a DQ alert was raised', calendarEvents.length > 0);
+
+  /* --- case 12: WHOLESALE_GROSS_FLOOR boundary — newest week's wholesale
+   *     gross of 799 suppresses the heartbeat; 801 stamps it. --- */
+  reset();
+  const byLabel799 = cleanFixtureSet('g1', 900);
+  byLabel799[weeks3[2].label] = weekFixtureFromOrders([order({ orderId: 'W-floor799', date: weeks3[2].start, amount: 799 })]);
+  armFetchWeekOrders(byLabel799);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case12a: newest gross 799 (< floor) -> heartbeat NOT stamped',
+    !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+
+  reset();
+  const byLabel801 = cleanFixtureSet('g2', 900);
+  byLabel801[weeks3[2].label] = weekFixtureFromOrders([order({ orderId: 'W-floor801', date: weeks3[2].start, amount: 801 })]);
+  armFetchWeekOrders(byLabel801);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case12b: newest gross 801 (>= floor) -> heartbeat IS stamped',
+    ('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps);
+
+  /* --- case 13: summary.ambiguous.orderCount > 0 (the real Leible Taiwan
+   *     case) -> DQ alert raised, rows STILL written on the ambiguous
+   *     channel (never dropped for being ambiguous). --- */
+  reset();
+  const byLabelAmb = cleanFixtureSet('amb', 900);
+  const ambWeek = weeks3[0];
+  byLabelAmb[ambWeek.label] = weekFixtureFromOrders([
+    order({ orderId: 'AMB-1', date: ambWeek.start, shopType: 'AMBIGUOUS', amount: 50 })
+  ]);
+  armFetchWeekOrders(byLabelAmb);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case13: ambiguous orderCount > 0 raises a DQ alert', calendarEvents.length > 0);
+  var revAmb = revenueRows();
+  var ambRow = findRevenueRow(revAmb, 'AMB-1');
+  check('case13: the ambiguous row is still written', !!ambRow);
+  if (ambRow) eq('case13: its channel is ambiguous', ambRow[2], 'ambiguous');
+
+  /* --- case 14: classificationConflicts — non-empty alerts; an IDENTICAL
+   *     conflict list next run is suppressed by the signature; a CHANGED
+   *     list alerts again. State (scriptProps) persists across these three
+   *     sub-runs deliberately — that persistence is what the signature gate
+   *     is testing. --- */
+  reset();
+  function fixtureWithConflicts(conflicts) {
+    var byLabel = cleanFixtureSet('cc', 900);
+    byLabel[weeks3[0].label] = weekFixtureFromOrders(
+      [order({ orderId: 'W-cc0', date: weeks3[0].start, amount: 900 })],
+      { classificationConflicts: conflicts }
+    );
+    return byLabel;
+  }
+  armFetchWeekOrders(fixtureWithConflicts(['shop-1 flip-flopped WHOLESALE/INTERNAL']));
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  eq('case14a: first run with conflicts alerts', calendarEvents.length, 1);
+
+  calendarEvents = [];
+  armFetchWeekOrders(fixtureWithConflicts(['shop-1 flip-flopped WHOLESALE/INTERNAL'])); // identical
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  eq('case14b: an identical conflict list next run is suppressed', calendarEvents.length, 0);
+
+  armFetchWeekOrders(fixtureWithConflicts(['shop-1 flip-flopped', 'shop-2 flip-flopped'])); // changed
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  eq('case14c: a CHANGED conflict list alerts again', calendarEvents.length, 1);
+
+  /* --- case 15: lock timeout -> {locked:true}, nothing written,
+   *     orderAppRunStart_ still ran (failcount incremented) BEFORE the lock. --- */
+  reset();
+  global.__forceLockTimeout = true;
+  var resLock;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resLock = wholesalePull(); });
+  eq('case15: lock timeout return shape', resLock, { locked: true });
+  eq('case15: failcount incremented before the lock attempt',
+    scriptProps['ORDERAPP_FAILCOUNT_' + WHOLESALE_SOURCE], '1');
+  check('case15: nothing written to Revenue', !currentSS.getSheetByName(REVENUE_TAB));
+  global.__forceLockTimeout = false;
+
+  /* --- case 16: no token -> {noToken:true}, nothing written, no heartbeat,
+   *     failcount reset by the not-armed skip. --- */
+  reset();
+  scriptProps = {};
+  var resNoToken;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resNoToken = wholesalePull_impl_(); });
+  eq('case16: no-token return shape', resNoToken, { noToken: true });
+  check('case16: nothing written to Revenue', !currentSS.getSheetByName(REVENUE_TAB));
+  check('case16: no heartbeat stamped', !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
+  eq('case16: failcount reset by the not-armed skip',
+    scriptProps['ORDERAPP_FAILCOUNT_' + WHOLESALE_SOURCE], '0');
+
+  /* --- case 17: idempotency — running the happy path twice leaves the
+   *     second run at rowsAdded:0/rowsUpdated:0 and Revenue's row count
+   *     unchanged; these are EXPLAINED duplicates (a snapshot entry backs
+   *     each one with an equal amount), so the heartbeat still stamps —
+   *     unlike case10's unexplained collision. --- */
+  reset();
+  const byLabelIdem = cleanFixtureSet('idem', 900);
+  armFetchWeekOrders(byLabelIdem);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  var countAfterRun1 = revenueRows().length;
+
+  armFetchWeekOrders(cleanFixtureSet('idem', 900)); // identical fixture, freshly armed
+  armWeeklySummarizeSpy();
+  var resIdem2;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resIdem2 = wholesalePull(); });
+  eq('case17: 2nd run rowsAdded is 0', resIdem2.rowsAdded, 0);
+  eq('case17: 2nd run rowsUpdated is 0', resIdem2.rowsUpdated, 0);
+  eq('case17: Revenue row count unchanged', revenueRows().length, countAfterRun1);
+  check('case17: heartbeat still stamps (explained duplicates, not a collision)',
+    ('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps);
+
+  /* --- case 18: never Summary-direct — with weeklySummarize STUBBED to a
+   *     no-op (never calling through to the real implementation), Summary
+   *     must stay completely untouched. If wholesalePull_impl_ ever wrote to
+   *     Summary itself, it would show up even with the real summarizer
+   *     disconnected. --- */
+  reset();
+  armFetchWeekOrders(cleanFixtureSet('ns', 900));
+  global.weeklySummarize = function () { return { refused: 'stubbed-for-test' }; };
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  check('case18: Summary tab untouched when weeklySummarize is a no-op stub',
+    !currentSS.getSheetByName('Summary'));
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+
+  /* --- case 19: orphanRows/undatedRows/outOfWeekRows are per-scan
+   *     diagnostics (never week-scoped, per the step-0 probe) -> zero rows
+   *     from them ever reach Revenue, and the log says so verbatim. --- */
+  reset();
+  const byLabelDiag = cleanFixtureSet('diag', 900);
+  const diagWeek = weeks3[0];
+  byLabelDiag[diagWeek.label] = weekFixtureFromOrders(
+    [order({ orderId: 'W-diag0', date: diagWeek.start, amount: 900 })],
+    {
+      orphanRows: { count: 3, gross: 2703 },
+      undatedRows: { count: 2, gross: 150.25 },
+      outOfWeekRows: { count: 138, gross: 240485.12 }
+    }
+  );
+  armFetchWeekOrders(byLabelDiag);
+  armWeeklySummarizeSpy();
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { wholesalePull(); });
+  var revDiag = revenueRows();
+  eq('case19: Revenue holds only the genuinely fetched orders (3), none from the diagnostic buckets',
+    revDiag.length - 1, 3);
+  check('case19: the log says diagnostic only — never ingested',
+    lastLoggedMessages().some(function (m) { return m.indexOf('diagnostic only — never ingested') !== -1; }));
+
+  /* --- case 20: resummarize cap + overflow queue — mirrors
+   *     GREENBEAN_RESUM_CAP: with more affected weeks than the cap, the
+   *     oldest are resummarized this run and the remainder persists to the
+   *     WHOLESALE_RESUM_QUEUE Script Property, oldest-first. --- */
+  reset();
+  scriptProps.WHOLESALE_REPULL_WEEKS = '7';
+  const weeks7 = lastCompletedWeeks_(PINNED_TODAY, 7);
+  const byLabelCap = {};
+  weeks7.forEach(function (w, i) {
+    byLabelCap[w.label] = weekFixtureFromOrders([order({ orderId: 'W-cap' + i, date: w.start, amount: 900 + i })]);
+  });
+  armFetchWeekOrders(byLabelCap);
+  armWeeklySummarizeSpy();
+  var resCap;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resCap = wholesalePull(); });
+
+  eq('case20: weeksResummarized capped at GREENBEAN_RESUM_CAP', resCap.weeksResummarized, GREENBEAN_RESUM_CAP);
+  eq('case20: weeksQueued is the overflow', resCap.weeksQueued, weeks7.length - GREENBEAN_RESUM_CAP);
+  eq('case20: weeklySummarize called oldest-first for exactly the capped weeks',
+    weeklySummarizeCalls, weeks7.slice(0, GREENBEAN_RESUM_CAP).map(function (w) { return w.start; }));
+  var wholesaleQueueRaw = scriptProps['WHOLESALE_RESUM_QUEUE'];
+  check('case20: the overflow persisted to WHOLESALE_RESUM_QUEUE', !!wholesaleQueueRaw);
+  if (wholesaleQueueRaw) {
+    eq('case20: the queue holds the overflow weeks, oldest-first',
+      JSON.parse(wholesaleQueueRaw), weeks7.slice(GREENBEAN_RESUM_CAP).map(function (w) { return w.start; }));
+  }
+
+  globalThis.wholesaleFetchWeekOrders_ = REAL_FETCH_WEEK_ORDERS;
+  global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
+  global.installOrderAppTriggers = REAL_INSTALL_TRIGGERS;
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

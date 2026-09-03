@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "wholesalePull is not defined — implementation missing. Test harness is sound (preceding assertions all pass); only blocker is the function entry point."
+}
