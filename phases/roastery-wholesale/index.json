@@ -209,7 +209,17 @@
       ],
       "started_at": "2026-09-04T07:40:38+0900",
       "completed_at": "2026-09-04T07:47:01+0900",
-      "summary": "Silo proof (file:line grep evidence, no code shared between shopSpend and wholesale paths) + summaryOrphanSweep_ purge-cutoff/archive-week bounds recorded in phases/roastery-wholesale/step6-report.md; schema.md/ingest-contract.md/api.md updated for the live coffee_order_app wr…"
+      "summary": "Silo proof (file:line grep evidence, no code shared between shopSpend and wholesale paths) + summaryOrphanSweep_ purge-cutoff/archive-week bounds recorded in phases/roastery-wholesale/step6-report.md; schema.md/ingest-contract.md/api.md updated for the live coffee_order_app wr…",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 0,
+        "fix_rounds": 0,
+        "result_file": "phases/roastery-wholesale/step6-review.json",
+        "checked_at": "2026-09-04T07:49:03+0900",
+        "review_model": "haiku"
+      }
     },
     {
       "step": 7,
@@ -219,7 +229,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-14"
-      ]
+      ],
+      "started_at": "2026-09-04T07:49:03+0900"
     },
     {
       "step": 8,
