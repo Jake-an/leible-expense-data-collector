@@ -1,0 +1,2005 @@
+mock harness: getRange/setValue can actually fail
+  ok  - getRange(2,1).setValue writes into the sheet, read back at row 2 col 1  (got "x")
+  ok  - getRange().setValue coerces a bare date string to a Date
+  ok  - ...and it round-trips to the same yyyy-MM-dd  (got "2026-08-03")
+  ok  - writing beyond current row length extends the row, does not throw
+  ok  - extended row has the value at the target column  (got "z")
+  ok  - SUPPLIERS_HEADERS used by tests is globalThis.SUPPLIERS_HEADERS (no shadow)
+  ok  - SALES_HEADERS used by tests is globalThis.SALES_HEADERS (no shadow)
+mock harness: getRange rejects invalid geometry (shopspend-hardening step 0)
+  ok  - getRange(1, 1, 1, 0) throws — numCols < 1 mirrors real GAS
+  ok  - getRange(1, 1, 0, 1) throws — numRows < 1 mirrors real GAS
+  ok  - getRange(row, col) with no numRows/numCols stays legal
+  ok  - getRange(row, col, numRows, numCols) with valid (>= 1) geometry stays legal
+ensureSheet — empty headers on a missing tab (shopspend-hardening step 0)
+  ok  - ensureSheet(ss, name, []) returns a sheet object
+  ok  - the tab now exists under that name
+  ok  - ensureSheet(ss, name, []) never issues a getRange call with invalid (< 1) geometry  (got 0)
+  ok  - no range on the new headerless sheet was styled  (got 0)
+  ok  - setFrozenRows was never called for a headerless tab  (got 0)
+  ok  - the new sheet has no data rows (nothing was appended)  (got 0)
+ensureSheet — non-empty headers, byte-identical to today (shopspend-hardening step 0)
+  ok  - header row is appended as row 1  (got ["date","supplier","total","invoice_ref","location","source","extracted_at","department"])
+  ok  - getRange(1, 1, 1, headers.length) was called for the header row
+  ok  - header range background is #a5b89d  (got "#a5b89d")
+  ok  - header range font color is white  (got "#ffffff")
+  ok  - header range font weight is bold  (got "bold")
+  ok  - setFrozenRows(1) was called exactly once  (got [1])
+ensureSheet — existing tab is untouched (shopspend-hardening step 0)
+  ok  - the same sheet object is returned
+  ok  - no new write calls (no re-append) on an existing tab  (got 0)
+  ok  - row count is still exactly 1 (header only, not duplicated)  (got 1)
+  ok  - headerless: the same sheet object is returned
+  ok  - headerless: no new getRange calls on an existing tab  (got 0)
+ensureSheet — existing callers still get their real header rows (shopspend-hardening step 0)
+  ok  - ensureSheet(ss, "Suppliers", SUPPLIERS_HEADERS) writes the real header row  (got ["date","supplier","total","invoice_ref","location","source","extracted_at","department"])
+  ok  - ensureSheet(ss, "Sales", SALES_HEADERS) writes the real header row  (got ["date","location","gross_sales","source","extracted_at","department"])
+  ok  - ensureSheet(ss, "Revenue", REVENUE_HEADERS) writes the real header row  (got ["date","department","channel","customer","amount","order_ref","source","extracted_at"])
+  ok  - ensureSheet(ss, "Summary", SUMMARY_HEADERS) writes the real header row  (got ["week_start","week_end","supplier","location","total","summarized_at","department","kind"])
+  ok  - ensureSheet(ss, "Labour", LABOUR_HEADERS) writes the real header row  (got ["week_start","week_end","location","total","iso_week","pulled_at","department"])
+ensureShopSpendTabs_ creates all three tabs without throwing (shopspend-hardening step 0)
+  ok  - ensureShopSpendTabs_ does not throw when creating all three tabs from scratch
+  ok  - ShopSpend tab created
+  ok  - ShopSpendPulls tab created
+  ok  - ShopSpend Report tab created (headerless)
+  ok  - ShopSpend Report tab is retrievable by name
+normalizeSupplierRow
+  ok  - maps columns + resolves canonical supplier from source, department defaults to Cafe  (got ["2026-06-15","Food and Dairy Co",245.5,"INV-1","York St","food_dairy_co","TS","Cafe"])
+  ok  - per-row supplier (Ordermentum) wins over the map  (got ["2026-06-15","Tuga Pastry",80,"O-9","","ordermentum","TS","Cafe"])
+  ok  - unknown source falls back to the raw source name  (got "mystery")
+  ok  - explicit row.department wins over the default  (got "Roastery")
+ingestSupplierRows dedup (source + invoice_ref)
+  ok  - batch of 3 with 1 dup → 2 added, 1 skipped  (got {"rowsAdded":2,"rowsUpdated":0,"duplicatesSkipped":1,"updates":[],"archivedSkipped":0})
+  ok  - re-ingest same batch → 0 added (all dup vs sheet)  (got {"rowsAdded":0,"rowsUpdated":0,"duplicatesSkipped":3,"updates":[],"archivedSkipped":0})
+doPost
+  ok  - happy path → ok, rowsAdded 2  (got {"result":"ok","rowsAdded":2,"rowsUpdated":0,"duplicatesSkipped":0})
+  ok  - batch with duplicate invoice_ref → 1 added, 1 skipped  (got {"result":"ok","rowsAdded":1,"rowsUpdated":0,"duplicatesSkipped":1})
+  ok  - missing total → result error
+  ok  - missing source → result error
+  ok  - unknown source still ingests (ok, 1 added)  (got {"result":"ok","rowsAdded":1,"rowsUpdated":0,"duplicatesSkipped":0})
+  ok  - unknown-source supplier defaults to raw source  (got "mystery_co")
+squareSumOrderGross_
+  ok  - sums total_money.amount (cents) → dollars, ignores malformed  (got 13.5)
+  ok  - empty → 0  (got 0)
+parseMayersInvoice_
+  ok  - parses real Mayers invoice — ref, date, total, location  (got {"date":"2026-06-17","total":736.74,"invoice_ref":"3429816","location":"Leible York"})
+  ok  - does not grab Ex Tax or Line Total as the total  (got 736.74)
+  ok  - does not grab Pay Ref as the invoice ref  (got "3429816")
+  ok  - falls back to received date when no date in text
+  ok  - returns null when no total/ref found
+mayersShopFromText_ — REAL Drive-OCR fixtures
+  ok  - North fixture is real OCR — the Bill-To run-on line is intact
+  ok  - North fixture carries its LEI07D account code
+  ok  - real 3446281 (5 BLUES ST) → Leible North  (got "Leible North")
+  ok  - real 3446281 parses whole — North, $570.15, ref and date intact  (got {"date":"2026-07-31","total":570.15,"invoice_ref":"3446281","location":"Leible North"})
+  ok  - real 3463868 (130 PITT ST) → Leible Pitt  (got "Leible Pitt")
+  ok  - real 3434688 (89 YORK ST) → Leible York  (got "Leible York")
+  ok  - real LEI04D statement → parseMayersInvoice_ returns null
+mayersShopFromText_ — two-pass Deliver-To scoping
+  ok  - Deliver-To Crows Nest beats a stray BLUES ST in Bill-To  (got "Leible Crowsnest")
+  ok  - Deliver-To Crows Nest beats a stray singular BLUE ST in Bill-To  (got "Leible Crowsnest")
+  ok  - no Deliver To marker at all → whole-text retry still finds York  (got "Leible York")
+  ok  - address outside the Deliver-To window → whole-text retry still finds it  (got "Leible Pitt")
+  ok  - no address anywhere → empty string  (got "")
+  ok  - unknown address under Deliver To → UNMAPPED prefix
+  ok  - synthetic singular BLUE ST still → Leible North  (got "Leible North")
+  ok  - Burlington → Leible Crowsnest  (got "Leible Crowsnest")
+  ok  - Crows Nest keyword → Leible Crowsnest  (got "Leible Crowsnest")
+parseRoasteryInvoice_ (Sample Bean Co — synthetic fixture, no PII, no real amounts)
+  ok  - parses a well-formed Sample Bean Co invoice — ref, date, total, department  (got {"date":"2026-07-05","total":612.5,"invoice_ref":"RST-24401","department":"Roastery"})
+  ok  - falls back to received date when no date in text
+  ok  - missing invoice number → invoice_ref null (caller falls back to the Gmail message id, not the parser)  (got null)
+  ok  - unparseable input RAISES rather than returning empty/null
+  ok  - raised error message is actionable (mentions total)
+coerceDateStr_
+  ok  - string passes through  (got "2026-06-15")
+  ok  - Date object → local YYYY-MM-DD (no off-by-one)  (got "2026-06-15")
+aggregateSupplierRows_ with Date-object dates
+  ok  - Date-object rows aggregate into the week  (got 1)
+  ok  - Date-object rows summed  (got 300)
+  ok  - Date-object rows default to Cafe/spend  (got "Cafe|spend")
+weekStartForDate_
+  ok  - Monday returns itself  (got "2026-06-22")
+  ok  - Wednesday returns Monday  (got "2026-06-22")
+  ok  - Sunday returns previous Monday  (got "2026-06-22")
+  ok  - Saturday returns Monday  (got "2026-06-22")
+  ok  - Tuesday returns Monday  (got "2026-06-22")
+getLastCompletedWeek_
+  ok  - Monday: last week start  (got "2026-06-15")
+  ok  - Monday: last week end  (got "2026-06-21")
+  ok  - Wednesday: last week start  (got "2026-06-15")
+  ok  - Wednesday: last week end  (got "2026-06-21")
+  ok  - Sunday: last week start  (got "2026-06-15")
+  ok  - Sunday: last week end  (got "2026-06-21")
+aggregateSupplierRows_
+  ok  - groups into 3 buckets (FDC-York, FDC-North, Butterboy-York)  (got 3)
+  ok  - Butterboy York total  (got 80)
+  ok  - Butterboy York supplier  (got "Butterboy")
+  ok  - FDC North total  (got 50)
+  ok  - FDC York total (100+200)  (got 300)
+  ok  - empty rows → empty result  (got 0)
+aggregateSupplierRows_ revenue grain — online is pull-owned and EXCLUDED
+  ok  - online: rows are excluded, no derived group  (got 0)
+  ok  - online: the exclusion is logged with count + dollars
+  ok  - wholesale: two customers stay two groups  (got 2)
+  ok  - wholesale: supplier is still the customer name  (got "Bar Mero")
+  ok  - wholesale: second customer intact  (got "Cafe X")
+  ok  - wholesale: totals not merged  (got "912|340")
+  ok  - mixed: 2 groups (0 online + 2 wholesale)  (got 2)
+  ok  - mixed: sorted keys → Bar Mero, Cafe X  (got "Bar Mero,Cafe X")
+  ok  - "Online" / " ONLINE " are excluded too  (got 0)
+  ok  - two departments → two groups  (got 2)
+  ok  - ...Cafe sorts first  (got "Cafe|70")
+  ok  - ...Roastery second  (got "Roastery|50")
+  ok  - Date-object revenue rows: only the in-week row counts  (got 1)
+  ok  - Date-object revenue rows: out-of-week excluded  (got 100)
+checkReadToken_
+  ok  - no stored token → unauthorized
+  ok  - no caller token → unauthorized
+  ok  - empty caller token → unauthorized
+  ok  - wrong token → unauthorized
+  ok  - correct token → ok
+summaryDataToObjects_
+  ok  - returns 2 objects  (got 2)
+  ok  - first obj supplier  (got "Food and Dairy Co")
+  ok  - first obj total_spend  (got 300)
+  ok  - second obj week_start  (got "2026-06-15")
+filterSummaryByDateRange_
+  ok  - from filter  (got 2)
+  ok  - to filter  (got 2)
+  ok  - from+to filter  (got 1)
+  ok  - no filter  (got 3)
+archiveAndPurge_
+  ok  - archived 2 old rows  (got 2)
+  ok  - source has header + 1 recent row  (got 2)
+  ok  - source remaining row is recent  (got "2026-06-15")
+  ok  - archive has header + 2 archived rows  (got 3)
+  ok  - archive first row date (bottom-up order)  (got "2026-01-15")
+doGet (integration)
+  ok  - no stored token → error  (got "error")
+  ok  - wrong token → error  (got "error")
+  ok  - valid token + date range → ok  (got "ok")
+  ok  - returns 2 rows for week Jun 15  (got 2)
+  ok  - first row supplier  (got "Food and Dairy Co")
+  ok  - wider range → 3 rows  (got 3)
+
+resolveDateArg_:
+  ok  - valid date passes through  (got "2026-07-15")
+  ok  - surrounding whitespace trimmed  (got "2026-07-15")
+  ok  - undefined → fallback  (got "FB")
+  ok  - null → fallback  (got "FB")
+  ok  - empty string → fallback  (got "FB")
+  ok  - trigger EVENT OBJECT → fallback  (got "FB")
+  ok  - Date object → fallback  (got "FB")
+  ok  - number → fallback  (got "FB")
+  ok  - dd/mm/yyyy → fallback  (got "FB")
+  ok  - unpadded 2026-7-5 → fallback  (got "FB")
+  ok  - ISO datetime → fallback  (got "FB")
+  ok  - 'yesterday' → fallback  (got "FB")
+  ok  - 2026-02-31 → fallback  (got "FB")
+  ok  - 2026-13-01 → fallback  (got "FB")
+  ok  - non-leap 2026-02-29 → fallback  (got "FB")
+  ok  - leap 2028-02-29 is valid  (got "2028-02-29")
+
+addDaysStr_:
+  ok  - +6 days within month  (got "2026-06-21")
+  ok  - +0 days is identity  (got "2026-06-15")
+  ok  - month rollover  (got "2026-07-05")
+  ok  - year rollover  (got "2027-01-03")
+  ok  - leap-year February  (got "2028-03-03")
+  ok  - negative days  (got "2026-06-29")
+
+squareDailyPull (Fault 3 regression):
+  ok  - trigger event → yesterday, not the event object  (got "2026-07-15")
+  ok  - a Sales row WAS written (test is not vacuous)  (got 2)
+  ok  - written date cell is a real date  (got "2026-07-15")
+  ok  - date cell never carries the event object
+  ok  - date cell matches YYYY-MM-DD exactly
+  ok  - the written row is NOT flagged corrupt by the cleanup predicate
+  ok  - explicit date still honoured  (got "2026-07-01")
+  ok  - explicit date reaches the row  (got "2026-07-01")
+  ok  - no arg → yesterday  (got "2026-07-15")
+
+square API failure — null sentinel (not [] / not silent $0):
+  ok  - squareListLocations_: API failure (squareCallApi_ -> null) returns null, not []  (got null)
+  ok  - squareListLocations_: genuine empty {locations: []} still returns []  (got [])
+  ok  - squareSearchOrders_: API failure (squareCallApi_ -> null) returns null, not []  (got null)
+  ok  - site API failure: no Sales row appended (header only)  (got 1)
+  ok  - site API failure: heartbeat NOT stamped
+  ok  - real closed day: a $0 Sales row IS written  (got 2)
+  ok  - real closed day: gross is genuinely 0  (got 0)
+  ok  - real closed day: heartbeat IS stamped
+  ok  - mixed sites: exactly one row written (the healthy site only)  (got 2)
+  ok  - mixed sites: the written row belongs to the healthy site  (got "North Sydney")
+  ok  - mixed sites: heartbeat IS stamped (>=1 site succeeded)
+
+salesRowIsCorrupt_:
+  ok  - healthy row (date as string) → keep
+  ok  - healthy row (date as Date object) → keep
+  ok  - corrupt row (stringified event) → delete
+  ok  - zero gross on a valid date → keep (closed day)
+  ok  - blank date on a square row → delete
+  ok  - non-square source is never touched
+  ok  - fully blank row → keep (source is not square)
+  ok  - source matching is case/space tolerant
+
+cleanupCorruptSalesRows:
+  ok  - no-arg → dry run  (got "dryRun")
+  ok  - dry run finds all 8  (got 8)
+  ok  - dry run deletes nothing  (got 11)
+  ok  - trigger event arg → still dry run  (got "dryRun")
+  ok  - trigger event arg deletes nothing  (got 11)
+  ok  - true → still dry run (only false applies)  (got "dryRun")
+  ok  - truthy string "false" → still dry run  (got "dryRun")
+  ok  - null → still dry run  (got "dryRun")
+  ok  - 0 → still dry run  (got "dryRun")
+  ok  - after every non-false arg, nothing was deleted  (got 11)
+  ok  - apply deletes 8  (got 8)
+  ok  - 2 legitimate rows survive (+header)  (got 3)
+  ok  - healthy row survived  (got "2026-07-14")
+  ok  - closed-day $0 row survived  (got "2026-07-15")
+  ok  - no corrupt row survived
+  ok  - count mismatch → aborted  (got "aborted")
+  ok  - aborted run deleted nothing  (got 8)
+  ok  - retargeted guard → applies  (got 5)
+
+cleanupDuplicateSummaryRows:
+  ok  - seeded 7 data rows (+header)  (got 8)
+  ok  - dry run is the default (no arg)  (got "dryRun")
+  ok  - dry run finds 4 duplicates  (got 4)
+  ok  - dry run deletes nothing  (got 0)
+  ok  - dry run leaves the sheet intact  (got 8)
+  ok  - apply deletes 4  (got 4)
+  ok  - 3 unique rows survive (+header)  (got 4)
+  ok  - first FDCo row kept  (got "T1")
+  ok  - first F&C row kept  (got "T1")
+  ok  - Labour row survived  (got "Labour")
+  ok  - Labour total intact  (got 4830.14)
+  ok  - re-apply finds nothing  (got 0)
+  ok  - re-apply deletes nothing  (got 0)
+  ok  - sheet unchanged by re-apply  (got 4)
+  ok  - conflict is reported  (got 1)
+  ok  - conflict names the differing total  (got 999)
+  ok  - conflict row is NOT deleted  (got true)
+  ok  - clean duplicates still removed alongside the conflict  (got 4)
+
+cleanupOnlineRevenueSummaryRows (v23 grain cleanup):
+  ok  - seeded 6 data rows (+header)  (got 7)
+  ok  - dry run is the default (no arg)  (got "dryRun")
+  ok  - dry run finds the 3 online revenue rows  (got 3)
+  ok  - dry run deletes nothing  (got 0)
+  ok  - dry run leaves the sheet intact  (got 7)
+  ok  - dry run reports 1 affected week  (got 1)
+  ok  - week is the Monday  (got "2026-06-15")
+  ok  - week total is the sum of the stale rows  (got 175)
+  ok  - week is re-summarizable (Revenue rows still present)  (got true)
+  ok  - counts the online Revenue rows backing the week  (got 3)
+  ok  - apply deletes 3  (got 3)
+  ok  - 3 rows survive (+header)  (got 4)
+  ok  - wholesale revenue survived  (got "Cafe X")
+  ok  - wholesale total intact  (got 340)
+  ok  - spend row survived  (got "Food and Dairy Co")
+  ok  - labour row survived  (got "Labour")
+  ok  - no online revenue row remains  (got false)
+  ok  - backup tab was created
+  ok  - backup holds all 3 removed rows (+header)  (got 4)
+  ok  - backup preserves the Summary header shape  (got "kind")
+  ok  - backup keeps the customer-keyed supplier  (got "#1001")
+  ok  - backup keeps the total  (got 25)
+  ok  - re-apply finds nothing  (got 0)
+  ok  - re-apply deletes nothing  (got 0)
+  ok  - sheet unchanged by re-apply  (got 4)
+  ok  - matches Online/Revenue regardless of case  (got 4)
+  ok  - purged-Revenue week is flagged NOT re-summarizable  (got false)
+  ok  - purged-Revenue week has no backing rows  (got 0)
+  ok  - mixed channel casing is detected  (got 2)
+  ok  - shopify_orderapp row is NOT matched by the dry run  (got 3)
+  ok  - apply deletes only the customer-keyed rows  (got 3)
+  ok  - shopify_orderapp row survives the apply  (got 1)
+  ok  - shopify_orderapp total intact  (got 512.5)
+
+online-revenue cleanup round trip (purge → resummarize, pull-owned semantics):
+  ok  - purge removed all 3 stale rows  (got 3)
+  ok  - purge spans 2 weeks  (got 2)
+  ok  - Summary is empty after the purge  (got 1)
+  ok  - both weeks recovered from the backup tab  (got 2)
+  ok  - oldest week first  (got "2026-06-08")
+  ok  - re-summarize still walks both weeks  (got 2)
+  ok  - re-summarize regenerates NO online Summary row
+  ok  - the backup tab remains the permanent record of every purged figure (+header)  (got 4)
+  ok  - backup keeps the recent-week dollars  (got 180)
+  ok  - re-running the week adds nothing  (got 0)
+  ok  - re-running the week updates nothing  (got 0)
+  ok  - Summary row count unchanged by the re-run (header only)  (got 1)
+  ok  - no backup tab → refuses, summarizes nothing  (got 0)
+
+labourWeeklyPull_ dedup:
+  ok  - labour rows written to Labour tab  (got 2)
+  ok  - labour rows written to Summary  (got 2)
+  ok  - Labour tab has header + 2 rows  (got 3)
+  ok  - Labour row carries the week Monday  (got "2026-06-15")
+  ok  - labour total survives the round-trip  (got 4830.14)
+  ok  - re-run adds no Labour tab rows  (got 0)
+  ok  - re-run adds no labour Summary rows  (got 0)
+  ok  - Labour tab still has header + 2 rows  (got 3)
+  ok  - no LABOUR_SHEET_ID → labour skipped  (got 0)
+  ok  - no LABOUR_SHEET_ID → supplier summary still lands  (got 1)
+
+labourWeeklyPull_ — summaryUpdated + week list:
+  ok  - one-element list: labourAdded matches the old single-week call  (got 2)
+  ok  - one-element list: summaryAdded matches the old single-week call  (got 2)
+  ok  - summaryUpdated is defined on a plain add
+  ok  - nothing to update yet -> summaryUpdated 0  (got 0)
+  ok  - correction: no new Labour tab rows (dedup by week||location)  (got 0)
+  ok  - correction: summaryUpdated is at least 1 (not a silent zero)
+  ok  - 4-week list: all 4 weeks land in the Labour tab  (got 4)
+  ok  - 4-week list: all 4 weeks land in Summary  (got 4)
+  ok  - 4-week list reads the external source exactly once, not once per week  (got 1)
+
+weeklySummarize override:
+  ok  - Wednesday override snaps to Monday  (got "2026-06-15")
+  ok  - week end is the following Sunday  (got "2026-06-21")
+  ok  - backlog week actually summarized  (got 1)
+  ok  - Summary row carries the snapped Monday  (got "2026-06-15")
+  ok  - spend aggregated for the week  (got 150)
+  ok  - Monday override is unchanged  (got "2026-06-15")
+  ok  - Sunday override snaps back to its Monday  (got "2026-06-15")
+  ok  - trigger event → falls back to last completed week  (got "2026-08-24")
+  ok  - no arg → last completed week  (got "2026-08-24")
+  ok  - re-run adds nothing (dedup)  (got 0)
+  ok  - Summary still has exactly 1 data row  (got 2)
+  ok  - current week → refused  (got "incomplete-week")
+  ok  - refused run summarizes nothing  (got 0)
+  ok  - refused run wrote no Summary rows  (got 1)
+  ok  - this Monday (week still running) → refused  (got "incomplete-week")
+  ok  - a future week → refused  (got "incomplete-week")
+  ok  - the most recently COMPLETED week is allowed
+  ok  - completed week summarizes normally  (got "2026-08-24")
+  ok  - old backlog week still summarizes  (got 1)
+  ok  - override run purged nothing (source row intact)  (got 2)
+  ok  - override run archived nothing  (got 1)
+
+archiveAndPurge_ blank-row guard:
+  ok  - only the genuinely old row is archived  (got 1)
+  ok  - blank row survives the purge  (got 3)
+  ok  - archive contains just the old row  (got 2)
+  ok  - archived row is the old one  (got "Old Co")
+
+staleness pure helpers:
+  ok  - parses an ISO string with offset  (got 1784163600000)
+  ok  - parses a Date object  (got 1784163600000)
+  ok  - blank → null  (got null)
+  ok  - null → null  (got null)
+  ok  - undefined → null  (got null)
+  ok  - garbage → null  (got null)
+  ok  - Invalid Date object → null  (got null)
+  ok  - newest extracted_at per source wins  (got 1783962000000)
+  ok  - a Date-object timestamp is handled  (got 1783738800000)
+  ok  - blank source row ignored
+  ok  - row with unparseable ts contributes nothing
+  ok  - the Sales layout works too (different column indexes)  (got 1784134800000)
+  ok  - merge keeps the NEWER timestamp  (got 300)
+  ok  - merge keeps non-overlapping keys  (got 500)
+  ok  - merge adds new keys  (got 900)
+  ok  - merging nothing → empty  (got "{}")
+  ok  - exactly 96h is FRESH (strictly greater is stale)  (got false)
+  ok  - 97h is stale  (got true)
+  ok  - 1h is fresh  (got false)
+  ok  - never seen → stale  (got true)
+  ok  - never seen → ageHours null  (got null)
+  ok  - age is reported  (got 10)
+  ok  - Fri 03:00 → Mon 11:00 is 80h  (got 80)
+  ok  - a normal weekend gap does NOT alert  (got false)
+  ok  - Thu 03:00 → Mon 11:00 is 104h  (got 104)
+  ok  - a genuine ~4-day outage DOES alert  (got true)
+  ok  - title is stable  (got "LEIBLE expense stale: square")
+  ok  - title carries no age/number
+
+staleness heartbeat:
+  ok  - heartbeat writes a Script Property
+  ok  - heartbeat value is a parseable timestamp
+  ok  - a failing Properties store cannot throw out of the heartbeat
+  ok  - doPost ingested  (got 1)
+  ok  - doPost stamped the heartbeat
+  ok  - re-post is all duplicates  (got 0)
+  ok  - an all-duplicate run STILL advances the heartbeat (kills the false positive)
+  ok  - an invalid payload stamps nothing
+
+staleness square-token exception:
+  ok  - no token → no site processed  (got 0)
+  ok  - NO heartbeat when every Square site was skipped
+  ok  - one token → one site processed  (got 1)
+  ok  - heartbeat stamped when a site really ran
+
+staleness alerts:
+  ok  - every source is stale on a cold start  (got 7)
+  ok  - one event per stale source  (got 7)
+  ok  - events are ORANGE
+  ok  - events carry a description
+  ok  - titles have no varying number
+  ok  - re-run creates no duplicate events  (got 0)
+  ok  - event count unchanged  (got 7)
+  ok  - fresh heartbeats → nothing stale  (got 0)
+  ok  - fresh heartbeats → no calendar events  (got 0)
+  ok  - no events created at all  (got 0)
+  ok  - a recent sheet row alone marks that source fresh
+  ok  - other sources remain stale
+  ok  - a fresh heartbeat overrides an ancient sheet row
+  ok  - a broken calendar does not throw
+  ok  - a broken calendar creates no events  (got 0)
+  ok  - staleness is still reported when the calendar is down
+  ok  - falls back to the default calendar
+
+staleness per-source thresholds:
+  ok  - healthy-week worst case is ~150h  (got 150)
+  ok  - weekly source at 150h is FRESH under its 168h override  (got false)
+  ok  - the report entry carries its own threshold  (got 168)
+  ok  - a missed weekly run reads ~174h at the next check  (got 174)
+  ok  - a weekly trigger that stopped firing alerts the day its run was missed  (got true)
+  ok  - un-overridden source still judged at the 96h default  (got true)
+  ok  - un-overridden entry carries the default threshold  (got 96)
+  ok  - overrides omitted → default applies to every source  (got true)
+  ok  - 31-day month-end check is ~726h  (got 726)
+  ok  - recurring at ~726h is FRESH under 744  (got false)
+  ok  - recurring missed-run at ~750h is STALE  (got true)
+  ok  - only the dead weekly source is stale  (got ["greenbean"])
+  ok  - one orange event raised for it  (got 1)
+  ok  - event body names the 168h threshold, not the 96h default
+
+sales dedup — rowKey_ coerces Date-typed key cols:
+  ok  - rowKey_: Date-typed date col matches its YYYY-MM-DD string  (got "2026-07-15||york")
+  ok  - first appendSalesRow_ call appends  (got {"appended":true,"updated":false})
+  ok  - sheet has header + 1 row after first append  (got 2)
+  ok  - re-run on a PRIOR day is recognised as the same key and updated in place  (got {"appended":false,"updated":true})
+  ok  - sheet row count unchanged (updated in place, not appended)  (got 2)
+  ok  - rowKey_: differing location produces a different key
+  ok  - rowKey_: location casing/whitespace still normalizes  (got "2026-07-15||york")
+
+migrateAddDepartment_ / sweepBlankDepartments_:
+  ok  - dry run: Suppliers headerAction=add (would add)  (got "add")
+  ok  - dry run: Suppliers blanksFilled=2 (both rows would be filled)  (got 2)
+  ok  - dry run writes NOTHING (sheet bytes unchanged)  (got "[[\"date\",\"supplier\",\"total\",\"invoice_ref\",\"location\",\"source\",\"extracted_at\"],[\"2026-06-14T14:00:00.000Z\",\"Food and Dairy Co\",100,\"A1\",\"York St\",\"food_dairy_co\",\"x\"],[\"2026-06-15T14:00:00.000Z\",\"Butterboy\",80,\"B1\",\"York St\",\"ordermentum\",\"x\"]]")
+  ok  - dry run creates no Revenue tab
+  ok  - apply: Suppliers headerAction=add  (got "add")
+  ok  - apply: header gains department  (got "department")
+  ok  - apply: row count unchanged  (got 3)
+  ok  - apply: data row 1 backfilled to Cafe  (got "Cafe")
+  ok  - apply: data row 2 backfilled to Cafe  (got "Cafe")
+  ok  - _staging header gains department  (got "department")
+  ok  - _staging data backfilled to Cafe  (got "Cafe")
+  ok  - _archive header gains department  (got "department")
+  ok  - _archive data backfilled to Cafe  (got "Cafe")
+  ok  - Sales header gains department  (got "department")
+  ok  - Sales data backfilled to Cafe  (got "Cafe")
+  ok  - Labour header gains department  (got "department")
+  ok  - Labour data backfilled to Cafe  (got "Cafe")
+  ok  - apply creates the Revenue tab
+  ok  - Revenue tab has exactly REVENUE_HEADERS  (got ["date","department","channel","customer","amount","order_ref","source","extracted_at"])
+  ok  - second run: Suppliers headerAction=present (skipped)  (got "present")
+  ok  - second run: no data change  (got "[[\"date\",\"supplier\",\"total\",\"invoice_ref\",\"location\",\"source\",\"extracted_at\",\"department\"],[\"2026-06-14T14:00:00.000Z\",\"Food and Dairy Co\",100,\"A1\",\"York St\",\"food_dairy_co\",\"x\",\"Cafe\"],[\"2026-06-15T14:00:00.000Z\",\"Butterboy\",80,\"B1\",\"York St\",\"ordermentum\",\"x\",\"Cafe\"]]")
+  ok  - second run: exactly one department column in the header  (got 1)
+  ok  - blank-only fill: pre-set Roastery value untouched  (got "Roastery")
+  ok  - blank-only fill: blank rows still backfilled to Cafe  (got "Cafe")
+  ok  - migrateAddDepartment_ re-run short-circuits on the header guard (sweeps nothing)  (got 0)
+  ok  - ...so the mid-window row is still blank  (got undefined)
+  ok  - sweep fills exactly the one blank row  (got 1)
+  ok  - mid-window row now reads Cafe  (got "Cafe")
+  ok  - every other row unchanged  (got "Cafe")
+  ok  - row count unchanged by the sweep  (got 4)
+  ok  - dry-run report has {tab, headerAction, blanksFilled} shape  (got ["blanksFilled","headerAction","tab"])
+  ok  - apply report has the SAME shape  (got ["blanksFilled","headerAction","tab"])
+  ok  - post-migration doGet returns department  (got "Cafe")
+  ok  - post-migration doGet returns kind  (got "spend")
+  ok  - post-migration doGet returns total  (got 300)
+
+migration editor wrappers:
+  ok  - all four wrappers take zero declared args  (got [0,0,0,0])
+  ok  - DryRun wrapper returns the report  (got "add")
+  ok  - DryRun wrapper writes NOTHING  (got "[[\"date\",\"supplier\",\"total\",\"invoice_ref\",\"location\",\"source\",\"extracted_at\"],[\"2026-06-14T14:00:00.000Z\",\"Food and Dairy Co\",100,\"A1\",\"York St\",\"food_dairy_co\",\"x\"]]")
+  ok  - DryRun wrapper creates no Revenue tab
+  ok  - Apply wrapper returns the report  (got "add")
+  ok  - Apply wrapper WRITES the header  (got "department")
+  ok  - Apply wrapper WRITES the backfill  (got "Cafe")
+  ok  - Apply wrapper creates the Revenue tab
+  ok  - Sweep DryRun reports the blank row  (got 1)
+  ok  - Sweep DryRun writes NOTHING  (got "")
+  ok  - Sweep Apply reports the blank row  (got 1)
+  ok  - Sweep Apply WRITES the fill  (got "Cafe")
+
+ingest — legacy back-compat, revenue kind, upsert:
+  ok  - legacy payload → ok  (got "ok")
+  ok  - legacy payload: columns 0-6 byte-identical to pre-change shape  (got ["2026-07-01","Food and Dairy Co",45,"LEG-1","York St","food_dairy_co","TS"])
+  ok  - legacy payload: department defaults to Cafe  (got "Cafe")
+  ok  - revenue payload → ok  (got "ok")
+  ok  - revenue payload → rowsAdded 1  (got 1)
+  ok  - revenue row lands in Revenue, in REVENUE_HEADERS order  (got ["2026-07-01","Roastery","wholesale","Acme Cafe",500,"ORD-1","wholesale_app","TS"])
+  ok  - Suppliers row count unchanged by a revenue POST  (got 1)
+  ok  - re-POST identical rows → rowsAdded 0  (got 0)
+  ok  - re-POST identical rows → duplicatesSkipped 1  (got 1)
+  ok  - upsert changed amount → rowsUpdated 1  (got 1)
+  ok  - upsert changed amount → rowsAdded 0  (got 0)
+  ok  - upsert: row count unchanged (header + 1)  (got 2)
+  ok  - upsert: amount updated to 300  (got 300)
+  ok  - upsert: extracted_at updated  (got "T2")
+  ok  - unchanged-amount re-post → duplicatesSkipped 1  (got 1)
+  ok  - unchanged-amount re-post → rowsUpdated 0  (got 0)
+  ok  - unchanged-amount re-post: extracted_at NOT overwritten  (got "T2")
+  ok  - upsert across a Date-valued key column still matches (updates, not appends)  (got {"rowsAdded":0,"rowsUpdated":1,"duplicatesSkipped":0,"updates":[{"key":"2026-07-01||york","from":100,"to":150}]})
+  ok  - sheet row count unchanged  (got 2)
+  ok  - amount updated via the Date-keyed match  (got 150)
+  ok  - revenue row missing order_ref → rejected
+  ok  - revenue row non-numeric amount → rejected
+  ok  - revenue row missing customer → rejected
+  ok  - rejection message names the row index
+  ok  - department:'Roastry' (typo) → rejected
+
+upsertRows_ — updates report:
+  ok  - changed row → rowsUpdated 1  (got 1)
+  ok  - new row → rowsAdded 1  (got 1)
+  ok  - nothing skipped in this batch  (got 0)
+  ok  - updates reports exactly the one rewritten row  (got 1)
+  ok  - updates entry carries key/from/to for the rewritten row  (got {"key":"2026-07-01||york","from":100,"to":150})
+  ok  - the brand-new row is NOT in updates
+  ok  - unchanged amount → duplicatesSkipped 1  (got 1)
+  ok  - unchanged amount → rowsUpdated 0  (got 0)
+  ok  - unchanged amount → updates is empty  (got [])
+  ok  - brand-new row → rowsAdded 1  (got 1)
+  ok  - brand-new row → updates is empty  (got [])
+  ok  - regression: rowsAdded unaffected by the updates addition  (got 0)
+  ok  - regression: rowsUpdated unaffected by the updates addition  (got 1)
+  ok  - regression: duplicatesSkipped unaffected by the updates addition  (got 0)
+
+Sales/Labour/Summary — department + upsert reach:
+  ok  - squareDailyPull row department = Cafe  (got "Cafe")
+  ok  - labour tab row lands with department Cafe  (got "Cafe")
+  ok  - labour Summary row: department Cafe  (got "Cafe")
+  ok  - labour Summary row: kind spend  (got "spend")
+  ok  - labour survives &department=Cafe filter
+  ok  - same-day re-run with a different gross is skipped  (got {"appended":false,"updated":false})
+  ok  - same-day row NOT overwritten  (got 100)
+  ok  - first summarize adds 1 Summary row  (got 1)
+  ok  - Summary total before amendment  (got 100)
+  ok  - re-summarize reaches the amended amount (summariesUpdated=1)  (got 1)
+  ok  - Summary row count unchanged  (got 2)
+  ok  - Summary total reflects the amended amount  (got 175)
+  ok  - both a spend row and a revenue row are summarized  (got 2)
+  ok  - spend row: department Cafe, total 100  (got "Cafe|100")
+  ok  - revenue row: department Roastery, total 500  (got "Roastery|500")
+  ok  - revenue never netted against spend (two distinct rows, not one combined)
+  ok  - a week of residual online orders → NO derived Summary row  (got 0)
+  ok  - doGet serves nothing for the week (pull row not yet landed)  (got 0)
+  ok  - first summarize adds the wholesale revenue row  (got 1)
+  ok  - re-summarize appends nothing (key is stable)  (got 0)
+  ok  - Summary row count unchanged across runs  (got 2)
+  ok  - amended wholesale revenue updates in place  (got 1)
+  ok  - ...and still appends nothing  (got 0)
+  ok  - Summary row count still unchanged  (got 2)
+  ok  - Summary total reflects the amendment  (got 99)
+  ok  - legacy row is orphaned in place, nothing new derived (1 row)  (got 1)
+  ok  - ...the stale figure persists until the cleanup removes it  (got 62)
+  ok  - mixed channel casing collapses to ONE Summary row  (got 1)
+  ok  - ...and both are summed: reports the full 125, not 25  (got 125)
+  ok  - &department=Roastery returns only Roastery rows  (got 1)
+  ok  - ...and it is the Roastery row  (got "Roastery")
+  ok  - no department filter → all rows  (got 2)
+
+recurring — recurringSlug_ (pure, deterministic + stable):
+  ok  - em-dash + spaces collapse to single hyphens  (got "rent-roastery")
+  ok  - plain word lowercases  (got "shopify")
+  ok  - same input always yields the same output  (got "rent-roastery")
+  ok  - leading/trailing junk trimmed  (got "rent")
+
+recurring — invoice_ref generation deterministic and slug-stable:
+  ok  - two configured entries -> 2 rows added  (got 2)
+  ok  - deterministic refs match vendor slug + period, matching the plan example  (got ["rent-roastery-2026-08","shopify-2026-08"])
+
+recurring — missing script property -> skipped, never written as 0:
+  ok  - only the configured entry is written  (got 1)
+  ok  - the missing entry is reported skipped, not silently zeroed  (got ["Shopify"])
+  ok  - no zero-amount row was written for Shopify (header + 1 data row only)  (got 2)
+
+recurring — running the generator twice in the same month: no duplicate rows, no doubled total (the crux of this phase):
+  ok  - first run: 2 rows added  (got 2)
+  ok  - second run same period: 0 rows added  (got 0)
+  ok  - second run same period: unchanged amount -> 0 updated (upsertRows_ no-op, not a duplicate write)  (got 0)
+  ok  - second run same period: 2 rows recognised as duplicates, not appended  (got 2)
+  ok  - still exactly 2 data rows after two runs — NOT 4  (got 3)
+  ok  - total is NOT doubled (2500 + 79, once)  (got 2579)
+
+recurring — an amount change upserts the existing row instead of adding a new one:
+  ok  - changed amount: 0 added, 1 updated  (got "0|1")
+  ok  - rent row now reflects the new amount  (got 2600)
+  ok  - still only one rent row (upsert, not append)  (got 3)
+
+recurring — a monthly entry yields exactly 12 rows across a simulated year:
+  ok  - 12 distinct monthly periods -> 12 data rows (header + 12)  (got 13)
+
+recurring — no periodStr arg defaults to the current month (Australia/Sydney):
+  ok  - defaults to 2026-08  (got "2026-08")
+
+recurring — a held script lock is reported, not silently swallowed:
+  ok  - locked run reports locked:true and writes nothing  (got "true|0")
+
+recurring — installRecurringTrigger runs without throwing (monthly ClockTriggerBuilder chain):
+  ok  - installRecurringTrigger does not throw
+
+staleness — every heartbeat source is watched:
+  ok  - square stamps a heartbeat and is watched
+  ok  - mayers stamps a heartbeat and is watched
+  ok  - roastery stamps a heartbeat but is NOT YET ARMED, so deliberately not watched
+  ok  - roastery re-add condition is recorded VERBATIM in staleness.gs
+  ok  - recurring stamps a heartbeat but is NOT YET ARMED, so deliberately not watched
+  ok  - recurring re-add condition is recorded VERBATIM in staleness.gs
+  ok  - shopspend is deliberately NOT watched (has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls)
+  ok  - shopify_orderapp stamps a heartbeat and is watched
+  ok  - greenbean stamps a heartbeat and is watched
+  ok  - shopify_orderapp override = weekly cadence (168h)  (got 168)
+  ok  - greenbean override = weekly cadence (168h)  (got 168)
+  ok  - recurring override = 31 days (744h)  (got 744)
+  ok  - every override belongs to a watched or not-yet-armed source (no dead config)
+  ok  - 'shopify' is NOT in STALENESS_SOURCES (shopify.gs deleted, superseded by shopify_orderapp)
+  ok  - 'coffee_order_app' is NOT in STALENESS_SOURCES (never stamps a heartbeat; exclusivity mechanically enforced)
+
+coffee order app — ingest contract:
+  ok  - coffee_order_app is NOT a staleness watchdog source (never stamps a heartbeat today)
+  ok  - wholesale revenue payload → ok  (got "ok")
+  ok  - wholesale revenue payload → rowsAdded 1  (got 1)
+  ok  - revenue row lands in REVENUE_HEADERS order  (got ["2026-08-03","Roastery","wholesale","Cafe X",340,"ORD-1182","coffee_order_app","2026-08-03T09:00:00+10:00"])
+  ok  - kind:"suppliers" + source:"coffee_order_app" → rejected
+  ok  - rejection message names the greenbean exclusivity
+  ok  - omitted kind (defaults to suppliers) + source:"coffee_order_app" → same rejection
+  ok  - omitted-kind rejection message also names greenbean
+  ok  - kind:"suppliers" + source:"greenbean" (well-formed rows) → still accepted
+  ok  - coffee_order_app has no SUPPLIER_NAMES entry (moot for suppliers-kind now that it is rejected, but still true)
+  ok  - missing order_ref → rejected
+  ok  - bad department ('Kitchen') → rejected
+  ok  - amount as a (non-numeric) string → rejected
+
+shopSpend — tabs and constants (step 1):
+  ok  - SHOPSPEND_TAB  (got "ShopSpend")
+  ok  - SHOPSPEND_PULLS_TAB  (got "ShopSpendPulls")
+  ok  - SHOPSPEND_REPORT_TAB  (got "ShopSpend Report")
+  ok  - SHOPSPEND_HEADERS has 14 entries
+  ok  - SHOPSPEND_HEADERS[0] is shop_id
+  ok  - SHOPSPEND_HEADERS[1] is week_label
+  ok  - SHOPSPEND_HEADERS ends in presence
+  ok  - SHOPSPEND_PULLS_HEADERS has 21 entries
+  ok  - SHOPSPEND_PULLS_HEADERS[0] is fetched_at
+  ok  - SHOPSPEND_PULLS_HEADERS ends in diagnostics_json
+  ok  - SHOPSPEND_KEY_COLS[0] indexes shop_id
+  ok  - SHOPSPEND_KEY_COLS[1] indexes week_label
+  ok  - ensureShopSpendTabs_ is defined
+  ok  - ensureShopSpendTabs_ returns a data sheet
+  ok  - ensureShopSpendTabs_ returns a pulls sheet
+  ok  - ensureShopSpendTabs_ returns a report sheet
+  ok  - ShopSpend row 1 equals SHOPSPEND_HEADERS  (got ["shop_id","week_label","week_start","week_end","order_count","amended_count","total_ex_gst","gst","total_inc_gst","gst_treatment","environment","fetched_at","source","presence"])
+  ok  - ShopSpendPulls row 1 equals SHOPSPEND_PULLS_HEADERS  (got ["fetched_at","environment","from_week","to_week","matched","returned","truncated","warnings_count","warnings","unpriced_sku_count","unpriced_skus","amended_count","possible_duplicate_shop_names","empty_range_with_invalid_labels","invalid_week_labels","gst_treatment","diverges_from_live_pricing","matches_live_pricing","total_orders_scanned","absent_shop_ids","diagnostics_json"])
+  ok  - ShopSpend has exactly 1 row (header only, no phantom blank row)  (got 1)
+  ok  - re-call: ShopSpend row count unchanged  (got 1)
+  ok  - re-call: ShopSpend header row unchanged  (got ["shop_id","week_label","week_start","week_end","order_count","amended_count","total_ex_gst","gst","total_inc_gst","gst_treatment","environment","fetched_at","source","presence"])
+  ok  - re-call: same sheet objects returned, nothing new created
+  ok  - Suppliers headers unchanged  (got ["date","supplier","total","invoice_ref","location","source","extracted_at","department"])
+  ok  - Sales headers unchanged  (got ["date","location","gross_sales","source","extracted_at","department"])
+  ok  - Revenue tab NOT created as a side effect of ensureShopSpendTabs_
+  ok  - Summary tab NOT created as a side effect of ensureShopSpendTabs_
+
+doPost — shopspend kind (step 2):
+  ok  - well-formed shopspend payload → ok  (got "ok")
+  ok  - rowsAdded equals row count  (got 2)
+  ok  - ShopSpend has header + 2 rows  (got 3)
+  ok  - row 1 lands in SHOPSPEND_HEADERS order  (got ["shop_1","2026-W31","2026-07-27","2026-08-02",12,1,500,0,500,"EXCLUSIVE_PRIMARY","prod","2026-08-03T09:00:00+10:00","shopspend","present"])
+  ok  - row 2 (no per-row fetched_at) falls back to extracted_at  (got "2026-08-03T09:30:00+10:00")
+  ok  - row 2 presence defaults to present  (got "present")
+  ok  - unknown kind → error  (got "error")
+  ok  - unknown kind → message names it  (got "unknown kind: nonsense")
+  ok  - missing shop_id → rejected
+  ok  - week_label '2026-W7' (single-digit week) → rejected
+  ok  - week_label '26-W07' (2-digit year) → rejected
+  ok  - non-numeric total_ex_gst → rejected
+  ok  - missing week_start → rejected
+  ok  - rejection message names the offending row index (row 1)
+  ok  - shopspend row without date → rejected
+  ok  - ...via the generic shared missing-date message
+  ok  - weeks_complete as a JSON string → rejected
+  ok  - weeks_complete as a nested array → rejected
+  ok  - weeks_complete with a bogus label → rejected
+  ok  - weeks_complete with a valid label → accepted
+  ok  - weeks_verified_empty as a JSON string → rejected
+  ok  - weeks_verified_empty as a nested array → rejected
+  ok  - weeks_verified_empty with a bogus label → rejected
+  ok  - weeks_verified_empty naming a week absent from weeks_complete → rejected
+  ok  - weeks_verified_empty naming a week with >=1 row in the same payload → rejected
+  ok  - weeks_verified_empty valid (declared complete, no rows for it) → accepted
+  ok  - isValidWeekLabelArray_(['2026-W00']) → false (week 00 out of range)
+  ok  - isValidWeekLabelArray_(['2026-W54']) → false (week 54 out of range)
+  ok  - isValidWeekLabelArray_(['2026-W99']) → false (week 99 out of range)
+  ok  - isValidWeekLabelArray_(['2026-W01']) → true (lower bound)
+  ok  - isValidWeekLabelArray_(['2026-W53']) → true (upper bound — ISO years can have 53 weeks)
+  ok  - isValidWeekLabelArray_(['2020-W01']) → true (the live-probe label)
+  ok  - weeks_complete with out-of-range week (2026-W00) → rejected with invalid weeks_complete message  (got "invalid weeks_complete")
+  ok  - shopspend row with week_label 2026-W00 → rejected at the row level  (got "row 0 invalid week_label")
+  ok  - shopspend row with week_label 2026-W99 → rejected at the row level  (got "row 0 invalid week_label")
+  ok  - shopspend row with week_label 2026-W53 → still accepted at the row level
+  ok  - suppliers row missing invoice_ref → still rejected
+  ok  - revenue row missing order_ref → still rejected
+  ok  - valid suppliers payload still succeeds  (got "ok")
+  ok  - ...and writes to Suppliers
+  ok  - valid revenue payload still succeeds  (got "ok")
+  ok  - ...and writes to Revenue
+  ok  - shopspend response → ok  (got "ok")
+  ok  - tombstonesWritten present on shopspend response
+  ok  - tombstonesSkipped present on shopspend response
+  ok  - tombstonesWritten is 0 for a first, non-tombstoning pull  (got 0)
+  ok  - tombstonesSkipped is an empty array when nothing was skipped  (got [])
+  ok  - tombstonesWritten omitted on a suppliers response
+  ok  - tombstonesSkipped omitted on a suppliers response
+  ok  - tombstonesWritten omitted on a revenue response
+  ok  - tombstonesSkipped omitted on a revenue response
+  ok  - successful shopspend post stamps the shopspend heartbeat
+  ok  - shopspend payload with pull → ok  (got "ok")
+  ok  - data written as a single block write before the pulls row (commit-marker ordering)
+  ok  - exactly one row appended to ShopSpendPulls  (got 2)
+  ok  - pulls row lands in SHOPSPEND_PULLS_HEADERS order  (got ["2026-08-03T09:30:00+10:00","prod","2026-W30","2026-W31",2,2,false,0,"[]",0,"[]",1,"[]",false,"[]","EXCLUSIVE_PRIMARY",false,true,17,"[]","{}"])
+
+ingestShopSpendRows — change detection (step 3):
+  ok  - first pull: rowsAdded  (got 3)
+  ok  - first pull: duplicatesSkipped  (got 0)
+  ok  - first pull: rowsUpdated is always 0  (got 0)
+  ok  - identical re-pull: rowsAdded  (got 0)
+  ok  - identical re-pull: duplicatesSkipped  (got 3)
+  ok  - identical re-pull: rowsUpdated is always 0  (got 0)
+  ok  - identical re-pull: tab row count unchanged (header + 3)  (got 4)
+  ok  - changed figure: rowsAdded  (got 1)
+  ok  - changed figure: duplicatesSkipped  (got 2)
+  ok  - changed figure: tab now holds header + 4 rows  (got 5)
+  ok  - both shop_1 snapshots (old + new) are present  (got 2)
+  ok  - old shop_1 snapshot is unmodified (total_ex_gst still 500)  (got 500)
+  ok  - new shop_1 snapshot carries the changed figure (total_ex_gst 999)  (got 999)
+  ok  - order_count change alone → appends  (got 1)
+  ok  - amended_count change alone → appends  (got 1)
+  ok  - total_ex_gst change alone → appends  (got 1)
+  ok  - gst change alone → appends  (got 1)
+  ok  - total_inc_gst change alone → appends  (got 1)
+  ok  - numerically-equal figure sent as a different string type is NOT a change  (got 0)
+  ok  - ...and counts as a duplicate  (got 1)
+  ok  - DST fixture: first row appends  (got 1)
+  ok  - DST fixture: second row (changed figure) appends  (got 1)
+  ok  - DST fixture: latest = append order — re-pull matching row B is unchanged  (got 0)
+  ok  - ...and counted as a duplicate  (got 1)
+  ok  - tombstone setup: pull A appends both shops  (got 2)
+  ok  - tombstone: pull B declares 2026-W31 complete, missing shopTombY → appends exactly one tombstone  (got 1)
+  ok  - tombstone: shopTombX itself is unchanged (duplicate)  (got 1)
+  ok  - tombstone: tombstonesWritten reflects the one write  (got 1)
+  ok  - tombstone: nothing skipped by the breaker (below the 5-shop floor)  (got [])
+  ok  - tombstone row key is shopTombY / 2026-W31  (got ["shopTombY","2026-W31"])
+  ok  - tombstone row presence is absent  (got "absent")
+  ok  - tombstone row figures are all zero  (got [0,0,0,0,0])
+  ok  - week not declared complete: missing shopUndY is NOT tombstoned  (got 0)
+  ok  - week not declared complete: tombstonesWritten is 0  (got 0)
+  ok  - weeks_complete absent + rows present → a Logger warning is logged
+  ok  - shopUndY row is still present, untouched  (got "present")
+  ok  - weeks_complete absent + rows EMPTY → no warning (nothing to warn about)
+  ok  - scoped pull: only the new week-31 row is appended (shopOldWeekA is a duplicate)  (got 1)
+  ok  - scoped pull: tombstonesWritten is 0 — week 30 has rows but is not declared complete  (got 0)
+  ok  - shopOldWeekB / 2026-W30 row is untouched (still present) — week 30 not declared complete  (got "present")
+  ok  - no double tombstone: shopTombY already absent → no new row for it  (got 0)
+  ok  - ...shopTombX unchanged → duplicate  (got 1)
+  ok  - no double tombstone: tombstonesWritten is 0  (got 0)
+  ok  - reappearance: shopTombY returns → appends a fresh present row  (got 1)
+  ok  - reappearance: shopTombX still unchanged → duplicate  (got 1)
+  ok  - shopTombY snapshot history is present, absent, present  (got ["present","absent","present"])
+  ok  - empty payload: rowsAdded  (got 0)
+  ok  - empty payload: duplicatesSkipped  (got 0)
+  ok  - empty payload: tab row count unchanged (header + 1)  (got 2)
+  ok  - empty payload: existing shopZ row is still present, untombstoned  (got "present")
+  ok  - single block write: exactly one write call for 3 new rows  (got 1)
+  ok  - ...and it is a setValues() call, not per-row appendRow()  (got "setValues")
+  ok  - ...covering all 3 rows in one call  (got 3)
+  ok  - changed row + tombstone still land in a single block write  (got 2)
+  ok  - the second call covers both the changed row and the tombstone  (got 2)
+  ok  - an all-duplicate pull issues no write call at all  (got 1)
+  ok  - week_start round-trips via cellDate  (got "2026-07-27")
+  ok  - week_end round-trips via cellDate  (got "2026-08-02")
+
+ingestShopSpendRows — weeks_complete tombstone gating + breaker (step 1):
+  ok  - C1 repro: half 1 writes zero tombstones  (got 0)
+  ok  - C1 repro: half 2 writes zero tombstones (does not tombstone half 1s shops)  (got 0)
+  ok  - C1 repro: exactly header + 4 data rows, no tombstone rows appended  (got 5)
+  ok  - C1 repro: all four shops remain present
+  ok  - C1 repro: identical re-post of half 1 appends nothing  (got 0)
+  ok  - C1 repro: identical re-post writes zero tombstones  (got 0)
+  ok  - identical re-post of a complete week: rowsAdded is 0  (got 0)
+  ok  - identical re-post of a complete week: tombstonesWritten is 0  (got 0)
+  ok  - identical re-post of a complete week: duplicatesSkipped is 2  (got 2)
+  ok  - truncated label 2026-W3 does not match 2026-W31 — no tombstone  (got 0)
+  ok  - truncated label: shopTruncB (missing from payload) is not tombstoned  (got 0)
+  ok  - shopTruncB stays present  (got "present")
+  ok  - below the 5-shop floor: 100% unverified still writes (floor not met)  (got 3)
+  ok  - below the 5-shop floor: nothing skipped  (got [])
+  ok  - unverified 100% with 5 present (>= floor): breaker skips, tombstonesWritten 0  (got 0)
+  ok  - unverified 100% with 5 present: rowsAdded 0 (skip means no tombstone rows land)  (got 0)
+  ok  - unverified 100% with 5 present: week appears in tombstonesSkipped  (got [{"week":"2026-W31","wouldHaveWritten":5,"present":5}])
+  ok  - unverified 100% with 5 present: all 5 shops remain present (suppressed, not written)
+  ok  - sticky skip: still suppressed  (got 0)
+  ok  - breaker skip is Logger.logged, not only returned on the wire
+  ok  - exactly 50% missing (not more than half): still writes  (got 50)
+  ok  - exactly 50%: nothing skipped  (got [])
+  ok  - 51% missing (more than half): breaker skips  (got 0)
+  ok  - 51% missing: week reported in tombstonesSkipped  (got [{"week":"2026-W31","wouldHaveWritten":51,"present":100}])
+  ok  - sticky skip: pull 1 skips  (got 0)
+  ok  - sticky skip: pull 1 reports the week skipped  (got [{"week":"2026-W31","wouldHaveWritten":5,"present":5}])
+  ok  - sticky skip: pull 2 (identical) skips again  (got 0)
+  ok  - sticky skip: pull 2 reports the week skipped again (non-self-healing)  (got [{"week":"2026-W31","wouldHaveWritten":5,"present":5}])
+  ok  - rows:[] + weeks_complete + weeks_verified_empty does not throw
+  ok  - verified-empty week: tombstones every present shop (100%, breaker exempt)  (got 5)
+  ok  - verified-empty week: nothing skipped  (got [])
+  ok  - belt-and-braces: a rows-carrying "verified empty" week is NOT treated as exempt — breaker still applies  (got 0)
+  ok  - belt-and-braces: the week is reported skipped, not silently 100%-tombstoned  (got [{"week":"2026-W31","wouldHaveWritten":5,"present":5}])
+
+docs/api.md — tombstone fields + confirmation procedure (step 1):
+  ok  - docs/api.md documents tombstonesWritten
+  ok  - docs/api.md documents tombstonesSkipped
+  ok  - docs/api.md documents a mass-absence confirmation procedure
+
+shopSpend — report builder (step 6):
+  ok  - shopSpendReportBlock_ is defined
+  ok  - buildShopSpendReport is defined
+  ok  - grid header row found (first cell literal "Shop")
+  ok  - week columns sorted numerically: W9, W10, W52, then 2027-W01  (got ["2026-W9","2026-W10","2026-W52","2027-W01"])
+  ok  - contrast: a lexicographic string sort of the same labels puts 2026-W10 before 2026-W9 — proving the grid is NOT string-sorted
+  ok  - shop row found
+  ok  - latest (last-appended) snapshot wins — cell shows 999, not 500
+  ok  - DST fixture: shop row found
+  ok  - DST fixture: latest = append order — resolves to the SECOND row (222), not the first (111)
+  ok  - no unpriced-SKU banner
+  ok  - no amended-orders banner
+  ok  - no duplicate-shop-names banner
+  ok  - no absent/stale banner
+  ok  - no unconfirmed cells
+  ok  - always: GST treatment stated on the tab
+  ok  - always: gst:0-is-normal note mentions GST-free SKUs
+  ok  - always: drift wording present, never "stale pricing"
+  ok  - always: default (unassessed) pull renders "not assessed", never "matches" or "diverges"
+  ok  - always: confirmed-orders-only note excludes Shopify/online
+  ok  - always: last fetched_at shown
+  ok  - "" renders "not assessed", never "matches" and never "diverges"
+  ok  - "" case never labelled "stale pricing"
+  ok  - undefined renders "not assessed" too (legacy/short row from the Sheet)
+  ok  - legacy true renders "diverges", never "stale pricing" or "not assessed"
+  ok  - legacy false renders "matches", never "not assessed" or "diverges"
+  ok  - warning 1 listed verbatim
+  ok  - warning 2 listed verbatim
+  ok  - banner names the count and says line items were skipped entirely
+  ok  - rendered total carries the ~ marker
+  ok  - banner names exactly 1 amended shop-week, marked provisional
+  ok  - amended shop-week cell is marked
+  ok  - non-amended shop-week cell is NOT marked
+  ok  - banner states fix upstream, NOT merged automatically
+  ok  - both flagged names listed
+  ok  - both shop_ids remain two SEPARATE grid rows (never auto-merged)
+  ok  - no cell renders as literal "$0" anywhere in the block
+  ok  - no cell is the bare number 0
+  ok  - shopE1's missing 2026-W32 cell reads 'unconfirmed'
+  ok  - shopE2's missing 2026-W31 cell reads 'unconfirmed'
+  ok  - banner names exactly 1 absent shop-week and calls the value stale
+  ok  - absent latest snapshot renders as 'stale', not a dollar figure
+  ok  - buildShopSpendReport returns something
+  ok  - exactly two write calls on the Report tab (clear + set)  (got 2)
+  ok  - first call is clearContents  (got "clearContents")
+  ok  - second call is a single setValues (not per-row appendRow)  (got "setValues")
+  ok  - a held lock is reported (refused:"locked") and nothing is written
+  ok  - ShopSpend tab byte-identical after a rebuild  (got [["shop_id","week_label","week_start","week_end","order_count","amended_count","total_ex_gst","gst","total_inc_gst","gst_treatment","environment","fetched_at","source","presence"],["shopNM1","2026-W31","2026-07-26T14:00:00.000Z","2026-08-01T14:00:00.000Z",12,1,500,0,500,"EXCLUSIVE_PRIMARY","prod","T1","shopspend","present"],["shopNM2","2026-W32","2026-07-26T14:00:00.000Z","2026-08-01T14:00:00.000Z",12,1,500,0,300,"EXCLUSIVE_PRIMARY","prod","T1","shopspend","present"]])
+  ok  - ShopSpendPulls tab byte-identical after a rebuild  (got [["fetched_at","environment","from_week","to_week","matched","returned","truncated","warnings_count","warnings","unpriced_sku_count","unpriced_skus","amended_count","possible_duplicate_shop_names","empty_range_with_invalid_labels","invalid_week_labels","gst_treatment","diverges_from_live_pricing","matches_live_pricing","total_orders_scanned","absent_shop_ids","diagnostics_json"],["2026-08-03T09:30:00+10:00","prod","2026-W30","2026-W31",1,1,false,0,"[]",0,"[]",0,"[]",false,"[]","EXCLUSIVE_PRIMARY","","",10,"[]","{}"]])
+
+shopSpend — watchdog and trigger (step 7):
+  ok  - shopSpendCoveredWeeks_ is defined
+  ok  - shopSpendWatchdogEvaluate_ is defined
+  ok  - shopSpendWatchdog is defined
+  ok  - installShopSpendWatchdogTrigger is defined
+  ok  - shopspend is NOT in STALENESS_SOURCES (its own shopSpendWatchdog trigger covers it; both would double-alert)
+  ok  - expands + merges overlapping spans, sorted + deduped  (got ["2026-W29","2026-W30","2026-W31","2026-W32"])
+  ok  - empty pulls tab yields [], not an error or null  (got [])
+  ok  - a pull spanning the just-closed week -> covered:true
+  ok  - weekLabel resolves to the just-closed ISO week  (got "2026-W31")
+  ok  - lastPullMs reflects the pull's fetched_at  (got 1785697200000)
+  ok  - no covering pulls row -> covered:false
+  ok  - weekLabel is still the just-closed week  (got "2026-W31")
+  ok  - lastPullMs still reports the newest pull seen (even though it doesn't cover)  (got 1785092400000)
+  ok  - a pull for an unrelated week does not satisfy coverage
+  ok  - cold start -> covered:false
+  ok  - cold start -> lastPullMs null (mirrors stalenessEvaluate_'s never-seen convention)  (got null)
+  ok  - shopSpendWatchdogEvaluate_.covered agrees with shopSpendCoveredWeeks_ for the same fixture  (got true)
+  ok  - ...and that agreement is a real "covered" (true), not both trivially false
+  ok  - first Monday of Jan 2027 resolves the just-closed week to 2026-W53, not 2027-W00/W01  (got "2026-W53")
+  ok  - covered week: no calendar event raised  (got 0)
+  ok  - missing week: exactly one calendar event raised  (got 1)
+  ok  - alert title matches the shopspend source (stable, no varying number)  (got "LEIBLE expense stale: shopspend")
+  ok  - alert is ORANGE like every other staleness alert
+  ok  - cold start: exactly one calendar event raised  (got 1)
+  ok  - cold start: description uses the never-seen wording (ageHours: null)
+  ok  - malformed pulls rows + a broken calendar never throw out of the handler
+  ok  - an event-object argument does not throw
+  ok  - shopSpendWatchdog(eventObject) behaves identically to shopSpendWatchdog() (same alert count)  (got 1)
+  ok  - installing twice leaves exactly one trigger for shopSpendWatchdog  (got 1)
+  ok  - trigger is MONDAY  (got 2)
+  ok  - trigger is hour 14  (got 14)
+  ok  - trigger is Australia/Sydney  (got "Australia/Sydney")
+
+doGet — fn dispatch + shopspendCoverage (step 8):
+  ok  - no fn: result ok  (got "ok")
+  ok  - no fn: count  (got 2)
+  ok  - no fn: week_start  (got "2026-06-15")
+  ok  - no fn: week_end  (got "2026-06-21")
+  ok  - no fn: first row supplier  (got "Food and Dairy Co")
+  ok  - no fn: first row total_spend  (got 300)
+  ok  - fn=summary matches omitted-fn response  (got {"result":"ok","week_start":"2026-06-15","week_end":"2026-06-21","count":2,"rows":[{"week_start":"2026-06-15","week_end":"2026-06-21","supplier":"Food and Dairy Co","location":"York St","total_spend":300,"summarized_at":"TS"},{"week_start":"2026-06-15","week_end":"2026-06-21","supplier":"Butterboy","location":"York St","total_spend":80,"summarized_at":"TS"}]})
+  ok  - shopspendCoverage: result ok  (got "ok")
+  ok  - shopspendCoverage: count  (got 3)
+  ok  - shopspendCoverage: weeks match shopSpendCoveredWeeks_ span expansion  (got ["2026-W29","2026-W30","2026-W31"])
+  ok  - empty ShopSpendPulls: result ok (not error)  (got "ok")
+  ok  - empty ShopSpendPulls: count 0  (got 0)
+  ok  - empty ShopSpendPulls: weeks []  (got [])
+  ok  - missing ShopSpendPulls tab: result ok (not error)  (got "ok")
+  ok  - missing ShopSpendPulls tab: count 0  (got 0)
+  ok  - missing ShopSpendPulls tab: weeks []  (got [])
+  ok  - coverage path: missing token → error  (got "error")
+  ok  - coverage path: missing token → unauthorized message  (got "unauthorized")
+  ok  - coverage path: bad token → error  (got "error")
+  ok  - coverage path: bad token → unauthorized message  (got "unauthorized")
+  ok  - unknown fn: result error  (got "error")
+  ok  - unknown fn: response has no rows array (did not fall through to Summary)
+  ok  - unknown fn + bad token: still unauthorized, not an unknown-fn error  (got "unauthorized")
+
+doPost — weeks_verified_empty token gate (step 0):
+  ok  - no token field: result error  (got "error")
+  ok  - no token field: code UNAUTHORIZED (machine-readable for poster degradation)  (got "UNAUTHORIZED")
+  ok  - no token field: message unauthorized  (got "unauthorized")
+  ok  - wrong token: result error  (got "error")
+  ok  - wrong token: message unauthorized  (got "unauthorized")
+  ok  - wrong token: code UNAUTHORIZED  (got "UNAUTHORIZED")
+  ok  - correct token: result ok  (got "ok")
+  ok  - correct token: tombstonesWritten present
+  ok  - correct token: tombstonesSkipped present
+  ok  - empty weeks_verified_empty array, no token: result error  (got "error")
+  ok  - empty weeks_verified_empty array, no token: still unauthorized  (got "unauthorized")
+  ok  - field absent, shopspend payload: result ok  (got "ok")
+  ok  - field absent, suppliers payload: result ok  (got "ok")
+  ok  - property unset: result error  (got "error")
+  ok  - property unset: message unauthorized (fail-closed)  (got "unauthorized")
+  ok  - property unset: code UNAUTHORIZED  (got "UNAUTHORIZED")
+  ok  - malformed weeks_verified_empty, no token: result error  (got "error")
+  ok  - malformed weeks_verified_empty, no token: unauthorized (not validation error)  (got "unauthorized")
+  ok  - malformed weeks_verified_empty, correct token: result error  (got "error")
+  ok  - malformed weeks_verified_empty, correct token: validation error surfaces  (got "invalid weeks_verified_empty")
+
+orderapp: orderAppFetch_ / orderAppClassifyResponse_ / orderAppBuildUrl_:
+  ok  - no token: result shape  (got {"ok":false,"reason":"no-token"})
+  ok  - no token: UrlFetchApp.fetch called zero times  (got 0)
+  ok  - HTTP 200 + ok:true passes the parsed body through  (got {"ok":true,"body":{"ok":true,"weeks":[{"label":"2026-W31"}]}})
+  ok  - HTTP 200 + ok:false api error -> api:<ERROR> reason  (got {"ok":false,"reason":"api:UNAUTHORIZED"})
+  ok  - HTTP 500 -> http-<code> reason  (got {"ok":false,"reason":"http-500"})
+  ok  - HTML login page does not throw
+  ok  - HTML login page -> parse reason  (got {"ok":false,"reason":"parse"})
+  ok  - orderAppBuildUrl_ starts with execUrl + "?"
+  ok  - orderAppBuildUrl_ percent-encodes "&" in a value
+  ok  - orderAppBuildUrl_ percent-encodes space in a value
+  ok  - orderAppBuildUrl_ percent-encodes "+" in a value
+
+orderapp: run start/success/alert failure accounting:
+  ok  - start x1 + success: failcount resets to 0  (got "0")
+  ok  - start x1 + success: heartbeat stamped
+  ok  - first consecutive start: no alert yet  (got 0)
+  ok  - second consecutive start (no success between): exactly one alert  (got 1)
+  ok  - alert raised after the 2nd failed start  (got 1)
+  ok  - alert title names the source
+  ok  - alert title says "did not complete"
+  ok  - alert body says "retrying"
+  ok  - alert body names the GAS trigger
+  ok  - alert body names the ORDER_APP_COST_TOKEN property
+  ok  - alert body names the /exec URL
+  ok  - alert body does NOT mention Task Scheduler (wrong remediation class)
+  ok  - after recovery: failcount back to 0  (got "0")
+  ok  - after recovery: "recovered" was logged
+  ok  - crash after start: failcount remains 1  (got "1")
+  ok  - crash after start: heartbeat NOT stamped
+  ok  - skip resets the failcount to 0  (got "0")
+  ok  - skip stamps NO heartbeat
+  ok  - repeated start->skip cycles never alert  (got 0)
+  ok  - a broken calendar does not throw out of orderAppRaiseAlert_
+
+orderapp: isoWeekLabel_ / lastCompletedWeeks_:
+  ok  - 2026-01-01 (Thursday) -> 2026-W01  (got "2026-W01")
+  ok  - 2024-12-30 (Monday belonging to the next ISO year) -> 2025-W01  (got "2025-W01")
+  ok  - 2021-01-01 (Friday belonging to the previous ISO year) -> 2020-W53  (got "2020-W53")
+  ok  - mid-year Monday and the Sunday of the same week share a label (Monday)  (got "2026-W25")
+  ok  - mid-year Monday and the Sunday of the same week share a label (Sunday)  (got "2026-W25")
+  ok  - zero-padding: a week-5 date yields W05  (got "2026-W05")
+  ok  - lastCompletedWeeks_('2026-08-06', 4): 4 entries oldest-first  (got ["2026-W28","2026-W29","2026-W30","2026-W31"])
+  ok  - lastCompletedWeeks_: full {label,start,end} shape  (got [{"label":"2026-W28","start":"2026-07-06","end":"2026-07-12"},{"label":"2026-W29","start":"2026-07-13","end":"2026-07-19"},{"label":"2026-W30","start":"2026-07-20","end":"2026-07-26"},{"label":"2026-W31","start":"2026-07-27","end":"2026-08-02"}])
+  ok  - lastCompletedWeeks_: every start is a Monday
+  ok  - lastCompletedWeeks_: every end is start+6 and < today
+  ok  - called on a Monday: the newest entry is the week that ended yesterday  (got [{"label":"2026-W31","start":"2026-07-27","end":"2026-08-02"}])
+
+orderapp: shopifyWeeklyPull_impl_ / shopifyWeeklyPull:
+  ok  - SHOPIFY_REPULL_WEEKS is 4  (got 4)
+  ok  - case1: weeksRequested  (got 4)
+  ok  - case1: weeksFetched  (got 4)
+  ok  - case1: rowsAdded  (got 4)
+  ok  - case1: rowsUpdated  (got 0)
+  ok  - case1: duplicatesSkipped  (got 0)
+  ok  - case1: no apiFailed flag on full success
+  ok  - case1: header + 4 rows  (got 5)
+  ok  - case1: a row exists for week 2026-W28
+  ok  - case1: row for 2026-W28 week_end  (got "2026-07-12")
+  ok  - case1: row for 2026-W28 supplier token is shopify_orderapp, never "shopify"  (got "shopify_orderapp")
+  ok  - case1: row for 2026-W28 location is online  (got "online")
+  ok  - case1: row for 2026-W28 total is the raw grossSales (incl. real zero)  (got 111.11)
+  ok  - case1: row for 2026-W28 summarized_at stamp  (got "2026-08-06T10:00:00+10:00")
+  ok  - case1: row for 2026-W28 department is Roastery  (got "Roastery")
+  ok  - case1: row for 2026-W28 kind is revenue  (got "revenue")
+  ok  - case1: a row exists for week 2026-W29
+  ok  - case1: row for 2026-W29 week_end  (got "2026-07-19")
+  ok  - case1: row for 2026-W29 supplier token is shopify_orderapp, never "shopify"  (got "shopify_orderapp")
+  ok  - case1: row for 2026-W29 location is online  (got "online")
+  ok  - case1: row for 2026-W29 total is the raw grossSales (incl. real zero)  (got 222.22)
+  ok  - case1: row for 2026-W29 summarized_at stamp  (got "2026-08-06T10:00:00+10:00")
+  ok  - case1: row for 2026-W29 department is Roastery  (got "Roastery")
+  ok  - case1: row for 2026-W29 kind is revenue  (got "revenue")
+  ok  - case1: a row exists for week 2026-W30
+  ok  - case1: row for 2026-W30 week_end  (got "2026-07-26")
+  ok  - case1: row for 2026-W30 supplier token is shopify_orderapp, never "shopify"  (got "shopify_orderapp")
+  ok  - case1: row for 2026-W30 location is online  (got "online")
+  ok  - case1: row for 2026-W30 total is the raw grossSales (incl. real zero)  (got 0)
+  ok  - case1: row for 2026-W30 summarized_at stamp  (got "2026-08-06T10:00:00+10:00")
+  ok  - case1: row for 2026-W30 department is Roastery  (got "Roastery")
+  ok  - case1: row for 2026-W30 kind is revenue  (got "revenue")
+  ok  - case1: a row exists for week 2026-W31
+  ok  - case1: row for 2026-W31 week_end  (got "2026-08-02")
+  ok  - case1: row for 2026-W31 supplier token is shopify_orderapp, never "shopify"  (got "shopify_orderapp")
+  ok  - case1: row for 2026-W31 location is online  (got "online")
+  ok  - case1: row for 2026-W31 total is the raw grossSales (incl. real zero)  (got 444.44)
+  ok  - case1: row for 2026-W31 summarized_at stamp  (got "2026-08-06T10:00:00+10:00")
+  ok  - case1: row for 2026-W31 department is Roastery  (got "Roastery")
+  ok  - case1: row for 2026-W31 kind is revenue  (got "revenue")
+  ok  - case2: rowsAdded stays 0 (settling)  (got 0)
+  ok  - case2: exactly the changed week updates  (got 1)
+  ok  - case2: the other 3 settle as duplicatesSkipped  (got 3)
+  ok  - case2: row count unchanged  (got 5)
+  ok  - case2: changed row total updated in place  (got 999.99)
+  ok  - case2: changed row stamp updated in place  (got "2026-08-07T10:00:00+10:00")
+  ok  - case2: an UNCHANGED row keeps its ORIGINAL stamp (no write happened)  (got "2026-08-06T10:00:00+10:00")
+  ok  - case2: an UNCHANGED row keeps its original total  (got 111.11)
+  ok  - case3: wrapper surfaces apiFailed:true from the impl
+  ok  - case3: failcount was incremented by orderAppRunStart_ (before the lock) and never reset  (got "1")
+  ok  - case3: heartbeat NOT stamped on a partial failure
+  ok  - case3: the 3 successful weeks ARE written  (got 4)
+  ok  - case5: NO online Summary row is derived from Revenue (any source, any casing)
+  ok  - case5: wholesale revenue still summarizes per customer
+  ok  - case5: weeklySummarize NEVER writes a Summary row keyed supplier=shopify_orderapp
+  ok  - case5: the exclusion is logged with count + dollars
+  ok  - case6: the week_start cell the Sheet hands back for dedup IS a Date object, not a string
+  ok  - case6: Date-object week_start cells still dedup cleanly (no re-add)  (got 0)
+  ok  - case6: identical figures -> all 4 duplicatesSkipped  (got 4)
+  ok  - case6: Summary row count unchanged  (got 5)
+  ok  - case7: lock timeout return shape  (got {"locked":true})
+  ok  - case7: failcount was still incremented before the lock attempt  (got "1")
+  ok  - case7: a loud log records the lock timeout
+  ok  - case7: nothing was written to Summary
+  ok  - case8: no-token return shape  (got {"noToken":true})
+  ok  - case8: nothing written to Summary
+  ok  - case8: no heartbeat stamped
+  ok  - case8: failcount reset by the not-armed skip  (got "0")
+  ok  - case8: repeated not-armed scheduled runs raise no alert  (got 0)
+  ok  - case9: excludedGross totals every held-out bucket  (got 455.5)
+  ok  - case9: the held-out gross is logged with the week label
+  ok  - case9: the Summary figure itself stays the API grossSales (excluded is surfaced, never added back)  (got 201)
+  ok  - case9: weeks without excluded buckets report excludedGross 0  (got 0)
+  ok  - case10: malformed bodies never throw out of the pull
+  ok  - case10: only the one well-shaped week is written  (got 1)
+  ok  - case10: run marked apiFailed (no heartbeat)
+  ok  - case10: heartbeat NOT stamped
+  ok  - case10: exactly one data row landed  (got 2)
+  ok  - case10: no NaN total anywhere
+  ok  - case10: each rejection is logged with its reason
+  ok  - case10: the clamped-week rejection names the echo mismatch
+
+orderapp: greenBeanInvoices_:
+  ok  - 3 lines/1 invoice: one summed row, date = earliest dateLocal  (got [{"date":"2026-06-14","supplier":"ACME Beans","total":175,"invoice_ref":"acme_beans/INV-1","department":"Roastery"}])
+  ok  - two suppliers sharing invoiceNum INV-100: two rows with distinct refs  (got [{"date":"2026-06-10","supplier":"Bean Co","total":200,"invoice_ref":"bean_co/INV-100","department":"Roastery"},{"date":"2026-06-11","supplier":"Coffee Ltd","total":300,"invoice_ref":"coffee_ltd/INV-100","department":"Roastery"}])
+  ok  - blank invoiceNum, same supplier, two different days: two noinv- rows  (got [{"date":"2026-06-01","supplier":"Roast Supply","total":10,"invoice_ref":"roast_supply/noinv-2026-06-01","department":"Roastery"},{"date":"2026-06-02","supplier":"Roast Supply","total":20,"invoice_ref":"roast_supply/noinv-2026-06-02","department":"Roastery"}])
+  ok  - blank/missing invoiceNum, same supplier+day, two lines: one summed row  (got [{"date":"2026-06-05","supplier":"Green Bean Traders","total":20,"invoice_ref":"green_bean_traders/noinv-2026-06-05","department":"Roastery"}])
+  ok  - rounding: 10.005 + 0.001 -> total 10.01, rounded once at emit  (got [{"date":"2026-06-20","supplier":"Precise Coffee","total":10.01,"invoice_ref":"precise_coffee/INV-500","department":"Roastery"}])
+  ok  - empty input -> []  (got [])
+  ok  - casing-drifted invoiceNum: ONE row, full sum, first-seen casing  (got [{"date":"2026-06-10","supplier":"ACME Beans","total":800,"invoice_ref":"acme_beans/INV-700","department":"Roastery"}])
+  ok  - string/undefined totals sum numerically, never concatenate  (got [{"date":"2026-06-20","supplier":"Str Co","total":75.5,"invoice_ref":"str_co/S-1","department":"Roastery"}])
+  ok  - blank supplierRaw -> explicit fallback name  (got "Green Bean (unnamed supplier)")
+  ok  - flagged row with totalCostIncGst:0 still contributes a row  (got [{"date":"2026-06-25","supplier":"Flagged Supplier","total":0,"invoice_ref":"flagged_supplier/INV-700","department":"Roastery"}])
+  ok  - mixed statuses in one invoice: single summed row, both lines counted  (got [{"date":"2026-06-30","supplier":"Mixed Status Co","total":100,"invoice_ref":"mixed_status_co/INV-800","department":"Roastery"}])
+  ok  - output order is deterministic: sorted by invoice_ref  (got ["aaa_supplier/INV-1","mmm_supplier/INV-1","zzz_supplier/INV-1"])
+
+orderapp: greenBeanWindow_:
+  ok  - GREENBEAN_RESUM_CAP is 5  (got 5)
+  ok  - GREENBEAN_RESUM_QUEUE_PROP name  (got "ORDERAPP_RESUM_QUEUE_greenbean")
+  ok  - year boundary: 2026-01-15 -> from = 1st of Nov 2025  (got {"from":"2025-11-01","to":"2026-01-15"})
+  ok  - mid-year: 2026-08-06 -> from = 1st of Jun 2026  (got {"from":"2026-06-01","to":"2026-08-06"})
+  ok  - month-2 rolls back a year cleanly: 2026-03-10 -> from = 2026-01-01  (got {"from":"2026-01-01","to":"2026-03-10"})
+
+orderapp: greenBeanFetchAllRows_ paging:
+  ok  - paging: rows concatenated across both pages  (got [{"dateLocal":"2026-06-01","supplierRaw":"A","supplierKey":"a","invoiceNum":"A-1","totalCostIncGst":1,"status":"RECEIVED"},{"dateLocal":"2026-06-02","supplierRaw":"A","supplierKey":"a","invoiceNum":"A-1","totalCostIncGst":2,"status":"RECEIVED"},{"dateLocal":"2026-06-03","supplierRaw":"A","supplierKey":"a","invoiceNum":"A-1","totalCostIncGst":3,"status":"RECEIVED"},{"dateLocal":"2026-06-04","supplierRaw":"A","supplierKey":"a","invoiceNum":"A-1","totalCostIncGst":4,"status":"RECEIVED"},{"dateLocal":"2026-06-05","supplierRaw":"A","supplierKey":"a","invoiceNum":"A-1","totalCostIncGst":5,"status":"RECEIVED"}])
+  ok  - paging: exactly 2 requests made  (got 2)
+  ok  - paging: first request carries offset=0
+  ok  - paging: second request carries offset=3
+  ok  - paging: request carries api=greenBeanCost
+  ok  - paging: request carries status=ALL
+  ok  - paging: request carries include=rows
+  ok  - paging: request carries limit=5000
+  ok  - paging: request carries the computed from=
+  ok  - paging: request carries the computed to=
+  ok  - size-guard: returns null, not [] or a partial array
+  ok  - ambiguous rowsIncluded (absent) on a truncated page: returns null
+  ok  - page-shift dupe: resent rowNumber kept once  (got 3)
+  ok  - page-shift dupe: distinct rowNumbers survive in order  (got [10,11,12])
+  ok  - page-shift dupe: the skip is logged
+  ok  - upstream warnings are logged verbatim
+  ok  - the fetch itself raises no alert (the impl owns the signature-gated alert)  (got 0)
+  ok  - non-advancing page (returned:0): returns null
+  ok  - non-advancing page: aborts after ONE fetch, no infinite loop  (got 1)
+  ok  - non-advancing page: the abort is logged
+  ok  - absent paging.returned on a truncated page: returns null (NaN offset guard)
+  ok  - runaway paging: returns null at the page cap
+  ok  - runaway paging: fetch count capped at GREENBEAN_MAX_PAGES  (got 20)
+  ok  - missing meta.paging: does not throw
+  ok  - missing meta.paging: returns null (abort, no ingest)
+  ok  - missing meta.paging: the abort is logged as shape validation
+  ok  - deletion shortfall (3 collected vs matched=4): returns null
+  ok  - deletion shortfall: the abort is logged
+  ok  - repeated per-page warning collected once (dedup keeps signature stable)  (got 1)
+
+orderapp: greenBeanPull / greenBeanPull_impl_ — ingest + snapshot-diff resummarize:
+  ok  - run1: rowsFetched = raw API row count  (got 10)
+  ok  - run1: invoices = grouped invoice count (10 distinct supplierKey/invoiceNum pairs)  (got 10)
+  ok  - run1: rowsAdded (all new)  (got 10)
+  ok  - run1: rowsUpdated  (got 0)
+  ok  - run1: duplicatesSkipped  (got 0)
+  ok  - run1: weeksResummarized capped at 5  (got 5)
+  ok  - run1: weeksQueued = the 2 overflow weeks  (got 2)
+  ok  - run1: no apiFailed flag on full success
+  ok  - run1: weeklySummarize called for exactly the 5 OLDEST affected weeks, oldest-first  (got ["2026-07-13","2026-07-20","2026-07-27","2026-08-03","2026-08-10"])
+  ok  - run1: the current (incomplete) week was never resummarized
+  ok  - run1: the 2 overflow weeks are persisted to the queue property, oldest-first  (got ["2026-08-17","2026-08-24"])
+  ok  - run1: Suppliers has header + 10 rows  (got 11)
+  ok  - run1: heartbeat stamped on full success (a non-empty queue is not a failure)
+  ok  - run2: rowsAdded (nothing new)  (got 0)
+  ok  - run2: rowsUpdated (nothing changed)  (got 0)
+  ok  - run2: duplicatesSkipped (all 10 settle)  (got 10)
+  ok  - run2: weeksResummarized = the 2 drained queue weeks  (got 2)
+  ok  - run2: weeksQueued after drain  (got 0)
+  ok  - run2: weeklySummarize called for the 2 queued weeks, oldest-first  (got ["2026-08-17","2026-08-24"])
+  ok  - run2: queue property is now empty  (got [])
+  ok  - run3: rowsFetched = raw API row count (12; CHANGED-1 now carries 2 lines)  (got 12)
+  ok  - run3: invoices = grouped invoice count (11; CHANGED-1 collapses to 1)  (got 11)
+  ok  - run3: rowsAdded (NEW-1 only)  (got 1)
+  ok  - run3: rowsUpdated (CHANGED-1 + CUR-1)  (got 2)
+  ok  - run3: duplicatesSkipped (7 plain + UNCHANGED-1)  (got 8)
+  ok  - run3: weeklySummarize called for {CHANGED-1 NEW week, NEW-1 week, CHANGED-1 OLD week}, oldest-first  (got ["2026-07-20","2026-07-27","2026-08-24"])
+  ok  - run3: the unchanged invoice's week was never resummarized
+  ok  - run3: the current week was never resummarized even though CUR-1 changed
+  ok  - run3: weeksResummarized  (got 3)
+  ok  - run3: weeksQueued (nothing overflowed)  (got 0)
+  ok  - run3: queue property stays empty  (got [])
+  ok  - run3: the current week was never queued either
+  ok  - run3: CHANGED-1 row exists
+  ok  - run3: CHANGED-1 total updated in place to the new summed value  (got 150)
+  ok  - run3: CHANGED-1 date column self-healed to the NEW computed date (the invoice moved weeks)  (got "2026-07-20")
+  ok  - run3: CUR-1 row exists
+  ok  - run3: CUR-1 total updated in place even though its week is never resummarized  (got 20)
+  ok  - no-token: return shape  (got {"noToken":true})
+  ok  - no-token: Suppliers untouched (header row only)  (got 1)
+  ok  - size-guard abort: apiFailed:true surfaced from the wrapper
+  ok  - size-guard abort: failcount incremented by orderAppRunStart_ (1 -> 2) and NEVER reset  (got "2")
+  ok  - size-guard abort: no heartbeat stamped
+  ok  - size-guard abort: Suppliers untouched (header row only)  (got 1)
+  ok  - size-guard abort: a loud log records the abort
+
+orderapp: greenBeanPull_impl_ — flagged rows surfaced:
+  ok  - flaggedRows counts rows carrying flags[]  (got 1)
+  ok  - flagged count is logged with remediation pointer
+  ok  - the flagged $0 line still ingested (never dropped)  (got 2)
+  ok  - flagged rows raise ONE data-quality calendar alert  (got 1)
+  ok  - data-quality alert names the source and understated risk
+  ok  - unchanged condition: still exactly one alert  (got 1)
+  ok  - the suppression is logged
+  ok  - changed condition (1 -> 2 flags): a second alert fires  (got 2)
+  ok  - clean run: no new alert  (got 2)
+  ok  - clean run: signature cleared, next occurrence re-arms
+  ok  - flag bucketing: alert names BLANK_SUPPLIER and NON_NUMERIC_PRICE_KG
+  ok  - flag bucketing: signature carries the flag names
+
+orderapp: round-2 fixes — crash-safe queue / snapshot casing / zero-row window:
+  ok  - mid-loop death propagates (fail-open counting sees an incomplete run)
+  ok  - the queue property still holds ALL 7 affected weeks (persisted pre-loop)  (got ["2026-07-06","2026-07-13","2026-07-20","2026-07-27","2026-08-03","2026-08-10","2026-08-17"])
+  ok  - no heartbeat stamped on the dead run
+  ok  - retyped-casing invoice updates the existing row, adds nothing  (got 0)
+  ok  - retyped-casing invoice counts as updated  (got 1)
+  ok  - date also moved -> BOTH weeks resummarized (self-heal), oldest first — the point is the snapshot HIT, not an append  (got ["2026-07-06","2026-08-10"])
+  ok  - padded stored ref: classifies as update, not new  (got 1)
+  ok  - padded stored ref: date also moved -> BOTH weeks resummarized (snapshot HIT proven, no append)  (got ["2026-07-06","2026-08-10"])
+  ok  - rename: one data-quality alert raised  (got 1)
+  ok  - orphan alert names the stale old ref, hints the new ref, carries the runbook
+  ok  - legit shared invoiceNum across suppliers: no rename alert  (got 0)
+  ok  - PARTIAL rename: alert fires even though the old key is still in the pull  (got 1)
+  ok  - partial-rename alert names the moved ref
+  ok  - date move: nothing added (same ref)  (got 0)
+  ok  - date move: the Suppliers date cell now carries the NEW date  (got "2026-07-13")
+  ok  - date move: BOTH weeks resummarized, oldest first  (got ["2026-07-13","2026-08-10"])
+  ok  - date move: the self-heal is logged
+  ok  - out-of-window prior holder: no rename alert  (got 0)
+  ok  - content-hash sig: first warning alerts  (got 1)
+  ok  - content-hash sig: unchanged text suppressed  (got 1)
+  ok  - content-hash sig: same count, changed text -> re-alerts  (got 2)
+  ok  - abort: apiFailed surfaced
+  ok  - abort: the collected warnings still raise the data-quality alert  (got 1)
+  ok  - abort alert says the run ABORTED and carries the warning text
+  ok  - upstream warning: one alert from the impl  (got 1)
+  ok  - upstream alert says spend may be incomplete
+  ok  - unchanged upstream warning: suppressed on the next pull  (got 1)
+  ok  - clean pull clears the upstream signature
+  ok  - zero-row window: run completes  (got 0)
+  ok  - zero-row window: no failure alert  (got 0)
+  ok  - zero-row window: loud WARNING logged
+  ok  - refused week: counted out of weeksResummarized  (got 1)
+  ok  - refused week: stays in the queue property  (got ["2026-07-06"])
+  ok  - refused week: the refusal is logged
+
+orderapp: round-9 fixes — orphaned rows / noinv date-move / extracted_at stamp:
+  ok  - noinv date-move: the stale old row raises an orphan alert (was a silent double-count)  (got 2)
+  ok  - orphan alert names the stale noinv ref and the runbook
+  ok  - alert title carries the greenbean_orphan key
+  ok  - deleted upstream invoice: orphan alert fires  (got 1)
+  ok  - deletion orphan names the ref and carries no rename hint
+  ok  - zeroed row: no further orphan alert  (got 1)
+  ok  - zeroed row: orphan signature cleared (next incident re-arms)
+  ok  - date-move self-heal still updates the date cell  (got "2026-07-13")
+  ok  - date-move self-heal re-stamps extracted_at alongside the date (value+stamp convention)
+  ok  - date move orphans a Summary row — real double-count, must alert  (got 1)
+
+validateIngest_ — online-channel revenue rejection (PRD-10):
+  ok  - channel=online revenue is rejected  (got false)
+  ok  - rejection message names the shopify_orderapp exclusivity
+  ok  - casing does not bypass the guard  (got false)
+  ok  - wholesale revenue still accepted  (got true)
+  ok  - any source is blocked, not just coffee_order_app  (got false)
+  ok  - suppliers gate: exact source rejected  (got false)
+  ok  - suppliers gate: mixed casing rejected too  (got false)
+  ok  - suppliers gate: padded source rejected too  (got false)
+
+orderapp: installOrderAppTriggers (step 6):
+  ok  - installOrderAppTriggers is defined
+  ok  - installing twice leaves exactly one trigger for shopifyWeeklyPull  (got 1)
+  ok  - installing twice leaves exactly one trigger for greenBeanPull  (got 1)
+  ok  - installer does not delete the unrelated shopSpendWatchdog trigger
+  ok  - shopify trigger is MONDAY  (got 2)
+  ok  - shopify trigger is hour 5  (got 5)
+  ok  - shopify trigger is Australia/Sydney  (got "Australia/Sydney")
+  ok  - greenbean trigger is TUESDAY  (got 3)
+  ok  - greenbean trigger is hour 5  (got 5)
+  ok  - greenbean trigger is Australia/Sydney  (got "Australia/Sydney")
+mayersDailyPull — unparseable-attachment memo (Drive OCR quota leak)
+  ok  - run 1 OCRs both attachments (mock observes real calls)  (got 2)
+  ok  - run 1 ingests the invoice  (got 1)
+  ok  - run 1 counts the statement as unparsed  (got 1)
+  ok  - run 1 skips no OCR — nothing memoed yet  (got 0)
+  ok  - invoice thread is labelled
+  ok  - statement thread stays UNLABELLED (a new attachment must still be seen)
+  ok  - run 2 performs ZERO OCR — the daily statement re-OCR is gone  (got 0)
+  ok  - run 2 reports the skip  (got 1)
+  ok  - run 2 ingests nothing new  (got 0)
+  ok  - statement thread is STILL unlabelled after being memoed
+  ok  - a NEW attachment on the memoed thread is OCRd  (got ["inv3434688.pdf:49000"])
+  ok  - the new invoice ingests  (got 1)
+  ok  - the statement beside it is still skipped  (got 1)
+  ok  - thread is labelled now that something parsed out of it
+  ok  - memoed under the current version → no OCR  (got 0)
+  ok  - …and reports the skip  (got 1)
+  ok  - version bump re-OCRs the memoed statement exactly once  (got ["statement-31JUL26.pdf:88000"])
+  ok  - version bump means nothing is skipped  (got 0)
+  ok  - and it is immediately re-memoed under the new version  (got 0)
+  ok  - re-memoed under new version reports the skip  (got 1)
+  ok  - a thrown OCR counts as unparsed  (got 1)
+  ok  - a transient OCR failure is NOT memoed — it retries next run  (got ["flaky.pdf:12345"])
+  ok  - and reports no skip  (got 0)
+  ok  - a recovered attachment ingests normally  (got 1)
+mayers memo helpers
+  ok  - attachment key pairs name with byte size  (got "a.pdf:42")
+  ok  - same name, different size → different key
+  ok  - absent memo loads as empty  (got {})
+  ok  - round-trips at the current version  (got {"x.pdf:1":1000})
+  ok  - a version bump discards the whole memo  (got {})
+  ok  - corrupt memo degrades to empty, not a throw  (got {})
+  ok  - memo is capped at MAYERS_UNPARSEABLE_MAX_  (got 200)
+  ok  - oldest entry was evicted
+  ok  - newest entry was kept
+mayers.gs — retained location-repair rollback
+  ok  - the backup tab name is retained  (got "Summary_mayers_location_backup")
+  ok  - the snapshot key prefix is retained  (got "MAYERS_REPAIR_SNAPSHOT_")
+  ok  - the rollback entry point survives the cleanup  (got "function")
+  ok  - zero-arg rollback finds the week from its property alone  (got 1)
+  ok  - the Suppliers location is back to the original UNMAPPED value  (got "UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060 ")
+  ok  - the stale Summary row is re-appended from the backup tab  (got 1)
+  ok  - ...with its original amount  (got 703.75)
+  ok  - the target-location row the repair created is removed  (got 0)
+  ok  - the co-located Bennetts row is untouched  (got 1)
+  ok  - ...with its total intact  (got 14219)
+  ok  - an unrelated supplier in the same week is untouched  (got 40)
+  ok  - a second rollback changes nothing  (got ["[\"2026-07-06\",\"Bennetts\",\"\",14219,\"Roastery\",\"spend\"]","[\"2026-07-06\",\"Kent Paper\",\"Leible York\",40,\"Cafe\",\"spend\"]","[\"2026-07-06\",\"Mayers\",\"UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060 \",703.75,\"Cafe\",\"spend\"]"])
+  ok  - ...and re-appends nothing (no double-count)  (got 0)
+  ok  - ...and deletes nothing  (got 0)
+  ok  - exactly one stale row is present, not two  (got 1)
+  ok  - a pre-existing target row survives rollback  (got 1)
+  ok  - ...restored to its pre-repair amount  (got 500)
+  ok  - no snapshots at all -> nothing to roll back, no throw  (got 0)
+  ok  - a corrupt snapshot refuses  (got "corrupt-snapshot")
+  ok  - ...and changes nothing  (got "Leible North")
+  ok  - a lock timeout refuses instead of silently no-opping  (got "locked")
+  ok  - ...having changed nothing  (got "Leible North")
+  ok  - saving over an existing week refuses  (got "already-exists")
+  ok  - ...leaving the real artifact intact  (got "{\"week\":\"2026-07-06\",\"capturedAt\":\"2026-08-24T12:54:00+10:00\",\"rows\":[{\"invoice_ref\":\"3437634\",\"location\":\"UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060 \",\"total\":703.75,\"date\":\"2026-07-08\",\"department\":\"Cafe\",\"supplier\":\"Mayers\"}],\"staleKeys\":[{\"week_start\":\"2026-07-06\",\"department\":\"Cafe\",\"kind\":\"spend\",\"supplier\":\"Mayers\",\"location\":\"UNMAPPED: LEIBLE COFFEE NORTH SYDNEY 5 BLUES ST NORTH SYDNEY NSW 2060 \",\"refs\":[\"3437634\"]}],\"targetKeys\":[{\"department\":\"Cafe\",\"kind\":\"spend\",\"supplier\":\"Mayers\",\"location\":\"Leible North\",\"existedBefore\":false,\"totalBefore\":null}]}")
+  ok  - a different week writes its own key  (got true)
+  ok  - ...and both are enumerated, oldest first  (got ["2026-07-06","2026-07-20"])
+  ok  - the full tuple finds exactly the Bennetts row  (got 1)
+  ok  - ...and does NOT confuse it with a blank-location Mayers key  (got 0)
+  ok  - mayersNorm_ matches rowKey_ normalization  (got "mayers")
+summary_audit.gs — Summary vs Suppliers drift audit
+  ok  - the audit writes NOTHING  (got 5)
+  ok  - a matching week is clean  (got 0)
+  ok  - ...and counted as audited  (got 1)
+  ok  - ...with no money reported  (got 0)
+  ok  - a missing row is found  (got 1)
+  ok  - ...the week is flagged  (got 1)
+  ok  - ...and the money is quantified  (got 250.5)
+  ok  - ...naming supplier and shop  (got "Fresh and Chill@Leible North")
+  ok  - a stale amount is found  (got 1)
+  ok  - ...reporting only the shortfall, not the whole row  (got 75.25)
+  ok  - ...with both figures  (got [100,175.25])
+  ok  - the fixture really does hold an unrounded float
+  ok  - a Summary cell of 0.30000000000000004 is NOT reported as drift  (got 0)
+  ok  - an archived week that matches is CLEAN, not an orphan  (got 0)
+  ok  - ...but a genuinely stale archived week IS reported  (got 1)
+  ok  - ...flagged as past the purge line
+  ok  - ...and as no longer present in Suppliers
+  ok  - Labour / Bennetts / shopify_orderapp are NOT flagged as orphans  (got 0)
+  ok  - a NON-pull-owned Summary-only row IS flagged  (got 1)
+  ok  - ...but is NOT netted into the under-reported figure  (got 0)
+  ok  - the in-flight week is skipped  (got 1)
+  ok  - ...and not counted as drift  (got 0)
+  ok  - ...with the reason recorded
+  ok  - a missing REVENUE row is found too  (got 1)
+  ok  - ...and quantified  (got 500)
+  ok  - logs line by line, not as one blob
+  ok  - no line risks truncation
+  ok  - the headline number is present
+  ok  - the purge line is stated
+  ok  - detail names the missing row
+Code.gs — computeHealPlan_ (single source of truth for what a heal would do)
+  ok  - one plan entry per requested week  (got 1)
+  ok  - ...for the requested week  (got "2026-07-06")
+  ok  - action is heal  (got "heal")
+  ok  - exactly one row to write  (got 1)
+  ok  - ...with live/computed named  (got [100,175.25])
+  ok  - ...and the delta correctly quantified (not the whole row)  (got 75.25)
+  ok  - ...not flagged as a new row (it already exists in Summary)
+  ok  - ...keyed exactly as rowKey_(SUMMARY_KEY_COLS) would key it  (got "2026-07-06||cafe||spend||kent paper||leible york")
+  ok  - an updated row costs 2 setValue calls (upsertRows_ pays amountCol + stampCol)  (got 2)
+  ok  - a week with an _archive row is skip-split  (got "skip-split")
+  ok  - ...with NO rows to write
+  ok  - ...and zero projected setValue calls  (got 0)
+  ok  - ...with a reason recorded
+  ok  - duplicate live keys (case/whitespace-insensitive) refuse the week  (got "refuse-duplicate-keys")
+  ok  - ...with NO rows to write
+  ok  - ...and zero projected setValue calls  (got 0)
+  ok  - ...with a reason recorded
+  ok  - action is heal  (got "heal")
+  ok  - the Bennetts location="" row IS included, proving no pull-owned filtering  (got 1)
+  ok  - ...as a brand-new row for the full computed amount  (got [true,14219])
+  ok  - a brand-new row costs 0 setValue calls — it is appended, not updated  (got 0)
+  ok  - action is heal (nothing computed collides with the live row)  (got "heal")
+  ok  - the live shopify_orderapp online row produces NO write — it is untouched  (got 0)
+  ok  - zero appendRow/setValues calls  (got 5)
+  ok  - ...and zero getRange (setValue) calls against Summary either  (got 1)
+summary_audit.gs — previewSummaryHeal() (zero-arg editor entry point)
+  ok  - the fixture really does store the archive date cell as a Date object
+  ok  - a Date-typed _archive row for wk-1 still triggers skip-split  (got "skip-split")
+  ok  - previewSummaryHeal does not throw on a blank archive date
+  ok  - ...and no week is mis-flagged skip-split by a blank-date key collision
+  ok  - previewSummaryHeal writes NOTHING  (got 8)
+  ok  - reports exactly the heal window (1 week — kill switch off by default)  (got ["2026-08-17"])
+  ok  - wk-1 is a heal with the one stale row  (got "heal")
+  ok  - ...delta correctly quantified  (got 75.25)
+  ok  - projectedSetValues sums the whole window (2 per updated row, upsertRows_-style)  (got 2)
+  ok  - projectedOverrideCost is the _archive + Summary read size a single override call pays  (got 4)
+  ok  - FIX4: previewSummaryHeal does not create the Summary tab
+  ok  - FIX4: previewSummaryHeal does not create the _archive tab
+  ok  - FIX4: previewSummaryHeal does not create the Revenue tab
+summary_audit.gs — auditSummaryDrift_ minWeek window (opt-in)
+  ok  - a null minWeek is byte-identical to omitting it entirely  (got "{\"generatedAt\":\"2026-08-24T12:00:00+10:00\",\"weeksAudited\":2,\"weeksClean\":0,\"weeksDrifted\":2,\"missingRows\":2,\"staleRows\":0,\"netUnderreported\":500,\"pastPurgeLine\":0,\"weeks\":[{\"week\":\"2026-02-23\",\"missing\":1,\"stale\":0,\"summaryOnly\":0,\"pullOwnedIgnored\":0,\"net\":200,\"sourceRowsStillPresent\":true,\"pastPurgeLine\":false,\"detail\":{\"missing\":[{\"supplier\":\"Kent Paper\",\"location\":\"X\",\"amount\":200}],\"stale\":[],\"summaryOnly\":[]}},{\"week\":\"2026-07-06\",\"missing\":1,\"stale\":0,\"summaryOnly\":0,\"pullOwnedIgnored\":0,\"net\":300,\"sourceRowsStillPresent\":true,\"pastPurgeLine\":false,\"detail\":{\"missing\":[{\"supplier\":\"Kent Paper\",\"location\":\"Y\",\"amount\":300}],\"stale\":[],\"summaryOnly\":[]}}],\"skipped\":[]}")
+  ok  - the week before minWeek is excluded  (got ["2026-07-06"])
+  ok  - ...and weeksAudited only counts the included week  (got 1)
+  ok  - the boundary week itself is included  (got ["2026-03-02"])
+summary_drift_repair.gs — safe re-summarize of drifted weeks
+  ok  - planning writes NOTHING  (got 9)
+  ok  - exactly one week is rebuildable  (got 1)
+  ok  - ...and it is the Suppliers-only week  (got "2026-08-10")
+  ok  - ...its money is claimed  (got 100)
+  ok  - the other three are skipped  (got 3)
+  ok  - a SPLIT week is refused
+  ok  - ...naming the split as the reason
+  ok  - ...and it is NOT in the repair list
+  ok  - ...the audit alone would have called it fixable
+  ok  - a fully-archived week is skipped for the purge line
+  ok  - an orphan-only week is skipped — a recompute has no delete path
+  ok  - a Suppliers-only recompute of the split week yields the partial total  (got 200)
+  ok  - ...which is LOWER than what Summary already reports (250)
+  ok  - the window opens at the approved week  (got "2026-02-23")
+  ok  - only the in-window week is repaired  (got ["2026-02-23"])
+  ok  - ...and only its money is claimed  (got 100)
+  ok  - the week one before the boundary is out of scope
+  ok  - ...as is the 2024 history
+  ok  - ...and their money is NOT claimed  (got 1100)
+  ok  - the boundary week is inside the window  (got ["2026-02-23"])
+  ok  - nothing is repaired  (got 0)
+  ok  - an out-of-window SPLIT week is still labelled SPLIT
+  ok  - all three are rebuildable  (got 3)
+  ok  - ...oldest first  (got ["2026-07-27","2026-08-03","2026-08-10"])
+  ok  - ...with the money summed  (got 600)
+  ok  - the dry run never calls weeklySummarize  (got 0)
+  ok  - ...and writes nothing  (got 6)
+  ok  - only the rebuildable week is summarized  (got ["2026-08-10"])
+  ok  - ...reported ok  (got 1)
+  ok  - ...none failed  (got 0)
+  ok  - a locked refusal fails every week  (got 3)
+  ok  - ...and none are counted ok  (got 0)
+  ok  - ...with the reason surfaced  (got "locked")
+  ok  - an incomplete-week refusal fails despite carrying weekStart  (got 3)
+  ok  - a week that summarized the WRONG week is not ok  (got 1)
+  ok  - ...only the one that genuinely matches
+  ok  - a 0/0 idempotent re-run is SUCCESS, not failure  (got 3)
+  ok  - a null return fails rather than throwing  (got 3)
+  ok  - nothing is attempted once the budget is gone  (got 0)
+  ok  - ...the run says it stopped early
+  ok  - ...and reports every week as still outstanding  (got 3)
+  ok  - no drift, nothing to repair  (got 0)
+  ok  - ...and nothing skipped either  (got 0)
+  ok  - logs line by line, not as one truncatable blob
+  ok  - no line risks truncation
+  ok  - the repair list is stated
+  ok  - every skip is stated with its week
+  ok  - and it says plainly that nothing was written
+_archive dedup — ingest awareness, audit dedup, duplicate census
+  ok  - the archived invoice is not added to Suppliers  (got 0)
+  ok  - ...it is counted, not silently dropped  (got 1)
+  ok  - ...and Suppliers stays empty  (got 1)
+  ok  - the new invoice is added  (got 1)
+  ok  - ...and only the archived one is skipped  (got 1)
+  ok  - ...Suppliers holds exactly the new row  (got "INV-9")
+  ok  - same ref under a different source is not an archive hit  (got 1)
+  ok  - ...nothing skipped  (got 0)
+  ok  - ingest works with no _archive tab  (got 1)
+  ok  - ...and reports zero archived skips  (got 0)
+  ok  - the duplicated invoice is counted ONCE, not twice  (got 300)
+  ok  - an archive-only invoice is still counted  (got 300)
+  ok  - six ARCHIVE-ONLY copies count as one invoice, not six  (got 300)
+  ok  - one row per distinct invoice, across BOTH tabs  (got 2)
+  ok  - two empty-key rows both survive dedup  (got 2)
+  ok  - one invoice is stored more than once  (got 1)
+  ok  - ...with six redundant copies (7 total, minus the one real)  (got 6)
+  ok  - ...and the deepest stack is reported  (got 7)
+  ok  - ...the over-count prices EVERY extra copy, not just one  (got 1800)
+  ok  - ...grouped by week  (got 1)
+  ok  - an archive-only duplicate is caught  (got 1)
+  ok  - ...priced once  (got 250)
+  ok  - a clean sheet reports no duplicates  (got 0)
+  ok  - ...no over-count  (got 0)
+  ok  - ...and the census writes NOTHING  (got 1)
+  ok  - it is not archived a second time  (got 0)
+  ok  - ..._archive still holds exactly one copy  (got 2)
+  ok  - ...but the Suppliers row is still purged  (got 1)
+  ok  - an unarchived old row IS archived  (got 1)
+  ok  - ..._archive holds it  (got 2)
+  ok  - within-run duplicates collapse to one archive row  (got 2)
+Code.gs — healWeek_ (guarded per-week write: backup, SPLIT guard, duplicate refusal, correction alert)
+  ok  - SPLIT week action is skip-split  (got "skip-split")
+  ok  - SPLIT week: Summary is byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - SPLIT week is still backed up
+  ok  - SPLIT week raises an alert
+  ok  - duplicate-key week is refused, not half-updated  (got "refuse-duplicate-keys")
+  ok  - duplicate-key week: Summary is byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"  KENT PAPER  \",\"leible york\",999,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - duplicate-key week raises an alert
+  ok  - Bennetts (blank location) IS summarized  (got "heal")
+  ok  - ...one row added, proving no pull-owned filtering  (got 1)
+  ok  - action is heal (nothing computed collides)  (got "heal")
+  ok  - zero rows written — the online row is untouched  (got 0)
+  ok  - Summary is byte-identical  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"shopify_orderapp\",\"online\",900,\"2026-08-24T13:00:00+10:00\",\"Roastery\",\"revenue\"]]")
+  ok  - a backup write happened
+  ok  - a Summary setValue happened (this is the update case)
+  ok  - the backup was written strictly before the Summary setValue
+  ok  - first heal snapshots exactly one row (the pre-heal 100)  (got 1)
+  ok  - ...carrying the PRE-heal total  (got 100)
+  ok  - a second heal of the same week does not add a second snapshot  (got 1)
+  ok  - ...the ORIGINAL pre-heal value survives, not the post-heal one  (got 100)
+  ok  - a genuine correction (100 -> 175.25) raises an alert
+  ok  - ...naming the week
+  ok  - ...and the update is reported  (got 1)
+  ok  - an idempotent re-heal (nothing changed) reports zero updates  (got 0)
+  ok  - ...and raises NO alert  (got 0)
+Code.gs — healEarliestBackupRows_ (restore resolves to the earliest snapshot)
+  ok  - exactly one row resolves for the week  (got 1)
+  ok  - ...the FIRST (earliest) snapshot, not the later one  (got 100)
+  ok  - ...tagged with the earliest run_id  (got "RUN-1")
+  ok  - a different week resolves independently  (got 1)
+  ok  - ...unaffected by the other week's duplicate  (got 50)
+  ok  - an absent week resolves to nothing  (got 0)
+Code.gs — healWeeks_ (shared entry: ctx-once, newest-first, newest-week failure is loud)
+  ok  - a 5-week batch reads _archive exactly once, not five times  (got 1)
+  ok  - processed newest-first regardless of input order  (got ["2026-08-17","2026-08-10"])
+  ok  - the newest week is SPLIT  (got "skip-split")
+  ok  - the run reports overall failure  (got false)
+  ok  - newestWeekFailed is set
+  ok  - the newest-week alert is HIGH severity (RED)
+  ok  - the older week is SPLIT  (got "skip-split")
+  ok  - the run still reports success — only the NEWEST week failing is fatal  (got true)
+  ok  - the older week's alert is NORMAL severity, not RED
+Code.gs — weeklySummarize() wired to the guarded heal path (kill switch, archive/purge, override parity)
+  ok  - SUMMARY_HEAL_WEEKS_ default window is 4  (got 4)
+  ok  - switch OFF: wk-1 is healed  (got 175.25)
+  ok  - switch OFF: wk-2 is left untouched (window=1)  (got 100)
+  ok  - switch OFF: a SPLIT wk-1 is STILL refused, not force-written  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-08-16T14:00:00.000Z\",\"2026-08-22T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - switch ON: wk-1 healed  (got 175.25)
+  ok  - switch ON: wk-2 healed  (got 200)
+  ok  - switch ON: wk-3 healed  (got 300)
+  ok  - switch ON: wk-4 healed  (got 400)
+  ok  - switch ON: wk-5 is OUTSIDE the window — untouched  (got 100)
+  ok  - archiveAndPurge_ runs exactly once for a 4-week scheduled heal, not once per week  (got 1)
+  ok  - archiveAndPurge_ never runs on an override  (got 0)
+  ok  - override path: SPLIT week is refused too  (got "skip-split")
+  ok  - override path: Summary is byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-08-16T14:00:00.000Z\",\"2026-08-22T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - override path raises the same alert the scheduled path would
+  ok  - override path: duplicate keys refuse too  (got "refuse-duplicate-keys")
+  ok  - override path: Summary is byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-08-16T14:00:00.000Z\",\"2026-08-22T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-08-16T14:00:00.000Z\",\"2026-08-22T14:00:00.000Z\",\"  KENT PAPER  \",\"leible york\",999,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - a labour-only correction (no Suppliers change) still raises an alert
+  ok  - ...and the labour figure actually moved  (got 4500)
+  ok  - an idempotent re-summarize of an unchanged week raises NO alert  (got 0)
+Code.gs — healWeek_ orphan detection (Step 3: automatic, read-only, rides the existing alert)
+  ok  - action is heal (a new location key is appended)  (got "heal")
+  ok  - exactly one row added (the new location)  (got 1)
+  ok  - res.orphans is an array with exactly the ONE stale key
+  ok  - orphan names the correct supplier  (got "Kent Paper")
+  ok  - orphan names the OLD location, not the new one  (got "Old Shop")
+  ok  - orphan carries the stale total  (got 100)
+  ok  - orphan carries a full key encoding the OLD location
+  ok  - zero deleteRow calls on the automatic path  (got 0)
+  ok  - the OLD Summary row is still there — detection didn't remove it
+  ok  - exactly one alert fires for the week — the orphan is folded into it, not a second event  (got 1)
+  ok  - ...and its description mentions the orphan
+  ok  - shopify_orderapp online row is excluded from orphan candidates
+  ok  - action is heal (nothing changed)  (got "heal")
+  ok  - a derived, blank-location row that matches the computed batch is NOT an orphan
+  ok  - action is heal (the Kent Paper row matches)  (got "heal")
+  ok  - FIX2: a Labour Summary row is excluded from orphan candidates
+summary_audit.gs — runSummaryOrphanSweepDryRun / runSummaryOrphanSweep (Step 3: gated, backed-up, bottom-up removal)
+  ok  - dry run writes NOTHING to Summary  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-12T14:00:00.000Z\",\"2026-07-18T14:00:00.000Z\",\"Fresh and Chill\",\"Old Balmain\",75,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - dry run finds exactly the 2 orphan candidates
+  ok  - orphan A gets its own log line
+  ok  - orphan B gets its own log line
+  ok  - neither candidate is buried inside one shared blob line (one line per candidate)
+  ok  - apply matches + deletes exactly the 2 approved candidates  (got 2)
+  ok  - a backup write happened
+  ok  - the first Summary delete happened
+  ok  - the backup was written strictly before the first delete
+  ok  - the retained backup tab exists after apply
+  ok  - every matched row was backed up (2 orphans -> 2 backup rows), regardless of header shape  (got 2)
+  ok  - at least 2 deleteRow calls were made against Summary
+  ok  - deleteRow calls happen bottom-up (strictly descending row indices)
+  ok  - the healthy Kent Paper / Leible York row survives the apply
+  ok  - both orphans are gone from Summary
+  ok  - a count mismatch deletes nothing  (got 0)
+  ok  - Summary is byte-identical after an aborted apply  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Even Older Shop\",60,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - zero deleteRow calls were made on an aborted apply  (got 0)
+  ok  - the abort is reported, not silently swallowed as success
+  ok  - a differently-cased/whitespace twin of a real computed key is NOT an orphan
+  ok  - FIX1: a week whose Suppliers rows exist only in _archive is NOT an orphan candidate — the sweep must merge _archive
+  ok  - FIX1: a week past the purge line yields ZERO candidates, not "every row is an orphan"
+  ok  - FIX1: a SPLIT week (rows in both Suppliers and _archive) yields ZERO candidates
+  ok  - FIX2: a Labour Summary row is excluded from orphan candidates
+  ok  - FIX4: an approval older than ~1 hour is refused, not silently honored  (got 0)
+  ok  - Summary is untouched by a stale-approval refusal  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - the refusal is reported as aborted, not silently treated as success
+summary_audit.gs / staleness.gs — checkSummaryDrift() drift guard (Step 4, PRD-13)
+  ok  - auditSummaryDrift() with no args still audits a week past the purge line
+  ok  - checkSummaryDrift / summaryDriftCheck_ / raiseCalendarAlert_ / installSummaryDriftTrigger are all defined
+  ok  - checkSummaryDrift takes no declared parameters (zero-arg contract)  (got 0)
+  ok  - checkSummaryDrift(eventObject) does not throw
+  ok  - the in-window drifted week is reported
+  ok  - the past-purge-line week is excluded entirely, not merely unalerted
+  ok  - checkSummaryDrift() writes nothing (spreadsheet write log)  (got 4)
+  ok  - checkSummaryDrift() writes nothing (cross-sheet write-order log — no setValue/appendRow/deleteRow)  (got 0)
+  ok  - exactly one calendar alert is raised  (got 1)
+  ok  - ...and the report agrees  (got 1)
+  ok  - a clean window raises no alert  (got 0)
+  ok  - ...and the report agrees  (got 0)
+  ok  - ...nothing drifted  (got 0)
+  ok  - a same-day re-run creates no new event  (got 0)
+  ok  - event count is unchanged  (got 1)
+  ok  - the SPLIT-only week raises no alert  (got 0)
+  ok  - ...it is recorded as suppressed, not silently dropped
+  ok  - ...for an explicit reason naming SPLIT
+  ok  - ...and it is NOT double-counted as an alertable drift too
+  ok  - raiseCalendarAlert_ joins bodyLines (array) with newlines, not a hand-built blob  (got "line one\nline two\nline three")
+  ok  - the mixed run still alerts once, for the plain week  (got 1)
+  ok  - ...the plain week is the one reported as drifted  (got ["2026-03-30"])
+  ok  - ...the SPLIT week is suppressed, not alerted  (got ["2026-03-16"])
+  ok  - ...and the alert body still names the SPLIT week + a remediation line
+  ok  - raiseCalendarAlert_ does not throw when the calendar is unavailable
+  ok  - ...and reports that nothing was created
+  ok  - installing twice leaves exactly one checkSummaryDrift trigger  (got 1)
+  ok  - unrelated shopSpendWatchdog trigger is untouched
+  ok  - unrelated checkIngestStaleness trigger is untouched
+  ok  - trigger is MONDAY  (got 2)
+  ok  - trigger is hour 7 (after weeklySummarize 04:00, clear of staleness 11:00)  (got 7)
+  ok  - trigger is Australia/Sydney  (got "Australia/Sydney")
+  ok  - every source is stale on a cold start (unchanged post-refactor)  (got 7)
+  ok  - one orange event per stale source (unchanged post-refactor)  (got 7)
+  ok  - events are still ORANGE
+  ok  - events still carry a description
+  ok  - re-run still creates no duplicate events (idempotency unchanged)  (got 0)
+  ok  - event count still unchanged  (got 7)
+  ok  - FIX4: summaryDriftCheck_ does not throw when auditSummaryDrift_ returns an error (no Summary tab)
+Code.gs / summary_audit.gs — FIX2: aggregateSupplierRows_ normalization (case/whitespace collisions SUM, converge, and are reported)
+  ok  - FIX2 test1: a case/whitespace-variant pair collapses to ONE group, not two  (got 1)
+  ok  - FIX2 test1: ...summed to the FULL total ($350), not split ($100 + $250 discarded)  (got 350)
+  ok  - FIX2 test1: displayed supplier keeps the FIRST-seen raw casing ("Mayers", not "mayers ")  (got "Mayers")
+  ok  - FIX2 test1: displayed location keeps the FIRST-seen raw casing ("Leible North")  (got "Leible North")
+  ok  - FIX2 test1 (via healWeek_): first heal writes ONE new row (the merged group)  (got 1)
+  ok  - ...and the Summary row itself carries the FULL $350, not $100  (got 350)
+  ok  - FIX3: healWeek_ reports duplicatesSkipped (0 on this first, non-colliding heal)  (got 0)
+  ok  - FIX2 test2: a second heal of the SAME week reports convergence — zero new/updated rows  (got 0)
+  ok  - FIX2 test2: ...and duplicatesSkipped settles at 1 (one converged row), not the pre-fix non-convergent 2 (two split groups colliding on the same key forever)  (got 1)
+  ok  - FIX3: a third (still-converged) heal keeps reporting duplicatesSkipped, not silence  (got 1)
+  ok  - FIX3 test3: a non-zero duplicatesSkipped on the heal path is logged, not silently discarded
+  ok  - FIX2 test4: the converged case-variant week is NOT reported as drifted by auditSummaryDrift_
+Code.gs — FIX1: healRaiseAlert_ routes through raiseCalendarAlert_ (idempotent, array bodyLines, no CalendarApp, no throw)
+  ok  - FIX1 test5: a same-day re-run of the same week+kind creates no second event  (got 1)
+  ok  - FIX1 test6: bodyLines is an array — the description is newline-joined by raiseCalendarAlert_, not pre-joined by the caller into one blob  (got "line one\nline two")
+  ok  - FIX1 test7: Code.gs no longer references CalendarApp directly (routes through raiseCalendarAlert_ instead)
+  ok  - FIX1 test8: healRaiseAlert_ does not throw when the calendar is unavailable
+summary_audit.gs — FIX4: a malformed/missing approvedAt on the orphan-sweep approval fails CLOSED, not open
+  ok  - FIX4 test9: a missing approvedAt refuses the apply (fails CLOSED) — deletes nothing  (got 0)
+  ok  - Summary is byte-identical after a fail-closed refusal  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - the refusal is reported as aborted, not silently treated as success
+Code.gs — step7 FIX3: healEarliestBackupRows_ is reachable from a documented, exercised restore entry point (not just textually referenced)
+  ok  - FIX3 test6a: restoreWeekFromHealBackup_ is named BY IDENTIFIER in TODO.md's runbook — a documented entry point an operator can actually find, not just described in prose
+  ok  - FIX3 test6b: healEarliestBackupRows_ still resolves (either wired in or removed)
+Code.gs — step7 FIX1 (CRITICAL): restoreWeekFromHealBackup_ reads + validates the snapshot BEFORE touching any live row
+  ok  - FIX1 test1: no snapshot -> a loud, distinct refusal (not {restored:0})  (got "no-snapshot")
+  ok  - FIX1 test1: the response does NOT carry a "restored" count at all — {restored:0} reads as success
+  ok  - FIX1 test1: zero deleteRow calls — nothing is touched before the snapshot is validated  (got 0)
+  ok  - FIX1 test1: live Summary rows are byte-identical afterwards ($350 survives, not $0)  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",200,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Fresh and Chill\",\"Leible North\",150,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - FIX1 test2: a missing Summary sheet does not throw
+  ok  - FIX1 test2: a missing Summary sheet is reported as a refusal
+  ok  - FIX1 test2: no Summary sheet is created as a side effect of the (failed) restore
+  ok  - FIX1 test3: a malformed snapshot (non-numeric total) is refused, not partially applied
+  ok  - FIX1 test3: zero deleteRow calls on a malformed snapshot  (got 0)
+  ok  - FIX1 test3: live Summary rows are byte-identical after a malformed-snapshot refusal  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - FIX1 test4: restores exactly 1 row (the earliest snapshot)  (got 1)
+  ok  - FIX1 test4: exactly one live row for the week after restore  (got 1)
+  ok  - FIX1 test4: restored to the EARLIEST snapshot value (100), not the later one (175.25)  (got 100)
+TODO.md — step7 FIX2: the kill-switch rollback claim matches what the code actually does
+  ok  - FIX2 setup: the "Rollback facts" section exists
+  ok  - FIX2 test5a: the runbook no longer claims the switch "stops the self-heal write immediately" (false — it only shrinks the window to 1)
+  ok  - FIX2 test5b: the runbook documents the switch as a WINDOW SIZE control (4 completed weeks -> 1), not a write stop
+  ok  - FIX2 test5c: the runbook names the REAL emergency stop — disabling/deleting the weeklySummarize trigger
+  ok  - FIX2 test5d: switch OFF/default yields window size 1 — the write path stays ACTIVE, not disabled  (got 1)
+Code.gs — step7 FIX4: "Labour correction" alert fires on a genuine update, never on a first-time insert
+  ok  - FIX4 setup: the first run is a genuine first-time labour insert  (got 1)
+  ok  - FIX4 test7a: a first-time labour insert raises NO "Labour correction" alert
+  ok  - FIX4 setup: the re-run adds no NEW labour summary rows (it is an update, not an insert)  (got 0)
+  ok  - FIX4 setup: the Summary row was genuinely corrected to the new total
+  ok  - FIX4 test7b: a genuine labour correction DOES raise a "Labour correction" alert
+Code.gs — step7 FIX5: healOrphanCandidates_ respects the auditPurgeCutoff_ guard (no false orphans past the purge line)
+  ok  - FIX5 test8: a week past auditPurgeCutoff_ reports ZERO orphan candidates, matching summaryOrphanSweep_'s own guard  (got 0)
+  ok  - FIX5 sanity: a RECENT week (inside the purge window) still reports the orphan
+connectors/gas/*.gs — step7 FIX6: CalendarApp-exclusivity is checked project-wide, orderapp.gs recorded as the known exception
+  ok  - FIX6 test9a: no .gs file outside the recorded exception (orderapp.gs) references CalendarApp directly  (got [])
+  ok  - FIX6 test9b: staleness.gs's CalendarApp-exclusivity comment records orderapp.gs as the known, out-of-scope exception (today it falsely claims sole ownership)
+  ok  - FIX6 test9c: TODO.md records the note step 6 was supposed to deliver — that orderapp.gs also touches CalendarApp and is deliberately out of scope here
+Code.gs — step8 FIX1 test1: listSummaryHealBackups() — zero-arg, read-only, one log line per snapshotted week
+  ok  - FIX1 test1 setup: listSummaryHealBackups is defined
+  ok  - FIX1 test1a: listSummaryHealBackups is zero-arg (Run-button friendly)  (got 0)
+  ok  - FIX1 test1b: writes nothing (spreadsheet write log)  (got 6)
+  ok  - FIX1 test1c: deletes nothing from the backup sheet  (got 0)
+  ok  - FIX1 test1d: creates no rows on the live Summary sheet  (got 1)
+  ok  - FIX1 test1e: exactly one log line for week A (one line PER WEEK, not per row/snapshot)  (got 1)
+  ok  - FIX1 test1f: exactly one log line for week B  (got 1)
+  ok  - FIX1 test1g: week A's line reports the EARLIEST run_id (RUN-1), never the later RUN-2
+  ok  - FIX1 test1h: week A's line reports row count 2 and total $150 (the earliest snapshot only)
+  ok  - FIX1 test1i: week B's line reports row count 1 and total $300
+  ok  - FIX1 test1j: a big single JSON.stringify blob is not the whole report (editor truncation) — more than one Logger.log call was made for 2 weeks
+  ok  - FIX1 test1k: returns something (not undefined) for a caller that wants the data too
+Code.gs — step8 FIX1 test2: restoreSummaryWeekFromBackup() refuses loudly when SUMMARY_RESTORE_WEEK is unset
+  ok  - FIX1 test2 setup: restoreSummaryWeekFromBackup is defined
+  ok  - FIX1 test2a: restoreSummaryWeekFromBackup is zero-arg (Run-button friendly)  (got 0)
+  ok  - FIX1 test2b: an unset SUMMARY_RESTORE_WEEK refuses loudly (Logger.log names the property)
+  ok  - FIX1 test2c: the return value carries a refusal, not a restore count
+  ok  - FIX1 test2d: zero deleteRow calls — nothing is touched when the property is unset  (got 0)
+  ok  - FIX1 test2e: live Summary rows are byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",200,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+Code.gs — step8 FIX1 test3: restoreSummaryWeekFromBackup() refuses an unparseable SUMMARY_RESTORE_WEEK
+  ok  - FIX1 test3a: an unparseable SUMMARY_RESTORE_WEEK is refused, not treated as a valid week
+  ok  - FIX1 test3b: zero deleteRow calls on an unparseable property value  (got 0)
+  ok  - FIX1 test3c: live Summary rows are byte-identical after an unparseable-property refusal  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",200,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+Code.gs — step8 FIX1 test4: restoreSummaryWeekFromBackup() with a valid property restores the EARLIEST snapshot
+  ok  - FIX1 test4a: restores exactly 1 row (the earliest snapshot)  (got 1)
+  ok  - FIX1 test4b: exactly one live row for the week after restore  (got 1)
+  ok  - FIX1 test4c: restored to the EARLIEST snapshot value (100), not the later one (175.25)  (got 100)
+Code.gs — step8 FIX1 test5: neither new operator entry point name ends in an underscore
+  ok  - FIX1 test5 setup: both listSummaryHealBackups and restoreSummaryWeekFromBackup are defined
+  ok  - FIX1 test5a: listSummaryHealBackups does not end with an underscore
+  ok  - FIX1 test5b: restoreSummaryWeekFromBackup does not end with an underscore
+Code.gs — step8 FIX2 test6: restoreWeekFromHealBackup_ refuses with a lock-timeout shape when the script lock is held
+  ok  - FIX2 test6a: restoreWeekFromHealBackup_ does not throw when the script lock is held
+  ok  - FIX2 test6b: a held lock refuses with a lock-flavoured {refused:...} shape
+  ok  - FIX2 test6c: zero deleteRow calls when the lock could not be acquired  (got 0)
+  ok  - FIX2 test6d: live Summary rows are untouched when the lock could not be acquired  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",175.25,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+Code.gs — step8 FIX3 test7: run_id column resolution comes from ONE named constant shared by both call sites
+  ok  - FIX3 test7 setup: SUMMARY_BACKUP_RUNID_COL is defined
+  ok  - FIX3 test7a: SUMMARY_BACKUP_RUNID_COL equals SUMMARY_HEADERS.length  (got 8)
+  ok  - FIX3 test7b: the run_id column in SUMMARY_HEAL_BACKUP_HEADERS sits exactly at SUMMARY_BACKUP_RUNID_COL  (got "run_id")
+  ok  - FIX3 test7c: healEarliestBackupRows_ resolves run_id via SUMMARY_BACKUP_RUNID_COL, not a bare row[8] literal
+  ok  - FIX3 test7d: restoreWeekFromHealBackup_ uses the SAME named constant for its slice
+  ok  - FIX3 test7e sanity: healEarliestBackupRows_ still resolves the real fixture correctly  (got 1)
+staleness.gs / Code.gs — step8 FIX4 test8: the day's calendar events are read ONCE per invocation, not once per alert
+  ok  - FIX4 test8 setup: all three stale sources raised a NEW event  (got 3)
+  ok  - FIX4 test8a: getEventsForDay is called exactly ONCE for a 3-entry staleness batch, not 3 times  (got 1)
+  ok  - FIX4 test8b: the already-present title is still skipped — only 2 of 3 are newly created  (got 2)
+  ok  - FIX4 test8c: still exactly ONE getEventsForDay call for the batch  (got 1)
+  ok  - FIX4 test8 setup: both weeks raised a distinct correction alert in this single healWeeks_ call
+  ok  - FIX4 test8d: healWeeks_ reads the calendar day ONCE for the whole run, even though 2 separate weeks each raised their own alert  (got 1)
+Code.gs — step9 FIX1: the backup baseline is not falsified for a newly-summarized (zero-live-rows) week
+  ok  - run1 setup: the first heal of an empty week genuinely wrote a Summary row
+  ok  - FIX1 test1: the first heal of a zero-live-row week records an explicit marker for that week in Summary_heal_backup, not left absent
+  ok  - run2 setup: the second heal genuinely corrected the total (175.25 -> 999.99)
+  ok  - FIX1 test1b: a later heal does not overwrite the recorded baseline with a second (falsified) snapshot — still exactly one run_id for the week  (got 1)
+  ok  - FIX1 test2: healEarliestBackupRows_ resolves to the EMPTY pre-heal baseline (total 0), never the falsified post-run1 total (175.25)  (got 0)
+  ok  - FIX1 test3: restoring a week whose true baseline was empty is NOT refused as "no-snapshot"
+  ok  - FIX1 test3b: restoring to the true (empty) baseline leaves ZERO live Summary rows for the week  (got 0)
+summary_audit.gs — step9 FIX2: previewSummaryHeal agrees with the real heal window for every window size (1, 4, 12)
+  ok  - FIX2 setup: summaryHealWindowSize_() is 1 with the kill switch off (default)  (got 1)
+  ok  - FIX2 test4: with the heal kill switch OFF (default), preview shows exactly the 1 week the scheduled run would actually heal, not a hardcoded 4  (got ["2026-08-24"])
+  ok  - FIX2 test3: preview agrees with the real heal window for SUMMARY_HEAL_WEEKS=1  (got ["2026-08-24"])
+  ok  - FIX2 test3: preview agrees with the real heal window for SUMMARY_HEAL_WEEKS=4  (got ["2026-08-03","2026-08-10","2026-08-17","2026-08-24"])
+  ok  - FIX2 test3: preview agrees with the real heal window for SUMMARY_HEAL_WEEKS=12  (got ["2026-06-08","2026-06-15","2026-06-22","2026-06-29","2026-07-06","2026-07-13","2026-07-20","2026-07-27","2026-08-03","2026-08-10","2026-08-17","2026-08-24"])
+summary_audit.gs — step9 FIX3 test1: runSummaryOrphanSweep refuses (no delete) when the script lock is held
+  ok  - FIX3 test1a: runSummaryOrphanSweep does not throw when the script lock is held
+  ok  - FIX3 test1b: zero deleteRow calls when the lock could not be acquired  (got 0)
+  ok  - FIX3 test1c: live Summary rows are untouched when the lock could not be acquired  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Old Pyrmont\",250,\"2026-08-20T09:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - FIX3 test1d: the refusal is reported, not silently treated as success
+summary_audit.gs — step9 FIX3 test2: a stale cached row index aborts the whole sweep, deletes nothing
+  ok  - FIX3 test2a: runSummaryOrphanSweep does not throw when a cached row index goes stale mid-sweep
+  ok  - FIX3 test2b: a stale-index mismatch aborts the WHOLE sweep — zero deleteRow calls  (got 0)
+  ok  - FIX3 test2c: the live row that landed mid-sweep survives untouched
+  ok  - FIX3 test2d: both original orphan rows still exist — nothing was deleted at all
+  ok  - FIX3 test2e: the healthy Kent Paper / Leible York row still exists
+  ok  - FIX3 test2f: the abort is reported, not silently treated as success
+Code.gs — step9 FIX4: the Labour correction alert shares the batch calendar-events cache (no extra getEventsForDay read)
+  ok  - FIX4 setup: the Suppliers-side heal genuinely corrected Kent Paper (100 -> 500)
+  ok  - FIX4 setup: the Labour pull genuinely corrected the stale total (1000 -> 4830.14)
+  ok  - FIX4 test7: both the Summary correction alert and the Labour correction alert share ONE getEventsForDay read for the whole weeklySummarize call, not two  (got 1)
+summary_audit.gs — step9 FIX5: listSummaryHealBackups validates dates before building the week list
+  ok  - FIX5 test8: a blank/malformed backup date does not produce a '' week entry
+  ok  - FIX5 test8b: the genuine week is still reported
+Code.gs — step10 FIX1 (CRITICAL): restoreWeekFromHealBackup_ never deletes a row its snapshot does not own
+  ok  - FIX1 test1a: the snapshot-owned row is restored to its baseline value (100, not 175.25)  (got 100)
+  ok  - FIX1 test1b: exactly one Kent Paper row survives (delete + re-append, never a duplicate)  (got 1)
+  ok  - FIX1 test1c: the shopify_orderapp row written AFTER the baseline SURVIVES ($4,321.55 — the probe case that went 1 -> 0 rows)  (got 4321.55)
+  ok  - FIX1 test1d: the Labour row written AFTER the baseline SURVIVES  (got 2870.4)
+  ok  - FIX1 test1e: exactly ONE deleteRow call — only the snapshot-owned row  (got 1)
+  ok  - FIX1 test1f: the response reports what it PRESERVED, so {restored:N} cannot be read as "the whole week is back to baseline"  (got 2)
+  ok  - FIX1 test1g: the response still reports the restored count  (got 1)
+  ok  - FIX1 test1h: a successful restore carries no refusal
+  ok  - FIX1 test2a: a key MINTED by the bad heal is removed by the undo
+  ok  - FIX1 test2b: the heal-foreign row still survives alongside that removal
+  ok  - FIX1 test2c: exactly 1 row preserved (the heal-foreign one)  (got 1)
+  ok  - FIX1 test3a: an empty baseline is not refused as "no-snapshot"
+  ok  - FIX1 test3b: restoring to an empty baseline removes the heal-created row
+  ok  - FIX1 test3c: the heal-foreign row survives a "restore to nothing" — it was never part of the heal and has no other copy  (got 1)
+  ok  - FIX1 test3d: and it still carries its full amount  (got 4321.55)
+  ok  - FIX1 test3e: the marker itself is never re-inserted as a live row  (got 0)
+  ok  - FIX1 test4a: SUMMARY_HEAL_FOREIGN_SUPPLIERS_ is exactly the two structurally un-recomputable sources  (got ["labour","shopify_orderapp"])
+  ok  - FIX1 test4b: it is NOT summary_audit.gs's SUMMARY_AUDIT_PULL_OWNED_ — that list also names the DERIVED, rebuildable greenbean/bennetts rows
+  ok  - FIX1 test4c: healOrphanCandidates_ routes through summaryRowIsHealForeign_, with no hardcoded copy of the supplier names
+  ok  - FIX1 test4c: restoreWeekFromHealBackup_ routes through summaryRowIsHealForeign_, with no hardcoded copy of the supplier names
+summary_audit.gs — step10 FIX2: listSummaryHealBackups does not count the empty-baseline marker as restorable
+  ok  - FIX2 test1a: a marker-only week reports 0 restorable rows, not 1  (got 0)
+  ok  - FIX2 test1b: and $0, with no phantom row behind it  (got 0)
+  ok  - FIX2 test1c: the week is LABELLED as an empty baseline, so 0/$0 is not read as "nothing was ever backed up"
+  ok  - FIX2 test2a: a genuine snapshot still reports its true row count  (got 1)
+  ok  - FIX2 test2b: and its true total  (got 100)
+  ok  - FIX2 test2c: a genuine snapshot is not flagged as an empty baseline
+step10 FIX3 (ship gate): the freeze is LIFTED in the shipped source; its refusal machinery still works when re-armed
+  ok  - FIX3 test0: the committed source ships with the freeze OFF (unfrozen 2026-08-31 after the return-shape fix and the 3 MINORs closed) — read from the FILE
+  ok  - FIX3 test0b: and the loaded value agrees (no test left it flipped)
+  ok  - FIX3 test1a: restoreSummaryWeekFromBackup refuses while frozen, even with a valid SUMMARY_RESTORE_WEEK pointing at a real snapshot
+  ok  - FIX3 test1b: the refusal names the freeze, not a missing property — an operator must not go hunting for a config problem that is not there
+  ok  - FIX3 test1c: zero deleteRow calls  (got 0)
+  ok  - FIX3 test1d: live Summary rows are byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",175.25,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - FIX3 test2a: runSummaryOrphanSweep refuses while frozen, even with a fresh matching approval on record
+  ok  - FIX3 test2b: it deletes nothing  (got 0)
+  ok  - FIX3 test2c: zero deleteRow calls  (got 0)
+  ok  - FIX3 test2d: live Summary rows are byte-identical afterwards  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-07-05T14:00:00.000Z\",\"2026-07-11T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",200,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - FIX3 test2e: the approval record is NOT consumed by a refusal — a refused sweep must not silently burn the operator's dry-run approval
+  ok  - FIX3 test3a: SUMMARY_HEAL_ENABLED=true cannot widen the window past 1 while frozen  (got 1)
+  ok  - FIX3 test3b: previewSummaryHeal shows the CLAMPED window — the freeze is applied in summaryHealWindowSize_, so preview can never diverge from what the run would heal  (got 1)
+  ok  - FIX3 test5a: while frozen, weeklySummarize never returns the MULTI-week shape (no `weeks` array at the top level)
+  ok  - FIX3 test5b: a refused run carries `refused` at the top level — the field greenBeanPull_'s completion test reads; the multi-week shape omits it, so an all-refused run would read as success and drain the queue
+  ok  - FIX3 test4a: previewSummaryHeal still returns a plan while frozen (read-only, shipped)
+  ok  - FIX3 test4b: and writes nothing — the header row and nothing else  (got 1)
+  ok  - FIX3 test4c: the drift guard is still installed as a live entry point
+  ok  - FIX3 test4d: the read-only backup listing is still a live entry point
+  ok  - FIX3 test4e: the read-only orphan DRY RUN is still a live entry point
+
+unfreeze step1 (Code.gs): the multi-week return is a superset of the single-week shape:
+  ok  - unfreeze test1a: the multi-week detail is still reported  (got 4)
+  ok  - unfreeze test1b: summariesAdded is a number, not undefined (callers do arithmetic on it)
+  ok  - unfreeze test1c: summariesUpdated is a number, not undefined
+  ok  - unfreeze test1d: labourTabAdded is a number, not undefined
+  ok  - unfreeze test1e: labourSummaryAdded is a number, not undefined
+  ok  - unfreeze test1f: summariesUpdated is the SUM across the whole window, not one week  (got 4)
+  ok  - unfreeze test1g: summariesAdded is the SUM across the whole window  (got 0)
+  ok  - unfreeze test1h: a fully successful heal reports NO refusal
+  ok  - unfreeze test2a setup: all four weeks really were refused  (got 0)
+  ok  - unfreeze test2b setup: Summary is byte-identical — nothing was written  (got "[[\"week_start\",\"week_end\",\"supplier\",\"location\",\"total\",\"summarized_at\",\"department\",\"kind\"],[\"2026-08-16T14:00:00.000Z\",\"2026-08-22T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-08-09T14:00:00.000Z\",\"2026-08-15T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-08-02T14:00:00.000Z\",\"2026-08-08T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"],[\"2026-07-26T14:00:00.000Z\",\"2026-08-01T14:00:00.000Z\",\"Kent Paper\",\"Leible York\",100,\"2026-08-24T13:00:00+10:00\",\"Cafe\",\"spend\"]]")
+  ok  - unfreeze test2c: a run that healed NOTHING reports refused at the top level, carrying the newest week action exactly as the single-week shape does  (got "skip-split")
+  ok  - unfreeze test2d: and reports zero counters, never undefined  (got 0)
+  ok  - unfreeze test3a setup: exactly one week healed  (got 1)
+  ok  - unfreeze test3b: a PARTIAL heal is NOT reported as a refusal
+  ok  - unfreeze test3c: and its counters reflect the week that did heal
+
+unfreeze step1 (orderapp.gs): greenBeanPull_ requires a POSITIVE completion signal:
+  ok  - unfreeze test4a: a return that healed a DIFFERENT week leaves the requested week QUEUED
+  ok  - unfreeze test4b: and is not counted as resummarized  (got 0)
+  ok  - unfreeze test4c: the non-completion is logged, not silently swallowed
+
+unfreeze MINOR1 (staleness.gs): a decoration throw must not leave an uncounted phantom event:
+  ok  - MINOR1 test1a setup: the event really WAS created on the calendar  (got 1)
+  ok  - MINOR1 test1b: a created-but-undecorated event is REPORTED as raised, not 0  (got 1)
+  ok  - MINOR1 test1c: a second call for the same title creates NO duplicate event  (got 1)
+  ok  - MINOR1 test1d: ...and reports 0, because the alert already exists  (got 0)
+  ok  - MINOR1 test1e: the decoration failure is logged in its own right
+
+unfreeze MINOR2 (Code.gs): only real week keys may enter healWeeks_ backedUpWeeks:
+  ok  - MINOR2 test2a setup: the driver really did hand healWeek_ a ctx
+  ok  - MINOR2 test2b: every backedUpWeeks key is a canonical YYYY-MM-DD week  (got [])
+  ok  - MINOR2 test2c: the one genuine backup week is still recognised
+
+unfreeze MINOR3 (Code.gs): the Labour correction alert title is bounded and stable:
+  ok  - MINOR3 test3a setup: a Labour correction alert was raised at all
+  ok  - MINOR3 test3b: the TITLE does not embed the joined week list
+  ok  - MINOR3 test3c: it anchors on the NEWEST healed week, like every other heal alert
+  ok  - MINOR3 test3d: and states how many weeks it covers
+  ok  - MINOR3 test3e: every healed week is still recorded, in the DESCRIPTION
+
+archiveAndPurge_ — batched writes:
+  ok  - 25 old rows archived  (got 25)
+  ok  - archive written with exactly ONE batched call  (got 1)
+  ok  - ...and that call is setValues, not appendRow  (got "setValues")
+  ok  - ...carrying all 25 rows in one block  (got 25)
+  ok  - source purged with exactly ONE contiguous deleteRows call  (got 1)
+  ok  - ...covering all 25 rows  (got 25)
+  ok  - the recent row survives  (got 2)
+  ok  - ...and it is the right one  (got "2026-08-31")
+  ok  - archive holds header + 25  (got 26)
+  ok  - 3 old rows archived across 2 runs  (got 3)
+  ok  - still ONE setValues for the archive  (got 1)
+  ok  - two contiguous runs → exactly 2 deleteRows calls, not 3  (got 2)
+  ok  - the keeper survives  (got 2)
+  ok  - ...and is the recent row  (got "2026-08-31")
+  ok  - a no-op purge does not throw on an empty batch  (got null)
+  ok  - ...archives nothing  (got 0)
+  ok  - ...writes nothing to the archive  (got 0)
+  ok  - ...deletes nothing  (got 0)
+  ok  - ...and leaves the row alone  (got 2)
+  ok  - 1000 rows archived  (got 1000)
+  ok  - 1000 rows cost 2 write calls, not 2000 (got 2)
+  ok  - clean archive -> no split weeks  (got "[]")
+  ok  - archived row snaps to its Monday and is flagged  (got "[\"2026-07-20\"]")
+  ok  - unreadable archive header reports every week as split (fails closed)  (got "[\"2026-07-20\",\"2026-08-24\"]")
+  ok  - backfill calls resummarizeWeeks_ (got array)
+  ok  - ...with the six complete outage weeks  (got 6)
+  ok  - ...oldest first  (got "2026-07-20")
+  ok  - ...newest is the last COMPLETED week  (got "2026-08-24")
+  ok  - ...and never the incomplete week 2026-08-31
+  ok  - a split week refuses  (got "archived_rows")
+  ok  - ...naming the week  (got "[\"2026-08-03\"]")
+  ok  - ...and rebuilds nothing (a partial total would understate it)
+
+orderapp: WHOLESALE_* constants:
+  ok  - WHOLESALE_SOURCE is coffee_order_app  (got "coffee_order_app")
+  ok  - WHOLESALE_REPULL_WEEKS_ is 8, not SHOPIFY_REPULL_WEEKS's 4  (got 8)
+  ok  - WHOLESALE_PAGE_LIMIT is 200 (producer default)  (got 200)
+  ok  - WHOLESALE_MAX_PAGES is 20 (mirrors GREENBEAN_MAX_PAGES)  (got 20)
+  ok  - WHOLESALE_GROSS_FLOOR is 800 (low-water mark, not median)  (got 800)
+  ok  - WHOLESALE_DIAGNOSTIC_FLAGS_ names all five producer flags  (got ["rowsOk","crossFootOk","moneyOk","partitionOk","byShopOk"])
+
+orderapp: wholesaleRepullWeeks_:
+  ok  - no property set -> falls back to the constant (8)  (got 8)
+  ok  - property set to '12' -> 12  (got 12)
+  ok  - unparseable property ('abc') -> falls back to 8  (got 8)
+  ok  - empty-string property -> falls back to 8  (got 8)
+
+orderapp: wholesaleValidWeekBody_ shape gate:
+  ok  - full valid PROD-shaped body -> ok:true
+  ok  - ...weekStart echoes the requested Monday  (got "2026-08-03")
+  ok  - ...summary is returned verbatim  (got {"all":{"orderCount":12,"gross":16709.92},"internal":{"orderCount":9,"gross":15312.77},"external":{"orderCount":2,"gross":1397.15},"ambiguous":{"orderCount":1,"gross":0},"unknown":{"orderCount":0,"gross":0}})
+  ok  - meta.week disagreeing with requestedWeek.label -> ok:false
+  ok  - ...reason names the week echo failure
+  ok  - meta.weekStart disagreeing with requestedWeek.start -> ok:false
+  ok  - ...reason names the weekStart mismatch
+  ok  - diagnostics.rowsOk = false -> ok:false
+  ok  - ...reason names rowsOk
+  ok  - diagnostics.crossFootOk = false -> ok:false
+  ok  - ...reason names crossFootOk
+  ok  - diagnostics.moneyOk = false -> ok:false
+  ok  - ...reason names moneyOk
+  ok  - diagnostics.partitionOk = false -> ok:false
+  ok  - ...reason names partitionOk
+  ok  - diagnostics.byShopOk = false -> ok:false
+  ok  - ...reason names byShopOk
+  ok  - diagnostics.crossFootOk = 1 (truthy, loose-equal true) -> ok:false
+  ok  - diagnostics.crossFootOk = 'true' (truthy string) -> ok:false
+  ok  - summary.external missing entirely -> ok:false
+  ok  - ...reason names external
+  ok  - summary.external.gross = null -> ok:false
+  ok  - summary.external.gross = "1200.30" -> ok:false
+  ok  - summary.external.gross = null -> ok:false
+  ok  - summary.external.orderCount non-finite -> ok:false
+  ok  - orders absent -> ok:false
+  ok  - orders is an object, not an array -> ok:false
+  ok  - meta.paging absent -> ok:false
+  ok  - meta.paging.matched non-finite -> ok:false
+  ok  - zero-activity week (all buckets 0, orders:[]) -> ok:true
+
+orderapp: wholesaleFetchWeekOrders_ paging:
+  ok  - single page: ok:true
+  ok  - single page: 6 orders returned  (got 6)
+  ok  - single page: orders match the page verbatim  (got [{"orderId":"S-0","date":"2026-08-04","shopId":"Wholesale Co","amount":10},{"orderId":"S-1","date":"2026-08-04","shopId":"Wholesale Co","amount":10},{"orderId":"S-2","date":"2026-08-04","shopId":"Wholesale Co","amount":10},{"orderId":"S-3","date":"2026-08-04","shopId":"Wholesale Co","amount":10},{"orderId":"S-4","date":"2026-08-04","shopId":"Wholesale Co","amount":10},{"orderId":"S-5","date":"2026-08-04","shopId":"Wholesale Co","amount":10}])
+  ok  - single page: summary is page 0's exact object
+  ok  - single page: meta is page 0's exact object
+  ok  - single page: exactly one fetch made  (got 1)
+  ok  - single page: request carries api=wholesaleSales  (got "wholesaleSales")
+  ok  - single page: request carries week=<label>  (got "2026-W32")
+  ok  - single page: request carries limit=WHOLESALE_PAGE_LIMIT  (got 200)
+  ok  - single page: request carries offset=0  (got 0)
+  ok  - three pages: ok:true
+  ok  - three pages: 450 orders collected  (got 450)
+  ok  - three pages: requested offsets are 0, 200, 400  (got [0,200,400])
+  ok  - three pages: summary is page 0's exact object
+  ok  - matched shift mid-scan: ok:false
+  ok  - ...reason names the shift (mentions both 450 and 400)
+  ok  - duplicate orderId across pages: ok:false (short-count guard fires, not a silent 2-of-3)
+  ok  - ...reason names short page
+  ok  - ...three fetches made (0, 2, 3 — dedup did not stall the offset)  (got [0,2,3])
+  ok  - empty page with matched:5 > collected:0: ok:false
+  ok  - ...reason names short page
+  ok  - runaway paging: ok:false at the page cap
+  ok  - ...reason names the cap
+  ok  - ...fetch count is bounded, not runaway
+  ok  - every page re-gated: ok:false when a LATER page fails
+  ok  - ...reason names the failing page index (2)
+  ok  - ...reason carries the gate's own reason (moneyOk)
+  ok  - ...three fetches made (page 0 and 1 passed before page 2 failed)  (got [0,2,4])
+  ok  - fetch failure: ok:false
+  ok  - ...reason carries the underlying fetch reason
+  ok  - zero-activity week: ok:true
+  ok  - ...orders is []  (got [])
+  ok  - ...exactly one fetch (no second page requested)  (got 1)
+  ok  - ...summary is page 0's exact object
+
+1801 passed, 0 failed
