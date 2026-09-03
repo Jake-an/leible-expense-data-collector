@@ -22,21 +22,41 @@
 
 Jake's call at close of 2026-09-02: **fix the connector next session.**
 
-**1. Roastery wholesale income has NO PRODUCER — this is a BUILD, not a bug hunt.**
-The **$10k+/week** wholesale money has no ingest path at all: `ingestRevenueRows`
-has a single caller and `coffee_order_app` has no live writer, so the hub can only
-ever report `shopify_orderapp` ONLINE revenue (~$1.5k/wk). The gap between the two
-is the whole of the reported shortfall.
+**1. Roastery wholesale income connector — IN BUILD (phase `roastery-wholesale`,
+PRD-14), steps 0-5 done as of 2026-09-04.**
 
-⚠ **The previous version of this block sent the next session to debug the stale
-`roastery` feed. That is the wrong connector** — the `roastery` feed writes
-**SPEND**, not income, so no amount of fixing it can produce wholesale revenue.
+**Never blocked on a credential — corrected 2026-09-04.** The owner is the Order
+app's own `?api=wholesaleSales` read endpoint, reached with the
+`ORDER_APP_COST_TOKEN` the collector already holds (the same token
+`shopifyWeeklyPull`/`greenBeanPull` use). The "Blocked on: the upstream API key"
+line that used to sit here was wrong from the start — see
+`phases/roastery-wholesale/prod-probe.md`.
 
-**Blocked on:** the upstream API key. Start by confirming which system owns the
-wholesale figure and whether its key is obtainable — the write path
-(`ingestRevenueRows` → `Revenue` → `Summary` → `doGet`) already exists, so this is
-a connector to build, not a schema change. Note `shopify_orderapp` writes `Summary`
-directly and is the one exception to "Summary is always derived".
+**Corrected magnitude (step 0 probe, PROD, 8 completed weeks 2026-W28..W35):**
+the **$10k+/week** figure this block used to cite is the `all` bucket, and
+**84.2%** of it ($107,095.09 of $127,185.06 over 8 weeks) is `internal` — beans
+moved to Leible's own cafes, an inter-company transfer already counted via those
+cafes' Square sales. Genuine **external** wholesale income is **~$2,364/week**
+($18,910.10 over 8 weeks, 14.9%). `wholesalePull` (built in steps 1-5) writes all
+four of the producer's buckets to `Revenue` as `channel` values
+(`wholesale`/`internal`/`ambiguous`/`unknown`), so only `wholesale` reaches the
+company headline downstream (see `docs/api.md`'s `ROASTERY_REVENUE_CHANNELS` note).
+
+⚠ **Still true, carried:** the `roastery` feed is still the wrong connector to
+debug for this — it writes **SPEND**, not income.
+
+- [ ] **Follow-up: split a dedicated `COST_API_TOKEN`.** The producer doc §12
+      flags that `?api=wholesaleSales` newly exposes order-level revenue for
+      every Leible cafe on a token shared with three other consumers —
+      `ORDER_APP_COST_TOKEN` today carries more blast radius than this read
+      needs. Out of scope for this phase (touches the Order-app repo); raise
+      with Jake next time app-side work is open.
+- [ ] **Follow-up: `greenBeanPull` (Tue 05:00) also misses the Monday 08:00
+      consumer read.** `LEIBLE_GM_COST_MONITOR` reads the hub every Monday
+      08:00 (`docs/api.md`); greenbean spend for the just-completed week isn't
+      pulled until the following day, so that Monday read is a day stale on
+      the greenbean figure specifically. Not new to this phase — worth a look
+      whenever `orderapp.gs` triggers are next touched.
 
 **2. Calendar OAuth scope is missing → EVERY alert is blind.** (carried, unchanged)
 `raiseCalendarAlert_` fires correctly and then dies at the calendar boundary:

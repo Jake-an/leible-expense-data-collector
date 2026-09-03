@@ -202,12 +202,14 @@
     {
       "step": 6,
       "name": "silo-check-and-docs",
-      "status": "pending",
+      "status": "completed",
       "tdd": false,
       "covers": [
         "PRD-14"
       ],
-      "started_at": "2026-09-04T07:40:38+0900"
+      "started_at": "2026-09-04T07:40:38+0900",
+      "completed_at": "2026-09-04T08:20:00+0900",
+      "summary": "Silo proof (file:line grep evidence, no code shared between shopSpend and wholesale paths) + summaryOrphanSweep_ purge-cutoff/archive-week bounds recorded in phases/roastery-wholesale/step6-report.md; schema.md/ingest-contract.md/api.md updated for the live coffee_order_app writer and the four new location values; TODO.md's stale credential-blocked claim replaced with the corrected ~$2,364/wk external figure. bash scripts/lint.sh clean, node connectors/gas/test_code.js 1993/1993 unchanged, no .gs file touched."
     },
     {
       "step": 7,

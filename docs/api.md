@@ -70,6 +70,21 @@ fork per kind):
 - any other channel → `supplier` is the **customer** name, one row per customer
   per week. Wholesale accounts are real named customers and keep their own line.
 
+**New in PRD-14 (2026-09-04): four `location` values from `coffee_order_app`.**
+`wholesalePull` (`connectors/gas/orderapp.gs`) writes `location` as one of
+`wholesale` / `internal` / `ambiguous` / `unknown` — the Order app's own
+shop-classification buckets, see `docs/schema.md`. This is a contract change
+for an external consumer: **`LEIBLE_GM_COST_MONITOR`** reads this endpoint
+every **Monday 08:00** (after this hub's own `weeklySummarize` 04:00 and
+`checkSummaryDrift` 07:00), and its `ROASTERY_REVENUE_CHANNELS` config
+(default `online,wholesale`) decides which of the four `location` values
+reach the company revenue headline. **`internal` / `ambiguous` / `unknown`
+must NOT be added to `ROASTERY_REVENUE_CHANNELS`** — `internal` is beans
+moved to Leible's own cafes, already booked as revenue via those cafes'
+Square sales, so folding it into the headline would double-count
+inter-company money; `ambiguous`/`unknown` are shops the producer itself
+couldn't classify, with no confirmed revenue status at all.
+
 Revenue and spend rows are never netted against each other — sum them
 separately per `kind` if you need a combined figure.
 

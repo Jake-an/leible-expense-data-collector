@@ -110,6 +110,22 @@ Sydney day never overwrites itself mid-day — see `appendSalesRow_`.
 **Dedup key:** `source + order_ref`, same upsert semantics as `Suppliers`. An
 amended wholesale order (same key, changed amount) updates in place.
 
+**`coffee_order_app` source — LIVE** (`connectors/gas/orderapp.gs`, `wholesalePull` /
+`wholesaleRevenueRows_`, PRD-14): a GAS-native time-triggered pull of the Order app's
+`?api=wholesaleSales` endpoint, last `WHOLESALE_REPULL_WEEKS` (8) completed ISO weeks,
+`department='Roastery'`. The producer's four shop-classification buckets map 1:1 onto
+`channel`: `external`→`wholesale`, `internal`→`internal`, `ambiguous`→`ambiguous`,
+`unknown`→`unknown`. Only `channel='wholesale'` is genuine external income — `internal`
+is beans moved to Leible's own cafes, an inter-company transfer already counted via those
+cafes' Square sales, and `ambiguous`/`unknown` are shops the producer itself couldn't
+classify. See `docs/api.md` for which of the four reach `LEIBLE_GM_COST_MONITOR`'s
+company-revenue headline. **`amount` is GST-EXCLUSIVE for `source='coffee_order_app'`
+only** — written exactly as the producer emits it, no gross-up — mirroring the `greenbean`
+precedent above (GST treatment is per-source and not asserted for any source beyond the
+one it's verified for). No gross-up is applied on purpose: roasted coffee is GST-free food
+in Australia, so multiplying by 1.1 would invent revenue that was never charged, on a
+figure the producer states is never reconciled against Xero.
+
 **`shopify` source — RETIRED.** `connectors/gas/shopify.gs` (`shopifyDailyPull`,
 direct Shopify Admin API access requiring `SHOPIFY_SHOP_DOMAIN` /
 `SHOPIFY_ACCESS_TOKEN` Script Properties) never ran in production and has been

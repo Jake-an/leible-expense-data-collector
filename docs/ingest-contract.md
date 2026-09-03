@@ -23,6 +23,25 @@ other connector; the read side, `doGet`, is the one that's token-gated — see
 
 ### 1. Wholesale revenue (orders the app itself takes)
 
+**Status: LIVE — but not via this doc's path.** `source='coffee_order_app'` `Revenue`
+rows (`channel` = `wholesale`/`internal`/`ambiguous`/`unknown`) are written in production
+today by the GAS-native `wholesalePull` (`connectors/gas/orderapp.gs`, PRD-14), which pulls
+the Order app's own `?api=wholesaleSales` read endpoint on a time trigger — **not** by the
+coffee order app POSTing this shape to `doPost`. The payload shape below remains the
+contract for if the app itself ever POSTs wholesale revenue directly, but nothing does
+that today; `wholesalePull` is the sole live producer.
+
+**Consequence: a GAS-native caller bypasses `validateIngest_` entirely.** Every rejection
+this doc attributes to ingest below — the `channel: "online"` reservation, the
+`department` enum check, the numeric-`amount` check — is enforced by `doPost` →
+`validateIngest_`, which only runs for an app-side POST. `wholesalePull` never calls
+`doPost`; it writes through `ingestRevenueRows` directly. So none of those rejections
+apply on the live path. `wholesaleRevenueRows_` (`connectors/gas/orderapp.gs`)
+re-implements the equivalent gates itself — shopType→channel mapping (drops an
+unrecognised `shopType` rather than defaulting it), `typeof amount === 'number' &&
+isFinite(amount)`, a strict date shape, non-blank `order_ref` — precisely because
+`validateIngest_` is never reached on this path.
+
 ```jsonc
 { "kind": "revenue", "source": "coffee_order_app", "extracted_at": "2026-08-03T09:00:00+10:00",
   "rows": [ { "date": "2026-08-03", "department": "Roastery", "channel": "wholesale",
@@ -43,11 +62,11 @@ Order-app read API is the sole producer for that channel, and a POSTed online
 row would flow through `weeklySummarize` into a second source-keyed Summary
 row and double-count the week. This wholesale-revenue shape is unaffected:
 `channel: "wholesale"` (or any non-`"online"` channel) from
-`coffee_order_app` remains valid. **When this wholesale-revenue writer ships,
-add `coffee_order_app` to `STALENESS_SOURCES` (staleness.gs) and
-`STAMPS_HEARTBEAT` (test_code.js)** — it was removed while no live writer
-exists because a never-seen source false-alarms daily, not because the path
-is closed.
+`coffee_order_app` remains valid. **This wholesale-revenue writer has now
+shipped** (`wholesalePull`, PRD-14, step 5 of the `roastery-wholesale` phase,
+2026-09-04) — `coffee_order_app` was added to `STALENESS_SOURCES`
+(staleness.gs) with a 168h override at that point; see the staleness bullet
+below.
 
 **`channel` is an open enum (aside from the `"online"` rejection above), and
 the weekly rollup treats one value specially.** `channel: "online"` rows are
@@ -158,11 +177,14 @@ malformed and will fail again identically.
   through `doPost`, plus the three rejection cases named by the plan:
   missing `order_ref`, an invalid `department`, and a non-numeric `amount`
   string.
-- **Staleness watchdog:** `coffee_order_app` is **NOT** in `STALENESS_SOURCES`
-  (`connectors/gas/staleness.gs`) — it never stamped a heartbeat in
-  production, and its one prospective ingest path (§2) is now mechanically
-  rejected, so watching it could only ever false-alarm. Adding it back would
-  require it to actually stamp a heartbeat via a real write path first.
+- **Staleness watchdog: LIVE, watched.** `coffee_order_app` is now armed in
+  `STALENESS_SOURCES` (`connectors/gas/staleness.gs`) with a 168h
+  `STALENESS_THRESHOLD_OVERRIDES` entry — added in step 5 of the
+  `roastery-wholesale` phase (2026-09-04) once `wholesalePull` gave it a real
+  heartbeat to watch. The historical reasoning above (never stamped, would
+  only false-alarm) no longer applies; §2's rejection is unrelated to this —
+  §1 (`wholesalePull`, GAS-native) is what stamps the heartbeat, not any
+  `doPost` path.
 
 ## Rollback
 
