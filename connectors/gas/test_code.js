@@ -11266,5 +11266,173 @@ console.log('\narchiveAndPurge_ — batched writes:');
 })();
 
 
+/* ------------------------------------------------------------------ *
+ * roastery-wholesale step 1 — WHOLESALE_* constants, wholesaleRepullWeeks_,
+ * wholesaleValidWeekBody_ shape gate (?api=wholesaleSales)
+ * ------------------------------------------------------------------ */
+(function testWholesaleConstants() {
+  console.log('\norderapp: WHOLESALE_* constants:');
+  eq('WHOLESALE_SOURCE is coffee_order_app', WHOLESALE_SOURCE, 'coffee_order_app');
+  eq('WHOLESALE_REPULL_WEEKS_ is 8, not SHOPIFY_REPULL_WEEKS\'s 4', WHOLESALE_REPULL_WEEKS_, 8);
+  eq('WHOLESALE_PAGE_LIMIT is 200 (producer default)', WHOLESALE_PAGE_LIMIT, 200);
+  eq('WHOLESALE_MAX_PAGES is 20 (mirrors GREENBEAN_MAX_PAGES)', WHOLESALE_MAX_PAGES, 20);
+  eq('WHOLESALE_GROSS_FLOOR is 800 (low-water mark, not median)', WHOLESALE_GROSS_FLOOR, 800);
+  eq('WHOLESALE_DIAGNOSTIC_FLAGS_ names all five producer flags',
+    WHOLESALE_DIAGNOSTIC_FLAGS_, ['rowsOk', 'crossFootOk', 'moneyOk', 'partitionOk', 'byShopOk']);
+})();
+
+(function testWholesaleRepullWeeks() {
+  console.log('\norderapp: wholesaleRepullWeeks_:');
+  const savedProps = scriptProps;
+
+  scriptProps = {};
+  eq('no property set -> falls back to the constant (8)', wholesaleRepullWeeks_(), 8);
+
+  scriptProps = { WHOLESALE_REPULL_WEEKS: '12' };
+  eq('property set to \'12\' -> 12', wholesaleRepullWeeks_(), 12);
+
+  scriptProps = { WHOLESALE_REPULL_WEEKS: 'abc' };
+  eq('unparseable property (\'abc\') -> falls back to 8', wholesaleRepullWeeks_(), 8);
+
+  scriptProps = { WHOLESALE_REPULL_WEEKS: '' };
+  eq('empty-string property -> falls back to 8', wholesaleRepullWeeks_(), 8);
+
+  scriptProps = savedProps;
+})();
+
+(function testWholesaleValidWeekBody() {
+  console.log('\norderapp: wholesaleValidWeekBody_ shape gate:');
+
+  // Modelled on the MEASURED PROD shape in phases/roastery-wholesale/prod-probe.md
+  // (2026-W32, all five diagnostics.*Ok true) — never the DEV doc's example.
+  const requestedWeek = { label: '2026-W32', start: '2026-08-03', end: '2026-08-09' };
+  const DIAG_FLAGS = ['rowsOk', 'crossFootOk', 'moneyOk', 'partitionOk', 'byShopOk'];
+
+  function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+  function validBody() {
+    return {
+      ok: true,
+      schemaVersion: 1,
+      meta: {
+        environment: 'PROD',
+        week: '2026-W32',
+        weekStart: '2026-08-03T00:00:00+10:00',
+        weekEndExclusive: '2026-08-10T00:00:00+10:00',
+        paging: { limit: 200, offset: 0, matched: 6, returned: 6, rowsIncluded: true, truncated: false }
+      },
+      summary: {
+        all: { orderCount: 12, gross: 16709.92 },
+        internal: { orderCount: 9, gross: 15312.77 },
+        external: { orderCount: 2, gross: 1397.15 },
+        ambiguous: { orderCount: 1, gross: 0 },
+        unknown: { orderCount: 0, gross: 0 }
+      },
+      diagnostics: { rowsOk: true, crossFootOk: true, moneyOk: true, partitionOk: true, byShopOk: true },
+      orders: [{ orderId: 'ORD-1', date: '2026-08-04', shopId: 'Wholesale Co', amount: 1397.15 }]
+    };
+  }
+
+  /* --- full valid body, modelled on PROD --- */
+  const b1 = validBody();
+  const r1 = wholesaleValidWeekBody_(b1, requestedWeek);
+  check('full valid PROD-shaped body -> ok:true', r1.ok === true);
+  if (r1.ok) {
+    eq('...weekStart echoes the requested Monday', r1.weekStart, '2026-08-03');
+    eq('...summary is returned verbatim', r1.summary, b1.summary);
+  }
+
+  /* --- meta.week does not echo the requested label --- */
+  const b2 = clone(validBody());
+  b2.meta.week = '2026-W33';
+  const r2 = wholesaleValidWeekBody_(b2, requestedWeek);
+  check('meta.week disagreeing with requestedWeek.label -> ok:false', r2.ok === false);
+  check('...reason names the week echo failure',
+    !!r2.reason && r2.reason.indexOf('2026-W33') !== -1 && r2.reason.indexOf('2026-W32') !== -1);
+
+  /* --- meta.weekStart does not echo the requested Monday --- */
+  const b3 = clone(validBody());
+  b3.meta.weekStart = '2026-08-10T00:00:00+10:00';
+  const r3 = wholesaleValidWeekBody_(b3, requestedWeek);
+  check('meta.weekStart disagreeing with requestedWeek.start -> ok:false', r3.ok === false);
+  check('...reason names the weekStart mismatch',
+    !!r3.reason && r3.reason.indexOf('weekStart') !== -1);
+
+  /* --- each of the five diagnostics flags, false one at a time --- */
+  DIAG_FLAGS.forEach(function (flag) {
+    const b = clone(validBody());
+    b.diagnostics[flag] = false;
+    const r = wholesaleValidWeekBody_(b, requestedWeek);
+    check('diagnostics.' + flag + ' = false -> ok:false', r.ok === false);
+    check('...reason names ' + flag, !!r.reason && r.reason.indexOf(flag) !== -1);
+  });
+
+  /* --- a truthy-but-not-strictly-true flag must still fail (=== true, not
+   *     truthy) — a loose-equality implementation must fail this case --- */
+  const b4a = clone(validBody());
+  b4a.diagnostics.crossFootOk = 1;
+  check('diagnostics.crossFootOk = 1 (truthy, loose-equal true) -> ok:false',
+    wholesaleValidWeekBody_(b4a, requestedWeek).ok === false);
+
+  const b4b = clone(validBody());
+  b4b.diagnostics.crossFootOk = 'true';
+  check('diagnostics.crossFootOk = \'true\' (truthy string) -> ok:false',
+    wholesaleValidWeekBody_(b4b, requestedWeek).ok === false);
+
+  /* --- summary missing the external bucket entirely --- */
+  const b5 = clone(validBody());
+  delete b5.summary.external;
+  const r5 = wholesaleValidWeekBody_(b5, requestedWeek);
+  check('summary.external missing entirely -> ok:false', r5.ok === false);
+  check('...reason names external', !!r5.reason && r5.reason.indexOf('external') !== -1);
+
+  /* --- summary.external.gross present but not a real number --- */
+  [null, '1200.30', NaN].forEach(function (badGross) {
+    const b = clone(validBody());
+    b.summary.external.gross = badGross;
+    const r = wholesaleValidWeekBody_(b, requestedWeek);
+    check('summary.external.gross = ' + JSON.stringify(badGross) + ' -> ok:false', r.ok === false);
+  });
+
+  /* --- summary.external.orderCount non-finite --- */
+  const b6 = clone(validBody());
+  b6.summary.external.orderCount = Infinity;
+  check('summary.external.orderCount non-finite -> ok:false',
+    wholesaleValidWeekBody_(b6, requestedWeek).ok === false);
+
+  /* --- orders absent, or an object instead of an array --- */
+  const b7a = clone(validBody());
+  delete b7a.orders;
+  check('orders absent -> ok:false', wholesaleValidWeekBody_(b7a, requestedWeek).ok === false);
+
+  const b7b = clone(validBody());
+  b7b.orders = {};
+  check('orders is an object, not an array -> ok:false', wholesaleValidWeekBody_(b7b, requestedWeek).ok === false);
+
+  /* --- meta.paging absent, and meta.paging.matched non-finite --- */
+  const b8a = clone(validBody());
+  delete b8a.meta.paging;
+  check('meta.paging absent -> ok:false', wholesaleValidWeekBody_(b8a, requestedWeek).ok === false);
+
+  const b8b = clone(validBody());
+  b8b.meta.paging.matched = NaN;
+  check('meta.paging.matched non-finite -> ok:false', wholesaleValidWeekBody_(b8b, requestedWeek).ok === false);
+
+  /* --- zero-activity week: every bucket zeroed, orders empty, flags all
+   *     true -> MUST still pass. Zero is finite; refusing an empty week is
+   *     step 4's heartbeat rule, not this gate's job. --- */
+  const b9 = clone(validBody());
+  b9.orders = [];
+  b9.summary = {
+    all: { orderCount: 0, gross: 0 },
+    internal: { orderCount: 0, gross: 0 },
+    external: { orderCount: 0, gross: 0 },
+    ambiguous: { orderCount: 0, gross: 0 },
+    unknown: { orderCount: 0, gross: 0 }
+  };
+  const r9 = wholesaleValidWeekBody_(b9, requestedWeek);
+  check('zero-activity week (all buckets 0, orders:[]) -> ok:true', r9.ok === true);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

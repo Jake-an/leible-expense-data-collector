@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "WHOLESALE_SOURCE constant is not defined in the implementation. The test correctly identifies the missing symbol that needs to be implemented."
+}
