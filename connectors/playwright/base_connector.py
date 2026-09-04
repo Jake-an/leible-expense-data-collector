@@ -475,6 +475,28 @@ class BaseConnector:
                 f"Run bash scripts/deploy.sh, or export GAS_EXEC_URL."
             )
 
+    def _require_ingest_token(self) -> str:
+        """Resolve the doPost ingest token, or fail with an actionable message.
+
+        doPost requires a token on EVERY payload (security audit 2026-09-04;
+        it previously gated only weeks_verified_empty payloads). Resolving it
+        BEFORE the request matters: without this, a missing token surfaces as
+        a bare `unauthorized` from the server with no hint about which
+        credential is absent on THIS machine.
+
+        GAS_READ_TOKEN is the connector-side name for the same secret GAS
+        stores as API_READ_TOKEN — deliberately different names, long-standing
+        convention. Never logged.
+        """
+        token = get_credential("GAS_READ_TOKEN")
+        if not token:
+            raise IngestError(
+                "GAS_READ_TOKEN is not set — doPost requires a token on every payload. "
+                "Set it in .env or the environment (same value as the GAS script property "
+                "API_READ_TOKEN). Nothing was posted."
+            )
+        return token
+
     def post(self, rows: list[dict]) -> dict:
         if not rows:
             return {"result": "skipped", "reason": "no rows"}
@@ -483,6 +505,7 @@ class BaseConnector:
             "source": self.SOURCE,
             "rows": rows,
             "extracted_at": datetime.now(SYD_TZ).isoformat(timespec="seconds"),
+            "token": self._require_ingest_token(),
         }
         resp = requests.post(self.exec_url, json=payload, timeout=POST_TIMEOUT_SECONDS)
         resp.raise_for_status()
@@ -491,6 +514,13 @@ class BaseConnector:
         except ValueError as err:
             raise IngestError(f"GAS response not valid JSON: {resp.text[:200]}") from err
         if body.get("result") != "ok":
+            # A rejected token is not retryable and not degradable — say so
+            # plainly rather than letting it read as an ingest data problem.
+            if body.get("code") == "UNAUTHORIZED":
+                raise IngestError(
+                    "GAS rejected the ingest token (UNAUTHORIZED). GAS_READ_TOKEN here and the "
+                    "API_READ_TOKEN script property have diverged — re-copy the value. Nothing was written."
+                )
             raise IngestError(body.get("message", "unknown ingest error"))
         return body
 

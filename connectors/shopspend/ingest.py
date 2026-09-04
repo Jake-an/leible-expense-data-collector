@@ -12,7 +12,6 @@ body's `result` field. A `LOCKED` body carries `code` but no `message`, so
 
 from __future__ import annotations
 
-import json
 import sys
 import time
 from datetime import datetime
@@ -65,7 +64,12 @@ def _report_tombstones(body: dict) -> None:
         )
 
 
-def _send(url: str, payload: dict) -> dict:
+def _send(url: str, payload: dict, token: str) -> dict:
+    # doPost requires a token on EVERY payload (security audit 2026-09-04),
+    # so it is attached here, at the single HTTP chokepoint, rather than at
+    # each of the four payload-construction sites — a future fifth site
+    # cannot then forget it.
+    payload = dict(payload, token=token)
     resp = requests.post(url, json=payload, timeout=300)
     body = _parse_response(resp)
     if body.get("result") == "ok":
@@ -84,44 +88,6 @@ def _send(url: str, payload: dict) -> dict:
 
     message = body.get("message") or (f"code={code}" if code else "unknown ingest error")
     raise IngestFailed(f"shopspend ingest failed: {message}", code=code)
-
-
-def _record_degradation(pull: dict, message: str, reason: str) -> None:
-    """Make a dropped weeks_verified_empty machine-visible in the pull marker.
-
-    The Monday 05:00 Scheduled Task may not capture stderr, so a token outage
-    must not be invisible-but-successful in the Sheet. Two channels, kept
-    consistent: the marker's warnings column (the Sheet-facing banner), and
-    diagnostics_json — whose harness key runner._build_pull froze BEFORE the
-    drop, so left alone it would assert a tombstone bypass that was never
-    sent, the exact "claim the opposite" failure the key exists to prevent.
-    """
-    raw_warnings = pull.get("warnings")
-    warnings = (
-        list(raw_warnings) if isinstance(raw_warnings, list) else json.loads(raw_warnings or "[]")
-    )
-    warnings.append(message)
-    pull["warnings"] = json.dumps(warnings)
-    pull["warnings_count"] = len(warnings)
-
-    raw_diag = pull.get("diagnostics_json")
-    try:
-        diagnostics = dict(raw_diag) if isinstance(raw_diag, dict) else json.loads(raw_diag or "{}")
-    except ValueError:
-        # A truncated blob (runner.truncate_diagnostics_json) is already
-        # visibly unreliable ("...TRUNCATED"); warnings above carries the
-        # truth, so leave it as-is.
-        return
-    if not isinstance(diagnostics, dict):
-        return
-    diag_warnings = diagnostics.get("warnings")
-    if isinstance(diag_warnings, list):
-        diag_warnings.append(message)
-    harness = diagnostics.setdefault("harness", {})
-    if isinstance(harness, dict):
-        harness["weeks_verified_empty"] = []
-        harness["verified_empty_dropped"] = reason
-    pull["diagnostics_json"] = json.dumps(diagnostics)
 
 
 def declared_weeks(rows: list[dict], weeks_complete: list[str], chunk_size: int = 200) -> list[str]:
@@ -169,20 +135,25 @@ def post_pull(
     if weeks_verified_empty is None:
         weeks_verified_empty = []
 
-    # GAS (step 0) rejects any weeks_verified_empty payload without a valid
-    # token. Resolved once, before the first POST, and only when there's
-    # something to protect — an unrelated pull with nothing verified-empty
-    # must never warn about a token it doesn't need.
-    token = None
-    if weeks_verified_empty:
-        token = bc.get_credential("GAS_READ_TOKEN")
-        if not token:
-            degradation_message = (
-                "GAS_READ_TOKEN not set — weeks_verified_empty dropped, tombstone bypass skipped"
-            )
-            print(f"[shopspend] WARNING: {degradation_message}", file=sys.stderr)
-            weeks_verified_empty = []
-            _record_degradation(pull, degradation_message, "no_token")
+    # doPost requires a token on EVERY payload (security audit 2026-09-04),
+    # not just those carrying weeks_verified_empty. Resolved once, before the
+    # first POST.
+    #
+    # There is no degraded mode any more. The old behaviour — drop
+    # weeks_verified_empty and post the spend rows anyway — only made sense
+    # while the rest of the payload was accepted tokenless. Now a missing
+    # token means NOTHING can be written, so recording a warning onto the pull
+    # marker would be pointless: that marker is itself delivered by the final
+    # POST, which cannot go either. A run that cannot authenticate must fail
+    # loudly and non-zero, not look like a success carrying a warning.
+    token = bc.get_credential("GAS_READ_TOKEN")
+    if not token:
+        raise IngestFailed(
+            "shopspend ingest failed: GAS_READ_TOKEN is not set — doPost requires a token on "
+            "every payload. Set it in .env or the environment (same value as the GAS script "
+            "property API_READ_TOKEN). Nothing was posted.",
+            code="NO_TOKEN",
+        )
 
     from collections import defaultdict
 
@@ -230,26 +201,10 @@ def post_pull(
             chunk_verified = [w for w in chunk_weeks if w in verified_empty_set]
             if chunk_verified:
                 payload["weeks_verified_empty"] = chunk_verified
-                payload["token"] = token
-            try:
-                _send(url, payload)
-            except IngestFailed as err:
-                # A REJECTED token (diverged rotation) must degrade exactly
-                # like a missing one — anything else aborts mid-stream with
-                # partial rows and no pull marker. Only the gated field is
-                # retried; every other failure still raises.
-                if err.code != "UNAUTHORIZED" or "weeks_verified_empty" not in payload:
-                    raise
-                rejected_message = (
-                    "GAS rejected the write token (UNAUTHORIZED) — "
-                    "weeks_verified_empty dropped, tombstone bypass skipped"
-                )
-                print(f"[shopspend] WARNING: {rejected_message}", file=sys.stderr)
-                _record_degradation(pull, rejected_message, "unauthorized")
-                verified_empty_set.clear()
-                del payload["weeks_verified_empty"]
-                del payload["token"]
-                _send(url, payload)
+            # No UNAUTHORIZED fallback: retrying without weeks_verified_empty
+            # cannot help when the token itself is what was rejected — the
+            # retry would be refused identically. Let it raise.
+            _send(url, payload, token)
 
         chunk = []
         chunk_weeks = []
@@ -278,7 +233,7 @@ def post_pull(
                     "rows": chunk_data,
                     "extracted_at": extracted_at,
                 }
-                _send(url, payload)
+                _send(url, payload, token)
     else:
         for offset in range(0, len(dated_rows), chunk_size):
             chunk = dated_rows[offset : offset + chunk_size]
@@ -288,7 +243,7 @@ def post_pull(
                 "rows": chunk,
                 "extracted_at": extracted_at,
             }
-            _send(url, payload)
+            _send(url, payload, token)
 
     final_payload = {
         "source": source,
@@ -297,4 +252,4 @@ def post_pull(
         "extracted_at": extracted_at,
         "pull": pull,
     }
-    return _send(url, final_payload)
+    return _send(url, final_payload, token)

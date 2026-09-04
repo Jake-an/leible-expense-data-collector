@@ -240,13 +240,31 @@ function withScriptLock_(fn) {
 function doPost(e) {
   try {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    if (body && body.weeks_verified_empty !== undefined) {
-      var auth = checkReadToken_({ token: body.token });
-      // code:'UNAUTHORIZED' is machine-readable on purpose: the poster
-      // degrades on it (drops weeks_verified_empty and resends) instead of
-      // aborting a pull mid-stream when the stored token has diverged.
-      if (!auth.ok) return jsonOut_({ result: 'error', code: 'UNAUTHORIZED', message: 'unauthorized' });
-    }
+
+    // AUTH FIRST, for EVERY payload — before validateIngest_, before any
+    // write. This deployment is access:ANYONE_ANONYMOUS and its /exec URL is
+    // committed in config/deployment.json, so an unauthenticated doPost means
+    // anyone holding that URL can write arbitrary rows into the financial
+    // Sheet: inflate or zero any supplier's spend, claim another connector's
+    // `source` and overwrite its real invoices in place, or swing the company
+    // headline the external GM cost monitor reads every Monday 08:00.
+    //
+    // This REPLACES the narrower gate from phase dopost-auth-minors, which
+    // covered only payloads carrying weeks_verified_empty. That scope was a
+    // deliberate decision at the time; it was reopened on 2026-09-04 after a
+    // security audit, by Jake, with the connector side updated in the same
+    // change. Every poster must now send `token` (the API_READ_TOKEN value,
+    // named GAS_READ_TOKEN on the connector side — same secret, different
+    // name by long-standing convention).
+    //
+    // checkReadToken_ is fail-closed: an unset API_READ_TOKEN rejects every
+    // request rather than opening the door.
+    //
+    // code:'UNAUTHORIZED' stays machine-readable, but it no longer means
+    // "retry without the gated field" — there is no degraded mode left, and
+    // the shopSpend poster was updated to stop trying one.
+    var auth = checkReadToken_({ token: body && body.token });
+    if (!auth.ok) return jsonOut_({ result: 'error', code: 'UNAUTHORIZED', message: 'unauthorized' });
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });
 

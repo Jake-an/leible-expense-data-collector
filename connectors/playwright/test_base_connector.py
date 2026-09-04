@@ -364,6 +364,67 @@ def test_post_raises_ingest_error_on_non_json_200_body(monkeypatch):
         conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
 
 
+def test_post_sends_ingest_token_in_payload(monkeypatch):
+    """doPost requires a token on EVERY payload (security audit 2026-09-04).
+
+    Asserted explicitly because the other post tests resolve the credential
+    from the developer's real .env — they would keep passing on this machine
+    even if post() stopped sending the token entirely.
+    """
+    captured = {}
+
+    def _capture(*a, **kw):
+        captured.update(kw.get("json") or {})
+        return _FakePostResponse(json_body={"result": "ok", "rowsAdded": 1})
+
+    monkeypatch.setattr(
+        b, "get_credential", lambda name: "tok-123" if name == "GAS_READ_TOKEN" else None
+    )
+    monkeypatch.setattr(b.requests, "post", _capture)
+    conn = _AutoLoginConnector()
+
+    conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert captured.get("token") == "tok-123"
+
+
+def test_post_without_ingest_token_raises_and_makes_no_http_call(monkeypatch):
+    """A missing credential must fail BEFORE the request. Posting tokenless
+    would leak the rows to an endpoint that will only reject them, and the
+    bare `unauthorized` back would not say which credential is absent here."""
+    calls = []
+    monkeypatch.setattr(b, "get_credential", lambda name: None)
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append((a, kw)))
+    conn = _AutoLoginConnector()
+
+    with pytest.raises(b.IngestError) as exc_info:
+        conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert "GAS_READ_TOKEN" in str(exc_info.value)
+    assert calls == [], "no HTTP call may be made without a token"
+
+
+def test_post_reports_rejected_token_distinctly(monkeypatch):
+    """UNAUTHORIZED means the two copies of the secret diverged — it must not
+    read as a row-data problem, and it is not degradable."""
+    monkeypatch.setattr(b, "get_credential", lambda name: "stale-token")
+    monkeypatch.setattr(
+        b.requests,
+        "post",
+        lambda *a, **kw: _FakePostResponse(
+            json_body={"result": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}
+        ),
+    )
+    conn = _AutoLoginConnector()
+
+    with pytest.raises(b.IngestError) as exc_info:
+        conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    msg = str(exc_info.value)
+    assert "UNAUTHORIZED" in msg
+    assert "diverged" in msg
+
+
 def test_post_empty_rows_returns_skipped_and_makes_no_http_call(monkeypatch):
     calls = []
     monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append((a, kw)))

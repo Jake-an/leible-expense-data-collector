@@ -692,16 +692,23 @@ def test_declared_weeks_excludes_split_weeks():
 
 
 # --------------------------------------------------------------------------- #
-# Step 3 — poster-token-degradation. GAS rejects any weeks_verified_empty
-# payload without a valid token (step 0). The poster resolves GAS_READ_TOKEN
-# once via bc.get_credential, attaches it only alongside weeks_verified_empty,
-# and degrades non-destructively (drops verified_empty, warns, keeps posting)
-# when the token is unresolvable — it must never raise or strand a partial
-# pull the way client.py's read path does.
+# Poster auth. doPost requires a token on EVERY payload (security audit
+# 2026-09-04), superseding the narrower dopost-auth-minors gate that covered
+# only weeks_verified_empty payloads. The poster resolves GAS_READ_TOKEN once
+# via bc.get_credential and attaches it to every request.
+#
+# The old non-destructive degradation (drop verified_empty, warn, keep
+# posting) is GONE and cannot come back: it only made sense while the rest of
+# the payload was accepted tokenless. A missing or rejected token now means
+# nothing can be written at all, so the poster fails loudly and BEFORE the
+# first POST rather than stranding a partial pull with no marker.
 # --------------------------------------------------------------------------- #
 
 
-def test_token_attached_only_to_chunks_carrying_verified_empty(monkeypatch):
+def test_token_attached_to_every_payload(monkeypatch):
+    """doPost requires a token on EVERY payload (security audit 2026-09-04),
+    not only the chunks carrying weeks_verified_empty. The pull-marker POST
+    counts too — it is a write like any other."""
     rows = _week_rows("2026-W28", "2026-07-06", 3, start_i=0) + _week_rows(
         "2026-W29", "2026-07-13", 3, start_i=100
     )
@@ -723,108 +730,56 @@ def test_token_attached_only_to_chunks_carrying_verified_empty(monkeypatch):
 
     data_calls = _data_requests(fake_post)
     assert len(data_calls) == 2, "scenario must span more than one chunk to be meaningful"
-
-    with_field = [c for c in data_calls if c.get("weeks_verified_empty")]
-    without_field = [c for c in data_calls if not c.get("weeks_verified_empty")]
-    assert len(with_field) == 1
-    assert len(without_field) == 1
-    assert with_field[0]["token"] == "test-token"
-    assert "token" not in without_field[0]
-
-    # The pull-marker request never carries weeks_verified_empty, so it must
-    # never carry a token either.
-    assert "token" not in fake_post.calls[-1]["json"]
+    assert all(c["token"] == "test-token" for c in data_calls)
+    assert fake_post.calls[-1]["json"]["token"] == "test-token", "pull marker is tokenised too"
 
 
-def test_token_not_attached_when_no_verified_empty_weeks(monkeypatch):
+def test_token_attached_even_when_no_verified_empty_weeks(monkeypatch):
+    """Ordinary spend rows need the token now, so having nothing
+    verified-empty is no longer an exemption."""
     fake_post = _FakePost([_ok_resp(), _ok_resp()])
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
 
     ingest.post_pull([_row()], _pull(), exec_url=PROD_URL, weeks_complete=["2026-W31"])
 
-    assert all("token" not in c["json"] for c in fake_post.calls)
+    assert fake_post.calls, "expected at least one POST"
+    assert all(c["json"]["token"] == "test-token" for c in fake_post.calls)
 
 
-def test_missing_token_drops_verified_empty_and_warns_once(monkeypatch, capsys):
+def test_missing_token_raises_and_posts_nothing(monkeypatch):
+    """No degraded mode any more. Without a token NOTHING can be written, so
+    the run must fail loudly instead of looking like a success carrying a
+    warning — and it must fail BEFORE any POST, because a partial send with
+    no pull marker is exactly the state this poster exists to avoid."""
     rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
     pull = _pull(from_week="2026-W31", to_week="2026-W31")
     fake_post = _FakePost([_ok_resp(), _ok_resp()])
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(bc, "get_credential", lambda name: None)
 
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
+    with pytest.raises(ingest.IngestFailed) as exc_info:
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            weeks_complete=["2026-W31"],
+            weeks_verified_empty=["2026-W31"],
+        )
 
-    assert fake_post.call_count == 2, "no exception, no partial send — every expected POST happens"
-    for call in fake_post.calls:
-        assert "weeks_verified_empty" not in call["json"]
-        assert "token" not in call["json"]
-    # weeks_complete itself is untouched — only the verified-empty declaration
-    # (and the tombstone bypass it authorises) is lost, never the data.
-    assert fake_post.calls[0]["json"]["weeks_complete"] == ["2026-W31"]
-
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert output.count("GAS_READ_TOKEN") == 1
-    assert "WARNING" in output
+    assert "GAS_READ_TOKEN" in str(exc_info.value)
+    assert fake_post.call_count == 0, "nothing may be posted without a token"
 
 
-def test_missing_token_with_no_verified_empty_weeks_does_not_warn(monkeypatch, capsys):
+def test_missing_token_raises_even_with_no_verified_empty_weeks(monkeypatch):
     fake_post = _FakePost([_ok_resp(), _ok_resp()])
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(bc, "get_credential", lambda name: None)
 
-    ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+    with pytest.raises(ingest.IngestFailed):
+        ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
 
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert "GAS_READ_TOKEN" not in output
-
-
-def test_degraded_pull_marker_records_warning_in_pull_dict(monkeypatch):
-    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
-    pull = _pull(from_week="2026-W31", to_week="2026-W31")
-    fake_post = _FakePost([_ok_resp(), _ok_resp()])
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(bc, "get_credential", lambda name: None)
-
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
-
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    assert marker_pull["warnings_count"] == 1
-    assert "GAS_READ_TOKEN" in marker_pull["warnings"]
-
-
-def test_healthy_pull_marker_does_not_record_degradation_warning(monkeypatch):
-    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
-    pull = _pull(from_week="2026-W31", to_week="2026-W31")
-    fake_post = _FakePost([_ok_resp(), _ok_resp()])
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(bc, "get_credential", lambda name: "test-token")
-
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
-
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    assert marker_pull["warnings_count"] == 0
-    assert "GAS_READ_TOKEN" not in marker_pull["warnings"]
+    assert fake_post.call_count == 0
 
 
 def _diag_claiming_verified_empty(week="2026-W31"):
@@ -836,36 +791,6 @@ def _diag_claiming_verified_empty(week="2026-W31"):
             "harness": {"weeks_complete": [week], "weeks_verified_empty": [week]},
         }
     )
-
-
-def test_degraded_pull_marker_rewrites_diagnostics_harness(monkeypatch):
-    # Phase-end review (important): warnings alone is not enough — the frozen
-    # diagnostics_json.harness must stop claiming a tombstone bypass that was
-    # never sent.
-    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
-    pull = _pull(
-        from_week="2026-W31",
-        to_week="2026-W31",
-        diagnostics_json=_diag_claiming_verified_empty(),
-    )
-    fake_post = _FakePost([_ok_resp(), _ok_resp()])
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(bc, "get_credential", lambda name: None)
-
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
-
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    harness = json.loads(marker_pull["diagnostics_json"])["harness"]
-    assert harness["weeks_verified_empty"] == []
-    assert harness["verified_empty_dropped"] == "no_token"
-    # The weeks_complete claim is true (still declared) and stays.
-    assert harness["weeks_complete"] == ["2026-W31"]
 
 
 def test_healthy_pull_marker_leaves_diagnostics_untouched(monkeypatch):
@@ -888,104 +813,33 @@ def test_healthy_pull_marker_leaves_diagnostics_untouched(monkeypatch):
     assert marker_pull["diagnostics_json"] == diag
 
 
-def test_degraded_truncated_diagnostics_json_does_not_raise(monkeypatch):
-    # runner.truncate_diagnostics_json can leave an unparseable blob; the
-    # degradation path must not fail harder than the outage it is handling.
-    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
-    truncated_blob = '{"warnings": ["x", "y...TRUNCATED'
-    pull = _pull(from_week="2026-W31", to_week="2026-W31", diagnostics_json=truncated_blob)
-    fake_post = _FakePost([_ok_resp(), _ok_resp()])
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(bc, "get_credential", lambda name: None)
-
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
-
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    assert marker_pull["diagnostics_json"] == truncated_blob
-    # The warnings channel still records the degradation.
-    assert "GAS_READ_TOKEN" in marker_pull["warnings"]
-
-
-def test_degraded_warnings_as_raw_list_does_not_raise(monkeypatch):
-    # Defensive: a future caller passing warnings as a list (the sibling dict
-    # shape) must not make the degradation path raise TypeError.
-    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
-    pull = _pull(from_week="2026-W31", to_week="2026-W31", warnings=["pre-existing"])
-    fake_post = _FakePost([_ok_resp(), _ok_resp()])
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(bc, "get_credential", lambda name: None)
-
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
-
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    recorded = json.loads(marker_pull["warnings"])
-    assert recorded[0] == "pre-existing"
-    assert any("GAS_READ_TOKEN" in w for w in recorded)
-    assert marker_pull["warnings_count"] == 2
-
-
 def _unauthorized_resp():
     # The shape the doPost gate returns when the token is wrong or stale —
     # code is machine-readable on purpose so the poster can degrade.
     return _FakeResp({"result": "error", "code": "UNAUTHORIZED", "message": "unauthorized"})
 
 
-def test_rejected_token_degrades_like_missing_token(monkeypatch, capsys):
-    # Phase-end review round 2 (important): a REJECTED token (diverged
-    # rotation — two recorded incidents) must not abort the pull mid-stream.
-    # The gated chunk is resent without the field; everything else proceeds.
-    rows = _week_rows("2026-W28", "2026-07-06", 3, start_i=0) + _week_rows(
-        "2026-W29", "2026-07-13", 3, start_i=100
-    )
-    pull = _pull(
-        from_week="2026-W28",
-        to_week="2026-W29",
-        diagnostics_json=_diag_claiming_verified_empty("2026-W29"),
-    )
-    fake_post = _FakePost([_ok_resp(), _unauthorized_resp(), _ok_resp(), _ok_resp()])
+def test_rejected_token_raises_without_a_degraded_resend(monkeypatch):
+    """A rejected token used to be retried without weeks_verified_empty.
+    That cannot help now — the token itself is what was refused, so the
+    resend would be refused identically. It must raise, not silently retry."""
+    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
+    pull = _pull(from_week="2026-W31", to_week="2026-W31")
+    fake_post = _FakePost([_unauthorized_resp()])
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(bc, "get_credential", lambda name: "stale-token")
 
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        chunk_size=3,
-        weeks_complete=["2026-W28", "2026-W29"],
-        weeks_verified_empty=["2026-W29"],
-    )
+    with pytest.raises(ingest.IngestFailed) as exc_info:
+        ingest.post_pull(
+            rows,
+            pull,
+            exec_url=PROD_URL,
+            weeks_complete=["2026-W31"],
+            weeks_verified_empty=["2026-W31"],
+        )
 
-    assert fake_post.call_count == 4, "rejected chunk resent, no partial send, marker posted"
-    # The resend of the rejected chunk carries neither the field nor the token.
-    resend = fake_post.calls[2]["json"]
-    assert resend["weeks_complete"] == ["2026-W29"]
-    assert "weeks_verified_empty" not in resend
-    assert "token" not in resend
-    # The pull marker still posts, and records the degradation honestly.
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    assert "UNAUTHORIZED" in marker_pull["warnings"]
-    harness = json.loads(marker_pull["diagnostics_json"])["harness"]
-    assert harness["weeks_verified_empty"] == []
-    assert harness["verified_empty_dropped"] == "unauthorized"
-
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert output.count("UNAUTHORIZED") == 1
-    assert "WARNING" in output
-    # The stale token value itself is never echoed.
-    assert "stale-token" not in output
+    assert exc_info.value.code == "UNAUTHORIZED"
+    assert fake_post.call_count == 1, "no degraded resend"
 
 
 def test_non_unauthorized_error_on_gated_chunk_still_raises(monkeypatch):
@@ -1003,33 +857,6 @@ def test_non_unauthorized_error_on_gated_chunk_still_raises(monkeypatch):
             weeks_complete=["2026-W31"],
             weeks_verified_empty=["2026-W31"],
         )
-
-
-def test_degradation_keeps_diagnostics_blob_warnings_consistent(monkeypatch):
-    # Round-2 minor: diagnostics_json carries its own top-level warnings list;
-    # the degradation message must land there too, not only in the marker's
-    # warnings column, or the two lists in the same marker disagree.
-    rows = _week_rows("2026-W31", "2026-07-27", 2, start_i=0)
-    pull = _pull(
-        from_week="2026-W31",
-        to_week="2026-W31",
-        diagnostics_json=_diag_claiming_verified_empty(),
-    )
-    fake_post = _FakePost([_ok_resp(), _ok_resp()])
-    monkeypatch.setattr(requests, "post", fake_post)
-    monkeypatch.setattr(bc, "get_credential", lambda name: None)
-
-    ingest.post_pull(
-        rows,
-        pull,
-        exec_url=PROD_URL,
-        weeks_complete=["2026-W31"],
-        weeks_verified_empty=["2026-W31"],
-    )
-
-    marker_pull = fake_post.calls[-1]["json"]["pull"]
-    diagnostics = json.loads(marker_pull["diagnostics_json"])
-    assert any("GAS_READ_TOKEN" in w for w in diagnostics["warnings"])
 
 
 def test_token_value_never_printed(monkeypatch, capsys):

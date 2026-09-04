@@ -15,9 +15,31 @@ implies the app can meet this contract yet.
 
 `POST` to the hub's `/exec` URL (`config/deployment.json`), `Content-Type`
 irrelevant — the body is parsed as JSON regardless
-(`JSON.parse(e.postData.contents)`). No auth token on write (matches every
-other connector; the read side, `doGet`, is the one that's token-gated — see
-`docs/api.md`).
+(`JSON.parse(e.postData.contents)`).
+
+**Every payload MUST carry a `token`** (security audit 2026-09-04). It goes in
+the JSON body as `token`, never in the query string — GAS logs query strings.
+The value is the `API_READ_TOKEN` script property; connectors read it as
+`GAS_READ_TOKEN` (same secret, deliberately different names — long-standing
+convention, don't invent a matching property). `checkReadToken_` is
+fail-closed and runs BEFORE `validateIngest_`, so a malformed payload without
+a token answers `unauthorized` rather than leaking the payload grammar.
+
+```jsonc
+{ "result": "error", "code": "UNAUTHORIZED", "message": "unauthorized" }
+```
+
+`code: "UNAUTHORIZED"` stays machine-readable, but it no longer means "retry
+without the gated field" — **there is no degraded mode**. It previously did:
+the gate covered only payloads carrying `weeks_verified_empty`, so the
+shopSpend poster could drop that field and post the rest. That scope left the
+primary write path (suppliers/revenue/plain shopspend) anonymous on an
+`ANYONE_ANONYMOUS` deployment whose `/exec` URL is committed to this repo, and
+was closed on 2026-09-04. A missing or rejected token now means nothing can be
+written, so posters fail loudly and before the first POST rather than
+stranding a partial pull with no marker.
+
+The read side, `doGet`, is token-gated the same way — see `docs/api.md`.
 
 ## Payload shapes (verbatim)
 

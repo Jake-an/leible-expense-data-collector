@@ -45,6 +45,24 @@ I hit this during step 7 prep. **Run `/security-audit` before the window opens**
 during it — otherwise you discover it with `/exec` already down. Do not use the bypass
 env var.
 
+## ⚠ Verify `GAS_READ_TOKEN` BEFORE pushing
+
+As of 2026-09-04 `doPost` requires a token on **every** payload, and the
+connectors were updated in the same change to send it. The moment this code is
+live, any connector that cannot resolve `GAS_READ_TOKEN` **stops ingesting** —
+it fails loudly and posts nothing (deliberately: a tokenless POST would leak rows
+to an endpoint that will only refuse them).
+
+So before the push, confirm on the machine the Scheduled Tasks run on:
+
+```bash
+python -c "import sys; sys.path.insert(0,'connectors/playwright'); import base_connector as b; print('GAS_READ_TOKEN resolved:', bool(b.get_credential('GAS_READ_TOKEN')))"
+```
+
+It must print `True`. If it prints `False`, set it (same value as the GAS script
+property `API_READ_TOKEN`) before going any further — and retype the value
+rather than pasting, the GAS property UI clips long values.
+
 ## ⚠ Run step 8 in the same sitting
 
 Step 5 armed `coffee_order_app` in `STALENESS_SOURCES`, but only step 8 ever stamps its

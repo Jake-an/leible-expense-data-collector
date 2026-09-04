@@ -451,9 +451,44 @@ function eq(name, actual, expected) {
         JSON.stringify(actual) === JSON.stringify(expected));
 }
 function freshSheets() { currentSS = makeSpreadsheet(); }
-function doPostJson(body) {
-  const out = doPost({ postData: { contents: JSON.stringify(body) } });
-  return JSON.parse(out.getContent());
+const DOPOST_TEST_TOKEN = 'test-ingest-token';
+
+/**
+ * POST a body through the real doPost.
+ *
+ * doPost requires a valid `token` on EVERY payload (security audit
+ * 2026-09-04), so this helper supplies one by default — otherwise every
+ * ingest test in the suite would assert against `unauthorized` instead of
+ * the behaviour it is actually about.
+ *
+ * Mock hygiene: `scriptProps` is a shared mutable global. If a caller has
+ * already set API_READ_TOKEN this helper uses THAT value and leaves it
+ * alone; if not, it sets a temporary one and deletes it afterwards, so a
+ * token never leaks into a later case and makes an `unauthorized` assertion
+ * pass for the wrong reason.
+ *
+ * @param {Object} body
+ * @param {{noToken?:boolean}} [opts] noToken:true sends the body verbatim —
+ *   use it (or set body.token yourself) for the auth tests.
+ */
+function doPostJson(body, opts) {
+  opts = opts || {};
+  let injected = false;
+  if (!opts.noToken) {
+    if (scriptProps.API_READ_TOKEN === undefined) {
+      scriptProps.API_READ_TOKEN = DOPOST_TEST_TOKEN;
+      injected = true;
+    }
+    if (body && body.token === undefined) {
+      body = Object.assign({}, body, { token: scriptProps.API_READ_TOKEN });
+    }
+  }
+  try {
+    const out = doPost({ postData: { contents: JSON.stringify(body) } });
+    return JSON.parse(out.getContent());
+  } finally {
+    if (injected) delete scriptProps.API_READ_TOKEN;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -2047,9 +2082,13 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
 
   // doPost stamps on ingest — and MUST stamp even when everything dedups.
   currentSS = makeSpreadsheet();
-  scriptProps = {};
+  // doPost now requires a token on EVERY payload (security audit 2026-09-04),
+  // so these direct calls carry one — otherwise they would assert against
+  // `unauthorized` instead of the heartbeat behaviour they are about.
+  scriptProps = { API_READ_TOKEN: 'hb-token' };
   const payload = {
     source: 'food_dairy_co',
+    token: 'hb-token',
     extracted_at: '2026-07-16T11:00:00+10:00',
     rows: [{ date: '2026-07-15', supplier: 'FDCo', total: 10, invoice_ref: 'INV1', location: 'Leible York' }],
   };
@@ -2066,8 +2105,10 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
     stalenessParseTs_('2020-01-01T00:00:00+10:00'));
 
   // An invalid payload is not a successful run.
-  scriptProps = {};
-  doPost({ postData: { contents: JSON.stringify({ source: 'food_dairy_co' }) } });
+  // Authenticated but INVALID — proves validation (not auth) is what stops
+  // the stamp. A tokenless payload would stop at auth and prove nothing here.
+  scriptProps = { API_READ_TOKEN: 'hb-token' };
+  doPost({ postData: { contents: JSON.stringify({ source: 'food_dairy_co', token: 'hb-token' }) } });
   check('an invalid payload stamps nothing', !('LAST_INGEST_food_dairy_co' in scriptProps));
 })();
 
@@ -4763,7 +4804,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var noToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31']
-  });
+  }, { noToken: true });
   eq('no token field: result error', noToken.result, 'error');
   eq('no token field: code UNAUTHORIZED (machine-readable for poster degradation)',
     noToken.code, 'UNAUTHORIZED');
@@ -4806,7 +4847,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var emptyArrayNoToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: [], weeks_verified_empty: []
-  });
+  }, { noToken: true });
   eq('empty weeks_verified_empty array, no token: result error', emptyArrayNoToken.result, 'error');
   eq('empty weeks_verified_empty array, no token: still unauthorized',
     emptyArrayNoToken.message, 'unauthorized');
@@ -4857,7 +4898,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var malformedNoToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: ['2026-W31'], weeks_verified_empty: 'not-an-array'
-  });
+  }, { noToken: true });
   eq('malformed weeks_verified_empty, no token: result error', malformedNoToken.result, 'error');
   eq('malformed weeks_verified_empty, no token: unauthorized (not validation error)',
     malformedNoToken.message, 'unauthorized');
@@ -12570,6 +12611,78 @@ console.log('\narchiveAndPurge_ — batched writes:');
   check('no heartbeat recorded: wholesalePull WAS called', calledAbsent);
 
   global.wholesalePull = REAL_WHOLESALE_PULL;
+})();
+
+/* ------------------------------------------------------------------ *
+ * doPost requires a token on EVERY payload — security audit 2026-09-04.
+ *
+ * Supersedes the narrower dopost-auth-minors gate, which covered only
+ * payloads carrying weeks_verified_empty and left the primary ingest path
+ * (suppliers/revenue/plain shopspend) writable by any anonymous caller
+ * holding the /exec URL — a URL committed in config/deployment.json.
+ * ------------------------------------------------------------------ */
+(function testDoPostRequiresTokenForEveryPayload() {
+  console.log('\nsecurity: doPost token required on every payload:');
+  const savedProps = scriptProps;
+
+  const suppliersBody = {
+    source: 'food_dairy_co', extracted_at: 'TS',
+    rows: [{ date: '2026-07-15', supplier: 'FDCo', total: 10, invoice_ref: 'INV-T1', location: 'Leible York' }]
+  };
+  const revenueBody = {
+    source: 'coffee_order_app', kind: 'revenue', extracted_at: 'TS',
+    rows: [{ date: '2026-07-15', department: 'Roastery', channel: 'wholesale', customer: 'Shop', amount: 10, order_ref: 'ORD-T1' }]
+  };
+
+  // --- suppliers: the primary write path, previously fully anonymous ---
+  scriptProps = { API_READ_TOKEN: 'real-token' };
+  freshSheets();
+  const suppNoTok = doPostJson(suppliersBody, { noToken: true });
+  eq('suppliers POST with NO token: result error', suppNoTok.result, 'error');
+  eq('suppliers POST with NO token: code UNAUTHORIZED', suppNoTok.code, 'UNAUTHORIZED');
+  const suppSheetAfter = currentSS.getSheetByName(SUPPLIERS_TAB);
+  check('suppliers POST with NO token wrote NOTHING',
+    !suppSheetAfter || suppSheetAfter.getDataRange().getValues().length <= 1);
+  check('suppliers POST with NO token stamped no heartbeat',
+    !('LAST_INGEST_food_dairy_co' in scriptProps));
+
+  // --- revenue: same ---
+  scriptProps = { API_READ_TOKEN: 'real-token' };
+  freshSheets();
+  const revNoTok = doPostJson(revenueBody, { noToken: true });
+  eq('revenue POST with NO token: code UNAUTHORIZED', revNoTok.code, 'UNAUTHORIZED');
+
+  // --- a WRONG token is rejected, not merely a missing one ---
+  scriptProps = { API_READ_TOKEN: 'real-token' };
+  freshSheets();
+  const wrongTok = doPostJson(Object.assign({}, suppliersBody, { token: 'not-the-token' }), { noToken: true });
+  eq('suppliers POST with a WRONG token: code UNAUTHORIZED', wrongTok.code, 'UNAUTHORIZED');
+
+  // --- fail CLOSED: no stored token means nothing is accepted, rather than
+  //     the gate opening because there is nothing to compare against ---
+  scriptProps = {};
+  freshSheets();
+  const noStored = doPostJson(Object.assign({}, suppliersBody, { token: 'anything' }), { noToken: true });
+  eq('API_READ_TOKEN unset: still UNAUTHORIZED (fail closed)', noStored.code, 'UNAUTHORIZED');
+
+  // --- auth precedes validation: a malformed payload without a token must
+  //     say unauthorized, so an anonymous caller learns nothing about the
+  //     payload grammar by probing ---
+  scriptProps = { API_READ_TOKEN: 'real-token' };
+  freshSheets();
+  const badNoTok = doPostJson({ source: 'food_dairy_co' }, { noToken: true });
+  eq('malformed + no token: unauthorized, NOT a validation message', badNoTok.code, 'UNAUTHORIZED');
+
+  // --- the correct token still works end to end ---
+  scriptProps = { API_READ_TOKEN: 'real-token' };
+  freshSheets();
+  const good = doPostJson(Object.assign({}, suppliersBody, { token: 'real-token' }), { noToken: true });
+  eq('suppliers POST WITH the right token: result ok', good.result, 'ok');
+  eq('suppliers POST WITH the right token: row written', good.rowsAdded, 1);
+  check('suppliers POST WITH the right token: heartbeat stamped',
+    'LAST_INGEST_food_dairy_co' in scriptProps);
+
+  scriptProps = savedProps;
 })();
 
 /* ------------------------------------------------------------------ *
