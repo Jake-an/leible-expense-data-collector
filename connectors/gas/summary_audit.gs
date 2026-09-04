@@ -728,7 +728,7 @@ function runSummaryOrphanSweep() {
     }
 
     var backup = ensureSheet(ss, SUMMARY_ORPHAN_BACKUP_TAB, SUMMARY_HEADERS);
-    for (var b = 0; b < candidates.length; b++) backup.appendRow(candidates[b].raw);
+    for (var b = 0; b < candidates.length; b++) backup.appendRow(sheetSafeRow_(candidates[b].raw));
     Logger.log('runSummaryOrphanSweep: backed up ' + candidates.length +
       ' row(s) to ' + SUMMARY_ORPHAN_BACKUP_TAB);
 

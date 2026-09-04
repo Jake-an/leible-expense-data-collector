@@ -627,7 +627,7 @@ function mayersRestoreWeek_(week) {
       var want = rowKey_(staleRow, SUMMARY_KEY_COLS);
       for (var b = 1; b < backupData.length; b++) {
         if (rowKey_(backupData[b], SUMMARY_KEY_COLS) !== want) continue;
-        summSheet.appendRow(backupData[b]);
+        summSheet.appendRow(sheetSafeRow_(backupData[b]));
         summData.push(backupData[b]);
         staleRestored++;
         break; // first (earliest) backup copy only

