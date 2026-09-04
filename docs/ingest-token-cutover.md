@@ -88,20 +88,37 @@ exist.
 bash scripts/deploy.sh
 ```
 
-**5. Prove every connector still authenticates — BEFORE walking away.**
-`--dry-run` pairs with `--attended` to log in and preview without writing.
+**5. Prove every token authenticates — BEFORE walking away.**
 
 ```bash
-python connectors/playwright/food_dairy_co.py   --attended --dry-run
-python connectors/playwright/fresh_and_chill.py --attended --dry-run
-python connectors/playwright/ordermentum.py     --attended --dry-run
-python -m connectors.shopspend.runner --backfill --dry-run
+python scripts/verify_ingest_tokens.py
 ```
 
-Each must reach its normal output. A failure naming the exact credential
-(`INGEST_TOKEN_… is not set`) means step 3 was missed for that connector; a
-`GAS rejected the ingest token (UNAUTHORIZED)` means step 2's value and step 3's
-value differ, or the deploy in step 4 did not take.
+> ⚠ **`--dry-run` does NOT verify auth.** `base_connector.py:351` returns the
+> dry-run report *before* `post()`, so the ingest token is never resolved and
+> never sent. A green `--dry-run` says nothing about whether the cutover worked.
+> That is what `verify_ingest_tokens.py` exists for.
+
+It POSTs a correctly-authenticated but deliberately invalid payload (no
+`extracted_at`) to each source. Because doPost checks auth *before*
+`validateIngest_`, the two outcomes are unambiguous — `UNAUTHORIZED` means the
+token is wrong, `missing extracted_at` means auth passed. Nothing is written, no
+heartbeat is stamped, no browser or portal session is needed. It then confirms
+the fix is live by spoofing `square`/`mayers`/`greenbean`/`shopify_orderapp`
+with a real connector token; each must be refused.
+
+Diagnosing a failure: `… is not set in .env` means step 3 was missed for that
+connector. `UNAUTHORIZED` means step 2's value and step 3's value differ, or the
+deploy in step 4 did not take. `spoof … NOT REFUSED` means the hub is still
+running the old shared-token build — step 4 did not take.
+
+Optionally follow with one real connector run. A re-post of invoices already in
+the Sheet dedups to `rowsAdded: 0`, so it costs nothing and exercises the whole
+path:
+
+```bash
+python connectors/playwright/food_dairy_co.py
+```
 
 **6. Only then leave it to the scheduler.** If step 5 cannot be made to pass,
 roll back the deploy — the spoofing hole reopens, but nothing is silently
@@ -129,7 +146,8 @@ not match the property.
 Because it is one property per source, each is independent:
 
 - **Rotate:** generate a new value, paste it into the Script Property and `.env`
-  together, re-run that connector with `--dry-run`. No other connector is touched.
+  together, then re-run `python scripts/verify_ingest_tokens.py` (NOT `--dry-run`,
+  which never resolves the token). No other connector is touched.
 - **Revoke:** delete the Script Property. That source fails closed immediately;
   everything else keeps ingesting. Revoking `INGEST_TOKEN_SHOPSPEND` revokes
   `shopspend-backfill` too — they share one credential by design.
