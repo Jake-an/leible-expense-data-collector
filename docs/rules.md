@@ -39,13 +39,20 @@ one attended pass is required:
    SHOPSPEND_URL_DEV=<shopSpend API URL for DEV>
    SHOPSPEND_TOKEN_DEV=<shopSpend API token for DEV>
    GAS_READ_TOKEN=<same secret as this hub's own API_READ_TOKEN Script Property>
+   INGEST_TOKEN_SHOPSPEND=<same secret as this hub's own INGEST_TOKEN_SHOPSPEND property>
    ```
    `SHOPSPEND_ENV` picks which `_PROD`/`_DEV` pair `connectors/shopspend/client.py`'s
    `resolve_config()` reads — only that pair needs a real value, but keeping both around
-   makes switching environments a one-line edit. `GAS_READ_TOKEN` is a **separate**
-   credential from the shopSpend API token: it authenticates `fn=shopspendCoverage`
-   against this project's own hub (`connectors/gas/Code.gs` `checkReadToken_`, see
-   `docs/api.md`), not the shopSpend supplier's API.
+   makes switching environments a one-line edit.
+
+   **Three different secrets, do not conflate them.** `SHOPSPEND_TOKEN_*` authenticates
+   against the shopSpend supplier's API. `GAS_READ_TOKEN` is the **read** credential for
+   this project's own hub — it authenticates `fn=shopspendCoverage` via `doGet`
+   (`checkReadToken_`, matching the `API_READ_TOKEN` Script Property; same secret,
+   deliberately different names). `INGEST_TOKEN_SHOPSPEND` is the **write** credential:
+   `doPost` binds each token to its own `source` (`checkIngestToken_` /
+   `INGEST_SOURCES_`), and the read token carries no write authority. Property and `.env`
+   variable share one name here on purpose — see `docs/ingest-contract.md`.
 2. **Verify with `--dry-run`** before anything is ever posted:
    ```
    python -m connectors.shopspend.runner --backfill --dry-run

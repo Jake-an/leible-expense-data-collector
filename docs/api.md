@@ -156,20 +156,26 @@ shop-weeks (below the floor, a small ordinary closure — e.g. 2 of 3 shops —
 always writes). A week named in `weeks_verified_empty` is exempt from the
 breaker (see `docs/schema.md`).
 
-**Write-side auth.** Any `doPost` payload carrying `weeks_verified_empty` must include `token`
-(in the JSON body, not the query string) matching the `API_READ_TOKEN` Script Property — the
-same secret the `doGet` side checks above. Missing or wrong token →
-`{ "result": "error", "code": "UNAUTHORIZED", "message": "unauthorized" }` — the `code` is
-machine-readable on purpose (see below). Every other `doPost` payload (suppliers,
-revenue, Square, or a shopspend chunk that carries no `weeks_verified_empty`) stays tokenless.
+**Write-side auth.** EVERY `doPost` payload — suppliers, revenue, shopspend, with or
+without `weeks_verified_empty` — must include `token` in the JSON body (not the query
+string), and the token is bound to the payload's `source`: each source has its own
+`INGEST_TOKEN_<SOURCE>` Script Property, resolved through the `INGEST_SOURCES_` allowlist
+in `connectors/gas/Code.gs`. `API_READ_TOKEN` is the **read** secret checked by `doGet`
+above and is NOT accepted here. See `docs/ingest-contract.md` for the source→property table.
+
+Missing token, wrong token, unset property or an unlisted `source` all answer the same
+`{ "result": "error", "code": "UNAUTHORIZED", "message": "unauthorized" }` — uniform on
+purpose, so an anonymous caller holding the committed `/exec` URL gets no source-enumeration
+oracle. Which of the four it was is written to the GAS **execution log**; that log is the
+only place a silently 401-ing scheduled connector can be diagnosed. The `code` stays
+machine-readable, but it no longer means "retry without the gated field": there is **no
+degraded mode**. The Python poster used to drop `weeks_verified_empty` and post the rest;
+that only made sense while the rest of the payload was accepted tokenless. Both posters
+(`connectors/playwright/base_connector.py`, `connectors/shopspend/ingest.py`) now resolve
+their own credential BEFORE the first request and fail loudly if it is absent.
+
 This gate covers the anonymous network surface only — the Apps Script editor path called out
-below still bypasses it. The Python poster (`connectors/shopspend/ingest.py`) degrades
-non-destructively in BOTH token-failure modes rather than failing the pull: when it cannot
-resolve `GAS_READ_TOKEN`, it drops `weeks_verified_empty` from the request up front; when GAS
-answers `code: "UNAUTHORIZED"` (a stale/diverged token), it resends that chunk without the
-field and drops it from the rest of the pull. Either way the tombstone bypass is skipped, a
-warning is printed to stderr, and the drop is recorded on the pull marker (`warnings` +
-`diagnostics_json.harness.verified_empty_dropped`).
+below still bypasses it.
 
 **What backs that exemption — read this before trusting it.** The connector
 does *not* positively confirm a week is empty upstream. It derives
@@ -201,7 +207,7 @@ curl -sL "$GAS_EXEC_URL" \
        "extracted_at":"2026-08-05T09:00:00+10:00",
        "weeks_complete":["2026-W31"],
        "weeks_verified_empty":["2026-W31"],
-       "token":"'"$GAS_READ_TOKEN"'"}'
+       "token":"'"$INGEST_TOKEN_SHOPSPEND"'"}'
 ```
 
 (Still a bare `curl -sL -d` — do not add `-X POST` or a `Content-Type` header; either one

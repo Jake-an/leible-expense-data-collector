@@ -175,6 +175,71 @@ var SUPPLIER_NAMES = {
   mayers: 'Mayers'
 };
 
+/**
+ * doPost ingest allowlist: source → the script property holding THAT
+ * source's ingest token. This is the AUTHORIZATION half of the gate.
+ *
+ * Requiring one shared token authenticates a caller but says nothing about
+ * which source it may claim. Since upsertRows_ keys on source+invoice_ref,
+ * a holder of the one secret could POST `source: 'square'` and overwrite
+ * Square's real rows in place, or swing the headline the external GM cost
+ * monitor reads every Monday 08:00. Binding the token to the source is what
+ * closes that.
+ *
+ * Deliberate properties of this table:
+ *
+ *  - It is CODE, not configuration. Membership here is checked BEFORE any
+ *    property lookup, so a stray or typo'd INGEST_TOKEN_* left in the GAS
+ *    properties UI cannot mint a new accepted source. Adding a connector is
+ *    a reviewed code change plus a deploy.
+ *
+ *  - GAS-NATIVE sources are absent on purpose. square/mayers/greenbean/
+ *    labour/shopify_orderapp write through the internal normalizers
+ *    (ingestSupplierRows/upsertRows_) and never touch doPost, so they have
+ *    no ingest token and every POST claiming them fails closed here.
+ *
+ *  - 'shopspend-backfill' is an ALIAS onto the shopspend token: same runner,
+ *    second source string, so the hyphen never has to become a property
+ *    name. Revoking shopspend revokes the backfill with it, which is the
+ *    intent.
+ *
+ *  - coffee_order_app is listed with no property set anywhere. That keeps
+ *    docs/ingest-contract.md's shape honest — the day the app is built, Jake
+ *    sets INGEST_TOKEN_COFFEE_ORDER_APP — while today it fails closed like
+ *    any other unset source. (Its suppliers-kind payloads are separately
+ *    rejected in validateIngest_.)
+ */
+var INGEST_SOURCES_ = {
+  food_dairy_co: 'INGEST_TOKEN_FOOD_DAIRY_CO',
+  fresh_and_chill: 'INGEST_TOKEN_FRESH_AND_CHILL',
+  kent_paper: 'INGEST_TOKEN_KENT_PAPER',
+  ordermentum: 'INGEST_TOKEN_ORDERMENTUM',
+  shopspend: 'INGEST_TOKEN_SHOPSPEND',
+  'shopspend-backfill': 'INGEST_TOKEN_SHOPSPEND',
+  coffee_order_app: 'INGEST_TOKEN_COFFEE_ORDER_APP'
+};
+
+/**
+ * The magnitude ceiling on any single ingested money value. Nothing this
+ * business invoices or earns comes near $1M on one line, and the cap is what
+ * stops a single POST (or a scraper reading a mangled cell) from swinging
+ * the weekly headline by an arbitrary amount.
+ */
+var MAX_INGEST_AMOUNT_ = 1000000;
+
+/**
+ * True iff `v` is a real, finite, in-range money value.
+ *
+ * NOT `!isNaN(Number(v))`, which was the previous check and let through
+ * Infinity (isNaN(Infinity) is false), '' and [] (both coerce to 0), '45'
+ * and true. A money field a gate must be able to reject has to be tested
+ * with typeof + isFinite, never through a coercion. Negatives are legal —
+ * credit notes and refunds are real rows.
+ */
+function isValidIngestAmount_(v) {
+  return typeof v === 'number' && isFinite(v) && Math.abs(v) <= MAX_INGEST_AMOUNT_;
+}
+
 /* ------------------------------------------------------------------ *
  * Concurrency — one lock mechanism, wrapped at entry points only
  *
@@ -250,20 +315,22 @@ function doPost(e) {
     // headline the external GM cost monitor reads every Monday 08:00.
     //
     // This REPLACES the narrower gate from phase dopost-auth-minors, which
-    // covered only payloads carrying weeks_verified_empty. That scope was a
-    // deliberate decision at the time; it was reopened on 2026-09-04 after a
-    // security audit, by Jake, with the connector side updated in the same
-    // change. Every poster must now send `token` (the API_READ_TOKEN value,
-    // named GAS_READ_TOKEN on the connector side — same secret, different
-    // name by long-standing convention).
+    // covered only payloads carrying weeks_verified_empty, and then the
+    // one-shared-token gate that briefly replaced it. A shared token is
+    // AUTHENTICATION only: it proves the caller holds a secret, not that it
+    // may claim the `source` it wrote in the body. Every poster now sends
+    // ITS OWN token, and checkIngestToken_ accepts it only for the source
+    // that token belongs to (INGEST_SOURCES_).
     //
-    // checkReadToken_ is fail-closed: an unset API_READ_TOKEN rejects every
-    // request rather than opening the door.
+    // Fail-closed at every step — unknown source, unset property, missing or
+    // wrong token — and with no fallback to API_READ_TOKEN, which is the
+    // doGet read secret and carries no write authority.
     //
-    // code:'UNAUTHORIZED' stays machine-readable, but it no longer means
+    // code:'UNAUTHORIZED' stays machine-readable, but it does not mean
     // "retry without the gated field" — there is no degraded mode left, and
-    // the shopSpend poster was updated to stop trying one.
-    var auth = checkReadToken_({ token: body && body.token });
+    // the shopSpend poster was updated to stop trying one. The response is
+    // deliberately uniform; the reason is in the GAS execution log.
+    var auth = checkIngestToken_(body);
     if (!auth.ok) return jsonOut_({ result: 'error', code: 'UNAUTHORIZED', message: 'unauthorized' });
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });
@@ -448,15 +515,23 @@ function validateIngest_(body) {
         return { ok: false, message: 'row ' + i + ' missing/invalid amended_count' };
       }
     } else if (kind === 'revenue') {
-      if (r.amount === undefined || r.amount === null || isNaN(Number(r.amount))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid amount' };
+      if (!isValidIngestAmount_(r.amount)) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' missing/invalid amount (needs a finite JSON number, ' +
+            '|amount| <= ' + MAX_INGEST_AMOUNT_ + ')'
+        };
       }
       if (!r.order_ref) return { ok: false, message: 'row ' + i + ' missing order_ref' };
       if (!r.channel) return { ok: false, message: 'row ' + i + ' missing channel' };
       if (!r.customer) return { ok: false, message: 'row ' + i + ' missing customer' };
     } else {
-      if (r.total === undefined || r.total === null || isNaN(Number(r.total))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid total' };
+      if (!isValidIngestAmount_(r.total)) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' missing/invalid total (needs a finite JSON number, ' +
+            '|total| <= ' + MAX_INGEST_AMOUNT_ + ')'
+        };
       }
       if (!r.invoice_ref) return { ok: false, message: 'row ' + i + ' missing invoice_ref' };
     }
@@ -1874,6 +1949,84 @@ function checkReadToken_(params) {
   // short-circuit on the first differing character.
   if (!timingSafeEqual_(String(params.token), stored)) return { ok: false, message: 'unauthorized' };
   return { ok: true };
+}
+
+/**
+ * Resolve the script property holding `source`'s ingest token, or null if
+ * `source` is not an allowlisted doPost source.
+ *
+ * hasOwnProperty, NOT a bare INGEST_SOURCES_[source]: a plain object
+ * inherits from Object.prototype, so `source: 'constructor'` or 'toString'
+ * would answer a Function — truthy, and enough to be mistaken for a
+ * property name by the caller.
+ */
+function ingestTokenPropertyFor_(source) {
+  if (typeof source !== 'string' || !source) return null;
+  if (!Object.prototype.hasOwnProperty.call(INGEST_SOURCES_, source)) return null;
+  return INGEST_SOURCES_[source];
+}
+
+/**
+ * The doPost gate: does this payload's `token` authorize the `source` it
+ * claims? Fail-closed at every step — unknown source, unset property,
+ * missing token, wrong token.
+ *
+ * The RETURN carries no reason, and doPost answers a uniform
+ * 'unauthorized'. Telling an anonymous caller whether a source exists, or
+ * whether its property happens to be unset, is a free enumeration oracle on
+ * a deployment whose /exec URL is committed to this repo. The reason goes to
+ * the GAS execution log instead, where only Jake can read it — that is the
+ * one place a silently 401-ing scheduled connector can be diagnosed, and it
+ * matters more than usual while the staleness alert is blind for want of the
+ * Calendar OAuth scope.
+ *
+ * There is deliberately NO fallback to API_READ_TOKEN. That is the doGet
+ * read secret; it carries no write authority, and accepting it here would
+ * leave the impersonation hole open under a different name.
+ *
+ * @param {Object} body the parsed doPost payload
+ * @returns {{ok: boolean}}
+ */
+function checkIngestToken_(body) {
+  var source = body && body.source;
+  var propName = ingestTokenPropertyFor_(source);
+  if (!propName) {
+    ingestAuthLog_('source is not an allowlisted ingest source', source);
+    return { ok: false };
+  }
+
+  var stored = PropertiesService.getScriptProperties().getProperty(propName);
+  if (!stored) {
+    ingestAuthLog_(propName + ' is not set — failing closed', source);
+    return { ok: false };
+  }
+
+  var token = body.token;
+  if (typeof token !== 'string' || !token) {
+    ingestAuthLog_('no token on the payload', source);
+    return { ok: false };
+  }
+
+  // timingSafeEqual_, not !==: this guards a write path that can overwrite
+  // real financial rows in place, so the comparison must not short-circuit
+  // on the first differing character.
+  if (!timingSafeEqual_(token, stored)) {
+    ingestAuthLog_('token does not match ' + propName, source);
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
+/**
+ * Log WHY a doPost was refused, for Jake's eyes only (the response stays
+ * uniform). `source` is attacker-controlled, so it is JSON-stringified —
+ * which escapes newlines, so a crafted value cannot forge extra log lines —
+ * and truncated, so it cannot flood the log.
+ */
+function ingestAuthLog_(reason, source) {
+  var shown = JSON.stringify(source === undefined ? null : source);
+  if (shown && shown.length > 80) shown = shown.slice(0, 80) + '...';
+  Logger.log('doPost UNAUTHORIZED: ' + reason + ' (source=' + shown + ')');
 }
 
 // new Date(Date.now()), not bare new Date(): todayStr_ is the single "what

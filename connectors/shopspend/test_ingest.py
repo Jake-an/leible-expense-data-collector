@@ -33,6 +33,19 @@ PROD_URL = "https://script.google.com/macros/s/FAKE_DEPLOYMENT_ID/exec"
 
 
 @pytest.fixture(autouse=True)
+def _stub_ingest_credential(monkeypatch):
+    """Every post_pull needs an ingest token before it will send anything.
+
+    Most tests in this file are about chunking, declaration and tombstones,
+    not auth — before this fixture they resolved the credential from the
+    developer's real .env, so they depended on THIS machine's environment and
+    would have started failing on a clean checkout. Tests that are about auth
+    monkeypatch get_credential themselves, which overrides this.
+    """
+    monkeypatch.setattr(bc, "get_credential", lambda name: "stub-ingest-token")
+
+
+@pytest.fixture(autouse=True)
 def fake_sleep(monkeypatch):
     """Backoff sleep must never actually wait during tests."""
     import time
@@ -693,9 +706,10 @@ def test_declared_weeks_excludes_split_weeks():
 
 # --------------------------------------------------------------------------- #
 # Poster auth. doPost requires a token on EVERY payload (security audit
-# 2026-09-04), superseding the narrower dopost-auth-minors gate that covered
-# only weeks_verified_empty payloads. The poster resolves GAS_READ_TOKEN once
-# via bc.get_credential and attaches it to every request.
+# 2026-09-04) and binds it to the payload's `source`, superseding both the
+# narrower dopost-auth-minors gate and the one-shared-token gate after it.
+# The poster resolves shopSpend's OWN credential once via bc.get_credential
+# and attaches it to every request.
 #
 # The old non-destructive degradation (drop verified_empty, warn, keep
 # posting) is GONE and cannot come back: it only made sense while the rest of
@@ -716,7 +730,9 @@ def test_token_attached_to_every_payload(monkeypatch):
     fake_post = _FakePost([_ok_resp(), _ok_resp(), _ok_resp()])
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(
-        bc, "get_credential", lambda name: "test-token" if name == "GAS_READ_TOKEN" else None
+        bc,
+        "get_credential",
+        lambda name: "test-token" if name == "INGEST_TOKEN_SHOPSPEND" else None,
     )
 
     ingest.post_pull(
@@ -767,7 +783,7 @@ def test_missing_token_raises_and_posts_nothing(monkeypatch):
             weeks_verified_empty=["2026-W31"],
         )
 
-    assert "GAS_READ_TOKEN" in str(exc_info.value)
+    assert "INGEST_TOKEN_SHOPSPEND" in str(exc_info.value)
     assert fake_post.call_count == 0, "nothing may be posted without a token"
 
 
@@ -877,3 +893,77 @@ def test_token_value_never_printed(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "test-token" not in captured.out
     assert "test-token" not in captured.err
+
+
+# --------------------------------------------------------------------------- #
+# Per-connector ingest tokens (security audit 2026-09-04).
+#
+# doPost binds the token to the payload's `source`, so the poster carries
+# shopSpend's OWN credential rather than the shared one. `shopspend-backfill`
+# is a second source string from this same runner and is an ALIAS onto the
+# shopspend token in GAS's INGEST_SOURCES_ — these tests are what keep the
+# two tables from drifting apart.
+# --------------------------------------------------------------------------- #
+
+
+def test_ingest_token_name_for_both_shopspend_sources():
+    assert ingest.ingest_token_name("shopspend") == "INGEST_TOKEN_SHOPSPEND"
+    assert ingest.ingest_token_name("shopspend-backfill") == "INGEST_TOKEN_SHOPSPEND"
+
+
+def test_ingest_token_name_rejects_an_unknown_source():
+    """Fail closed locally too. A source GAS will refuse should not cost a
+    round trip that answers a uniform `unauthorized` explaining nothing."""
+    with pytest.raises(ingest.IngestFailed) as exc_info:
+        ingest.ingest_token_name("square")
+    assert "square" in str(exc_info.value)
+
+
+def test_poster_sends_the_shopspend_token(monkeypatch):
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(
+        bc,
+        "get_credential",
+        lambda name: "shopspend-own-token" if name == "INGEST_TOKEN_SHOPSPEND" else None,
+    )
+
+    ingest.post_pull([_row()], _pull(), exec_url=PROD_URL, weeks_complete=["2026-W31"])
+
+    assert fake_post.calls, "expected at least one POST"
+    assert all(c["json"]["token"] == "shopspend-own-token" for c in fake_post.calls)
+
+
+def test_backfill_source_sends_the_same_shopspend_token(monkeypatch):
+    """The alias is the point: one credential covers both source strings, so
+    revoking shopspend revokes the backfill with it."""
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(
+        bc,
+        "get_credential",
+        lambda name: "shopspend-own-token" if name == "INGEST_TOKEN_SHOPSPEND" else None,
+    )
+
+    ingest.post_pull([_row()], _pull(), source="shopspend-backfill", exec_url=PROD_URL)
+
+    assert fake_post.calls, "expected at least one POST"
+    assert all(c["json"]["source"] == "shopspend-backfill" for c in fake_post.calls)
+    assert all(c["json"]["token"] == "shopspend-own-token" for c in fake_post.calls)
+
+
+def test_read_token_is_not_accepted_for_ingest(monkeypatch):
+    """GAS_READ_TOKEN is the doGet secret and has no write authority. Falling
+    back to it would trade a clear local failure for a server-side rejection
+    that says only `unauthorized`."""
+    fake_post = _FakePost([_ok_resp(), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(
+        bc, "get_credential", lambda name: "read-secret" if name == "GAS_READ_TOKEN" else None
+    )
+
+    with pytest.raises(ingest.IngestFailed) as exc_info:
+        ingest.post_pull([_row()], _pull(), exec_url=PROD_URL)
+
+    assert "INGEST_TOKEN_SHOPSPEND" in str(exc_info.value)
+    assert fake_post.call_count == 0, "nothing may be posted on the read token"

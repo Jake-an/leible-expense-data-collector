@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -475,32 +476,94 @@ class BaseConnector:
                 f"Run bash scripts/deploy.sh, or export GAS_EXEC_URL."
             )
 
-    def _require_ingest_token(self) -> str:
-        """Resolve the doPost ingest token, or fail with an actionable message.
+    @classmethod
+    def ingest_token_name(cls) -> str:
+        """This connector's ingest credential name, on BOTH sides.
 
-        doPost requires a token on EVERY payload (security audit 2026-09-04;
-        it previously gated only weeks_verified_empty payloads). Resolving it
-        BEFORE the request matters: without this, a missing token surfaces as
-        a bare `unauthorized` from the server with no hint about which
-        credential is absent on THIS machine.
+        doPost binds the token to the payload's `source` (security audit
+        2026-09-04): a shared token authenticated a caller but never said
+        which source it may claim, so any holder could POST
+        `source: "square"` and, since upsertRows_ keys on
+        source+invoice_ref, overwrite Square's real rows in place.
 
-        GAS_READ_TOKEN is the connector-side name for the same secret GAS
-        stores as API_READ_TOKEN — deliberately different names, long-standing
-        convention. Never logged.
+        The name is identical here and in GAS — `INGEST_TOKEN_<SOURCE>` is
+        both the .env variable and the script property. That is deliberate:
+        the old GAS_READ_TOKEN/API_READ_TOKEN pair meant a mismatch sent the
+        reader translating between two names for one secret. GAS's
+        INGEST_SOURCES_ table must agree with this string.
         """
-        token = get_credential("GAS_READ_TOKEN")
+        return f"INGEST_TOKEN_{cls.SOURCE.upper()}"
+
+    def _require_ingest_token(self) -> str:
+        """Resolve this connector's OWN ingest token, or fail with an
+        actionable message.
+
+        Resolving it BEFORE the request matters: without this, a missing
+        token surfaces as a bare `unauthorized` from the server with no hint
+        about which credential is absent on THIS machine — and GAS answers a
+        deliberately uniform `unauthorized` that will not say either.
+
+        There is no fallback to GAS_READ_TOKEN. That is the doGet read secret
+        and carries no write authority on the GAS side, so falling back to it
+        would only turn a clear local failure into a confusing server-side
+        rejection. Never logged.
+        """
+        name = self.ingest_token_name()
+        token = get_credential(name)
         if not token:
             raise IngestError(
-                "GAS_READ_TOKEN is not set — doPost requires a token on every payload. "
-                "Set it in .env or the environment (same value as the GAS script property "
-                "API_READ_TOKEN). Nothing was posted."
+                f"{name} is not set — doPost requires this connector's OWN token on every "
+                f"payload, and will not accept any other source's. Set {name} in .env or the "
+                f"environment (same value as the GAS script property of the same name). "
+                f"Nothing was posted."
             )
         return token
+
+    # The hub's ceiling on any single money value (MAX_INGEST_AMOUNT_ in
+    # connectors/gas/Code.gs). Mirrored, not guessed — the two must agree.
+    MAX_TOTAL = 1_000_000
+
+    @classmethod
+    def _check_totals(cls, rows: list[dict]) -> None:
+        """Every `total` must be a real, finite, in-range number BEFORE the
+        POST.
+
+        validateIngest_ requires `typeof total === 'number' && isFinite(total)`
+        (security audit 2026-09-04); `!isNaN(Number(x))` used to let through
+        Infinity, '', [] and '45'. A connector that scrapes a total out of a
+        page or takes it verbatim from a supplier API can easily emit a
+        numeric STRING — the hub would then refuse the ENTIRE batch with a
+        message about one row, so it is caught here where the failure names
+        the row locally and costs no round trip.
+
+        bool is excluded explicitly: it is a subclass of int in Python, so
+        `isinstance(True, (int, float))` is True and `True` would sail
+        through as 1.
+        """
+        for i, row in enumerate(rows):
+            total = row.get("total")
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+                raise IngestError(
+                    f"row {i} has a non-numeric total ({total!r}). Connectors must emit "
+                    f"`total` as a real JSON number — parse it in the connector, because the "
+                    f"hub refuses the whole batch over one bad value. Nothing was posted."
+                )
+            if not math.isfinite(total):
+                raise IngestError(
+                    f"row {i} has a non-finite total ({total!r}). Nothing was posted."
+                )
+            if abs(total) > cls.MAX_TOTAL:
+                raise IngestError(
+                    f"row {i} has a total of {total!r}, beyond the hub's per-value ceiling of "
+                    f"{cls.MAX_TOTAL}. If this is genuine, raise MAX_INGEST_AMOUNT_ in "
+                    f"connectors/gas/Code.gs and MAX_TOTAL here together. Nothing was posted."
+                )
 
     def post(self, rows: list[dict]) -> dict:
         if not rows:
             return {"result": "skipped", "reason": "no rows"}
         self._require_exec_url()
+        self._check_totals(rows)
         payload = {
             "source": self.SOURCE,
             "rows": rows,
@@ -517,9 +580,13 @@ class BaseConnector:
             # A rejected token is not retryable and not degradable — say so
             # plainly rather than letting it read as an ingest data problem.
             if body.get("code") == "UNAUTHORIZED":
+                name = self.ingest_token_name()
                 raise IngestError(
-                    "GAS rejected the ingest token (UNAUTHORIZED). GAS_READ_TOKEN here and the "
-                    "API_READ_TOKEN script property have diverged — re-copy the value. Nothing was written."
+                    f"GAS rejected the ingest token (UNAUTHORIZED). Either {name} here and the "
+                    f"script property of the same name have diverged — re-copy the value — or "
+                    f"source {self.SOURCE!r} is not in the hub's INGEST_SOURCES_ allowlist. "
+                    f"GAS answers a uniform 'unauthorized'; the reason is in its execution log. "
+                    f"Nothing was written."
                 )
             raise IngestError(body.get("message", "unknown ingest error"))
         return body

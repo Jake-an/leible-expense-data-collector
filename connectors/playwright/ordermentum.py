@@ -89,6 +89,26 @@ RETIRED_VENUES = {
 INVOICE_PAGE_LIMIT = 40  # runaway guard; 40 * 25 = 1000 invoices per venue+supplier
 
 
+def _as_amount(value, invoice_ref) -> float:
+    """Coerce an Ordermentum invoice total to a float, or fail naming the
+    invoice.
+
+    The hub requires `total` to be a real JSON number (validateIngest_,
+    security audit 2026-09-04) and refuses the ENTIRE batch over one bad
+    value, so an unparseable total has to be identified here — "the batch was
+    rejected" is not a diagnosis. bool is excluded because it is an int
+    subclass in Python and would otherwise pass as 1.
+    """
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"invoice {invoice_ref!r}: total is {value!r}, not a number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as err:
+        raise ValueError(
+            f"invoice {invoice_ref!r}: total {value!r} is not parseable as a number"
+        ) from err
+
+
 class OrdermentumConnector(BaseConnector):
     NAME = "ordermentum"
     SOURCE = "ordermentum"
@@ -168,7 +188,14 @@ class OrdermentumConnector(BaseConnector):
                     rows.append(
                         {
                             "date": inv["date"][:10],
-                            "total": inv["total"],
+                            # float(), not verbatim: `total` comes straight off
+                            # the Ordermentum API, and the hub now requires a
+                            # real JSON number (validateIngest_, security audit
+                            # 2026-09-04). A JSON API returning "123.45" as a
+                            # string would otherwise have the hub refuse the
+                            # whole batch. Parsing the supplier's own format is
+                            # the connector's job; normalization still is not.
+                            "total": _as_amount(inv.get("total"), inv.get("number")),
                             "invoice_ref": inv["number"],
                             "supplier": sname,
                             "location": shop,

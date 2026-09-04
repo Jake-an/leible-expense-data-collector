@@ -17,13 +17,42 @@ implies the app can meet this contract yet.
 irrelevant — the body is parsed as JSON regardless
 (`JSON.parse(e.postData.contents)`).
 
-**Every payload MUST carry a `token`** (security audit 2026-09-04). It goes in
-the JSON body as `token`, never in the query string — GAS logs query strings.
-The value is the `API_READ_TOKEN` script property; connectors read it as
-`GAS_READ_TOKEN` (same secret, deliberately different names — long-standing
-convention, don't invent a matching property). `checkReadToken_` is
-fail-closed and runs BEFORE `validateIngest_`, so a malformed payload without
+**Every payload MUST carry a `token`, and the token is bound to the payload's
+`source`** (security audit 2026-09-04). It goes in the JSON body as `token`,
+never in the query string — GAS logs query strings.
+
+Each source has its OWN credential, named identically on both sides:
+`INGEST_TOKEN_<SOURCE>` is both the script property and the connector's `.env`
+variable. `checkIngestToken_` resolves the property from `INGEST_SOURCES_` (a
+code constant in `connectors/gas/Code.gs`, not configuration) and is
+fail-closed at every step — unknown source, unset property, missing token,
+wrong token. It runs BEFORE `validateIngest_`, so a malformed payload without
 a token answers `unauthorized` rather than leaking the payload grammar.
+
+A shared token would only be AUTHENTICATION: it proves the caller holds a
+secret, not that it may claim the `source` it wrote in the body. Since
+`upsertRows_` keys on `source` + `invoice_ref`, a holder could POST
+`source: "square"` and overwrite Square's real rows in place, or swing the
+company headline the external GM cost monitor reads every Monday 08:00.
+
+`API_READ_TOKEN` is the **read** secret for `doGet` and buys nothing here —
+there is deliberately no fallback to it.
+
+The allowlist as of 2026-09-04:
+
+| `source` | script property + `.env` name |
+|---|---|
+| `food_dairy_co` | `INGEST_TOKEN_FOOD_DAIRY_CO` |
+| `fresh_and_chill` | `INGEST_TOKEN_FRESH_AND_CHILL` |
+| `kent_paper` | `INGEST_TOKEN_KENT_PAPER` |
+| `ordermentum` | `INGEST_TOKEN_ORDERMENTUM` |
+| `shopspend` | `INGEST_TOKEN_SHOPSPEND` |
+| `shopspend-backfill` | `INGEST_TOKEN_SHOPSPEND` (alias — same runner) |
+| `coffee_order_app` | `INGEST_TOKEN_COFFEE_ORDER_APP` (**unset today**, so this contract's shape fails closed until Jake sets it) |
+
+GAS-native sources (`square`, `mayers`, `greenbean`, `labour`,
+`shopify_orderapp`) are absent on purpose: they write through the internal
+normalizers and never touch `doPost`, so every POST claiming them is refused.
 
 ```jsonc
 { "result": "error", "code": "UNAUTHORIZED", "message": "unauthorized" }
@@ -192,12 +221,18 @@ malformed and will fail again identically.
   Kitchen`. Since this is Roastery-sourced data, the app will realistically
   always send `department: 'Roastery'` explicitly rather than rely on the
   `Cafe` default — but the default exists and is honored if it's omitted.
-- **`amount` / `total` must be a JSON number, not a numeric string.** A
-  string like `"340.00"` currently still parses via `Number(...)` and would
-  NOT be rejected (see `validateIngest_` in `connectors/gas/Code.gs`) — but a
-  non-numeric string (e.g. a form field the app failed to parse, landing as
-  `"340.00abc"` or similar) IS rejected. The app should still send a genuine
-  JSON number type, not rely on this leniency.
+- **`amount` / `total` must be a real, finite JSON number, and `|value|` must
+  be `<= 1,000,000`.** Tightened 2026-09-04 (security audit). `validateIngest_`
+  now tests `typeof v === 'number' && isFinite(v)` and the magnitude bound —
+  the old `!isNaN(Number(v))` accepted `Infinity` (`isNaN(Infinity)` is
+  false), `""` and `[]` (both coerce to `0`), `true`, and any magnitude, so
+  ONE payload could swing the company headline the GM cost monitor reads
+  every Monday 08:00. **Numeric strings such as `"340.00"` are now REJECTED**
+  — the leniency this bullet used to describe is gone; send a genuine JSON
+  number. Negatives ARE accepted: credit notes and refunds are real rows. The
+  ceiling is `MAX_INGEST_AMOUNT_` in `connectors/gas/Code.gs`, mirrored as
+  `BaseConnector.MAX_TOTAL` in `connectors/playwright/base_connector.py` —
+  raise them together or not at all.
 - **Contract tests exist** in `connectors/gas/test_code.js`
   (`testCoffeeOrderAppContract`) covering both payload shapes end-to-end
   through `doPost`, plus the three rejection cases named by the plan:

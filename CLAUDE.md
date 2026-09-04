@@ -58,5 +58,6 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 - `docs/rules.md` — full operating rules. *Load before automating or scheduling.*
 - `docs/schema.md` — two-tab Sheet spec (`Suppliers` + `Sales`). *Load when writing connectors or normalization.*
 - `docs/api.md` — read API (doGet) endpoint, auth, params, response format. *Load when building consumers or modifying the summary endpoint.*
+- `docs/ingest-token-cutover.md` — per-source `doPost` ingest tokens: the cutover, diagnosing an `UNAUTHORIZED`, rotating/revoking one connector. *Load when a connector stops ingesting, or when adding/rotating an ingest credential.*
 - `docs/harness-workflow.md` — how to use the phase/step runner. *Load when creating or running phases.*
 - `TODO.md` — active work items.

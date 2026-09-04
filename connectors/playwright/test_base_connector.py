@@ -330,6 +330,11 @@ class _FakePostResponse:
 
 
 def test_post_returns_body_on_result_ok(monkeypatch):
+    # Stub the credential explicitly. These used to resolve it from the
+    # developer's real .env, so they silently depended on this machine's
+    # environment and would pass or fail for reasons unrelated to the
+    # behaviour under test.
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
     fake_resp = _FakePostResponse(json_body={"result": "ok", "rowsAdded": 3})
     monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
     conn = _AutoLoginConnector()
@@ -340,6 +345,11 @@ def test_post_returns_body_on_result_ok(monkeypatch):
 
 
 def test_post_raises_ingest_error_on_result_error(monkeypatch):
+    # Stub the credential explicitly. These used to resolve it from the
+    # developer's real .env, so they silently depended on this machine's
+    # environment and would pass or fail for reasons unrelated to the
+    # behaviour under test.
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
     fake_resp = _FakePostResponse(
         json_body={"result": "error", "message": "row 0 missing invoice_ref"}
     )
@@ -356,6 +366,11 @@ def test_post_raises_ingest_error_on_non_json_200_body(monkeypatch):
     """A 200 with an unparseable body (e.g. an HTML error page from GAS) is
     NOT confirmable success — must raise, not fall back to {"result":"ok"}
     the way the old lenient `except ValueError` used to."""
+    # Stub the credential explicitly. These used to resolve it from the
+    # developer's real .env, so they silently depended on this machine's
+    # environment and would pass or fail for reasons unrelated to the
+    # behaviour under test.
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
     fake_resp = _FakePostResponse(json_raises=True, text="<html>error</html>")
     monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
     conn = _AutoLoginConnector()
@@ -378,7 +393,9 @@ def test_post_sends_ingest_token_in_payload(monkeypatch):
         return _FakePostResponse(json_body={"result": "ok", "rowsAdded": 1})
 
     monkeypatch.setattr(
-        b, "get_credential", lambda name: "tok-123" if name == "GAS_READ_TOKEN" else None
+        b,
+        "get_credential",
+        lambda name: "tok-123" if name == "INGEST_TOKEN_AUTOLOGINTEST" else None,
     )
     monkeypatch.setattr(b.requests, "post", _capture)
     conn = _AutoLoginConnector()
@@ -400,7 +417,7 @@ def test_post_without_ingest_token_raises_and_makes_no_http_call(monkeypatch):
     with pytest.raises(b.IngestError) as exc_info:
         conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
 
-    assert "GAS_READ_TOKEN" in str(exc_info.value)
+    assert "INGEST_TOKEN_AUTOLOGINTEST" in str(exc_info.value)
     assert calls == [], "no HTTP call may be made without a token"
 
 
@@ -1536,3 +1553,219 @@ def test_fdco_expired_token_but_working_refresh_is_logged_in():
     assert conn.is_logged_in(page) is True
     assert page.refresh_calls == 1
     assert conn._token == fresh_token  # cached, so the read path does not refetch
+
+
+# --------------------------------------------------------------------------- #
+# Per-connector ingest tokens (security audit 2026-09-04).
+#
+# One shared token authenticated a caller but never said WHICH source it may
+# claim, so any holder could POST `source: "square"` and overwrite Square's
+# real rows in place. Each connector now carries its OWN credential, named
+# identically on both sides: the .env / environment variable and the GAS
+# script property are both INGEST_TOKEN_<SOURCE>. GAS_READ_TOKEN survives,
+# but for doGet reads only — it buys nothing on the write path.
+# --------------------------------------------------------------------------- #
+
+
+def test_ingest_token_name_is_derived_from_the_source(monkeypatch):
+    """The credential name must be exactly the GAS script property name, so a
+    mismatch names one string spelled the same in both places rather than
+    sending the reader on a GAS_READ_TOKEN/API_READ_TOKEN translation hunt."""
+    conn = _AutoLoginConnector()
+    assert conn.ingest_token_name() == "INGEST_TOKEN_AUTOLOGINTEST"
+
+
+def test_ingest_token_name_matches_every_real_connector():
+    """Every shipped connector's SOURCE maps to the property name GAS holds.
+    Locked in as data so a rename on either side is a failing test, not a
+    silently dead connector."""
+    from food_dairy_co import FoodDairyCoConnector
+    from fresh_and_chill import FreshAndChillConnector
+    from kent_paper import KentPaperConnector
+    from ordermentum import OrdermentumConnector
+
+    assert FoodDairyCoConnector.ingest_token_name() == "INGEST_TOKEN_FOOD_DAIRY_CO"
+    assert FreshAndChillConnector.ingest_token_name() == "INGEST_TOKEN_FRESH_AND_CHILL"
+    assert KentPaperConnector.ingest_token_name() == "INGEST_TOKEN_KENT_PAPER"
+    assert OrdermentumConnector.ingest_token_name() == "INGEST_TOKEN_ORDERMENTUM"
+
+
+def test_post_sends_the_connectors_own_token(monkeypatch):
+    """post() resolves the per-source credential, not the shared one."""
+    captured = {}
+
+    def _capture(*a, **kw):
+        captured.update(kw.get("json") or {})
+        return _FakePostResponse(json_body={"result": "ok", "rowsAdded": 1})
+
+    monkeypatch.setattr(
+        b,
+        "get_credential",
+        lambda name: "own-token" if name == "INGEST_TOKEN_AUTOLOGINTEST" else None,
+    )
+    monkeypatch.setattr(b.requests, "post", _capture)
+
+    _AutoLoginConnector().post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert captured.get("token") == "own-token"
+    assert captured.get("source") == "autologintest"
+
+
+def test_post_does_not_fall_back_to_the_read_token(monkeypatch):
+    """GAS_READ_TOKEN is the doGet secret. It has no write authority on the
+    GAS side either, so falling back to it would only turn a clear local
+    failure into a confusing `unauthorized` from the server."""
+    calls = []
+    monkeypatch.setattr(
+        b, "get_credential", lambda name: "read-secret" if name == "GAS_READ_TOKEN" else None
+    )
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append(kw))
+
+    with pytest.raises(b.IngestError) as exc_info:
+        _AutoLoginConnector().post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert "INGEST_TOKEN_AUTOLOGINTEST" in str(exc_info.value)
+    assert calls == [], "no HTTP call may be made on the read token"
+
+
+def test_missing_ingest_token_names_the_exact_credential(monkeypatch):
+    """The message has to name the one string to set. A scheduled connector
+    that starts 401-ing is otherwise near-undiagnosable while the staleness
+    alert is blind."""
+    calls = []
+    monkeypatch.setattr(b, "get_credential", lambda name: None)
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append(kw))
+
+    with pytest.raises(b.IngestError) as exc_info:
+        _AutoLoginConnector().post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    msg = str(exc_info.value)
+    assert "INGEST_TOKEN_AUTOLOGINTEST" in msg
+    assert calls == [], "no HTTP call may be made without a token"
+
+
+def test_unauthorized_message_names_the_per_connector_credential(monkeypatch):
+    """UNAUTHORIZED now means THIS connector's token diverged (or its source
+    is not allowlisted) — not that two differently-named copies of one shared
+    secret drifted apart."""
+    monkeypatch.setattr(b, "get_credential", lambda name: "stale-token")
+    monkeypatch.setattr(
+        b.requests,
+        "post",
+        lambda *a, **kw: _FakePostResponse(
+            json_body={"result": "error", "code": "UNAUTHORIZED", "message": "unauthorized"}
+        ),
+    )
+
+    with pytest.raises(b.IngestError) as exc_info:
+        _AutoLoginConnector().post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert "INGEST_TOKEN_AUTOLOGINTEST" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- #
+# `total` must leave the connector as a real JSON number.
+#
+# validateIngest_ now requires `typeof total === 'number' && isFinite(total)`
+# and |total| <= 1,000,000 (security audit 2026-09-04) — `!isNaN(Number(x))`
+# used to accept Infinity, '', [] and '45'. A connector emitting a numeric
+# STRING would be refused by the hub for the whole batch, so the failure is
+# raised here instead, where the message can name the offending row.
+# --------------------------------------------------------------------------- #
+
+
+def _post_with_rows(monkeypatch, rows):
+    sent = {}
+
+    def _capture(*a, **kw):
+        sent.update(kw.get("json") or {})
+        return _FakePostResponse(json_body={"result": "ok", "rowsAdded": len(rows)})
+
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    monkeypatch.setattr(b.requests, "post", _capture)
+    _AutoLoginConnector().post(rows)
+    return sent
+
+
+def test_post_accepts_real_numbers(monkeypatch):
+    sent = _post_with_rows(
+        monkeypatch,
+        [
+            {"date": "2026-07-01", "total": 45.5, "invoice_ref": "N-1"},
+            {"date": "2026-07-01", "total": 0, "invoice_ref": "N-2"},
+            {"date": "2026-07-01", "total": -120.0, "invoice_ref": "N-3"},
+        ],
+    )
+    assert [r["total"] for r in sent["rows"]] == [45.5, 0, -120.0]
+
+
+@pytest.mark.parametrize(
+    "bad", ["45.50", "", " ", None, [], float("inf"), float("nan"), True, "$45.50"]
+)
+def test_post_rejects_a_total_that_is_not_a_finite_number(monkeypatch, bad):
+    calls = []
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append(kw))
+
+    with pytest.raises(b.IngestError) as exc_info:
+        _AutoLoginConnector().post([{"date": "2026-07-01", "total": bad, "invoice_ref": "B-1"}])
+
+    msg = str(exc_info.value)
+    assert "row 0" in msg
+    assert "total" in msg
+    assert calls == [], "a batch with a bad total must not be posted at all"
+
+
+def test_post_rejects_a_total_over_the_hub_ceiling(monkeypatch):
+    """The hub caps a single value at 1,000,000. Catching it here means the
+    message names the row rather than coming back as a whole-batch refusal."""
+    calls = []
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append(kw))
+
+    with pytest.raises(b.IngestError):
+        _AutoLoginConnector().post(
+            [{"date": "2026-07-01", "total": 1_000_000.01, "invoice_ref": "B-2"}]
+        )
+
+    assert calls == []
+
+
+def test_post_names_the_offending_row_index(monkeypatch):
+    calls = []
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: calls.append(kw))
+
+    with pytest.raises(b.IngestError) as exc_info:
+        _AutoLoginConnector().post(
+            [
+                {"date": "2026-07-01", "total": 1.0, "invoice_ref": "OK-1"},
+                {"date": "2026-07-01", "total": 2.0, "invoice_ref": "OK-2"},
+                {"date": "2026-07-01", "total": "3.00", "invoice_ref": "BAD-3"},
+            ]
+        )
+
+    assert "row 2" in str(exc_info.value)
+    assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Ordermentum takes `total` verbatim from the supplier API, so it is the one
+# connector whose type is not established by its own parsing. _as_amount is
+# what keeps a JSON string from reaching the hub's numeric contract.
+# --------------------------------------------------------------------------- #
+
+
+def test_ordermentum_as_amount_coerces_and_rejects():
+    from ordermentum import _as_amount
+
+    assert _as_amount(123.45, "INV-1") == 123.45
+    assert _as_amount(120, "INV-2") == 120.0
+    assert isinstance(_as_amount(120, "INV-2"), float)
+    assert _as_amount("123.45", "INV-3") == 123.45
+    assert _as_amount(-50.0, "INV-4") == -50.0
+
+    for bad in (None, "", "n/a", "$12.00", [], {}, True, False):
+        with pytest.raises(ValueError) as exc_info:
+            _as_amount(bad, "INV-BAD")
+        assert "INV-BAD" in str(exc_info.value), f"{bad!r} must name the invoice"

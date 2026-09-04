@@ -822,13 +822,22 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
      (~/.claude/docs/todo-hygiene.md). -->
 
 ### Open security findings (from /security-audit 2026-09-04, verdict `blocked`)
-- **NEXT SESSION** — per-connector ingest tokens to bind `source` to the caller
-  (`connectors/gas/Code.gs:266` checkReadToken_, `:480-490` normalizeSupplierRow).
-  One shared token today = any token holder can claim another connector's `source`
-  and `upsertRows_` overwrites its real rows in place. HIGH, still open.
-- Bound `amount`/`total` in `validateIngest_` (`Code.gs:449-455`) — only `!isNaN`
-  today, so one POST can swing the headline the GM cost monitor reads Mon 08:00.
-  HIGH, still open. Cheap; no connector changes.
+- ~~per-connector ingest tokens to bind `source` to the caller~~ **CODE DONE
+  2026-09-04, NOT YET CUT OVER.** `checkIngestToken_` + `INGEST_SOURCES_`
+  (`connectors/gas/Code.gs`) bind each token to one source; connectors carry
+  `INGEST_TOKEN_<SOURCE>`. ⚠ **Nothing is deployed and no Script Property is set** —
+  until Jake works through `docs/ingest-token-cutover.md` (needs him at the keyboard,
+  ~20 min) the hub still runs the old shared-token build and the HIGH is still live
+  in PROD. Values waiting in gitignored `credentials/ingest-tokens-2026-09-04.txt`.
+- ~~Bound `amount`/`total` in `validateIngest_`~~ **CODE DONE 2026-09-04, NOT YET
+  DEPLOYED.** `isValidIngestAmount_` requires a finite JS number with
+  `|v| <= MAX_INGEST_AMOUNT_` (1,000,000); negatives stay legal for credit notes.
+  Numeric strings are now REJECTED — `connectors/playwright/base_connector.py`
+  `_check_totals` and `ordermentum.py` `_as_amount` were changed to match. Ships
+  with the cutover deploy above.
+- [ ] **`.env.example` still lists no `INGEST_TOKEN_*` names** — this session could not
+  write it (env files are outside the assistant's permitted paths). Add the five names
+  with empty values so a fresh clone knows they exist. One-line job for Jake.
 - Bind `department` to the source rather than only enum-checking it
   (`Code.gs:420-422`). MEDIUM.
 - `upsertRows_` silently drops a within-batch dedup-key collision (`Code.gs:746`) —

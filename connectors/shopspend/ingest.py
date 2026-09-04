@@ -36,6 +36,40 @@ class IngestFailed(Exception):
         super().__init__(message)
 
 
+# source → the credential holding THAT source's ingest token, mirroring the
+# hub's INGEST_SOURCES_ table (connectors/gas/Code.gs). The name is identical
+# on both sides — .env variable and GAS script property — so a mismatch names
+# one string spelled the same in both places.
+#
+# 'shopspend-backfill' is a second source string emitted by this same runner
+# and is deliberately an ALIAS onto the shopspend token: one credential, and
+# revoking shopspend revokes the backfill with it. Keeping the hyphen out of
+# any property name is the other half of the reason.
+_INGEST_TOKEN_NAMES = {
+    "shopspend": "INGEST_TOKEN_SHOPSPEND",
+    "shopspend-backfill": "INGEST_TOKEN_SHOPSPEND",
+}
+
+
+def ingest_token_name(source: str) -> str:
+    """The credential name for `source`, or raise if this poster has no
+    business claiming it.
+
+    Fails closed locally as well as at the hub: a source GAS will refuse
+    should not cost a round trip that answers a deliberately uniform
+    `unauthorized` explaining nothing.
+    """
+    try:
+        return _INGEST_TOKEN_NAMES[source]
+    except KeyError:
+        raise IngestFailed(
+            f"shopspend ingest failed: no ingest token is configured for source {source!r}. "
+            f"This poster may only claim {sorted(_INGEST_TOKEN_NAMES)}; the hub binds each "
+            f"token to its own source and would refuse anything else. Nothing was posted.",
+            code="NO_TOKEN",
+        ) from None
+
+
 def _parse_response(resp) -> dict:
     try:
         return resp.json()
@@ -135,9 +169,10 @@ def post_pull(
     if weeks_verified_empty is None:
         weeks_verified_empty = []
 
-    # doPost requires a token on EVERY payload (security audit 2026-09-04),
-    # not just those carrying weeks_verified_empty. Resolved once, before the
-    # first POST.
+    # doPost requires a token on EVERY payload and binds it to the payload's
+    # `source` (security audit 2026-09-04). Resolved once, before the first
+    # POST, and it must be THIS source's own token — no other source's, and
+    # not the doGet read secret.
     #
     # There is no degraded mode any more. The old behaviour — drop
     # weeks_verified_empty and post the spend rows anyway — only made sense
@@ -146,12 +181,14 @@ def post_pull(
     # marker would be pointless: that marker is itself delivered by the final
     # POST, which cannot go either. A run that cannot authenticate must fail
     # loudly and non-zero, not look like a success carrying a warning.
-    token = bc.get_credential("GAS_READ_TOKEN")
+    token_name = ingest_token_name(source)
+    token = bc.get_credential(token_name)
     if not token:
         raise IngestFailed(
-            "shopspend ingest failed: GAS_READ_TOKEN is not set — doPost requires a token on "
-            "every payload. Set it in .env or the environment (same value as the GAS script "
-            "property API_READ_TOKEN). Nothing was posted.",
+            f"shopspend ingest failed: {token_name} is not set — doPost requires this "
+            f"source's OWN token on every payload and will not accept any other. Set "
+            f"{token_name} in .env or the environment (same value as the GAS script "
+            f"property of the same name). Nothing was posted.",
             code="NO_TOKEN",
         )
 

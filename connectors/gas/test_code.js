@@ -456,14 +456,20 @@ const DOPOST_TEST_TOKEN = 'test-ingest-token';
 /**
  * POST a body through the real doPost.
  *
- * doPost requires a valid `token` on EVERY payload (security audit
- * 2026-09-04), so this helper supplies one by default — otherwise every
- * ingest test in the suite would assert against `unauthorized` instead of
- * the behaviour it is actually about.
+ * doPost requires a valid `token` on EVERY payload, and the token is bound
+ * to the payload's `source` (security audit 2026-09-04), so this helper
+ * supplies the RIGHT one by default — otherwise every ingest test in the
+ * suite would assert against `unauthorized` instead of the behaviour it is
+ * actually about.
+ *
+ * Which property to use comes from INGEST_SOURCES_, the same allowlist
+ * doPost consults. A body whose source is NOT allowlisted therefore gets no
+ * token injected and is refused, exactly as over the wire — the helper must
+ * not be a way to post as a source the gate would reject.
  *
  * Mock hygiene: `scriptProps` is a shared mutable global. If a caller has
- * already set API_READ_TOKEN this helper uses THAT value and leaves it
- * alone; if not, it sets a temporary one and deletes it afterwards, so a
+ * already set the source's property this helper uses THAT value and leaves
+ * it alone; if not, it sets a temporary one and deletes it afterwards, so a
  * token never leaks into a later case and makes an `unauthorized` assertion
  * pass for the wrong reason.
  *
@@ -473,21 +479,24 @@ const DOPOST_TEST_TOKEN = 'test-ingest-token';
  */
 function doPostJson(body, opts) {
   opts = opts || {};
-  let injected = false;
+  let injectedProp = null;
   if (!opts.noToken) {
-    if (scriptProps.API_READ_TOKEN === undefined) {
-      scriptProps.API_READ_TOKEN = DOPOST_TEST_TOKEN;
-      injected = true;
-    }
-    if (body && body.token === undefined) {
-      body = Object.assign({}, body, { token: scriptProps.API_READ_TOKEN });
+    const prop = ingestTokenPropertyFor_(body && body.source);
+    if (prop) {
+      if (scriptProps[prop] === undefined) {
+        scriptProps[prop] = DOPOST_TEST_TOKEN;
+        injectedProp = prop;
+      }
+      if (body && body.token === undefined) {
+        body = Object.assign({}, body, { token: scriptProps[prop] });
+      }
     }
   }
   try {
     const out = doPost({ postData: { contents: JSON.stringify(body) } });
     return JSON.parse(out.getContent());
   } finally {
-    if (injected) delete scriptProps.API_READ_TOKEN;
+    if (injectedProp) delete scriptProps[injectedProp];
   }
 }
 
@@ -755,10 +764,25 @@ check('missing source → result error',
 
 freshSheets();
 (function () {
+  // Was 'unknown source still ingests'. DELIBERATELY REVERSED on 2026-09-04:
+  // an unknown source is now refused at the doPost gate, because "any source
+  // string is accepted" is exactly what let a token holder claim another
+  // connector's identity. INGEST_SOURCES_ is the allowlist.
   const res = doPostJson({ source: 'mystery_co', extracted_at: 'TS', rows: [{ date: '2026-06-15', total: 5, invoice_ref: 'E1' }] });
-  eq('unknown source still ingests (ok, 1 added)', res, { result: 'ok', rowsAdded: 1, rowsUpdated: 0, duplicatesSkipped: 0 });
-  const data = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
-  eq('unknown-source supplier defaults to raw source', data[1][1], 'mystery_co');
+  eq('unknown source is refused, not ingested', res,
+    { result: 'error', code: 'UNAUTHORIZED', message: 'unauthorized' });
+  const sheet = currentSS.getSheetByName('Suppliers');
+  check('unknown source wrote nothing', !sheet || sheet.getDataRange().getValues().length <= 1);
+
+  // The raw-source fallback it used to prove still exists — it is reachable
+  // from the GAS-native writers, which do not pass through doPost — so test
+  // it where it actually lives rather than losing the coverage.
+  eq('canonicalSupplier_ falls back to the raw source',
+    canonicalSupplier_('mystery_co', { date: '2026-06-15' }), 'mystery_co');
+  eq('canonicalSupplier_ prefers the mapped name',
+    canonicalSupplier_('food_dairy_co', {}), 'Food and Dairy Co');
+  eq('canonicalSupplier_ prefers a per-row supplier',
+    canonicalSupplier_('ordermentum', { supplier: 'Butterboy' }), 'Butterboy');
 })();
 
 console.log('squareSumOrderGross_');
@@ -2082,13 +2106,14 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
 
   // doPost stamps on ingest — and MUST stamp even when everything dedups.
   currentSS = makeSpreadsheet();
-  // doPost now requires a token on EVERY payload (security audit 2026-09-04),
-  // so these direct calls carry one — otherwise they would assert against
+  // doPost requires a token on EVERY payload and binds it to the payload's
+  // `source` (security audit 2026-09-04), so these direct calls carry
+  // food_dairy_co's OWN token — otherwise they would assert against
   // `unauthorized` instead of the heartbeat behaviour they are about.
-  scriptProps = { API_READ_TOKEN: 'hb-token' };
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-hb-token' };
   const payload = {
     source: 'food_dairy_co',
-    token: 'hb-token',
+    token: 'dummy-hb-token',
     extracted_at: '2026-07-16T11:00:00+10:00',
     rows: [{ date: '2026-07-15', supplier: 'FDCo', total: 10, invoice_ref: 'INV1', location: 'Leible York' }],
   };
@@ -2107,8 +2132,8 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
   // An invalid payload is not a successful run.
   // Authenticated but INVALID — proves validation (not auth) is what stops
   // the stamp. A tokenless payload would stop at auth and prove nothing here.
-  scriptProps = { API_READ_TOKEN: 'hb-token' };
-  doPost({ postData: { contents: JSON.stringify({ source: 'food_dairy_co', token: 'hb-token' }) } });
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-hb-token' };
+  doPost({ postData: { contents: JSON.stringify({ source: 'food_dairy_co', token: 'dummy-hb-token' }) } });
   check('an invalid payload stamps nothing', !('LAST_INGEST_food_dairy_co' in scriptProps));
 })();
 
@@ -2564,7 +2589,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   freshSheets();
   var suppBefore = currentSS.getSheetByName('Suppliers').getDataRange().getValues().length;
   var revRes = doPostJson({
-    kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS', rows: [
+    kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS', rows: [
       { date: '2026-07-01', channel: 'wholesale', customer: 'Acme Cafe', amount: 500, order_ref: 'ORD-1', department: 'Roastery' }
     ]
   });
@@ -2573,7 +2598,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var revRow = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
   eq('revenue row lands in Revenue, in REVENUE_HEADERS order',
     [cellDate(revRow[0])].concat(revRow.slice(1)),
-    ['2026-07-01', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'ORD-1', 'wholesale_app', 'TS']);
+    ['2026-07-01', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'ORD-1', 'coffee_order_app', 'TS']);
   eq('Suppliers row count unchanged by a revenue POST',
     currentSS.getSheetByName('Suppliers').getDataRange().getValues().length, suppBefore);
 
@@ -2590,10 +2615,10 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // Upsert: ORD-1182 at 340.00 then 300.00 → row count unchanged, amount
   // 300.00, extracted_at updated, rowsUpdated:1.
   freshSheets();
-  doPostJson({ source: 'wholesale_app', extracted_at: 'T1', rows: [
+  doPostJson({ source: 'food_dairy_co', extracted_at: 'T1', rows: [
     { date: '2026-07-01', total: 340.00, invoice_ref: 'ORD-1182' }
   ] });
-  var upsertRes = doPostJson({ source: 'wholesale_app', extracted_at: 'T2', rows: [
+  var upsertRes = doPostJson({ source: 'food_dairy_co', extracted_at: 'T2', rows: [
     { date: '2026-07-01', total: 300.00, invoice_ref: 'ORD-1182' }
   ] });
   eq('upsert changed amount → rowsUpdated 1', upsertRes.rowsUpdated, 1);
@@ -2604,7 +2629,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('upsert: extracted_at updated', suppData[1][6], 'T2');
 
   // Upsert with unchanged amount → duplicatesSkipped:1, rowsUpdated:0, no write.
-  var noopRes = doPostJson({ source: 'wholesale_app', extracted_at: 'T3', rows: [
+  var noopRes = doPostJson({ source: 'food_dairy_co', extracted_at: 'T3', rows: [
     { date: '2026-07-01', total: 300.00, invoice_ref: 'ORD-1182' }
   ] });
   eq('unchanged-amount re-post → duplicatesSkipped 1', noopRes.duplicatesSkipped, 1);
@@ -2633,7 +2658,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   // validateIngest_: revenue row validation + department guard.
   (function () {
-    var base = { kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS' };
+    var base = { kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS' };
     check('revenue row missing order_ref → rejected',
       !validateIngest_(Object.assign({}, base, { rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 10 }] })).ok);
     check('revenue row non-numeric amount → rejected',
@@ -2802,7 +2827,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     var supp = currentSS.getSheetByName('Suppliers');
     supp.appendRow(['2026-06-17', 'Food and Dairy Co', 100, 'MX-1', 'York St', 'food_dairy_co', 'x', 'Cafe']);
     var rev = ensureSheet(currentSS, 'Revenue', REVENUE_HEADERS);
-    rev.appendRow(['2026-06-18', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'MX-ORD-1', 'wholesale_app', 'x']);
+    rev.appendRow(['2026-06-18', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'MX-ORD-1', 'coffee_order_app', 'x']);
 
     var res = weeklySummarize('2026-06-15');
     eq('both a spend row and a revenue row are summarized', res.summariesAdded, 2);
@@ -3344,7 +3369,9 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   }
 
   // Unknown kind still rejected — the whitelist widened, it did not open.
-  var unknownRes = doPostJson({ kind: 'nonsense', source: 'x', extracted_at: 'TS',
+  // source must be allowlisted: auth runs BEFORE validateIngest_, so an
+  // unknown source would answer 'unauthorized' and never reach the kind check.
+  var unknownRes = doPostJson({ kind: 'nonsense', source: 'shopspend', extracted_at: 'TS',
     rows: [{ date: '2026-07-27' }] });
   eq('unknown kind → error', unknownRes.result, 'error');
   eq('unknown kind → message names it', unknownRes.message, 'unknown kind: nonsense');
@@ -3457,7 +3484,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     !validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS',
       rows: [{ date: '2026-07-01', total: 10 }] }).ok);
   check('revenue row missing order_ref → still rejected',
-    !validateIngest_({ kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS',
+    !validateIngest_({ kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS',
       rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 10 }] }).ok);
 
   freshSheets();
@@ -3467,7 +3494,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   check('...and writes to Suppliers',
     currentSS.getSheetByName('Suppliers').getDataRange().getValues().length === 2);
 
-  var revOk = doPostJson({ kind: 'revenue', source: 'wholesale_app', extracted_at: 'TS',
+  var revOk = doPostJson({ kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS',
     rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme', amount: 10, order_ref: 'REG-2' }] });
   eq('valid revenue payload still succeeds', revOk.result, 'ok');
   check('...and writes to Revenue',
@@ -4799,7 +4826,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   // --- weeks_verified_empty present, no token field → unauthorized --------
   savedProps = scriptProps;
-  scriptProps = { API_READ_TOKEN: 'test-token' };
+  scriptProps = { INGEST_TOKEN_SHOPSPEND: 'dummy-test-token' };
   freshSheets();
   var noToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
@@ -4813,12 +4840,12 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   // --- weeks_verified_empty present, wrong token → unauthorized -----------
   savedProps = scriptProps;
-  scriptProps = { API_READ_TOKEN: 'test-token' };
+  scriptProps = { INGEST_TOKEN_SHOPSPEND: 'dummy-test-token' };
   freshSheets();
   var wrongToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31'],
-    token: 'wrong-token'
+    token: 'dummy-wrong-token'
   });
   eq('wrong token: result error', wrongToken.result, 'error');
   eq('wrong token: message unauthorized', wrongToken.message, 'unauthorized');
@@ -4827,12 +4854,12 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
   // --- weeks_verified_empty present, correct token → processing proceeds --
   savedProps = scriptProps;
-  scriptProps = { API_READ_TOKEN: 'test-token' };
+  scriptProps = { INGEST_TOKEN_SHOPSPEND: 'dummy-test-token' };
   freshSheets();
   var correctToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31'],
-    token: 'test-token'
+    token: 'dummy-test-token'
   });
   eq('correct token: result ok', correctToken.result, 'ok');
   check('correct token: tombstonesWritten present', 'tombstonesWritten' in correctToken);
@@ -4842,7 +4869,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // --- weeks_verified_empty: [] present but empty, no token → unauthorized
   //     (presence-gated, not content-gated) ---------------------------------
   savedProps = scriptProps;
-  scriptProps = { API_READ_TOKEN: 'test-token' };
+  scriptProps = { INGEST_TOKEN_SHOPSPEND: 'dummy-test-token' };
   freshSheets();
   var emptyArrayNoToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
@@ -4883,7 +4910,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var unsetProp = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: ['2026-W31'], weeks_verified_empty: ['2026-W31'],
-    token: 'any-token-at-all'
+    token: 'dummy-any-token'
   });
   eq('property unset: result error', unsetProp.result, 'error');
   eq('property unset: message unauthorized (fail-closed)', unsetProp.message, 'unauthorized');
@@ -4893,7 +4920,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // --- auth precedes validation: malformed weeks_verified_empty, no token
   //     → unauthorized, NOT the validation message ---------------------------
   savedProps = scriptProps;
-  scriptProps = { API_READ_TOKEN: 'test-token' };
+  scriptProps = { INGEST_TOKEN_SHOPSPEND: 'dummy-test-token' };
   freshSheets();
   var malformedNoToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
@@ -4907,12 +4934,12 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // --- same malformed payload WITH the correct token → gate passes through,
   //     validation error surfaces -------------------------------------------
   savedProps = scriptProps;
-  scriptProps = { API_READ_TOKEN: 'test-token' };
+  scriptProps = { INGEST_TOKEN_SHOPSPEND: 'dummy-test-token' };
   freshSheets();
   var malformedWithToken = doPostJson({
     source: 'shopspend', kind: 'shopspend', extracted_at: 'TS', rows: [],
     weeks_complete: ['2026-W31'], weeks_verified_empty: 'not-an-array',
-    token: 'test-token'
+    token: 'dummy-test-token'
   });
   eq('malformed weeks_verified_empty, correct token: result error', malformedWithToken.result, 'error');
   eq('malformed weeks_verified_empty, correct token: validation error surfaces',
@@ -12635,7 +12662,7 @@ console.log('\narchiveAndPurge_ — batched writes:');
   };
 
   // --- suppliers: the primary write path, previously fully anonymous ---
-  scriptProps = { API_READ_TOKEN: 'real-token' };
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-real-token', INGEST_TOKEN_COFFEE_ORDER_APP: 'dummy-real-token' };
   freshSheets();
   const suppNoTok = doPostJson(suppliersBody, { noToken: true });
   eq('suppliers POST with NO token: result error', suppNoTok.result, 'error');
@@ -12647,15 +12674,15 @@ console.log('\narchiveAndPurge_ — batched writes:');
     !('LAST_INGEST_food_dairy_co' in scriptProps));
 
   // --- revenue: same ---
-  scriptProps = { API_READ_TOKEN: 'real-token' };
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-real-token', INGEST_TOKEN_COFFEE_ORDER_APP: 'dummy-real-token' };
   freshSheets();
   const revNoTok = doPostJson(revenueBody, { noToken: true });
   eq('revenue POST with NO token: code UNAUTHORIZED', revNoTok.code, 'UNAUTHORIZED');
 
   // --- a WRONG token is rejected, not merely a missing one ---
-  scriptProps = { API_READ_TOKEN: 'real-token' };
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-real-token', INGEST_TOKEN_COFFEE_ORDER_APP: 'dummy-real-token' };
   freshSheets();
-  const wrongTok = doPostJson(Object.assign({}, suppliersBody, { token: 'not-the-token' }), { noToken: true });
+  const wrongTok = doPostJson(Object.assign({}, suppliersBody, { token: 'dummy-wrong-token' }), { noToken: true });
   eq('suppliers POST with a WRONG token: code UNAUTHORIZED', wrongTok.code, 'UNAUTHORIZED');
 
   // --- fail CLOSED: no stored token means nothing is accepted, rather than
@@ -12668,15 +12695,15 @@ console.log('\narchiveAndPurge_ — batched writes:');
   // --- auth precedes validation: a malformed payload without a token must
   //     say unauthorized, so an anonymous caller learns nothing about the
   //     payload grammar by probing ---
-  scriptProps = { API_READ_TOKEN: 'real-token' };
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-real-token', INGEST_TOKEN_COFFEE_ORDER_APP: 'dummy-real-token' };
   freshSheets();
   const badNoTok = doPostJson({ source: 'food_dairy_co' }, { noToken: true });
   eq('malformed + no token: unauthorized, NOT a validation message', badNoTok.code, 'UNAUTHORIZED');
 
   // --- the correct token still works end to end ---
-  scriptProps = { API_READ_TOKEN: 'real-token' };
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-real-token', INGEST_TOKEN_COFFEE_ORDER_APP: 'dummy-real-token' };
   freshSheets();
-  const good = doPostJson(Object.assign({}, suppliersBody, { token: 'real-token' }), { noToken: true });
+  const good = doPostJson(Object.assign({}, suppliersBody, { token: 'dummy-real-token' }), { noToken: true });
   eq('suppliers POST WITH the right token: result ok', good.result, 'ok');
   eq('suppliers POST WITH the right token: row written', good.rowsAdded, 1);
   check('suppliers POST WITH the right token: heartbeat stamped',
@@ -12825,6 +12852,318 @@ console.log('\narchiveAndPurge_ — batched writes:');
     !usedSymbols.MailApp && declared.indexOf(SYMBOL_SCOPES.MailApp) === -1);
   check('oauthScopes: Session unused, so userinfo.email is NOT declared',
     !usedSymbols.Session && declared.indexOf(SYMBOL_SCOPES.Session) === -1);
+})();
+
+
+/* ------------------------------------------------------------------ *
+ * doPost binds the token to the SOURCE — security audit 2026-09-04.
+ *
+ * Requiring one shared token (the previous commit) is AUTHENTICATION only:
+ * any holder of that one secret could POST `source: 'square'` and, because
+ * upsertRows_ keys on source+invoice_ref, overwrite Square's real rows in
+ * place — or swing the headline the external GM cost monitor reads Monday
+ * 08:00. Authorization has to say WHICH source a caller may claim.
+ *
+ * Design (grilled + locked 2026-09-04):
+ *   - one script property per source, INGEST_TOKEN_<SOURCE>
+ *   - INGEST_SOURCES_ (a code constant) is the allowlist; a stray property
+ *     in the GAS UI cannot mint an accepted source
+ *   - fail closed on unknown source, unset property, missing/wrong token
+ *   - no legacy branch: a valid API_READ_TOKEN buys nothing on doPost
+ *   - uniform 'unauthorized' over the wire; the reason goes to the GAS log
+ * ------------------------------------------------------------------ */
+(function testDoPostBindsTokenToSource() {
+  console.log('\nsecurity: doPost binds the ingest token to the source:');
+  const savedProps = scriptProps;
+
+  const FDCO_TOKEN = 'dummy-fdco-token';
+  const ORD_TOKEN = 'dummy-ordermentum-token';
+  const SHOPSPEND_TOKEN = 'dummy-shopspend-token';
+
+  function allTokens() {
+    return {
+      INGEST_TOKEN_FOOD_DAIRY_CO: FDCO_TOKEN,
+      INGEST_TOKEN_ORDERMENTUM: ORD_TOKEN,
+      INGEST_TOKEN_SHOPSPEND: SHOPSPEND_TOKEN,
+      API_READ_TOKEN: 'dummy-read-token'
+    };
+  }
+
+  function suppliersBody(overrides) {
+    return Object.assign({
+      source: 'food_dairy_co', extracted_at: 'TS',
+      rows: [{ date: '2026-07-15', total: 10, invoice_ref: 'BIND-1' }]
+    }, overrides);
+  }
+
+  function post(body) {
+    return doPostJson(body, { noToken: true });
+  }
+
+  // Every token that must NOT authenticate the source under test.
+  // 'dummy-read-token' is the API_READ_TOKEN value and matters most: before
+  // this change it was THE valid doPost credential, so it is the token an
+  // attacker actually holds. A case that omits it passes vacuously today and
+  // proves nothing about the fix.
+  const OTHER_TOKENS = [ORD_TOKEN, SHOPSPEND_TOKEN, 'dummy-read-token'];
+
+  function eachOtherTokenIsRejected(label, bodyFor) {
+    OTHER_TOKENS.forEach(function (tok) {
+      scriptProps = allTokens();
+      freshSheets();
+      const res = post(bodyFor(tok));
+      eq(label + ' [tok ' + tok + ']: UNAUTHORIZED', res.code, 'UNAUTHORIZED');
+      const sheet = currentSS.getSheetByName(SUPPLIERS_TAB);
+      check(label + ' [tok ' + tok + ']: wrote NOTHING',
+        !sheet || sheet.getDataRange().getValues().length <= 1);
+    });
+  }
+
+  // --- the source's OWN token works end to end ---------------------------
+  scriptProps = allTokens();
+  freshSheets();
+  const own = post(suppliersBody({ token: FDCO_TOKEN }));
+  eq('own token: result ok', own.result, 'ok');
+  eq('own token: row written', own.rowsAdded, 1);
+
+  // --- ANOTHER source's token cannot claim this source -------------------
+  // This is the whole finding: authentication alone let any token holder
+  // impersonate any connector. Includes the API_READ_TOKEN value, which is
+  // the credential that WAS accepted here before this change — so there is
+  // NO legacy branch left either.
+  eachOtherTokenIsRejected('food_dairy_co claimed by a foreign token',
+    function (tok) { return suppliersBody({ token: tok }); });
+
+  scriptProps = allTokens();
+  freshSheets();
+  post(suppliersBody({ token: ORD_TOKEN }));
+  check('cross-source token stamped no heartbeat',
+    !('LAST_INGEST_food_dairy_co' in scriptProps));
+
+  // --- a GAS-NATIVE source can never be claimed over the wire ------------
+  // square/mayers/greenbean/labour/shopify_orderapp write through the
+  // internal normalizers; none of them has (or may have) an ingest token, so
+  // every doPost claiming them fails closed at the allowlist. Posting
+  // `source:'square'` with the old shared token is the exact attack this
+  // change exists to stop: upsertRows_ keys on source+invoice_ref, so it
+  // overwrote Square's real rows in place.
+  ['square', 'mayers', 'greenbean', 'labour', 'shopify_orderapp'].forEach(function (internal) {
+    eachOtherTokenIsRejected('spoofing internal source ' + internal,
+      function (tok) { return suppliersBody({ source: internal, token: tok }); });
+    scriptProps = allTokens();
+    freshSheets();
+    const own = post(suppliersBody({ source: internal, token: FDCO_TOKEN }));
+    eq('spoofing ' + internal + ' with a real connector token: UNAUTHORIZED',
+      own.code, 'UNAUTHORIZED');
+  });
+
+  // --- allowlisted source whose property is UNSET fails CLOSED -----------
+  scriptProps = { API_READ_TOKEN: 'dummy-read-token' };
+  freshSheets();
+  const unset = post(suppliersBody({ token: FDCO_TOKEN }));
+  eq('INGEST_TOKEN_FOOD_DAIRY_CO unset: UNAUTHORIZED (fail closed)', unset.code, 'UNAUTHORIZED');
+
+  // --- an EMPTY property is not a wildcard -------------------------------
+  scriptProps = Object.assign(allTokens(), { INGEST_TOKEN_FOOD_DAIRY_CO: '' });
+  freshSheets();
+  const emptyProp = post(suppliersBody({ token: '' }));
+  eq('empty property + empty token: UNAUTHORIZED', emptyProp.code, 'UNAUTHORIZED');
+
+  // --- shopspend-backfill is an ALIAS onto the shopspend token -----------
+  // Same runner, second source string; the hyphen never becomes a property
+  // name. It must NOT be authenticable by any other source's token.
+  scriptProps = allTokens();
+  freshSheets();
+  const backfill = post({
+    source: 'shopspend-backfill', kind: 'suppliers', extracted_at: 'TS',
+    rows: [{ date: '2026-07-15', total: 10, invoice_ref: 'BF-1' }],
+    token: SHOPSPEND_TOKEN
+  });
+  eq('shopspend-backfill authenticates with INGEST_TOKEN_SHOPSPEND', backfill.result, 'ok');
+
+  // SHOPSPEND_TOKEN is deliberately absent from this list — it is the
+  // backfill's LEGITIMATE credential, which is the whole point of the alias.
+  [FDCO_TOKEN, ORD_TOKEN, 'dummy-read-token'].forEach(function (tok) {
+    scriptProps = allTokens();
+    freshSheets();
+    const res = post({
+      source: 'shopspend-backfill', kind: 'suppliers', extracted_at: 'TS',
+      rows: [{ date: '2026-07-15', total: 10, invoice_ref: 'BF-2' }],
+      token: tok
+    });
+    eq('shopspend-backfill claimed by a foreign token [' + tok + ']: UNAUTHORIZED',
+      res.code, 'UNAUTHORIZED');
+  });
+
+  // --- a source not in INGEST_SOURCES_ is rejected outright --------------
+  eachOtherTokenIsRejected('unknown source mystery_co',
+    function (tok) { return suppliersBody({ source: 'mystery_co', token: tok }); });
+
+  scriptProps = allTokens();
+  freshSheets();
+  post(suppliersBody({ source: 'mystery_co', token: 'dummy-read-token' }));
+  check('unknown source stamped no heartbeat', !('LAST_INGEST_mystery_co' in scriptProps));
+
+  // --- INGEST_SOURCES_ lookups must not walk the prototype chain ---------
+  // A bare obj[source] answers a Function for 'constructor' and 'toString',
+  // which is truthy — enough to be mistaken for a property name.
+  //
+  // Asserted at BOTH levels on purpose. End to end, these are refused even
+  // without the guard, because getProperty(<a Function>) finds nothing and
+  // the gate fails closed — a mutation check confirmed the doPost-level
+  // cases alone pass with the guard deleted. So the resolver is also
+  // asserted directly, where the guard is the only thing that makes it
+  // answer null instead of a Function.
+  ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf', 'isPrototypeOf']
+    .forEach(function (proto) {
+      eq('ingestTokenPropertyFor_ returns null for prototype key ' + proto,
+        ingestTokenPropertyFor_(proto), null);
+      eachOtherTokenIsRejected('prototype key as source (' + proto + ')',
+        function (tok) { return suppliersBody({ source: proto, token: tok }); });
+    });
+
+  // --- the resolver answers a real property name for every allowlisted
+  //     source, and null for everything else --------------------------------
+  eq('food_dairy_co resolves to its own property',
+    ingestTokenPropertyFor_('food_dairy_co'), 'INGEST_TOKEN_FOOD_DAIRY_CO');
+  eq('shopspend-backfill resolves to the SHOPSPEND property (alias)',
+    ingestTokenPropertyFor_('shopspend-backfill'), 'INGEST_TOKEN_SHOPSPEND');
+  eq('shopspend and its backfill share one property',
+    ingestTokenPropertyFor_('shopspend'), ingestTokenPropertyFor_('shopspend-backfill'));
+  ['square', 'mayers', 'greenbean', 'labour', 'shopify_orderapp', 'roastery', ''].forEach(function (s) {
+    eq('ingestTokenPropertyFor_ returns null for non-ingest source ' + JSON.stringify(s),
+      ingestTokenPropertyFor_(s), null);
+  });
+  Object.keys(INGEST_SOURCES_).forEach(function (src) {
+    check('INGEST_SOURCES_ entry ' + src + ' names an INGEST_TOKEN_* property',
+      /^INGEST_TOKEN_[A-Z_]+$/.test(INGEST_SOURCES_[src]));
+    check('INGEST_SOURCES_ entry ' + src + ' does not reuse API_READ_TOKEN',
+      INGEST_SOURCES_[src] !== 'API_READ_TOKEN');
+  });
+
+  // --- a missing / non-string source cannot authenticate -----------------
+  [undefined, null, 42, ['food_dairy_co'], { toString: function () { return 'food_dairy_co'; } }]
+    .forEach(function (bad, i) {
+      scriptProps = allTokens();
+      freshSheets();
+      const body = suppliersBody({ token: 'dummy-read-token' });
+      body.source = bad;
+      eq('non-string source #' + i + ': UNAUTHORIZED', post(body).code, 'UNAUTHORIZED');
+    });
+
+  // --- the response discloses nothing about WHICH check failed ----------
+  // Uniform message; the reason is Logger.log'd inside GAS instead.
+  scriptProps = allTokens();
+  freshSheets();
+  const unknownSrc = post(suppliersBody({ source: 'mystery_co', token: FDCO_TOKEN }));
+  const wrongTok = post(suppliersBody({ token: 'nope' }));
+  scriptProps = { API_READ_TOKEN: 'dummy-read-token' };
+  const noProp = post(suppliersBody({ token: FDCO_TOKEN }));
+  eq('unknown-source message is the uniform one', unknownSrc.message, 'unauthorized');
+  eq('wrong-token message is the uniform one', wrongTok.message, 'unauthorized');
+  eq('unset-property message is the uniform one', noProp.message, 'unauthorized');
+  check('no response names the property or the source',
+    [unknownSrc, wrongTok, noProp].every(function (r) {
+      return JSON.stringify(r).indexOf('INGEST_TOKEN') === -1 &&
+        JSON.stringify(r).indexOf('mystery_co') === -1;
+    }));
+
+  // --- auth still precedes validation ------------------------------------
+  scriptProps = allTokens();
+  freshSheets();
+  const malformed = post({ source: 'food_dairy_co', token: 'nope' });
+  eq('malformed + wrong token: unauthorized, NOT a validation message',
+    malformed.message, 'unauthorized');
+
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ *
+ * validateIngest_ bounds the money fields — security audit 2026-09-04.
+ *
+ * `!isNaN(Number(x))` accepted Infinity, '', [], '45' and any magnitude, so
+ * one POST could swing the company headline LEIBLE_GM_COST_MONITOR reads
+ * every Monday 08:00. Locked: a real finite JS number, |x| <= 1,000,000,
+ * negatives allowed so credit notes still ingest.
+ * ------------------------------------------------------------------ */
+(function testIngestMoneyBounds() {
+  console.log('\nsecurity: validateIngest_ bounds total/amount:');
+
+  function suppliers(total) {
+    return {
+      source: 'food_dairy_co', extracted_at: 'TS',
+      rows: [{ date: '2026-07-15', total: total, invoice_ref: 'MB-1' }]
+    };
+  }
+  function revenue(amount) {
+    return {
+      kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS',
+      rows: [{ date: '2026-07-15', channel: 'wholesale', customer: 'Cafe X',
+        amount: amount, order_ref: 'MB-R1' }]
+    };
+  }
+
+  // --- rejected: not a real finite number -------------------------------
+  const badValues = [
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['NaN', NaN],
+    ['empty string (Number("") === 0)', ''],
+    ['empty array (Number([]) === 0)', []],
+    ['numeric string', '45'],
+    ['whitespace string', ' '],
+    ['boolean true (Number(true) === 1)', true],
+    ['single-element array (Number([7]) === 7)', [7]]
+  ];
+  badValues.forEach(function (pair) {
+    const label = pair[0], value = pair[1];
+    check('suppliers total rejected: ' + label,
+      validateIngest_(suppliers(value)).ok === false);
+    check('revenue amount rejected: ' + label,
+      validateIngest_(revenue(value)).ok === false);
+  });
+
+  // --- rejected: out of magnitude ---------------------------------------
+  check('suppliers total rejected: 1000000.01 (over the ceiling)',
+    validateIngest_(suppliers(1000000.01)).ok === false);
+  check('suppliers total rejected: -1000000.01 (under the floor)',
+    validateIngest_(suppliers(-1000000.01)).ok === false);
+  check('revenue amount rejected: 5e7',
+    validateIngest_(revenue(5e7)).ok === false);
+
+  // --- the rejection names the row and the field ------------------------
+  const msg = validateIngest_(suppliers(Infinity)).message;
+  check('rejection message names row 0', String(msg).indexOf('row 0') !== -1);
+  check('rejection message names total', String(msg).indexOf('total') !== -1);
+
+  // --- accepted: real money, including credit notes ---------------------
+  [0, 0.01, 45.5, -500, 1000000, -1000000].forEach(function (good) {
+    check('suppliers total accepted: ' + good, validateIngest_(suppliers(good)).ok === true);
+    check('revenue amount accepted: ' + good, validateIngest_(revenue(good)).ok === true);
+  });
+
+  // --- a bad value on a LATER row is still caught -----------------------
+  const multi = {
+    source: 'food_dairy_co', extracted_at: 'TS',
+    rows: [
+      { date: '2026-07-15', total: 10, invoice_ref: 'MB-A' },
+      { date: '2026-07-15', total: Infinity, invoice_ref: 'MB-B' }
+    ]
+  };
+  const multiRes = validateIngest_(multi);
+  check('bad value on row 1 rejects the payload', multiRes.ok === false);
+  check('...and the message names row 1', String(multiRes.message).indexOf('row 1') !== -1);
+
+  // --- an out-of-bound row is not written -------------------------------
+  const savedProps = scriptProps;
+  scriptProps = { INGEST_TOKEN_FOOD_DAIRY_CO: 'dummy-fdco-token' };
+  freshSheets();
+  const posted = doPostJson(Object.assign(suppliers(9e9), { token: 'dummy-fdco-token' }), { noToken: true });
+  eq('out-of-bound POST: result error', posted.result, 'error');
+  const sheet = currentSS.getSheetByName(SUPPLIERS_TAB);
+  check('out-of-bound POST wrote NOTHING',
+    !sheet || sheet.getDataRange().getValues().length <= 1);
+  scriptProps = savedProps;
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
