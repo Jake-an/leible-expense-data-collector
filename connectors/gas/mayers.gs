@@ -434,7 +434,7 @@ var MAYERS_REPAIR_SNAPSHOT_PREFIX_ = 'MAYERS_REPAIR_SNAPSHOT_';
  * or a different case in one Sheet cell must never make a guard silently miss.
  */
 function mayersNorm_(v) {
-  return String(v).trim().toLowerCase();
+  return sheetKeyPart_(v);
 }
 
 function mayersRepairSnapshotKey_(week) {
@@ -583,8 +583,13 @@ function mayersRestoreWeek_(week) {
     for (var r = 1; r < suppData.length; r++) {
       if (mayersNorm_(suppData[r][5]) !== 'mayers') continue;
       if (mayersNorm_(suppData[r][3]) !== mayersNorm_(suppRows[i].invoice_ref)) continue;
-      if (String(suppData[r][4]) === String(suppRows[i].location)) break; // already restored
-      suppSheet.getRange(r + 1, 5).setValue(suppRows[i].location);
+      // Unguard BOTH sides before comparing: the sheet cell may carry the
+      // formula text-guard while the snapshot value (captured pre-guard, or
+      // built in memory) does not. Comparing raw would read "not yet
+      // restored" forever and rewrite the cell on every run. Not mayersNorm_
+      // — that lowercases, and location is case-significant here.
+      if (String(sheetUnguardCell_(suppData[r][4])) === String(sheetUnguardCell_(suppRows[i].location))) break;
+      suppSheet.getRange(r + 1, 5).setValue(sheetSafeCell_(suppRows[i].location));
       locationsRestored++;
       break;
     }

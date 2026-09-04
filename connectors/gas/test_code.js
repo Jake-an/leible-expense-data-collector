@@ -12250,6 +12250,32 @@ console.log('\narchiveAndPurge_ — batched writes:');
   check('case9b: ORD-Y still holds the corrected date',
     !!ordYRow && cellDate(ordYRow[0]) === '2026-08-11');
 
+  /* --- case 9c (security regression, 2026-09-04): the formula-injection
+   *     guard stores an order_ref beginning with a formula trigger as
+   *     "'=ORD-Z", but the API still reports it unguarded as "=ORD-Z".
+   *     wholesalePull builds its date-heal snapshot key from the SHEET and
+   *     looks it up with a key built from the FRESH pull, so both sides must
+   *     go through sheetKeyPart_. If either skips the unguard step the keys
+   *     never match: the self-heal silently never fires and the money stays
+   *     in the wrong ISO week forever. --- */
+  reset();
+  const byLabelG = cleanFixtureSet('grd', 500);
+  const revSheetG = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+  // stored guarded, exactly as sheetSafeRow_ would have written it
+  revSheetG.appendRow(['2026-08-03', 'Roastery', 'wholesale', 'Shop Z', 100, "'=ORD-Z", WHOLESALE_SOURCE, 'OLD-STAMP']);
+  byLabelG[weeks3[1].label] = weekFixtureFromOrders([order({ orderId: '=ORD-Z', date: '2026-08-11', amount: 100 })]);
+  armFetchWeekOrders(byLabelG);
+  armWeeklySummarizeSpy();
+  var resG;
+  withMockNow(PINNED_TODAY + 'T00:00:00Z', function () { resG = wholesalePull(); });
+
+  eq('case9c: the date-move self-heal fires for a guarded order_ref', resG.datesHealed, 1);
+  var guardedRow = findRevenueRow(revenueRows(), "'=ORD-Z");
+  check('case9c: the guarded row was healed in place, not duplicated',
+    !!guardedRow && cellDate(guardedRow[0]) === '2026-08-11');
+  eq('case9c: no second row was appended under the unguarded key',
+    revenueRows().filter(function (r) { return String(r[5]).indexOf('ORD-Z') !== -1; }).length, 1);
+
   /* --- case 10: within-batch key collision (two mapped rows share an
    *     order_ref) -> Code.gs:728 silently drops the second one; an
    *     unexplained duplicatesSkipped (no snapshot entry backs it) must be

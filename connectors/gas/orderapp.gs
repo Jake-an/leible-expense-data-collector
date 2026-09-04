@@ -1085,7 +1085,7 @@ function greenBeanPull_impl_() {
   for (var r = 1; r < existingValues.length; r++) {
     var existingRow = existingValues[r];
     if (String(existingRow[5]) !== GREENBEAN_SOURCE) continue;
-    snapshot[GREENBEAN_SOURCE + '||' + String(existingRow[3]).trim().toLowerCase()] = {
+    snapshot[GREENBEAN_SOURCE + '||' + sheetKeyPart_(existingRow[3])] = {
       storedDate: coerceDateStr_(existingRow[0]),
       total: Number(existingRow[2]),
       rowIndex: r + 1 // 1-based sheet row, for the date-move self-heal below
@@ -1109,7 +1109,7 @@ function greenBeanPull_impl_() {
   // sweep after it.
   var pullRefs = {};
   for (var pk = 0; pk < invoices.length; pk++) {
-    pullRefs[String(invoices[pk].invoice_ref).trim().toLowerCase()] = true;
+    pullRefs[sheetKeyPart_(invoices[pk].invoice_ref)] = true;
   }
   // Bare invoice-number part of every ref NEW to this pull. Purely a display
   // hint so an orphan alert can say where the money probably went after a
@@ -1118,10 +1118,10 @@ function greenBeanPull_impl_() {
 
   for (var i = 0; i < invoices.length; i++) {
     var invoice = invoices[i];
-    var snap = snapshot[GREENBEAN_SOURCE + '||' + String(invoice.invoice_ref).trim().toLowerCase()];
+    var snap = snapshot[GREENBEAN_SOURCE + '||' + sheetKeyPart_(invoice.invoice_ref)];
     if (!snap) {
       addAffectedWeek(weekStartForDate_(invoice.date));
-      var newParts = String(invoice.invoice_ref).trim().toLowerCase().split('/');
+      var newParts = sheetKeyPart_(invoice.invoice_ref).split('/');
       var newBare = newParts.slice(1).join('/');
       if (newBare) newRefsByBare[newBare] = invoice.invoice_ref;
       continue;
@@ -1315,7 +1315,7 @@ function wholesaleSimulateUpsert_(rows, simSnapshot) {
   var rowsAdded = 0, rowsUpdated = 0, duplicatesSkipped = 0;
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
-    var key = WHOLESALE_SOURCE + '||' + String(row.order_ref).trim().toLowerCase();
+    var key = WHOLESALE_SOURCE + '||' + sheetKeyPart_(row.order_ref);
     if (seenInBatch[key]) { duplicatesSkipped++; continue; }
     seenInBatch[key] = true;
 
@@ -1386,7 +1386,7 @@ function wholesalePull_impl_(opts) {
   for (var er = 1; er < existingValues.length; er++) {
     var existingRow = existingValues[er];
     if (String(existingRow[6]) !== WHOLESALE_SOURCE) continue;
-    snapshot[WHOLESALE_SOURCE + '||' + String(existingRow[5]).trim().toLowerCase()] = {
+    snapshot[WHOLESALE_SOURCE + '||' + sheetKeyPart_(existingRow[5])] = {
       storedDate: coerceDateStr_(existingRow[0]),
       amount: Number(existingRow[4]),
       rowIndex: er + 1
@@ -1524,7 +1524,7 @@ function wholesalePull_impl_(opts) {
     var weekDatesHealed = 0;
     for (var mi = 0; mi < mapped.rows.length; mi++) {
       var mrow = mapped.rows[mi];
-      var key = WHOLESALE_SOURCE + '||' + String(mrow.order_ref).trim().toLowerCase();
+      var key = WHOLESALE_SOURCE + '||' + sheetKeyPart_(mrow.order_ref);
       var snap = snapshot[key];
       if (snap && mrow.date !== snap.storedDate) {
         if (!dryRun) {
@@ -1572,7 +1572,7 @@ function wholesalePull_impl_(opts) {
     var batchSeen = {};
     var unexplainedSkips = 0;
     for (var br = 0; br < mapped.rows.length; br++) {
-      var bkey = WHOLESALE_SOURCE + '||' + String(mapped.rows[br].order_ref).trim().toLowerCase();
+      var bkey = WHOLESALE_SOURCE + '||' + sheetKeyPart_(mapped.rows[br].order_ref);
       if (batchSeen[bkey]) { unexplainedSkips++; continue; }
       batchSeen[bkey] = true;
     }

@@ -811,12 +811,27 @@ function sheetUnguardCell_(v) {
   return (typeof v === 'string' && v.charAt(0) === SHEET_TEXT_GUARD_) ? v.slice(1) : v;
 }
 
+/**
+ * The ONE way to normalize a value into a dedup/lookup key part.
+ *
+ * Use this ANYWHERE a key is built, not just in rowKey_. Several call sites
+ * key a value read back from the sheet (which carries the text guard) against
+ * the same value freshly pulled from an API (which does not) — greenBeanPull
+ * and wholesalePull both build such snapshots. A key builder that skips the
+ * unguard step silently fails to match for any ref beginning with = + - or @,
+ * which breaks the date-move self-heal and makes the orphan detector accuse a
+ * live invoice of being stale (whose runbook tells a human to zero the row).
+ */
+function sheetKeyPart_(v) {
+  return String(sheetUnguardCell_(v)).trim().toLowerCase();
+}
+
 function rowKey_(rowArray, keyCols) {
   var parts = [];
   for (var i = 0; i < keyCols.length; i++) {
     var v = rowArray[keyCols[i]];
     v = (v instanceof Date) ? coerceDateStr_(v) : v;
-    parts.push(String(sheetUnguardCell_(v)).trim().toLowerCase());
+    parts.push(sheetKeyPart_(v));
   }
   return parts.join('||');
 }
@@ -1993,8 +2008,8 @@ function aggregateSupplierRows_(rows, weekStart, weekEnd, kind) {
     // upsertRows_'s duplicatesSkipped branch (REVIEW FIXES 2026-08-26, FIX 2).
     // Display fields keep the FIRST-seen raw casing — doGet consumers and
     // LEIBLE_GM_COST_MONITOR's location mapping read those strings.
-    var key = String(department).trim().toLowerCase() + '||' + kind + '||' +
-      String(name).trim().toLowerCase() + '||' + String(location).trim().toLowerCase();
+    var key = sheetKeyPart_(department) + '||' + kind + '||' +
+      sheetKeyPart_(name) + '||' + sheetKeyPart_(location);
     if (!groups[key]) groups[key] = { supplier: name, location: location, department: department, kind: kind, total: 0 };
     groups[key].total += total;
   }
