@@ -815,3 +815,33 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 ## Future
 - Move Playwright runners to an always-on box
 - Telegram notifications when connectors go `blocked`
+
+## Batch candidates
+<!-- Work spotted but not done. Append DURING the session, one line each, always naming
+     the file/area it touches. Source for the Next batches block at "lets stop here"
+     (~/.claude/docs/todo-hygiene.md). -->
+
+### Open security findings (from /security-audit 2026-09-04, verdict `blocked`)
+- **NEXT SESSION** — per-connector ingest tokens to bind `source` to the caller
+  (`connectors/gas/Code.gs:266` checkReadToken_, `:480-490` normalizeSupplierRow).
+  One shared token today = any token holder can claim another connector's `source`
+  and `upsertRows_` overwrites its real rows in place. HIGH, still open.
+- Bound `amount`/`total` in `validateIngest_` (`Code.gs:449-455`) — only `!isNaN`
+  today, so one POST can swing the headline the GM cost monitor reads Mon 08:00.
+  HIGH, still open. Cheap; no connector changes.
+- Bind `department` to the source rather than only enum-checking it
+  (`Code.gs:420-422`). MEDIUM.
+- `upsertRows_` silently drops a within-batch dedup-key collision (`Code.gs:746`) —
+  caller cannot tell "true duplicate" from "data lost". MEDIUM.
+- `doGet` maps every live Summary column generically (`Code.gs:2495-2508`) — a future
+  column is auto-exposed to any token holder. LOW.
+- `runtime-defense` gate can never pass in GAS (wants Cloudflare security-headers
+  middleware), so `/security-audit` can never reach `approve` for this repo as-is.
+
+### Other open work
+- F2 resummarize-queue starvation: cap drains oldest-first, so a permanently-refused
+  split week can consume it forever and the newest week starves
+  (`connectors/gas/orderapp.gs`, greenBeanPull + wholesalePull). Suggested fix:
+  reserve a slot — newest affected week + 4 oldest. Also fixes the run-1 no-heartbeat.
+- `roastery_email.gs:93` success-gated label — verify whether the mayers re-OCR fix
+  was ever ported here (memory says latent; both files look identical at that line).
