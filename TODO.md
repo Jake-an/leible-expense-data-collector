@@ -822,6 +822,15 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
      (~/.claude/docs/todo-hygiene.md). -->
 
 ### Open security findings (from /security-audit 2026-09-04, verdict `blocked`)
+- 🔴 **INGEST IS DOWN UNTIL THE CUTOVER IS FINISHED (as of 2026-09-06).** All three
+  unattended connectors have failed both nights since the commit — Food and Dairy Co,
+  Fresh and Chill, Ordermentum, `exit=1` on 05/09 and 06/09; last good run 04/09.
+  Cause confirmed in `logs/*.log`: `INGEST_TOKEN_<SOURCE> is not set … Nothing was
+  posted.` Fail-loud, not data loss — the credential resolves before any HTTP call.
+  Task Scheduler runs the **working tree**, so the rename broke scheduled runs at
+  COMMIT time, not deploy time. All three re-read a newest-first window with no date
+  filter, so the missed nights back-fill on the first successful run — do NOT
+  `--backfill`. Fix = finish the cutover (~15 min, `docs/ingest-token-cutover.md`).
 - ~~per-connector ingest tokens to bind `source` to the caller~~ **CODE DONE
   2026-09-04, NOT YET CUT OVER.** `checkIngestToken_` + `INGEST_SOURCES_`
   (`connectors/gas/Code.gs`) bind each token to one source; connectors carry
