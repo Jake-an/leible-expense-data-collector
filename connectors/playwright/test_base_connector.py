@@ -1074,6 +1074,87 @@ def test_ordermentum_get_invoices_respects_the_runaway_limit(monkeypatch):
     assert len(req.calls) == 2
 
 
+def test_ordermentum_get_invoices_records_a_breach_when_over_the_limit(monkeypatch):
+    """A print alone is invisible in an unattended run — the breach must also
+    be recorded so run() can turn it into a non-zero exit."""
+    monkeypatch.setattr(ordermentum, "INVOICE_PAGE_LIMIT", 2)
+    req = _PagedOMRequest(pages={n: [_inv(n)] for n in range(1, 6)})
+    conn = _om_conn()
+    conn._get_invoices(_PagedOMPage(req), "venue-x", "supplier-y")
+    assert conn._page_limit_breaches == [
+        {"venue_id": "venue-x", "supplier_id": "supplier-y", "total_pages": 5, "read": 2}
+    ]
+
+
+def test_ordermentum_get_invoices_under_the_limit_records_no_breach():
+    """The breach list must not cry wolf on a normal read, or the failure
+    mode below gets ignored like every other warning."""
+    req = _PagedOMRequest(pages={1: [_inv(1)], 2: [_inv(2)]})
+    conn = _om_conn()
+    conn._get_invoices(_PagedOMPage(req), "venue-x", "supplier-y")
+    assert conn._page_limit_breaches == []
+
+
+def test_ordermentum_run_raises_after_posting_on_page_limit_breach(monkeypatch):
+    """The whole point of the fix: a breach must not be swallowed by a print.
+    run() has to fail loudly — but only AFTER the data that WAS read has
+    already been handed to the base class's post path, so the breach costs
+    nothing beyond visibility.
+
+    This pins the NEW behaviour. Against the pre-fix code (a print-only
+    warning, no PageLimitBreachError, no run() override) this test fails with
+    AttributeError: module 'ordermentum' has no attribute 'PageLimitBreachError'.
+    """
+    monkeypatch.setattr(ordermentum, "VENUES", {"live-id": "Leible North"})
+    monkeypatch.setattr(ordermentum, "INVOICE_PAGE_LIMIT", 1)
+    req = _PagedOMRequest(
+        pages={1: [_inv(1)], 2: [_inv(2)]},
+        suppliers=[{"supplierId": "s1", "supplier": {"name": "Fuel Bakery", "tradingName": ""}}],
+    )
+    posted = {}
+
+    def fake_base_run(self, attended=False, dry_run=False, since=None):
+        # Stands in for BaseConnector.run(): calls read_invoices (which is
+        # what actually records the breach) and reports as if POST succeeded,
+        # exactly like a real run that reads a truncated-but-real page set
+        # and successfully ingests it.
+        rows = self.read_invoices(_PagedOMPage(req))
+        posted["rows"] = rows
+        return {"rows": len(rows), "post": {"result": "ok"}}
+
+    monkeypatch.setattr(b.BaseConnector, "run", fake_base_run)
+
+    conn = _om_conn()
+    with pytest.raises(ordermentum.PageLimitBreachError, match="INVOICE_PAGE_LIMIT"):
+        conn.run()
+
+    # The data that WAS read (page 1, limit=1) reached the stubbed "post"
+    # before the exception fired — the breach reports, it does not withhold.
+    assert len(posted["rows"]) == 1
+
+
+def test_ordermentum_run_does_not_raise_on_dry_run_breach(monkeypatch):
+    """--dry-run posts nothing and a human is already reading the table on
+    screen, so the exit code doesn't need to carry the signal too."""
+    monkeypatch.setattr(ordermentum, "VENUES", {"live-id": "Leible North"})
+    monkeypatch.setattr(ordermentum, "INVOICE_PAGE_LIMIT", 1)
+    req = _PagedOMRequest(
+        pages={1: [_inv(1)], 2: [_inv(2)]},
+        suppliers=[{"supplierId": "s1", "supplier": {"name": "Fuel Bakery", "tradingName": ""}}],
+    )
+
+    def fake_base_run(self, attended=False, dry_run=False, since=None):
+        rows = self.read_invoices(_PagedOMPage(req))
+        return {"rows": len(rows), "post": {"result": "dry-run", "reason": "nothing posted"}}
+
+    monkeypatch.setattr(b.BaseConnector, "run", fake_base_run)
+
+    conn = _om_conn()
+    result = conn.run(dry_run=True)
+    assert result["rows"] == 1
+    assert conn._page_limit_breaches  # breach WAS recorded, just not raised
+
+
 def test_ordermentum_barren_venue_warns_loudly(monkeypatch, capsys):
     """A venue returning zero matching suppliers is exactly what the dead North
     account looked like for months. Every venue in VENUES is there because it

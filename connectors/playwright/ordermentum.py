@@ -82,11 +82,31 @@ RETIRED_VENUES = {
 
 # /v2/invoices is paginated at 25/page and the connector used to request page 1
 # only, dropping everything older with no warning. Measured 2026-08-24: Tuga at
-# the North venue has 437 invoices across 18 pages, Fuel Bakery 53 across 3.
-# That never showed up in the weekly figures because the sort is newest-first
-# and a weekly run only needs the newest few — it bites a backfill, or any
-# recovery after an outage, which is exactly when the data matters most.
-INVOICE_PAGE_LIMIT = 40  # runaway guard; 40 * 25 = 1000 invoices per venue+supplier
+# the North venue has 437 invoices across 18 pages, Fuel Bakery 53 across 3 —
+# still the largest known supplier+venue history as of 2026-09-07. The
+# connector below now follows every page up to this limit, so nothing is
+# truncated today; INVOICE_PAGE_LIMIT exists only to stop an API bug (e.g. a
+# bad totalPages value or a paging loop) from reading forever.
+#
+# 60 gives ~3.3x headroom over the largest measured history (18 pages) without
+# being unbounded. If a breach ever fires it is NOT silent: _get_invoices
+# still emits the per-supplier WARNING immediately (for whoever is watching
+# live), but read_invoices additionally records the breach, and
+# OrdermentumConnector.run() raises PageLimitBreachError once the read is
+# complete — AFTER the rows already collected have been POSTed, so a real
+# breach costs nothing already read, but the run still exits non-zero and
+# fails loudly in an unattended nightly job instead of leaving a print buried
+# in a log nobody reads. A breach recurs every run (newest-first pagination
+# never reaches the tail), so the failure will keep firing — as intended —
+# until INVOICE_PAGE_LIMIT is raised or the supplier is investigated.
+INVOICE_PAGE_LIMIT = 60  # runaway guard; 60 * 25 = 1500 invoices per venue+supplier
+
+
+class PageLimitBreachError(Exception):
+    """Raised by OrdermentumConnector.run() after a successful POST when one or
+    more supplier+venue invoice histories exceeded INVOICE_PAGE_LIMIT. Data
+    already read is not lost — it was posted before this is raised — but the
+    process exits non-zero so the breach cannot be missed in an unattended run."""
 
 
 def _as_amount(value, invoice_ref) -> float:
@@ -113,6 +133,14 @@ class OrdermentumConnector(BaseConnector):
     NAME = "ordermentum"
     SOURCE = "ordermentum"
     LOGIN_URL = "https://app.ordermentum.com"
+
+    def __init__(self, exec_url: str | None = None):
+        super().__init__(exec_url=exec_url)
+        # Populated by _get_invoices via read_invoices; checked by run() after
+        # the base class has already POSTed. Initialised here (not just in
+        # run()) so a test can call _get_invoices/read_invoices directly
+        # without going through run() first.
+        self._page_limit_breaches: list[dict] = []
 
     def is_logged_in(self, page: Page) -> bool:
         resp = page.request.get(f"{API_BASE}/v1/profiles/")
@@ -298,7 +326,47 @@ class OrdermentumConnector(BaseConnector):
                 f"{INVOICE_PAGE_LIMIT} — read {len(out)} invoice(s), OLDEST ONES SKIPPED",
                 file=sys.stderr,
             )
+            # A print alone is invisible in an unattended nightly run — record
+            # it so run() can turn it into a non-zero exit AFTER the rows read
+            # here have been POSTed (see PageLimitBreachError).
+            self._page_limit_breaches.append(
+                {
+                    "venue_id": venue_id,
+                    "supplier_id": supplier_id,
+                    "total_pages": total_pages,
+                    "read": len(out),
+                }
+            )
         return out
+
+    def run(self, attended: bool = False, dry_run: bool = False, since: str | None = None) -> dict:
+        """Same as BaseConnector.run(), plus: if any supplier+venue exceeded
+        INVOICE_PAGE_LIMIT during the read, raise PageLimitBreachError AFTER
+        the base run has already POSTed. Rows already read are not withheld —
+        the breach is reported, not swallowed, without costing the data that
+        WAS collected.
+
+        Skipped on --dry-run: nothing was posted, the per-supplier WARNING and
+        the dry-run table already surface it, and a human is reading the
+        output directly rather than relying on the exit code.
+        """
+        self._page_limit_breaches = []
+        result = super().run(attended=attended, dry_run=dry_run, since=since)
+        if self._page_limit_breaches and not dry_run:
+            detail = "; ".join(
+                f"venue {b['venue_id']} supplier {b['supplier_id']}: {b['total_pages']} "
+                f"pages > INVOICE_PAGE_LIMIT {INVOICE_PAGE_LIMIT} ({b['read']} invoice(s) "
+                f"read, oldest ones skipped)"
+                for b in self._page_limit_breaches
+            )
+            raise PageLimitBreachError(
+                f"{len(self._page_limit_breaches)} supplier+venue history/histories "
+                f"exceeded INVOICE_PAGE_LIMIT after a successful POST of "
+                f"{result.get('rows', 0)} row(s): {detail}. This will recur every run "
+                f"(pagination is newest-first, the tail is never reached) until "
+                f"INVOICE_PAGE_LIMIT is raised or the supplier is investigated."
+            )
+        return result
 
 
 def list_venues() -> None:
