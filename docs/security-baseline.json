@@ -1,0 +1,15 @@
+{
+  "_comment": "ACCEPTED-RISK REGISTER. Every entry is a REVIEWED decision by Jake to ship with a known finding open - not a fix, and not a way to make a gate quiet. Validated by the check-security-baseline gate. Delete an entry the moment its finding is fixed.",
+  "accepted": [
+    {
+      "id": "gas-anonymous-web-app",
+      "severity": "Medium",
+      "location": "connectors/gas/appsscript.json (webapp.access / webapp.executeAs)",
+      "summary": "The web app is published ANYONE_ANONYMOUS executing as USER_DEPLOYING, so every unauthenticated caller reaches doPost/doGet running with the deploying user's Sheets, Drive and Gmail authority.",
+      "why_accepted": "Structural, not an oversight. The callers are headless Playwright connectors on a scheduled task, not people: they hold no Google identity, so no access mode narrower than ANYONE_ANONYMOUS lets them POST at all, and the handler must write the owner's spreadsheet, which requires USER_DEPLOYING. The trust boundary is therefore enforced in CODE, and it was verified at the source on 2026-09-07 rather than assumed. doPost calls checkIngestToken_ as its FIRST statement - before validateIngest_ and before any write - using a PER-SOURCE token, so a token proves not just that the caller holds a secret but that it may claim the source it wrote in the body; it fails closed on unknown source, unset property, missing or wrong token, with no fallback to the doGet read secret. doGet calls checkReadToken_ before dispatching any fn. Those two are the entire anonymous surface: the GAS sources contain no HtmlService call and no google.script.run, so the app serves no HTML client and there is no google.script.run surface for any other global to be reachable through. The residual risk is an ingest token leaking, which is why they are per-source and revocable one connector at a time (docs/ingest-token-cutover.md). Revisit if the app ever starts serving an HtmlService page, if a new doPost/doGet branch is added ahead of its auth call, or if the /exec URL is shared beyond the connectors.",
+      "accepted_by": "Jake",
+      "accepted_at": "2026-09-07",
+      "expires": "2026-11-06"
+    }
+  ]
+}
