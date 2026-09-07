@@ -149,11 +149,23 @@ plan at `C:/Users/mioja/.claude/plans/graceful-brewing-piglet.md`:
 - [ ] Clean up the **253 redundant `_archive` rows** (113 invoices, up to 7
       copies each) — must happen before any archive-aware repair of the SPLIT
       weeks below.
-- [ ] Raise or paginate past `INVOICE_PAGE_LIMIT = 40` — Ordermentum history
-      is silently cut at ~1000 invoices/venue (`2023-05-29` is where the
-      window ran out, not where trading began). **Still firing 2026-09-07:**
-      supplier `b180d945` at venue `73cb4dc6` reported 60 pages against the
-      limit of 40 — 1000 read, oldest skipped, on every run.
+- [x] **CLOSED (8b1f1bf), 2026-09-07:** Raise or paginate past
+      `INVOICE_PAGE_LIMIT = 40`. Pagination was never the bug (the connector
+      already followed every page); the cap was. Raised 40 → 60 and a breach
+      now raises `PageLimitBreachError` from `run()` *after* the rows read have
+      been POSTed — non-zero exit, no data lost, fails every run until dealt
+      with, instead of a `print` nobody reads in an unattended job.
+- [ ] **Re-measure `INVOICE_PAGE_LIMIT` headroom — the 60 was justified on a
+      stale number.** 8b1f1bf's message calls 60 "3.3x the largest measured
+      history: Tuga North at 18 pages", but the item it closed had already
+      recorded supplier `b180d945` at venue `73cb4dc6` (Leible York) reporting
+      **60 pages**. Real headroom is therefore ~1.0x, not 3.3x: the guard is
+      `total_pages > INVOICE_PAGE_LIMIT`, so 60 pages passes by exactly one
+      page and that venue's history is complete today — but page 61 breaches
+      and the nightly run starts failing. Action: re-measure max `totalPages`
+      across all supplier+venue pairs (`--list-venues` first — note there are
+      two North Sydney accounts and one is dead), then set the cap from the
+      real maximum and correct the comment at `connectors/playwright/ordermentum.py:88-102`.
 - [ ] The **24 SPLIT weeks — $92,885.74** — still NOT repairable by
       `weeklySummarize` (reads `Suppliers` only, would understate them);
       needs an archive-aware aggregate, blocked on the `_archive` cleanup above.
