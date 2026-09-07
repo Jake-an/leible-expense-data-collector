@@ -363,11 +363,11 @@ truncated the 2026-08-14 harvest at 4 of 8 PDFs.
       - `resetMayersUnparseableMemo()` is a zero-arg editor escape hatch.
       - 33 new tests; this is the first coverage `mayersDailyPull` has ever had
         (`global.GmailApp` was `{}`). Suite 1145 passed / 0 failed.
-- [ ] **Latent, same defect class, NOT fixed:** `roastery_email.gs` has the identical
-      `if (threadParsed > 0)` gate and shares `extractPdfText_`. It is **not leaking
-      today** — its source label `roastery/invoices` does not exist in the mailbox, so
-      its search returns nothing and the connector is dormant. It will leak the moment
-      roastery goes live with any non-invoice attachment. Effort: S (port the memo).
+- [x] ~~**Latent, same defect class, NOT fixed:** `roastery_email.gs` has the identical
+      `if (threadParsed > 0)` gate~~ ✅ **PORTED 2026-09-07** (`db41856`, batch A) —
+      `roasteryLoadUnparseable_` + the memo now split transient OCR failures from
+      deterministic parse failures, so a permanently-unparseable attachment is memoed
+      instead of re-OCR'd every run. Entry was stale as of this close-out; corrected.
 
 ### Order-app pulls — live bring-up (Jake + Claude, after phase merge)
 Code (branch `feat-orderapp-pulls`, phase `orderapp-pulls`) is merged and unit-tested
