@@ -589,6 +589,23 @@ class BaseConnector:
                     f"Nothing was written."
                 )
             raise IngestError(body.get("message", "unknown ingest error"))
+        # A within-batch dedup-key collision is DATA LOSS, not dedup: the hub
+        # drops the second row for a key without ever comparing or summing it,
+        # so a row this connector sent is nowhere on the Sheet. `rowsAdded`
+        # and `duplicatesSkipped` read identically whether the skip was
+        # harmless (the row was already stored, unchanged) or lossy, which is
+        # why the hub reports the lossy half separately. Warn rather than
+        # raise: the rest of the batch DID land, and failing the run would
+        # only re-send the same colliding refs.
+        dropped = body.get("collisionsDropped", 0)
+        if dropped:
+            print(
+                f"[{self.NAME}] WARNING: the hub dropped {dropped} row(s) as within-batch "
+                f"dedup-key collisions (source+invoice_ref repeated in this batch). "
+                f"Those rows were NOT written and NOT summed into the surviving row. "
+                f"Check the scrape for a repeated invoice_ref before trusting this week's total.",
+                file=sys.stderr,
+            )
         return body
 
     def mark_blocked(self, reason: str) -> None:

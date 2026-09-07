@@ -344,6 +344,55 @@ def test_post_returns_body_on_result_ok(monkeypatch):
     assert result == {"result": "ok", "rowsAdded": 3}
 
 
+def test_post_warns_when_the_hub_reports_dropped_collisions(monkeypatch, capsys):
+    """collisionsDropped > 0 means rows this connector sent are nowhere on the
+    Sheet — the hub dropped a repeated dedup key without summing it. That is
+    data loss wearing dedup's clothes (duplicatesSkipped counts both), so it
+    must reach stderr rather than being swallowed by a result:'ok'."""
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    fake_resp = _FakePostResponse(
+        json_body={"result": "ok", "rowsAdded": 1, "duplicatesSkipped": 2, "collisionsDropped": 2}
+    )
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+    conn = _AutoLoginConnector()
+
+    result = conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    # The batch still succeeded — the surviving rows landed, so this warns.
+    assert result["result"] == "ok"
+    err = capsys.readouterr().err
+    assert "dropped 2 row(s)" in err
+    assert "NOT written" in err
+
+
+def test_post_is_silent_when_no_collisions_were_dropped(monkeypatch, capsys):
+    """A warning that fires on every run is a warning nobody reads. A plain
+    duplicatesSkipped (the row was already stored, unchanged) is NOT loss."""
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    fake_resp = _FakePostResponse(
+        json_body={"result": "ok", "rowsAdded": 0, "duplicatesSkipped": 5, "collisionsDropped": 0}
+    )
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+    conn = _AutoLoginConnector()
+
+    conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])
+
+    assert "dropped" not in capsys.readouterr().err
+
+
+def test_post_tolerates_a_hub_that_omits_collisions_dropped(monkeypatch, capsys):
+    """The field is absent on the ShopSpend response shape (append-only path,
+    no upsert), and on any deployment older than this change. Absent must read
+    as 'no collisions', not as a crash."""
+    monkeypatch.setattr(b, "get_credential", lambda name: "tok")
+    fake_resp = _FakePostResponse(json_body={"result": "ok", "rowsAdded": 1})
+    monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
+    conn = _AutoLoginConnector()
+
+    assert conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])["result"] == "ok"
+    assert "dropped" not in capsys.readouterr().err
+
+
 def test_post_raises_ingest_error_on_result_error(monkeypatch):
     # Stub the credential explicitly. These used to resolve it from the
     # developer's real .env, so they silently depended on this machine's

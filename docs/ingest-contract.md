@@ -171,8 +171,27 @@ rejected before rows are validated.
 Success:
 
 ```json
-{ "result": "ok", "rowsAdded": 1, "rowsUpdated": 0, "duplicatesSkipped": 0 }
+{ "result": "ok", "rowsAdded": 1, "rowsUpdated": 0, "duplicatesSkipped": 0, "collisionsDropped": 0 }
 ```
+
+**`collisionsDropped` is a DATA-LOSS counter, not a dedup counter** (added
+2026-09-07). `duplicatesSkipped` counts two different things and could not
+distinguish them:
+
+- the row's dedup key was already on the Sheet with an identical amount —
+  nothing lost, this is dedup working;
+- the row's dedup key recurred **within this same POST**. `upsertRows_` drops
+  the second occurrence with no amount comparison and never sums it, so if the
+  two rows were genuinely different money the difference is nowhere on the
+  Sheet and nowhere in the total.
+
+`collisionsDropped` counts only the second. A non-zero value means rows you
+sent are not stored: check the batch for a repeated `invoice_ref` /
+`order_ref` before trusting the period's total. It is always present on the
+`Suppliers` and `Revenue` paths (`0` when clean, so a poster can assert on it
+unconditionally) and absent on the `shopspend` response, which is append-only
+and never upserts. `BaseConnector.post` warns on stderr when it is non-zero;
+GAS logs one line per dropped row in the execution log.
 
 Validation failure (payload rejected, nothing written):
 

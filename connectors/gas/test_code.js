@@ -171,6 +171,10 @@ function makeSheet(headers, name, globalWriteLog) {
     getRange: (row, col, numRows, numCols) => makeRangeChain(row, col, numRows, numCols),
     getRangeCalls: () => rangeCalls.slice(),
     getLastRow: () => rows.length,
+    // Real Sheet#getName. The mock omitted it, so any production code that
+    // names the tab it is writing to (e.g. upsertRows_'s collision log)
+    // blew up in the suite while working fine in GAS.
+    getName: () => name,
     getWriteCalls: () => writeCalls.slice(),
     clearWriteCalls: () => writeCalls.splice(0),
     setFrozenRows: (n) => { frozenRowsCalls.push(n); },
@@ -730,11 +734,22 @@ freshSheets();
     { date: '2026-06-16', total: 999, invoice_ref: 'A1' }, // dup key A1 within batch
   ];
   const r1 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
-  eq('batch of 3 with 1 dup → 2 added, 1 skipped', r1,
-    { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1, updates: [], archivedSkipped: 0 });
+  // The 'dup' here is a WITHIN-BATCH collision: row 2 ($999, ref A1) is
+  // dropped without ever being compared to row 0 ($100, ref A1). It now says
+  // so — duplicatesSkipped alone could not tell this from harmless dedup.
+  eq('batch of 3 with 1 dup → 2 added, 1 skipped (and the drop is reported)', r1,
+    { rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 1, unchangedSkipped: 0,
+      collisions: [{ key: 'kent_paper||a1', index: 2, amount: 999 }],
+      updates: [], archivedSkipped: 0 });
   const r2 = ingestSupplierRows('kent_paper', batch, 'TS', sheet);
+  // Same batch again: 2 genuinely-unchanged sheet rows + the same 1 collision.
+  // The old flat duplicatesSkipped:3 hid that split entirely.
   eq('re-ingest same batch → 0 added (all dup vs sheet)', r2,
-    { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3, updates: [], archivedSkipped: 0 });
+    { rowsAdded: 0, rowsUpdated: 0, duplicatesSkipped: 3, unchangedSkipped: 2,
+      collisions: [{ key: 'kent_paper||a1', index: 2, amount: 999 }],
+      updates: [], archivedSkipped: 0 });
+  eq('duplicatesSkipped is exactly unchangedSkipped + collisions.length',
+    r2.duplicatesSkipped, r2.unchangedSkipped + r2.collisions.length);
 })();
 
 console.log('doPost');
@@ -744,7 +759,7 @@ eq('happy path → ok, rowsAdded 2',
     { date: '2026-06-15', total: 50, invoice_ref: 'B1' },
     { date: '2026-06-15', total: 60, invoice_ref: 'B2' },
   ] }),
-  { result: 'ok', rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 0 });
+  { result: 'ok', rowsAdded: 2, rowsUpdated: 0, duplicatesSkipped: 0, collisionsDropped: 0 });
 
 freshSheets();
 eq('batch with duplicate invoice_ref → 1 added, 1 skipped',
@@ -752,7 +767,10 @@ eq('batch with duplicate invoice_ref → 1 added, 1 skipped',
     { date: '2026-06-15', total: 50, invoice_ref: 'C1' },
     { date: '2026-06-99', total: 77, invoice_ref: 'C1' },
   ] }),
-  { result: 'ok', rowsAdded: 1, rowsUpdated: 0, duplicatesSkipped: 1 });
+  // collisionsDropped:1 is the connector's ONLY signal that row 1 ($77) is
+  // nowhere on the Sheet — duplicatesSkipped:1 reads identically when the
+  // row was a harmless re-send of something already stored.
+  { result: 'ok', rowsAdded: 1, rowsUpdated: 0, duplicatesSkipped: 1, collisionsDropped: 1 });
 
 freshSheets();
 check('missing total → result error',
@@ -2650,7 +2668,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     var second = normalizeSalesRow_('2026-07-01', 'York', 150, 'square', 'T2', 'Cafe');
     var res = upsertRows_(sheet, [second], SALES_KEY_COLS, 2, 4);
     eq('upsert across a Date-valued key column still matches (updates, not appends)',
-      res, { rowsAdded: 0, rowsUpdated: 1, duplicatesSkipped: 0,
+      res, { rowsAdded: 0, rowsUpdated: 1, duplicatesSkipped: 0, unchangedSkipped: 0,
+        collisions: [],
         updates: [{ key: rowKey_(second, SALES_KEY_COLS), from: 100, to: 150 }] });
     eq('sheet row count unchanged', sheet._rows.length, 2);
     eq('amount updated via the Date-keyed match', sheet.getDataRange().getValues()[1][2], 150);
@@ -2820,6 +2839,163 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     eq('doPost: own-department payload -> rowsAdded 1', okRes.rowsAdded, 1);
     eq('doPost: the row landed as Cafe',
       currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1][7], 'Cafe');
+  })();
+})();
+
+/* ------------------------------------------------------------------ *
+ * upsertRows_ reports within-batch key collisions instead of swallowing them
+ *
+ * duplicatesSkipped counted two different events under one name: a row whose
+ * key is already on the sheet with an identical amount (dedup working), and a
+ * row whose key recurs WITHIN the batch (dropped with no amount comparison,
+ * never summed — real money can vanish). A caller could not tell "true
+ * duplicate" from "data lost".
+ * ------------------------------------------------------------------ */
+
+(function testUpsertReportsWithinBatchCollisions() {
+  console.log('\nupsertRows_ — within-batch collisions are reportable:');
+
+  // THE DATA-LOSS CASE: same key, DIFFERENT amounts, in one batch. The second
+  // is dropped without comparison, so $200 is nowhere on the Sheet and
+  // nowhere in the total. Before this, the only trace was duplicatesSkipped:1
+  // — indistinguishable from a harmless re-send.
+  (function () {
+    freshSheets();
+    var sheet = ensureSheet(currentSS, 'Suppliers', SUPPLIERS_HEADERS);
+    var res = ingestSupplierRows('kent_paper', [
+      { date: '2026-06-15', total: 100, invoice_ref: 'DUP-1' },
+      { date: '2026-06-15', total: 200, invoice_ref: 'DUP-1' }
+    ], 'TS', sheet);
+
+    eq('only the first row is written', res.rowsAdded, 1);
+    eq('the drop is still counted in duplicatesSkipped (unchanged meaning)',
+      res.duplicatesSkipped, 1);
+    eq('...but NOT as an unchanged-existing skip', res.unchangedSkipped, 0);
+    eq('...it is reported as a collision', res.collisions.length, 1);
+    var col0 = res.collisions[0] || {};
+    eq('the collision names the dropped amount', col0.amount, 200);
+    eq('...and the batch index of the row that was dropped', col0.index, 1);
+    eq('...and the dedup key it collided on', col0.key, 'kent_paper||dup-1');
+
+    var rows = sheet.getDataRange().getValues();
+    eq('the sheet really is missing the money', rows.length, 2);
+    eq('...the surviving row is the FIRST amount, not a sum', rows[1][2], 100);
+  })();
+
+  // The other half of the old counter: a genuine unchanged duplicate against a
+  // row already on the sheet. Nothing lost, so nothing to report.
+  (function () {
+    freshSheets();
+    var sheet = ensureSheet(currentSS, 'Suppliers', SUPPLIERS_HEADERS);
+    ingestSupplierRows('kent_paper', [{ date: '2026-06-15', total: 100, invoice_ref: 'U-1' }], 'TS', sheet);
+    var res = ingestSupplierRows('kent_paper', [{ date: '2026-06-15', total: 100, invoice_ref: 'U-1' }], 'TS', sheet);
+
+    eq('re-sending an identical row adds nothing', res.rowsAdded, 0);
+    eq('...counted in duplicatesSkipped', res.duplicatesSkipped, 1);
+    eq('...as an unchanged-existing skip', res.unchangedSkipped, 1);
+    eq('...and reported as NO collision — this is dedup, not loss',
+      res.collisions.length, 0);
+  })();
+
+  // A batch mixing both, to prove the two counters genuinely separate rather
+  // than tracking each other.
+  (function () {
+    freshSheets();
+    var sheet = ensureSheet(currentSS, 'Suppliers', SUPPLIERS_HEADERS);
+    ingestSupplierRows('kent_paper', [{ date: '2026-06-15', total: 100, invoice_ref: 'M-1' }], 'TS', sheet);
+    var res = ingestSupplierRows('kent_paper', [
+      { date: '2026-06-15', total: 100, invoice_ref: 'M-1' },  // unchanged vs sheet
+      { date: '2026-06-15', total: 300, invoice_ref: 'M-2' },  // new
+      { date: '2026-06-16', total: 400, invoice_ref: 'M-2' },  // within-batch collision
+      { date: '2026-06-17', total: 500, invoice_ref: 'M-2' }   // and again
+    ], 'TS', sheet);
+
+    eq('mixed batch: 1 appended', res.rowsAdded, 1);
+    eq('mixed batch: duplicatesSkipped is still the TOTAL', res.duplicatesSkipped, 3);
+    eq('mixed batch: 1 of them was an unchanged existing row', res.unchangedSkipped, 1);
+    eq('mixed batch: 2 of them were dropped collisions', res.collisions.length, 2);
+    eq('the invariant holds: total = unchanged + collisions',
+      res.duplicatesSkipped, res.unchangedSkipped + res.collisions.length);
+    eq('collisions is always an array, never undefined',
+      Array.isArray(res.collisions), true);
+    eq('both dropped amounts are named',
+      res.collisions.map(function (c) { return c.amount; }).join(','), '400,500');
+  })();
+
+  // Every collision is logged individually. One blob per run would be
+  // truncated in the GAS editor log — the same reason the drift audit emits a
+  // line per item.
+  (function () {
+    freshSheets();
+    var sheet = ensureSheet(currentSS, 'Suppliers', SUPPLIERS_HEADERS);
+    clearLoggedMessages();
+    ingestSupplierRows('kent_paper', [
+      { date: '2026-06-15', total: 10, invoice_ref: 'L-1' },
+      { date: '2026-06-15', total: 20, invoice_ref: 'L-1' },
+      { date: '2026-06-15', total: 30, invoice_ref: 'L-1' }
+    ], 'TS', sheet);
+    var lines = lastLoggedMessages().filter(function (m) {
+      return m.indexOf('within-batch key collision') !== -1;
+    });
+    eq('one log line per collision, not one blob', lines.length, 2);
+    var line0 = lines[0] || '';
+    check('the line names the tab it happened on', line0.indexOf('Suppliers') !== -1);
+    check('the line names the key', line0.indexOf('kent_paper||l-1') !== -1);
+    check('the line says the money can be lost', line0.indexOf('lost') !== -1);
+
+    // And a clean batch logs nothing — a warning that fires on every run is
+    // a warning nobody reads.
+    clearLoggedMessages();
+    ingestSupplierRows('kent_paper', [
+      { date: '2026-06-15', total: 40, invoice_ref: 'L-2' }
+    ], 'TS', sheet);
+    eq('a collision-free batch logs no collision line',
+      lastLoggedMessages().filter(function (m) {
+        return m.indexOf('within-batch key collision') !== -1;
+      }).length, 0);
+  })();
+
+  // The Revenue path shares upsertRows_, so it reports collisions too.
+  (function () {
+    freshSheets();
+    var revSheet = ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    var res = ingestRevenueRows('coffee_order_app', [
+      { date: '2026-08-03', channel: 'wholesale', customer: 'Cafe X', amount: 340, order_ref: 'R-1' },
+      { date: '2026-08-03', channel: 'wholesale', customer: 'Cafe X', amount: 55, order_ref: 'R-1' }
+    ], 'TS', revSheet);
+    eq('revenue: 1 row written', res.rowsAdded, 1);
+    eq('revenue: the second is reported as a collision', res.collisions.length, 1);
+    eq('revenue: with the dropped amount', (res.collisions[0] || {}).amount, 55);
+  })();
+
+  // doPost surfaces the count to the connector — the ONLY signal an external
+  // poster gets that a row it sent is nowhere on the Sheet.
+  (function () {
+    freshSheets();
+    var lost = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
+      { date: '2026-06-15', total: 50, invoice_ref: 'P-1' },
+      { date: '2026-06-15', total: 60, invoice_ref: 'P-1' }
+    ] });
+    eq('doPost: still ok (the write itself succeeded)', lost.result, 'ok');
+    eq('doPost: duplicatesSkipped keeps its old value', lost.duplicatesSkipped, 1);
+    eq('doPost: collisionsDropped tells the poster a row was lost',
+      lost.collisionsDropped, 1);
+
+    // A clean POST reports 0 rather than omitting the field, so a poster can
+    // assert on it unconditionally.
+    freshSheets();
+    var clean = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
+      { date: '2026-06-15', total: 50, invoice_ref: 'P-2' }
+    ] });
+    eq('doPost: a clean batch reports collisionsDropped 0', clean.collisionsDropped, 0);
+
+    // A dedup-only POST (same row twice, across two POSTs) reports 0 — this is
+    // the distinction the finding was about.
+    var again = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
+      { date: '2026-06-15', total: 50, invoice_ref: 'P-2' }
+    ] });
+    eq('doPost: a true duplicate is skipped...', again.duplicatesSkipped, 1);
+    eq('...and reports NO collision', again.collisionsDropped, 0);
   })();
 })();
 

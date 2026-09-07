@@ -350,7 +350,9 @@ function withScriptLock_(fn) {
  * `kind` defaults to 'suppliers' (back-compat: existing connectors omit it).
  *   'suppliers' rows → Suppliers tab (dedup+upsert on source+invoice_ref)
  *   'revenue'   rows → Revenue tab   (dedup+upsert on source+order_ref)
- * @returns {ContentService.TextOutput} JSON { result, rowsAdded, rowsUpdated, duplicatesSkipped }
+ * @returns {ContentService.TextOutput} JSON { result, rowsAdded, rowsUpdated,
+ *   duplicatesSkipped, collisionsDropped } — collisionsDropped is the data-loss
+ *   half of duplicatesSkipped (see upsertRows_), absent on the shopspend path.
  */
 function doPost(e) {
   try {
@@ -424,6 +426,13 @@ function doPost(e) {
       rowsUpdated: res.rowsUpdated,
       duplicatesSkipped: res.duplicatesSkipped
     };
+    // A within-batch key collision is data LOSS, not dedup: the second row is
+    // dropped without ever being compared or summed. duplicatesSkipped alone
+    // cannot distinguish the two, so the connector is told the count outright
+    // — the only signal it gets that a row it sent is nowhere on the Sheet.
+    // Additive and always present, so a poster can assert on it; ShopSpend has
+    // its own append-only path and reports no collisions.
+    if (res.collisions) response.collisionsDropped = res.collisions.length;
     if (kind === 'shopspend') {
       response.tombstonesWritten = res.tombstonesWritten;
       response.tombstonesSkipped = res.tombstonesSkipped;
@@ -868,11 +877,36 @@ function buildKeySet_(sheet, keyCols) {
  * - Existing sheet key, amount changed → update amountCol + stampCol in
  *   place (getRange().setValue()), rowsUpdated++.
  * - A key repeated within the same batch (after being resolved once) →
- *   duplicatesSkipped++, matching the old within-batch dedup behaviour.
+ *   duplicatesSkipped++ AND recorded in `collisions`, matching the old
+ *   within-batch dedup behaviour but no longer silently.
  * `updates` records only rows actually rewritten (amount genuinely changed) —
  * a new row or an unchanged-amount duplicate never appears in it. This is
  * what the correction alert (PRD-12) is driven from.
- * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number, updates:Array<{key:string,from:number,to:number}>}}
+ *
+ * `duplicatesSkipped` counts TWO different events, and the caller could not
+ * tell them apart:
+ *
+ *   unchangedSkipped — the key is already on the sheet with an identical
+ *     amount. Nothing was lost; this is dedup working. Every re-pull of a
+ *     settled week is full of these.
+ *   collisions      — the key recurs WITHIN this batch. The second row is
+ *     dropped with no amount comparison and is never summed, so if the two
+ *     rows were genuinely different money (two same-day invoices that share a
+ *     ref, a producer paging the same order twice), that money is LOST and
+ *     nothing on the sheet records it.
+ *
+ * The second is a data-loss event wearing the first's clothes. `collisions`
+ * now names the dropped rows so a caller can react, and a non-empty one is
+ * logged here so the GAS-native callers that never inspect this return
+ * (mayers, recurring, roastery_email, the drift repair) still surface it.
+ * `duplicatesSkipped` keeps its old meaning — the TOTAL — so no existing
+ * consumer changes behaviour; the invariant
+ * `duplicatesSkipped === unchangedSkipped + collisions.length` is asserted in
+ * the tests.
+ *
+ * @returns {{rowsAdded:number, rowsUpdated:number, duplicatesSkipped:number,
+ *   unchangedSkipped:number, collisions:Array<{key:string,index:number,amount:*}>,
+ *   updates:Array<{key:string,from:number,to:number}>}}
  */
 function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
   var values = sheet.getDataRange().getValues();
@@ -883,14 +917,23 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
 
   var seenInBatch = {};
   var toAppend = [];
-  var rowsUpdated = 0, duplicatesSkipped = 0;
+  var rowsUpdated = 0, duplicatesSkipped = 0, unchangedSkipped = 0;
   var updates = [];
+  var collisions = [];
 
   for (var i = 0; i < normalizedRows.length; i++) {
     var row = normalizedRows[i];
     var key = rowKey_(row, keyCols);
 
-    if (seenInBatch[key]) { duplicatesSkipped++; continue; }
+    // Within-batch collision: dropped WITHOUT an amount comparison, so unlike
+    // the unchanged-amount skip below this can silently lose real money.
+    // Recorded rather than merely counted — the caller needs the key and the
+    // amount to tell a harmless re-send from a genuine second invoice.
+    if (seenInBatch[key]) {
+      duplicatesSkipped++;
+      collisions.push({ key: key, index: i, amount: row[amountCol] });
+      continue;
+    }
 
     var existingRowNum = idx[key];
     if (existingRowNum === undefined) {
@@ -903,7 +946,7 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
     var existingAmount = Number(values[existingRowNum - 1][amountCol]);
     var newAmount = Number(row[amountCol]);
 
-    if (existingAmount === newAmount) { duplicatesSkipped++; continue; }
+    if (existingAmount === newAmount) { duplicatesSkipped++; unchangedSkipped++; continue; }
 
     sheet.getRange(existingRowNum, amountCol + 1).setValue(newAmount);
     if (stampCol !== undefined && stampCol !== null) {
@@ -915,7 +958,23 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
 
   if (toAppend.length) appendNewRows_(sheet, toAppend);
 
-  return { rowsAdded: toAppend.length, rowsUpdated: rowsUpdated, duplicatesSkipped: duplicatesSkipped, updates: updates };
+  // One line per collision, not one blob: an approval gate or a scan of the
+  // execution log has to be able to read them individually.
+  for (var c = 0; c < collisions.length; c++) {
+    Logger.log('upsertRows_: within-batch key collision on ' + sheet.getName() +
+      ' — key=' + collisions[c].key + ' row ' + collisions[c].index +
+      ' (amount=' + collisions[c].amount + ') dropped WITHOUT summing; ' +
+      'if this is a second genuine row for that key the money is lost');
+  }
+
+  return {
+    rowsAdded: toAppend.length,
+    rowsUpdated: rowsUpdated,
+    duplicatesSkipped: duplicatesSkipped,
+    unchangedSkipped: unchangedSkipped,
+    collisions: collisions,
+    updates: updates
+  };
 }
 
 /* ------------------------------------------------------------------ *
