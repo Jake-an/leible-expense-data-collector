@@ -389,7 +389,9 @@ def test_post_tolerates_a_hub_that_omits_collisions_dropped(monkeypatch, capsys)
     monkeypatch.setattr(b.requests, "post", lambda *a, **kw: fake_resp)
     conn = _AutoLoginConnector()
 
-    assert conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])["result"] == "ok"
+    assert (
+        conn.post([{"date": "2026-07-01", "total": 1.0, "invoice_ref": "INV-1"}])["result"] == "ok"
+    )
     assert "dropped" not in capsys.readouterr().err
 
 
