@@ -240,6 +240,29 @@ new appended row (see `docs/schema.md`'s append-only rule).
 | `department` | string | `Cafe` or `Roastery` |
 | `kind` | string | `spend` (from `Suppliers`) or `revenue` (from `Revenue`) |
 
+**These columns are a WHITELIST, not whatever the tab happens to hold** (from
+2026-09-07). `doGet` reads the LIVE header row, and it used to map every
+column it found into the JSON — so any column later added to `Summary` was
+published to every `API_READ_TOKEN` holder without anyone deciding to publish
+it. `summaryDataToObjects_` now serves only the names on
+`SUMMARY_PUBLIC_FIELDS_` (`connectors/gas/Code.gs`) and drops the rest,
+whatever their position in the header row.
+
+Consequences:
+
+- **Adding a column to `Summary` does NOT expose it.** A new column is private
+  until someone adds it to `SUMMARY_PUBLIC_FIELDS_` and this table — a
+  reviewed one-line change plus a deploy, the same shape as adding an ingest
+  source.
+- **Nothing a current consumer reads changed.** The whitelist is exactly the
+  eight columns above plus `total_spend`, which is on it twice over: as the
+  literal header of a pre-migration `Summary` tab, and as the alias of `total`
+  added after mapping. `LEIBLE_GM_COST_MONITOR` reads `location`, `supplier`,
+  `total`/`total_spend`, `week_start`, `summarized_at` and `kind`; all remain
+  served.
+- The whitelist is deliberately **not derived** from `SUMMARY_HEADERS` —
+  deriving it would restore the auto-expose behaviour it exists to remove.
+
 ## Weekly trigger
 
 `weeklySummarize()` runs every Monday at 4am AEST (install via `installWeeklySummarizeTrigger()` in the editor). Each run:

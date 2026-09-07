@@ -3000,6 +3000,118 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 })();
 
 /* ------------------------------------------------------------------ *
+ * doGet serves a WHITELIST of Summary columns, not whatever the tab holds
+ *
+ * summaryDataToObjects_ mapped the LIVE header row generically, so any column
+ * later added to Summary was published to every API_READ_TOKEN holder without
+ * anyone deciding to publish it. The default is now drop.
+ * ------------------------------------------------------------------ */
+
+(function testDoGetSummaryFieldWhitelist() {
+  console.log('\ndoGet — Summary column whitelist:');
+
+  function seedSummary(headers, rows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = { API_READ_TOKEN: 'tok' };
+    var s = currentSS.insertSheet('Summary');
+    s.appendRow(headers);
+    for (var i = 0; i < rows.length; i++) s.appendRow(rows[i]);
+    return s;
+  }
+  function getRows(params) {
+    var p = Object.assign({ token: 'tok', from: '2026-06-15', to: '2026-06-21' }, params || {});
+    return JSON.parse(doGet({ parameter: p }).getContent());
+  }
+
+  // The whitelist may not name a column that does not exist — that would be a
+  // typo silently doing nothing, which is how a whitelist rots into a no-op.
+  (function () {
+    var allowed = SUMMARY_HEADERS.concat(['total_spend']);
+    var strays = SUMMARY_PUBLIC_FIELDS_.filter(function (f) { return allowed.indexOf(f) === -1; });
+    eq('every whitelisted field is a real Summary column (or the total_spend alias)',
+      strays.join(','), '');
+    // ...and the fields docs/api.md promises, plus the one the external
+    // GM cost monitor keys on, are all actually served.
+    var promised = ['week_start', 'week_end', 'supplier', 'location', 'total',
+      'summarized_at', 'department', 'kind'];
+    var missing = promised.filter(function (f) { return SUMMARY_PUBLIC_FIELDS_.indexOf(f) === -1; });
+    eq('every field docs/api.md documents is whitelisted', missing.join(','), '');
+  })();
+
+  // The documented shape still comes back in full.
+  (function () {
+    seedSummary(SUMMARY_HEADERS, [
+      ['2026-06-15', '2026-06-21', 'Butterboy', 'York St', 240.5, 'TS', 'Cafe', 'spend']
+    ]);
+    var got = getRows();
+    eq('one row served', got.count, 1);
+    var row = got.rows[0];
+    eq('served keys are exactly the documented set',
+      Object.keys(row).sort().join(','),
+      'department,kind,location,summarized_at,supplier,total,total_spend,week_end,week_start');
+    eq('location survives — LEIBLE_GM_COST_MONITOR keys on it', row.location, 'York St');
+    eq('total survives', row.total, 240.5);
+    eq('the total_spend alias still lands', row.total_spend, 240.5);
+    eq('kind survives', row.kind, 'spend');
+    eq('department survives', row.department, 'Cafe');
+  })();
+
+  // THE FINDING: a column added to the tab is NOT published to a token holder.
+  (function () {
+    seedSummary(SUMMARY_HEADERS.concat(['margin_pct', 'internal_note']), [
+      ['2026-06-15', '2026-06-21', 'Butterboy', 'York St', 240.5, 'TS', 'Cafe', 'spend',
+        0.62, 'renegotiate before Q4']
+    ]);
+    var row = getRows().rows[0];
+    eq('an unlisted column is not served', row.margin_pct, undefined);
+    eq('...nor the second one', row.internal_note, undefined);
+    check('...and its VALUE appears nowhere in the response body',
+      JSON.stringify(getRows()).indexOf('renegotiate') === -1);
+    eq('the whitelisted columns are unaffected by its presence', row.total, 240.5);
+    eq('...including ones positioned before it', row.week_start, '2026-06-15');
+  })();
+
+  // A column inserted in the MIDDLE must not shift the mapping — the mapper
+  // resolves each whitelisted name to its own column index, it does not assume
+  // whitelist order matches sheet order.
+  (function () {
+    seedSummary(
+      ['week_start', 'internal_note', 'week_end', 'supplier', 'location', 'total',
+        'summarized_at', 'department', 'kind'],
+      [['2026-06-15', 'secret', '2026-06-21', 'Butterboy', 'York St', 240.5, 'TS', 'Cafe', 'spend']]
+    );
+    var row = getRows().rows[0];
+    eq('a mid-table unlisted column does not shift the others', row.week_end, '2026-06-21');
+    eq('...supplier still reads from its own column', row.supplier, 'Butterboy');
+    eq('...and the unlisted one is still dropped', row.internal_note, undefined);
+  })();
+
+  // An UNMIGRATED hub's header row literally says 'total_spend' (ensureSheet
+  // only writes headers when the tab is missing, so the constant does not
+  // migrate a live tab). Dropping that column would blank the figure.
+  (function () {
+    seedSummary(
+      ['week_start', 'week_end', 'supplier', 'location', 'total_spend', 'summarized_at'],
+      [['2026-06-15', '2026-06-21', 'Butterboy', 'York St', 240.5, 'TS']]
+    );
+    var row = getRows().rows[0];
+    eq('a pre-migration total_spend column is still served', row.total_spend, 240.5);
+    eq('...and no phantom total is invented', row.total, undefined);
+  })();
+
+  // Date coercion still applies to whitelisted columns (the Sheet hands back
+  // Date objects; toISOString would shift AEST midnight back a day).
+  (function () {
+    var s = seedSummary(SUMMARY_HEADERS, []);
+    s.appendRow([new Date(2026, 5, 15), new Date(2026, 5, 21), 'Butterboy', 'York St',
+      240.5, 'TS', 'Cafe', 'spend']);
+    var row = getRows().rows[0];
+    eq('Date-valued week_start is coerced to a local YYYY-MM-DD', row.week_start, '2026-06-15');
+    eq('...and week_end too', row.week_end, '2026-06-21');
+  })();
+})();
+
+/* ------------------------------------------------------------------ *
  * Step 1 — upsertRows_ reports which rows it actually rewrote
  *
  * PRD-12: the correction alert must be driven by what upsertRows_ actually

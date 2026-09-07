@@ -27,6 +27,35 @@ var LABOUR_TAB = 'Labour';
 var REVENUE_TAB = 'Revenue';
 
 var SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', 'total', 'summarized_at', 'department', 'kind'];
+
+/**
+ * The ONLY Summary columns doGet is allowed to serve.
+ *
+ * summaryDataToObjects_ used to map the LIVE header row generically, so every
+ * column the tab happens to carry was published to anyone holding
+ * API_READ_TOKEN — including one nobody meant to expose. That made adding a
+ * Summary column an implicit publishing decision made by whoever added it,
+ * which is backwards: a new column should be private until someone decides
+ * otherwise. Now an unlisted header is dropped, so the default is fail-closed
+ * and exposure is a reviewed one-line edit here.
+ *
+ * It is deliberately NOT derived from SUMMARY_HEADERS — deriving it would
+ * re-create exactly the auto-expose behaviour being removed.
+ *
+ * Every entry is already documented in docs/api.md's response table, so this
+ * changes nothing a current consumer can see. Do not remove one without
+ * checking that table AND LEIBLE_GM_COST_MONITOR, an external consumer that
+ * reads this endpoint every Monday 08:00 and keys on `location` (and on
+ * `kind`, `department`, `week_start`, `total`).
+ *
+ * 'total_spend' is here for the header itself, not the alias: an UNMIGRATED
+ * Summary tab still has a literal 'total_spend' column and doGet reads the
+ * live header row, not this constant (ensureSheet only writes headers when the
+ * tab is missing). Dropping it would break a pre-migration hub. The alias of
+ * the same name is added after this mapping, in doGetSummary_.
+ */
+var SUMMARY_PUBLIC_FIELDS_ = ['week_start', 'week_end', 'supplier', 'location', 'total',
+  'total_spend', 'summarized_at', 'department', 'kind'];
 var LABOUR_HEADERS = ['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at', 'department'];
 var REVENUE_HEADERS = ['date', 'department', 'channel', 'customer', 'amount', 'order_ref', 'source', 'extracted_at'];
 
@@ -2011,8 +2040,9 @@ function doGetSummary_(params) {
       rows = filterSummaryByDateRange_(rows, from, to);
     }
 
-    // department/kind are already emitted by summaryDataToObjects_ (it maps
-    // every header generically). Keep the JSON field name 'supplier' — on
+    // department/kind are already emitted by summaryDataToObjects_ (both are on
+    // SUMMARY_PUBLIC_FIELDS_; it no longer maps every header generically).
+    // Keep the JSON field name 'supplier' — on
     // kind='revenue' rows it holds the SOURCE when location is 'online' and the
     // customer name on every other channel (see aggregateSupplierRows_) — and
     // keep 'total_spend' as a one-release alias for 'total' so existing
@@ -2887,15 +2917,29 @@ function healWeeks_(weeks) {
   };
 }
 
+/**
+ * Map Summary rows to JSON objects for doGet, keeping ONLY the columns on
+ * SUMMARY_PUBLIC_FIELDS_. A column the whitelist does not name is dropped
+ * however the live header row spells it — see that constant for why the
+ * default is drop rather than publish.
+ */
 function summaryDataToObjects_(values) {
   var headers = values[0];
+  // Resolve the whitelist against THIS sheet's actual header row once, rather
+  // than per row per column.
+  var publish = [];
+  for (var h = 0; h < headers.length; h++) {
+    var name = String(headers[h]);
+    if (SUMMARY_PUBLIC_FIELDS_.indexOf(name) !== -1) publish.push({ col: h, name: name });
+  }
+
   var result = [];
   for (var r = 1; r < values.length; r++) {
     var obj = {};
-    for (var c = 0; c < headers.length; c++) {
-      var val = values[r][c];
+    for (var p = 0; p < publish.length; p++) {
+      var val = values[r][publish[p].col];
       if (val instanceof Date) val = coerceDateStr_(val);
-      obj[headers[c]] = val;
+      obj[publish[p].name] = val;
     }
     result.push(obj);
   }
