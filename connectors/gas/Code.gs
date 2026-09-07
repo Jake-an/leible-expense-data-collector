@@ -220,6 +220,56 @@ var INGEST_SOURCES_ = {
 };
 
 /**
+ * The DEPARTMENT half of the same allowlist: source -> the one department
+ * that source's rows may claim.
+ *
+ * checkIngestToken_ binds a token to the `source` it may write; nothing bound
+ * the `department` it may write. `department` was only enum-checked against
+ * DEPARTMENTS, so any token holder could tag its rows with the OTHER
+ * department: a cafe supplier portal could post its invoices as 'Roastery'
+ * spend and move cost between the two P&Ls the weekly rollup reports on
+ * (Summary is keyed week_start||department||kind||supplier||location, and
+ * doGet's &department filter is what LEIBLE_GM_COST_MONITOR reads). One
+ * compromised or buggy connector should not be able to reach across the
+ * department boundary; the source it authenticated as decides the department.
+ *
+ * Value semantics:
+ *  - a DEPARTMENTS string — rows from this source may carry that department
+ *    explicitly, or omit it (omission still defaults to DEFAULT_DEPARTMENT in
+ *    the normalizers, exactly as before).
+ *  - null — this source's rows carry no department AT ALL. The ShopSpend tab
+ *    has no department column (SHOPSPEND_HEADERS), so a department on a
+ *    shopspend payload would be silently discarded; rejecting it is how the
+ *    sender finds out rather than assuming it landed.
+ *
+ * Every INGEST_SOURCES_ key MUST appear here — test_code.js asserts the two
+ * tables cover each other, so a new connector cannot be added token-first and
+ * silently arrive department-unbound (the SYMBOL_SCOPES blind spot: a gate
+ * that is missing an entry is not red, it is blind).
+ *
+ * GAS-native sources (square/mayers/greenbean/labour/shopify_orderapp/
+ * recurring) are deliberately ABSENT, the same as in INGEST_SOURCES_: they
+ * never reach doPost, so checkIngestToken_ refuses any POST claiming them
+ * before validateIngest_ runs. A source with no entry here is NOT bound, and
+ * the DEPARTMENTS enum check stands alone for it — which is only reachable by
+ * calling validateIngest_ directly, as the unit tests do.
+ *
+ * These are today's real routes, not a permanent judgement: kent_paper
+ * packaging or an ordermentum line could legitimately become Roastery spend.
+ * That is a one-line edit here plus a deploy — a reviewed change, which is the
+ * point.
+ */
+var INGEST_SOURCE_DEPARTMENTS_ = {
+  food_dairy_co: 'Cafe',
+  fresh_and_chill: 'Cafe',
+  kent_paper: 'Cafe',
+  ordermentum: 'Cafe',
+  shopspend: null,
+  'shopspend-backfill': null,
+  coffee_order_app: 'Roastery'
+};
+
+/**
  * The magnitude ceiling on any single ingested money value. Nothing this
  * business invoices or earns comes near $1M on one line, and the cap is what
  * stops a single POST (or a scraper reading a mangled cell) from swinging
@@ -484,9 +534,31 @@ function validateIngest_(body) {
     if (!r || typeof r !== 'object') return { ok: false, message: 'row ' + i + ' is not an object' };
     if (!r.date) return { ok: false, message: 'row ' + i + ' missing date' };
 
-    if (r.department !== undefined && r.department !== null && r.department !== '' &&
-        DEPARTMENTS.indexOf(String(r.department)) === -1) {
-      return { ok: false, message: 'row ' + i + ' invalid department: ' + r.department };
+    if (r.department !== undefined && r.department !== null && r.department !== '') {
+      if (DEPARTMENTS.indexOf(String(r.department)) === -1) {
+        return { ok: false, message: 'row ' + i + ' invalid department: ' + r.department };
+      }
+      // Enum-valid is not the same as authorized: the department must be the
+      // one THIS source is bound to (INGEST_SOURCE_DEPARTMENTS_). Without
+      // this, any token holder could post its rows into the other
+      // department's P&L. Omitting department is still fine — the normalizers
+      // default it — so this only rejects a source claiming a department that
+      // is not its own.
+      var deptBinding = ingestDepartmentFor_(body.source);
+      if (deptBinding.bound && deptBinding.department === null) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' sets department, but source ' + body.source +
+            ' writes no department column'
+        };
+      }
+      if (deptBinding.bound && String(r.department) !== deptBinding.department) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' department ' + r.department + ' is not permitted for source ' +
+            body.source + ' (bound to ' + deptBinding.department + ')'
+        };
+      }
     }
 
     if (kind === 'shopspend') {
@@ -1964,6 +2036,26 @@ function ingestTokenPropertyFor_(source) {
   if (typeof source !== 'string' || !source) return null;
   if (!Object.prototype.hasOwnProperty.call(INGEST_SOURCES_, source)) return null;
   return INGEST_SOURCES_[source];
+}
+
+/**
+ * Which department may `source`'s rows claim? The department counterpart of
+ * ingestTokenPropertyFor_, and hasOwnProperty-guarded for the same reason:
+ * a bare `INGEST_SOURCE_DEPARTMENTS_[source]` would answer for 'constructor'
+ * or 'toString' with something truthy off Object.prototype.
+ *
+ * @param {*} source the payload's claimed source
+ * @returns {{bound: boolean, department: (string|null)}}
+ *   bound=false — not a doPost ingest source, so no binding applies.
+ *   bound=true, department=<string> — rows may carry exactly that department.
+ *   bound=true, department=null — rows may carry no department at all.
+ */
+function ingestDepartmentFor_(source) {
+  if (typeof source !== 'string' || !source) return { bound: false, department: null };
+  if (!Object.prototype.hasOwnProperty.call(INGEST_SOURCE_DEPARTMENTS_, source)) {
+    return { bound: false, department: null };
+  }
+  return { bound: true, department: INGEST_SOURCE_DEPARTMENTS_[source] };
 }
 
 /**

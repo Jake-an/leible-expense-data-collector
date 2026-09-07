@@ -221,6 +221,44 @@ malformed and will fail again identically.
   Kitchen`. Since this is Roastery-sourced data, the app will realistically
   always send `department: 'Roastery'` explicitly rather than rely on the
   `Cafe` default — but the default exists and is honored if it's omitted.
+- **`department` is BOUND TO THE SOURCE, not merely enum-checked.** Tightened
+  2026-09-07. Passing the enum is not enough: the department must be the one
+  that source is bound to in `INGEST_SOURCE_DEPARTMENTS_`
+  (`connectors/gas/Code.gs`), the department half of the same allowlist
+  `checkIngestToken_` uses to bind a token to its `source`. Today's bindings:
+
+  | source | may claim |
+  |---|---|
+  | `food_dairy_co`, `fresh_and_chill`, `kent_paper`, `ordermentum` | `Cafe` |
+  | `coffee_order_app` | `Roastery` |
+  | `shopspend`, `shopspend-backfill` | *no department at all* |
+
+  Omitting `department` is unaffected and still defaults to
+  `DEFAULT_DEPARTMENT` (`Cafe`) in the normalizers — only an explicit claim is
+  checked. A crossed claim is rejected per row, e.g. `row 0 department
+  Roastery is not permitted for source food_dairy_co (bound to Cafe)`; a
+  shopspend payload carrying one is rejected with `row 0 sets department, but
+  source shopspend writes no department column` (the `ShopSpend` tab has no
+  such column, so the value would otherwise be silently discarded).
+
+  **Why:** a token proves which `source` a caller may claim, and said nothing
+  about which department. Since `Summary` is keyed
+  `week_start||department||kind||supplier||location` and `doGet`'s
+  `&department` filter is what `LEIBLE_GM_COST_MONITOR` reads, one compromised
+  or buggy connector could otherwise move cost between the two P&Ls.
+
+  These bindings are today's real routes, not a permanent judgement — if
+  `kent_paper` packaging or an `ordermentum` line ever becomes genuine
+  Roastery spend, that is a one-line edit to the map plus a deploy. Adding a
+  connector to `INGEST_SOURCES_` without a department entry fails the test
+  suite by design (a gate missing an entry is blind, not red).
+
+  **GAS-native sources are absent from the map on purpose**, exactly as in
+  `INGEST_SOURCES_`: `square`/`mayers`/`greenbean`/`labour`/`shopify_orderapp`/
+  `recurring` never reach `doPost`, so `checkIngestToken_` refuses any POST
+  claiming them before `validateIngest_` runs. A source with no entry is
+  *unbound* — the `DEPARTMENTS` enum check stands alone for it — which is only
+  reachable by calling `validateIngest_` in-process, as the unit tests do.
 - **`amount` / `total` must be a real, finite JSON number, and `|value|` must
   be `<= 1,000,000`.** Tightened 2026-09-04 (security audit). `validateIngest_`
   now tests `typeof v === 'number' && isFinite(v)` and the magnitude bound —

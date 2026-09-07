@@ -2673,6 +2673,157 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 })();
 
 /* ------------------------------------------------------------------ *
+ * department is BOUND to source, not merely enum-checked
+ *
+ * checkIngestToken_ binds a token to the source it may claim; before this,
+ * nothing bound the department. A cafe supplier's own token could tag its
+ * invoices 'Roastery' and move spend across the two P&Ls the weekly rollup
+ * (Summary, keyed on department) and doGet's &department filter report on.
+ * ------------------------------------------------------------------ */
+
+(function testDepartmentBoundToSource() {
+  console.log('\ningest — department is bound to source:');
+
+  // The two allowlist halves must cover each other. A connector added
+  // token-first but department-unbound would leave the gate BLIND, not red —
+  // exactly the SYMBOL_SCOPES failure mode. This is the mechanical guard.
+  (function () {
+    var tokenKeys = Object.keys(INGEST_SOURCES_).sort();
+    var deptKeys = Object.keys(INGEST_SOURCE_DEPARTMENTS_).sort();
+    eq('every ingest source is department-bound (and vice versa)',
+      deptKeys.join(','), tokenKeys.join(','));
+    for (var i = 0; i < deptKeys.length; i++) {
+      var v = INGEST_SOURCE_DEPARTMENTS_[deptKeys[i]];
+      check(deptKeys[i] + ' binds to null or a real DEPARTMENTS value',
+        v === null || DEPARTMENTS.indexOf(v) !== -1);
+    }
+  })();
+
+  // THE HOLE: a cafe portal claiming the roastery department.
+  (function () {
+    var base = { source: 'food_dairy_co', extracted_at: 'TS' };
+    var row = function (dept) {
+      var r = { date: '2026-07-01', total: 45, invoice_ref: 'FD-1' };
+      if (dept !== undefined) r.department = dept;
+      return r;
+    };
+
+    var crossed = validateIngest_(Object.assign({}, base, { rows: [row('Roastery')] }));
+    check("food_dairy_co claiming department:'Roastery' -> rejected", !crossed.ok);
+    var crossedMsg = String(crossed.message || '');
+    check('...and the message names the row, the source and the binding',
+      crossedMsg.indexOf('row 0') !== -1 &&
+      crossedMsg.indexOf('food_dairy_co') !== -1 &&
+      crossedMsg.indexOf('Cafe') !== -1);
+
+    check("food_dairy_co claiming its own department:'Cafe' -> accepted",
+      validateIngest_(Object.assign({}, base, { rows: [row('Cafe')] })).ok);
+    check('food_dairy_co omitting department -> still accepted (defaults downstream)',
+      validateIngest_(Object.assign({}, base, { rows: [row()] })).ok);
+    check("department:'' is still treated as omitted, not as a claim",
+      validateIngest_(Object.assign({}, base, { rows: [row('')] })).ok);
+    check('department:null is still treated as omitted, not as a claim',
+      validateIngest_(Object.assign({}, base, { rows: [row(null)] })).ok);
+
+    // The binding is per-row, not per-payload: one bad row poisons the POST.
+    var mixed = validateIngest_(Object.assign({}, base, { rows: [
+      row('Cafe'),
+      { date: '2026-07-02', total: 10, invoice_ref: 'FD-2', department: 'Roastery' }
+    ] }));
+    check('a single crossed row rejects the whole payload', !mixed.ok);
+    check('...naming row 1', String(mixed.message || '').indexOf('row 1') !== -1);
+  })();
+
+  // The binding runs in BOTH directions — coffee_order_app is Roastery-bound.
+  (function () {
+    var revBase = { kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS' };
+    var revRow = function (dept) {
+      return { date: '2026-08-03', department: dept, channel: 'wholesale',
+        customer: 'Cafe X', amount: 340, order_ref: 'ORD-1' };
+    };
+    check("coffee_order_app claiming department:'Cafe' -> rejected",
+      !validateIngest_(Object.assign({}, revBase, { rows: [revRow('Cafe')] })).ok);
+    check("coffee_order_app claiming department:'Roastery' -> accepted",
+      validateIngest_(Object.assign({}, revBase, { rows: [revRow('Roastery')] })).ok);
+  })();
+
+  // shopspend binds to null: SHOPSPEND_HEADERS has no department column, so a
+  // department would be silently discarded. Say so instead of swallowing it.
+  (function () {
+    check('SHOPSPEND_HEADERS genuinely has no department column',
+      SHOPSPEND_HEADERS.indexOf('department') === -1);
+    var base = { kind: 'shopspend', source: 'shopspend', extracted_at: 'TS' };
+    // Local fixture: the shopspendRow() helper lives inside a LATER test
+    // function's scope, not on the module.
+    var ssRow = function () {
+      return { date: '2026-07-27', shop_id: 'shop_1', week_label: '2026-W31',
+        week_start: '2026-07-27', week_end: '2026-08-02',
+        order_count: 12, amended_count: 1, total_ex_gst: 500, gst: 0, total_inc_gst: 500 };
+    };
+    var withDept = Object.assign(ssRow(), { department: 'Cafe' });
+    var res = validateIngest_(Object.assign({}, base, { rows: [withDept] }));
+    check('shopspend row carrying a department -> rejected', !res.ok);
+    check('...and the message says the source writes no department column',
+      String(res.message || '').indexOf('no department column') !== -1);
+    check('shopspend row without a department -> still accepted',
+      validateIngest_(Object.assign({}, base, { rows: [ssRow()] })).ok);
+    check("'shopspend-backfill' is bound identically",
+      !validateIngest_(Object.assign({}, base, { source: 'shopspend-backfill', rows: [withDept] })).ok);
+  })();
+
+  // A source with no entry is UNBOUND, not denied — the enum check stands
+  // alone. Only reachable by calling validateIngest_ directly: checkIngestToken_
+  // refuses an unknown source before doPost ever gets here. This is what keeps
+  // the GAS-native sources (greenbean et al) callable in-process.
+  (function () {
+    eq('greenbean is not a doPost ingest source', 'greenbean' in INGEST_SOURCES_, false);
+    eq('...so it is unbound', ingestDepartmentFor_('greenbean').bound, false);
+    check("unbound source may still carry 'Roastery' (enum-valid)",
+      validateIngest_({ kind: 'suppliers', source: 'greenbean', extracted_at: 'TS',
+        rows: [{ date: '2026-08-01', supplier: 'Green Bean Co', total: 1840, invoice_ref: 'gb-1',
+          department: 'Roastery' }] }).ok);
+    check('...but a typo is still rejected by the enum check',
+      !validateIngest_({ kind: 'suppliers', source: 'greenbean', extracted_at: 'TS',
+        rows: [{ date: '2026-08-01', supplier: 'Green Bean Co', total: 1840, invoice_ref: 'gb-1',
+          department: 'Roastry' }] }).ok);
+  })();
+
+  // Prototype keys must not answer for a real binding (same reason
+  // ingestTokenPropertyFor_ is hasOwnProperty-guarded).
+  (function () {
+    eq("source 'constructor' is unbound", ingestDepartmentFor_('constructor').bound, false);
+    eq("source 'toString' is unbound", ingestDepartmentFor_('toString').bound, false);
+    eq('a non-string source is unbound', ingestDepartmentFor_(undefined).bound, false);
+  })();
+
+  // End to end through doPost: the crossed payload is refused AND writes
+  // nothing. A validation failure that still appended would be the real bug.
+  (function () {
+    freshSheets();
+    var before = currentSS.getSheetByName('Suppliers');
+    var beforeRows = before ? before.getDataRange().getValues().length : 0;
+    var res = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
+      { date: '2026-07-01', total: 45, invoice_ref: 'FD-X', department: 'Roastery' }
+    ] });
+    eq('doPost: crossed department -> error', res.result, 'error');
+    check('doPost: the reason names the source binding',
+      String(res.message || '').indexOf('food_dairy_co') !== -1);
+    var supp = currentSS.getSheetByName('Suppliers');
+    eq('doPost: nothing was written',
+      supp ? supp.getDataRange().getValues().length : 0, beforeRows);
+
+    // Control: the same payload with the source's OWN department lands.
+    var okRes = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
+      { date: '2026-07-01', total: 45, invoice_ref: 'FD-X', department: 'Cafe' }
+    ] });
+    eq('doPost: own-department payload -> ok', okRes.result, 'ok');
+    eq('doPost: own-department payload -> rowsAdded 1', okRes.rowsAdded, 1);
+    eq('doPost: the row landed as Cafe',
+      currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1][7], 'Cafe');
+  })();
+})();
+
+/* ------------------------------------------------------------------ *
  * Step 1 — upsertRows_ reports which rows it actually rewrote
  *
  * PRD-12: the correction alert must be driven by what upsertRows_ actually
