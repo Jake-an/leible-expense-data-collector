@@ -12818,6 +12818,12 @@ console.log('\narchiveAndPurge_ — batched writes:');
     GmailApp: 'https://www.googleapis.com/auth/gmail.modify',
     DriveApp: 'https://www.googleapis.com/auth/drive',
     Drive: 'https://www.googleapis.com/auth/drive',
+    // DocumentApp was ABSENT from this map until 2026-09-07, which is exactly
+    // why the documents scope shipped missing: extractPdfText_ opens the OCR'd
+    // temp Doc (mayers.gs:284), so the whole Mayers OCR path would have thrown
+    // at the permission boundary inside the 6am trigger. A symbol missing here
+    // makes BOTH directions of this gate blind to it.
+    DocumentApp: 'https://www.googleapis.com/auth/documents',
     CalendarApp: 'https://www.googleapis.com/auth/calendar',
     UrlFetchApp: 'https://www.googleapis.com/auth/script.external_request',
     ScriptApp: 'https://www.googleapis.com/auth/script.scriptapp',

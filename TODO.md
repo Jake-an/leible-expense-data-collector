@@ -69,8 +69,21 @@ Script would have asked. Calendar is therefore NOT in the statically-inferred sc
 set. `installStalenessTrigger()` does NOT grant it either (it only calls
 `ScriptApp.*`), so the comment at `staleness.gs:421` is **wrong** — fix it as part
 of this work.
-**Fix:** declare `oauthScopes` explicitly in `connectors/gas/appsscript.json`,
-which currently declares NONE. Risk to plan around: the list must cover every scope
+**STATUS 2026-09-07:** the explicit `oauthScopes` array was staged in `c722a06`
+and is now DEPLOYED (v45) — this item's "currently declares NONE" was stale.
+The declared list was INCOMPLETE: `https://www.googleapis.com/auth/documents`
+was missing although `mayers.gs:284` calls `DocumentApp.openById` (the whole OCR
+path). It shipped missing because test_code.js's `SYMBOL_SCOPES` map had no
+`DocumentApp` entry, so BOTH directions of the scope gate were blind to it.
+Both are fixed and the gate now reds without the scope. The stale comments at
+`staleness.gs:18/277/446` were already corrected in `c722a06`.
+**STILL TO DO — Jake at the keyboard:** the `documents` addition is a scope
+change, so per `staleness.gs:31` it must ship as `deploy.sh --push-only` →
+authorize in the editor → full `deploy.sh`, then re-run `checkIngestStaleness()`
+to confirm Calendar alerts finally fire. Until then the DEPLOYED manifest still
+omits `documents`; OCR keeps working only on the older, broader grant.
+
+**Original fix note:** declare `oauthScopes` explicitly in `connectors/gas/appsscript.json`. Risk to plan around: the list must cover every scope
 the project uses — Sheets, Gmail (read + label), Drive **plus** the Drive advanced
 service, `script.external_request`, `script.scriptapp`, Calendar — and a single
 omission silently breaks a working connector. It also forces a re-authorization on
