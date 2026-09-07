@@ -812,6 +812,38 @@ var GREENBEAN_UPSTREAM_WARNINGS_ = [];
 var GREENBEAN_RESUM_QUEUE_PROP = 'ORDERAPP_RESUM_QUEUE_greenbean'; // JSON array of 'yyyy-MM-dd' week starts
 
 /**
+ * Pure. Choose which queued weeks to resummarize this run, reserving the LAST
+ * slot for the NEWEST week.
+ *
+ * The queue is drained oldest-first so a genuine backlog clears in order. But
+ * a week that is split across _archive is refused ('skip-split') by
+ * weeklySummarize on EVERY run, so it never leaves the queue. Enough stuck old
+ * weeks (>= cap) would therefore consume the whole per-run allowance forever
+ * and the newest week would NEVER be resummarized - Summary silently frozen
+ * for the week anyone actually looks at, and in wholesalePull the heartbeat's
+ * newestResumOk condition could never be satisfied, so the feed would look
+ * permanently stale once armed.
+ *
+ * Reserving one slot for the newest entry bounds that: the newest week is
+ * resummarized on EVERY run regardless of how many old weeks are wedged, while
+ * the other cap-1 slots still drain the backlog oldest-first. It also fixes
+ * first-run bring-up, where all 8 window weeks are affected at once: run 1
+ * used to write every week but stamp no heartbeat.
+ *
+ * @param {Array<string>} sortedUnique - 'yyyy-MM-dd' week starts, ASCENDING, deduped
+ * @param {number} cap - max weeks to resummarize this run
+ * @returns {Array<string>} the weeks to resummarize, in call order
+ */
+function orderAppResumSlice_(sortedUnique, cap) {
+  if (cap <= 0 || sortedUnique.length === 0) return [];
+  if (sortedUnique.length <= cap) return sortedUnique.slice();
+  // length > cap >= 1, so the newest is never already inside the oldest cap-1.
+  var picked = sortedUnique.slice(0, cap - 1);
+  picked.push(sortedUnique[sortedUnique.length - 1]);
+  return picked;
+}
+
+/**
  * Pure. {from, to} for the greenBeanCost window: from = 1st of (month−2)
  * relative to todayStr, to = todayStr. String arithmetic only — no Date
  * object, so there is nothing here for a UTC/local offset to corrupt.
@@ -1216,7 +1248,7 @@ function greenBeanPull_impl_() {
   }
   mergedUnique.sort();
 
-  var toSummarize = mergedUnique.slice(0, GREENBEAN_RESUM_CAP);
+  var toSummarize = orderAppResumSlice_(mergedUnique, GREENBEAN_RESUM_CAP);
 
   // Crash safety: Suppliers already holds the new totals, so the snapshot
   // diff above can never be re-derived. Persist the FULL affected list BEFORE
@@ -1254,7 +1286,9 @@ function greenBeanPull_impl_() {
     // undrained backlog must say so itself — Summary stays stale for these
     // weeks until later runs (or a manual weeklySummarize sweep) drain them.
     Logger.log('greenBeanPull: ' + remainingQueue.length + ' affected week(s) still queued beyond the ' +
-      GREENBEAN_RESUM_CAP + '/run cap (oldest: ' + remainingQueue[0] + ') — drained over coming runs');
+      GREENBEAN_RESUM_CAP + '/run cap (oldest: ' + remainingQueue[0] + ') — drained over coming runs; ' +
+      'the newest week is resummarized every run regardless (reserved slot), so an oldest ' +
+      'entry that never advances is a permanently-refused week, not a backlog');
   }
 
   // A live roastery with ZERO intake rows across a rolling quarter almost
@@ -1612,7 +1646,7 @@ function wholesalePull_impl_(opts) {
   var resummarizedWeeksOk = {};
   var remainingQueue = mergedUnique;
   if (!dryRun) {
-    var toSummarize = mergedUnique.slice(0, GREENBEAN_RESUM_CAP);
+    var toSummarize = orderAppResumSlice_(mergedUnique, GREENBEAN_RESUM_CAP);
     wholesaleWriteQueue_(mergedUnique);
     for (var s = 0; s < toSummarize.length; s++) {
       var sumRes = weeklySummarize(toSummarize[s]);
@@ -1632,11 +1666,12 @@ function wholesalePull_impl_(opts) {
       // A trigger-invoked run has no reader for the return value, so an
       // undrained backlog must say so itself (same as greenBeanPull).
       // Read the OLDEST entry first: toSummarize takes mergedUnique's first
-      // GREENBEAN_RESUM_CAP in chronological order, and a week that is split
-      // across _archive is refused ('skip-split') by weeklySummarize on EVERY
-      // run — so it never clears. Enough stuck old weeks would consume the
-      // whole per-run cap and starve newer weeks indefinitely. A run where
-      // the oldest entry never changes is that condition, not a slow drain.
+      // GREENBEAN_RESUM_CAP-1 in chronological order PLUS a reserved slot for
+      // the newest (see orderAppResumSlice_). A week that is split across
+      // _archive is refused ('skip-split') by weeklySummarize on EVERY run, so
+      // it never clears — but it can no longer starve the newest week, which
+      // is resummarized every run regardless. A run where the oldest entry
+      // never changes is that condition, not a slow drain.
       Logger.log('wholesalePull: ' + remainingQueue.length + ' affected week(s) still queued beyond the ' +
         GREENBEAN_RESUM_CAP + '/run cap (oldest: ' + remainingQueue[0] + ') — drained over coming runs; ' +
         'an oldest entry that never advances is a permanently-refused week, not a backlog');

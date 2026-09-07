@@ -852,9 +852,15 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
   middleware), so `/security-audit` can never reach `approve` for this repo as-is.
 
 ### Other open work
-- F2 resummarize-queue starvation: cap drains oldest-first, so a permanently-refused
-  split week can consume it forever and the newest week starves
-  (`connectors/gas/orderapp.gs`, greenBeanPull + wholesalePull). Suggested fix:
-  reserve a slot — newest affected week + 4 oldest. Also fixes the run-1 no-heartbeat.
-- `roastery_email.gs:93` success-gated label — verify whether the mayers re-OCR fix
-  was ever ported here (memory says latent; both files look identical at that line).
+- ~~F2 resummarize-queue starvation~~ ✅ **FIXED 2026-09-07.** `orderAppResumSlice_`
+  (`connectors/gas/orderapp.gs`) reserves the last slot for the NEWEST week, so the
+  other cap-1 still drain oldest-first but a wedge of permanently-refused split weeks
+  can no longer starve the newest. Also fixes the run-1 no-heartbeat: a first
+  bring-up with all 8 window weeks affected now stamps on run 1 instead of run 2.
+  Used by both greenBeanPull and wholesalePull. 11 new tests + case20/case20b
+  rewritten (they asserted the starvation); mutation-checked: dropping the reserved
+  slot kills 13.
+- ~~`roastery_email.gs:93` success-gated label~~ ✅ **PORTED 2026-09-07** (`db41856`).
+  It had NOT been ported — verified, not assumed. The port splits transient OCR
+  failures from deterministic parse failures so a Drive rate-limit is never memoed;
+  34 new tests, first coverage `roasteryDailyPull` has had.

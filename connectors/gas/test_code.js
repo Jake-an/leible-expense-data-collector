@@ -5882,8 +5882,13 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   /* --- Run 1 (first-ever pull): 7 distinct completed weeks (weeksAll[1..7])
    *     each carrying at least one NEW invoice, plus one invoice dated in
    *     the CURRENT (incomplete) week -> exactly 5 of the 7 affected weeks
-   *     are resummarized (cap), the oldest 2 are queued; the current-week
-   *     invoice never counts as an affected week at all. --- */
+   *     are resummarized (cap) and 2 are queued; the current-week invoice
+   *     never counts as an affected week at all.
+   *
+   *     The 5 are the 4 OLDEST plus a RESERVED slot for the NEWEST
+   *     (orderAppResumSlice_), so the two queued are the MIDDLE weeks. The
+   *     newest week must never be starved by a wedge of old refused weeks -
+   *     it is the week anyone actually looks at. --- */
   const run1Lines = [];
   for (let i = 1; i <= 7; i++) {
     run1Lines.push(line(weeksAll[i].start, 'plainw' + i, 'Plain Supplier ' + i, 'PLAIN-' + i, 100 + i));
@@ -5905,13 +5910,15 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   eq('run1: weeksQueued = the 2 overflow weeks', res1.weeksQueued, 2);
   check('run1: no apiFailed flag on full success', !res1.apiFailed);
 
-  eq('run1: weeklySummarize called for exactly the 5 OLDEST affected weeks, oldest-first',
-    weeklySummarizeCalls, [weeksAll[1].start, weeksAll[2].start, weeksAll[3].start, weeksAll[4].start, weeksAll[5].start]);
+  eq('run1: weeklySummarize called for the 4 oldest + the RESERVED newest slot',
+    weeklySummarizeCalls, [weeksAll[1].start, weeksAll[2].start, weeksAll[3].start, weeksAll[4].start, weeksAll[7].start]);
+  check('run1: the NEWEST affected week is resummarized even though 7 > the cap',
+    weeklySummarizeCalls.indexOf(weeksAll[7].start) !== -1);
   check('run1: the current (incomplete) week was never resummarized',
     weeklySummarizeCalls.indexOf(currentWeekStart) === -1);
 
-  eq('run1: the 2 overflow weeks are persisted to the queue property, oldest-first',
-    queueProp(), [weeksAll[6].start, weeksAll[7].start]);
+  eq('run1: the 2 overflow weeks (the MIDDLE ones) are persisted, oldest-first',
+    queueProp(), [weeksAll[5].start, weeksAll[6].start]);
 
   eq('run1: Suppliers has header + 10 rows', suppliersRows().length, 11);
   check('run1: heartbeat stamped on full success (a non-empty queue is not a failure)',
@@ -5930,7 +5937,7 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   eq('run2: weeksResummarized = the 2 drained queue weeks', res2.weeksResummarized, 2);
   eq('run2: weeksQueued after drain', res2.weeksQueued, 0);
   eq('run2: weeklySummarize called for the 2 queued weeks, oldest-first',
-    weeklySummarizeCalls, [weeksAll[6].start, weeksAll[7].start]);
+    weeklySummarizeCalls, [weeksAll[5].start, weeksAll[6].start]);
   eq('run2: queue property is now empty', queueProp(), []);
 
   /* --- Run 3: a changed invoice that gains an EARLIER line — its computed
@@ -12531,8 +12538,9 @@ console.log('\narchiveAndPurge_ — batched writes:');
 
   /* --- case 20: resummarize cap + overflow queue — mirrors
    *     GREENBEAN_RESUM_CAP: with more affected weeks than the cap, the
-   *     oldest are resummarized this run and the remainder persists to the
-   *     WHOLESALE_RESUM_QUEUE Script Property, oldest-first. --- */
+   *     oldest cap-1 PLUS a reserved slot for the newest are resummarized
+   *     this run (orderAppResumSlice_) and the remaining MIDDLE weeks
+   *     persist to the WHOLESALE_RESUM_QUEUE Script Property, oldest-first. --- */
   reset();
   scriptProps.WHOLESALE_REPULL_WEEKS = '7';
   const weeks7 = lastCompletedWeeks_(PINNED_TODAY, 7);
@@ -12547,34 +12555,41 @@ console.log('\narchiveAndPurge_ — batched writes:');
 
   eq('case20: weeksResummarized capped at GREENBEAN_RESUM_CAP', resCap.weeksResummarized, GREENBEAN_RESUM_CAP);
   eq('case20: weeksQueued is the overflow', resCap.weeksQueued, weeks7.length - GREENBEAN_RESUM_CAP);
-  eq('case20: weeklySummarize called oldest-first for exactly the capped weeks',
-    weeklySummarizeCalls, weeks7.slice(0, GREENBEAN_RESUM_CAP).map(function (w) { return w.start; }));
+  eq('case20: weeklySummarize called for the oldest cap-1 plus the reserved newest',
+    weeklySummarizeCalls,
+    weeks7.slice(0, GREENBEAN_RESUM_CAP - 1).map(function (w) { return w.start; })
+      .concat([weeks7[weeks7.length - 1].start]));
   var wholesaleQueueRaw = scriptProps['WHOLESALE_RESUM_QUEUE'];
   check('case20: the overflow persisted to WHOLESALE_RESUM_QUEUE', !!wholesaleQueueRaw);
   if (wholesaleQueueRaw) {
-    eq('case20: the queue holds the overflow weeks, oldest-first',
-      JSON.parse(wholesaleQueueRaw), weeks7.slice(GREENBEAN_RESUM_CAP).map(function (w) { return w.start; }));
+    eq('case20: the queue holds the MIDDLE overflow weeks, oldest-first',
+      JSON.parse(wholesaleQueueRaw),
+      weeks7.slice(GREENBEAN_RESUM_CAP - 1, weeks7.length - 1).map(function (w) { return w.start; }));
   }
 
-  /* --- case 20b: the cap drains OLDEST-first, so when affected weeks exceed
-   *     it the NEWEST week lands in the overflow — and the heartbeat's
-   *     newestResumOk condition then cannot be satisfied. Every other
-   *     heartbeat condition passes here (week fetched, cross-footed, not
-   *     split, wrote rows, gross 906 >= the 800 floor), so this isolates
-   *     the resummarize condition alone.
+  /* --- case 20b: the reserved newest slot, and the run-1 heartbeat it buys.
+   *     The cap drains oldest-first, so BEFORE orderAppResumSlice_ the NEWEST
+   *     week landed in the overflow whenever affected weeks exceeded the cap —
+   *     and the heartbeat's newestResumOk condition could then never be
+   *     satisfied. Every other heartbeat condition passes here (week fetched,
+   *     cross-footed, not split, wrote rows, gross 906 >= the 800 floor), so
+   *     this isolates the resummarize condition alone.
    *
    *     This is REAL first-run behaviour, not a corner case: a first live
-   *     bring-up has all 8 window weeks affected at once, so run 1 writes
-   *     every week but stamps NO heartbeat. It self-corrects on run 2, once
-   *     the queue drains. Asserted so nobody reads it as a failed pull. --- */
+   *     bring-up has all 8 window weeks affected at once. Run 1 used to write
+   *     every week but stamp NO heartbeat, self-correcting only on run 2 —
+   *     which meant a healthy bring-up looked stale. With the reserved slot
+   *     run 1 stamps immediately. --- */
   var newestWeek7 = weeks7[weeks7.length - 1];
-  check('case20b: the newest week is in the overflow, not the summarized set',
-    weeklySummarizeCalls.indexOf(newestWeek7.start) === -1);
-  check('case20b: heartbeat NOT stamped — the newest week could not be resummarized',
-    !(('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps));
-  check('case20b: ...and that is the ONLY reason — the week itself wrote rows cleanly',
+  check('case20b: the newest week IS resummarized despite exceeding the cap',
+    weeklySummarizeCalls.indexOf(newestWeek7.start) !== -1);
+  check('case20b: heartbeat IS stamped on run 1 — the newest week resummarized',
+    ('LAST_INGEST_' + WHOLESALE_SOURCE) in scriptProps);
+  check('case20b: ...and the week itself wrote rows cleanly',
     resCap.failedWeeks.length === 0 && resCap.crossFootFailures.length === 0 &&
-    resCap.splitWeeks.length === 0 && resCap.heartbeatStamped === false);
+    resCap.splitWeeks.length === 0 && resCap.heartbeatStamped === true);
+  check('case20b: a backlog still remains — the reserved slot does not raise the cap',
+    resCap.weeksQueued === weeks7.length - GREENBEAN_RESUM_CAP);
 
   globalThis.wholesaleFetchWeekOrders_ = REAL_FETCH_WEEK_ORDERS;
   global.weeklySummarize = REAL_WEEKLY_SUMMARIZE;
@@ -13365,6 +13380,65 @@ console.log('roastery memo helpers');
 
   globalThis.ROASTERY_PARSER_VERSION = savedVersion;
   scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * orderAppResumSlice_ - the reserved newest slot (F2 starvation)
+ *
+ * The queue drains oldest-first, but a week split across _archive is refused
+ * 'skip-split' by weeklySummarize on EVERY run and so never leaves the queue.
+ * With cap-many such weeks wedged at the front, the newest week would never be
+ * resummarized again - Summary frozen for the week anyone actually reads, and
+ * wholesalePull's heartbeat permanently unstamped.
+ * ------------------------------------------------------------------ */
+console.log('orderAppResumSlice_ - reserved newest slot');
+(function () {
+  const W = function (n) {
+    const out = [];
+    for (let i = 1; i <= n; i++) out.push('2026-01-' + String(i).padStart(2, '0'));
+    return out;
+  };
+
+  eq('empty queue -> nothing to do', orderAppResumSlice_([], 5), []);
+  eq('a zero cap takes nothing', orderAppResumSlice_(W(3), 0), []);
+  eq('fewer than the cap -> every week, order preserved',
+    orderAppResumSlice_(W(3), 5), ['2026-01-01', '2026-01-02', '2026-01-03']);
+  eq('exactly the cap -> every week, nothing reserved away',
+    orderAppResumSlice_(W(5), 5), ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04', '2026-01-05']);
+
+  eq('over the cap -> oldest cap-1, then the newest',
+    orderAppResumSlice_(W(7), 5),
+    ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04', '2026-01-07']);
+
+  eq('the slice never exceeds the cap', orderAppResumSlice_(W(40), 5).length, 5);
+
+  // The starvation itself: however many old weeks are permanently wedged, the
+  // newest is still picked every single run.
+  const many = W(40);
+  const newest = many[many.length - 1];
+  check('40 wedged old weeks still cannot starve the newest',
+    orderAppResumSlice_(many, 5).indexOf(newest) !== -1);
+  check('...and it holds at a cap of 1 (the reserved slot IS the whole budget)',
+    orderAppResumSlice_(many, 1).length === 1 &&
+    orderAppResumSlice_(many, 1)[0] === newest);
+  check('no week is picked twice',
+    new Set(orderAppResumSlice_(many, 5)).size === orderAppResumSlice_(many, 5).length);
+
+  // Repeated runs against a permanently-refused front: the newest is re-picked
+  // every time, while the oldest slots keep grinding through the same wedge.
+  let sawNewest = 0;
+  for (let run = 0; run < 10; run++) {
+    if (orderAppResumSlice_(many, 5).indexOf(newest) !== -1) sawNewest++;
+  }
+  eq('the newest week is picked on every one of 10 consecutive runs', sawNewest, 10);
+
+  // Input is not mutated - callers filter mergedUnique afterwards.
+  const before = W(7);
+  const snapshot = before.slice();
+  orderAppResumSlice_(before, 5);
+  eq('the caller\'s array is left untouched', before, snapshot);
 })();
 
 /* ------------------------------------------------------------------ */
