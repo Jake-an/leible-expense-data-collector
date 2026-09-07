@@ -157,11 +157,18 @@ plan at `C:/Users/mioja/.claude/plans/graceful-brewing-piglet.md`:
 - [ ] The **24 SPLIT weeks — $92,885.74** — still NOT repairable by
       `weeklySummarize` (reads `Suppliers` only, would understate them);
       needs an archive-aware aggregate, blocked on the `_archive` cleanup above.
-- [ ] **known open (step 9, FIX6):** step 8's `tdd_evidence.tdd_state` had recurred
-      as `"green_done"` — a value `scripts/execute.py` never writes (its only
-      terminal write is `red_done`); step subagents keep emitting it by hand. A
-      future harness change should reject unknown `tdd_state` values at write
-      time instead of letting them persist silently.
+- [x] **CLOSED (step 9, FIX6), 2026-09-07:** `scripts/execute.py` now has
+      `LEGAL_TDD_STATES = {"red_done"}` and `_normalize_tdd_state()`, called at
+      the top of `_execute_single_step` for every `tdd:true` step: an illegal
+      `tdd_state` (e.g. hand-written `"green_done"`) with real RED evidence on
+      record is repaired to `"red_done"` in place (skips a wasteful, sometimes
+      impossible RED re-confirmation); without RED evidence the field is
+      dropped so RED runs clean. Hand-repaired the 3 live `green_done`
+      occurrences found at audit time (`phases/fix-silent-ingest-failures/index.json`
+      steps 1/2, `phases/shopspend/index.json` step 8) to `red_done` — all had
+      `status: completed` plus both `tdd_evidence.red` and `.green`. Pinned by
+      `TestNormalizeTddState` + `TestRunTddGreenViaExecuteSingleStep::test_illegal_tdd_state_with_red_evidence_repairs_to_red_done_and_skips_red`
+      in `scripts/test_execute.py`, mutation-checked (fail without the fix).
 
 **Post-verification action:** flip `PRD-12`/`PRD-13` to `built` in
 `docs/PRD.md` **only after Jake's live verification** of the self-heal window
@@ -313,11 +320,13 @@ test after line 7042 stopped running, with no commit involved. `todayStr_` is no
 back to an enclosing pin); `testShopifyWeeklyPull` is pinned instead of clock-dependent.
 **Lesson: never trust an inherited green count — re-run the suite.**
 
-**STILL OPEN — harness defect.** Step subagents keep writing `tdd_state: "green_done"`, a
-value `scripts/execute.py` never produces (its only terminal write is `red_done`,
-`execute.py:715`). Repaired twice and it recurred both times. On retry the runner re-runs
-RED and silently disables GREEN's mechanical check. The runner should reject unknown
-`tdd_state` values at write time.
+**CLOSED, 2026-09-07 — harness defect.** Step subagents kept writing `tdd_state:
+"green_done"`, a value `scripts/execute.py` never produces (its only terminal write is
+`red_done`, `execute.py:715`). Repaired by hand twice and it recurred both times, because
+nothing rejected the value at read time. `_normalize_tdd_state()` (`execute.py`, called
+from `_execute_single_step`) now repairs/discards any `tdd_state` outside
+`LEGAL_TDD_STATES = {"red_done"}` the moment the runner reads it back, instead of a human
+having to catch each recurrence. See "step 9, FIX6" above for the hand-repair record.
 
 **STILL OPEN — pre-existing, out of scope:** `orderapp.gs:176` and `:212` call
 `CalendarApp.EventColor` directly, so `staleness.gs`'s "THE ONLY SOURCE OF THE CalendarApp

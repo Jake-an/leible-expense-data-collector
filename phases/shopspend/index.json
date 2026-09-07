@@ -404,7 +404,7 @@
           "at": "2026-08-04T19:02:17+0900"
         }
       },
-      "tdd_state": "green_done",
+      "tdd_state": "red_done",
       "summary": "Added fn dispatch to doGet (default summary unchanged) plus fn=shopspendCoverage delegating to shopSpendCoveredWeeks_; 705 tests pass, docs/api.md documents the new param + response.",
       "completed_at": "2026-08-04T19:02:16+0900",
       "review": {

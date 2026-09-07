@@ -80,7 +80,7 @@
           "at": "2026-07-21T16:28:25+0900"
         }
       },
-      "tdd_state": "green_done",
+      "tdd_state": "red_done",
       "review": {
         "verdict": "approve",
         "critical": 0,
@@ -123,7 +123,7 @@
           "at": "2026-07-21T16:33:29+0900"
         }
       },
-      "tdd_state": "green_done",
+      "tdd_state": "red_done",
       "review": {
         "verdict": "approve",
         "critical": 0,

@@ -64,6 +64,12 @@ class StepExecutor:
     """Harness that sequentially executes steps inside a phase directory."""
 
     MAX_RETRIES = 3
+    # The runner's only terminal write for tdd_state is "red_done" (see _run_tdd_red).
+    # Step-dispatch agents have repeatedly hand-written "green_done" instead (not a
+    # value this runner ever produces or understands) — see TODO.md "STILL OPEN —
+    # harness defect". _normalize_tdd_state() repairs/rejects anything outside this set
+    # the moment the runner reads a step back, instead of letting it persist silently.
+    LEGAL_TDD_STATES = frozenset({"red_done"})
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     RED_MSG = "test({phase}): step {num} RED — {name}"
@@ -1034,6 +1040,49 @@ class StepExecutor:
 
     # --- execution loop ---
 
+    def _normalize_tdd_state(self, step_num: int) -> dict:
+        """Reject/repair an illegal tdd_state on step_num the moment the runner reads it
+        back, instead of letting it persist silently (see LEGAL_TDD_STATES). A step-dispatch
+        agent hand-writing e.g. "green_done" is a known recurring failure mode (TODO.md).
+
+        - Legal value or absent: no-op.
+        - Illegal value with real RED evidence recorded: repair to "red_done" — the state
+          the runner itself would have written — so the run proceeds straight to GREEN
+          instead of wastefully (and sometimes impossibly, if the fix already landed)
+          re-confirming a RED that already happened.
+        - Illegal value with no RED evidence: drop the field so RED runs cleanly from
+          scratch, exactly as if tdd_state had never been set.
+
+        Returns the (possibly repaired) step dict, re-read from disk if it changed.
+        """
+        index = self._read_json(self._index_file)
+        changed = False
+        for s in index["steps"]:
+            if s["step"] != step_num:
+                continue
+            state = s.get("tdd_state")
+            if state is None or state in self.LEGAL_TDD_STATES:
+                break
+            has_red = bool(s.get("tdd_evidence", {}).get("red"))
+            if has_red:
+                print(
+                    f"  ⚠ Step {step_num}: illegal tdd_state {state!r} repaired to "
+                    f"'red_done' (RED evidence already on record)."
+                )
+                s["tdd_state"] = "red_done"
+            else:
+                print(
+                    f"  ⚠ Step {step_num}: illegal tdd_state {state!r} discarded "
+                    f"(no RED evidence on record) — RED will run from scratch."
+                )
+                s.pop("tdd_state", None)
+            changed = True
+            break
+        if changed:
+            self._write_json(self._index_file, index)
+            return self._get_step(step_num)
+        return self._get_step(step_num)
+
     def _execute_single_step(self, step: dict, guardrails: str) -> bool:
         """Execute a single step (with retries). Returns True on completion, False on failure/block.
         For tdd:true steps, the RED sub-phase runs first (skipped on resume if tdd_state is
@@ -1041,6 +1090,9 @@ class StepExecutor:
         test_cmd before honoring a "completed"/"done_with_concerns" claim."""
         step_num, step_name = step["step"], step["name"]
         sha_before = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        if step.get("tdd"):
+            step = self._normalize_tdd_state(step_num)
 
         if step.get("tdd") and step.get("tdd_state") != "red_done":
             if not self._run_tdd_red(step, guardrails):

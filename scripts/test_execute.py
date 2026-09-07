@@ -2099,6 +2099,42 @@ class TestBuildGreenPreamble:
         assert "colleague's precedent" in result
 
 
+class TestNormalizeTddState:
+    def test_legal_value_is_left_alone(self, tdd_executor, tdd_phase_dir, green_ready_step):
+        step = tdd_executor._normalize_tdd_state(0)
+        assert step["tdd_state"] == "red_done"
+
+    def test_absent_value_is_left_alone(self, tdd_executor, tdd_phase_dir):
+        step = tdd_executor._normalize_tdd_state(0)
+        assert "tdd_state" not in step
+
+    def test_illegal_value_without_red_evidence_is_discarded(self, tdd_executor, tdd_phase_dir):
+        index = json.loads((tdd_phase_dir / "index.json").read_text())
+        for s in index["steps"]:
+            if s["step"] == 0:
+                s["tdd_state"] = "green_done"
+        (tdd_phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        step = tdd_executor._normalize_tdd_state(0)
+        assert "tdd_state" not in step
+
+        on_disk = json.loads((tdd_phase_dir / "index.json").read_text())
+        s0 = next(s for s in on_disk["steps"] if s["step"] == 0)
+        assert "tdd_state" not in s0
+
+    def test_illegal_value_with_red_evidence_is_repaired(
+        self, tdd_executor, tdd_phase_dir, green_ready_step
+    ):
+        index = json.loads((tdd_phase_dir / "index.json").read_text())
+        for s in index["steps"]:
+            if s["step"] == 0:
+                s["tdd_state"] = "green_done"  # tdd_evidence.red already present via fixture
+        (tdd_phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        step = tdd_executor._normalize_tdd_state(0)
+        assert step["tdd_state"] == "red_done"
+
+
 class TestRunTddGreenViaExecuteSingleStep:
     def _step(self, tdd_executor):
         # Mirror _execute_all_steps: read the pending step fresh from index.json so
@@ -2126,6 +2162,44 @@ class TestRunTddGreenViaExecuteSingleStep:
         result = tdd_executor._execute_single_step(self._step(tdd_executor), "")
         assert result is True
         red_spy.assert_not_called()
+
+    def test_illegal_tdd_state_with_red_evidence_repairs_to_red_done_and_skips_red(
+        self, tdd_executor, tdd_phase_dir, green_ready_step
+    ):
+        # A step-dispatch agent hand-wrote "green_done" — not a value this runner ever
+        # produces (LEGAL_TDD_STATES == {"red_done"}). Real RED evidence is still on
+        # record, so the runner should repair the field in place and go straight to
+        # GREEN, never re-running RED (which could even fail if the fix already landed).
+        index = json.loads((tdd_phase_dir / "index.json").read_text())
+        for s in index["steps"]:
+            if s["step"] == 0:
+                s["tdd_state"] = "green_done"
+        (tdd_phase_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+        red_spy = MagicMock(side_effect=AssertionError("_run_tdd_red should not be called"))
+        tdd_executor._run_tdd_red = red_spy
+
+        def fake_invoke(step, preamble):
+            assert "GREEN" in preamble  # confirms is_green was computed True post-repair
+            idx = tdd_executor._read_json(tdd_executor._index_file)
+            for s in idx["steps"]:
+                if s["step"] == 0:
+                    s["status"] = "completed"
+            tdd_executor._write_json(tdd_executor._index_file, idx)
+            return {}
+
+        tdd_executor._invoke_claude = fake_invoke
+        tdd_executor._run_test_cmd = lambda cmd: MagicMock(
+            returncode=0, stdout="3 passed", stderr=""
+        )
+
+        result = tdd_executor._execute_single_step(self._step(tdd_executor), "")
+        assert result is True
+        red_spy.assert_not_called()
+
+        final = json.loads((tdd_phase_dir / "index.json").read_text())
+        s0 = next(s for s in final["steps"] if s["step"] == 0)
+        assert s0["tdd_state"] == "red_done"
 
     def test_green_verification_passes_records_evidence_and_completes(
         self, tdd_executor, tdd_phase_dir, green_ready_step
