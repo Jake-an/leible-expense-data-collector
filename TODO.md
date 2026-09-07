@@ -58,7 +58,22 @@ debug for this — it writes **SPEND**, not income.
       the greenbean figure specifically. Not new to this phase — worth a look
       whenever `orderapp.gs` triggers are next touched.
 
-**2. Calendar OAuth scope is missing → EVERY alert is blind.** (carried, unchanged)
+**2. ~~Calendar OAuth scope is missing → EVERY alert is blind.~~ ✅ RESOLVED 2026-09-07.**
+`checkIngestStaleness()` now runs clean and WRITES events:
+`checked=8, stale=1, eventsCreated=1`. No consent prompt appeared, so the grant
+already carried Calendar — this item's premise was stale. Corroborated by a live
+`LEIBLE expense stale: food_dairy_co` calendar event created 2026-09-01, i.e.
+alerting has worked since that revoke + re-consent, not from today.
+The real defect was elsewhere and is fixed in `a903db2`: appsscript.json omitted
+`.../auth/documents` while `mayers.gs:284` calls `DocumentApp.openById`, and
+test_code.js's `SYMBOL_SCOPES` had no `DocumentApp` entry so the scope gate was
+BLIND rather than red. Deployed v46 (`--push-only` → authorize → full deploy).
+The one live alert is `coffee_order_app` "never seen" — CORRECT, not a fault:
+its writer is `wholesalePull`, still parked at roastery-wholesale steps 7+8.
+Why this week's 3-night outage raised nothing: at the 07/09 check food_dairy_co
+was ~80h stale against the 96h threshold — correctly silent, would have fired 08/09.
+
+**ORIGINAL DIAGNOSIS (kept for context):**
 `raiseCalendarAlert_` fires correctly and then dies at the calendar boundary:
 `stalenessCalendar_: getCalendarById/getDefaultCalendar failed — script does not
 have permission … Required permissions: …/auth/calendar`. A clean run logs nothing,
@@ -865,6 +880,13 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
   middleware), so `/security-audit` can never reach `approve` for this repo as-is.
 
 ### Other open work
+- [ ] **Verify the `checkIngestStaleness` daily 11:00 trigger actually exists**
+      (Apps Script → Triggers — the Triggers page is the ONLY source of truth,
+      never the code). Both calendar alerts on record (2026-09-01, 2026-09-07)
+      were created by a MANUAL editor run, so nothing yet proves the trigger
+      fires on its own. If it is absent, alerting is exactly as blind as before
+      — it just fails silently instead of throwing. `installStalenessTrigger()`
+      installs it. Jake at the keyboard.
 - ~~F2 resummarize-queue starvation~~ ✅ **FIXED 2026-09-07.** `orderAppResumSlice_`
   (`connectors/gas/orderapp.gs`) reserves the last slot for the NEWEST week, so the
   other cap-1 still drain oldest-first but a wedge of permanently-refused split weeks
