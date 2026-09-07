@@ -13166,5 +13166,208 @@ console.log('\narchiveAndPurge_ — batched writes:');
   scriptProps = savedProps;
 })();
 
+/* ------------------------------------------------------------------ *
+ * roastery_email.gs - unparseable-attachment memo (ported from mayers.gs)
+ *
+ * Same defect class as the mayers Drive-OCR quota leak fixed 2026-08-15: a
+ * document that can never parse stays unlabelled, keeps matching
+ * ROASTERY_SEARCH, and is re-OCR'd every run forever. Not leaking in PROD
+ * today only because the roastery/invoices label does not exist yet - these
+ * tests are what stop it leaking the day the feed goes live.
+ *
+ * The mock mirrors the mayers one: search() honours `-label:roastery-ingested`
+ * by returning only unlabelled threads, exactly as Gmail does.
+ * ------------------------------------------------------------------ */
+console.log('roasteryDailyPull - unparseable-attachment memo');
+(function () {
+  const savedGmail = global.GmailApp;
+  const savedExtract = globalThis.extractPdfText_;
+  const savedVersion = globalThis.ROASTERY_PARSER_VERSION;
+  const savedProps = scriptProps;
+
+  const INVOICE_TEXT = 'Sample Bean Co\nInvoice No: SBC-1041\n' +
+    'Invoice Date: 2026-07-06\nTotal Due: $482.50';
+  const INVOICE2_TEXT = 'Sample Bean Co\nInvoice No: SBC-1099\n' +
+    'Invoice Date: 2026-07-20\nTotal Due: $221.00';
+  // No total anywhere -> parseRoasteryInvoice_ RAISES -> deterministic failure.
+  const PRICELIST_TEXT = 'Sample Bean Co - 2026 wholesale price list\nSingle origin, per kg.';
+
+  let ocrCalls = [];
+  let ocrText = {};
+  let allThreads = [];
+  let msgSeq = 0;
+
+  function attachment(name, size) {
+    return {
+      getContentType: () => 'application/pdf',
+      getName: () => name,
+      getSize: () => size,
+    };
+  }
+  function message(name, size, dateIso) {
+    const id = 'msg' + (++msgSeq);
+    return {
+      getAttachments: () => [attachment(name, size)],
+      getDate: () => new Date(dateIso),
+      getId: () => id,
+    };
+  }
+  function thread(messages) {
+    const t = {
+      _labelled: false,
+      _messages: messages,
+      getId: () => 'thr1',
+      getMessages: () => t._messages,
+      addLabel: () => { t._labelled = true; },
+    };
+    return t;
+  }
+
+  global.GmailApp = {
+    search: () => allThreads.filter((t) => !t._labelled),
+    getUserLabelByName: () => ({ _name: ROASTERY_PROCESSED_LABEL }),
+    createLabel: () => ({ _name: ROASTERY_PROCESSED_LABEL }),
+  };
+  globalThis.extractPdfText_ = function (pdf) {
+    ocrCalls.push(pdf.getName() + ':' + pdf.getSize());
+    const t = ocrText[pdf.getName()];
+    if (t instanceof Error) throw t;
+    return t;
+  };
+
+  function resetProps() { scriptProps = { HUB_SHEET_ID: 'hub' }; }
+  function run() { ocrCalls = []; return roasteryDailyPull(); }
+
+  /* --- one real invoice + an unparseable price list ----------------- */
+  freshSheets();
+  resetProps();
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT, 'pricelist-2026.pdf': PRICELIST_TEXT };
+  const invoiceThread = thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z')]);
+  const pricelistThread = thread([message('pricelist-2026.pdf', 91000, '2026-07-08T02:00:00Z')]);
+  allThreads = [invoiceThread, pricelistThread];
+
+  const run1 = run();
+  // Meta-assertion: without this, every "0 OCR calls" claim below could pass
+  // against a stub that was never actually wired in.
+  eq('run 1 OCRs both attachments (mock observes real calls)', ocrCalls.length, 2);
+  eq('run 1 ingests the invoice', run1.rowsAdded, 1);
+  eq('run 1 counts the price list as unparsed', run1.unparsed, 1);
+  eq('run 1 skips no OCR - nothing memoed yet', run1.ocrSkipped, 0);
+  check('invoice thread is labelled', invoiceThread._labelled === true);
+  check('price-list thread stays UNLABELLED (a new attachment must still be seen)',
+    pricelistThread._labelled === false);
+
+  /* --- the leak: second sighting of the same price list ------------- */
+  const run2 = run();
+  eq('run 2 performs ZERO OCR - the forever re-OCR is gone', ocrCalls.length, 0);
+  eq('run 2 reports the skip', run2.ocrSkipped, 1);
+  eq('run 2 ingests nothing new', run2.rowsAdded, 0);
+  check('price-list thread is STILL unlabelled after being memoed',
+    pricelistThread._labelled === false);
+
+  /* --- a new attachment on that same thread is still processed ------ */
+  ocrText['inv-SBC-1099.pdf'] = INVOICE2_TEXT;
+  pricelistThread._messages = pricelistThread._messages.concat([
+    message('inv-SBC-1099.pdf', 38000, '2026-07-20T02:00:00Z'),
+  ]);
+  const run3 = run();
+  eq('a NEW attachment on the memoed thread is OCRd', ocrCalls, ['inv-SBC-1099.pdf:38000']);
+  eq('the new invoice ingests', run3.rowsAdded, 1);
+  eq('the price list beside it is still skipped', run3.ocrSkipped, 1);
+  check('thread is labelled now that something parsed out of it',
+    pricelistThread._labelled === true);
+
+  /* --- a parser change retries every memoed document exactly once --- */
+  freshSheets();
+  resetProps();
+  ocrText = { 'pricelist-2026.pdf': PRICELIST_TEXT };
+  allThreads = [thread([message('pricelist-2026.pdf', 91000, '2026-07-08T02:00:00Z')])];
+
+  run();                                  // first sighting: memoed
+  const memoed = run();
+  eq('memoed under the current version -> no OCR', ocrCalls.length, 0);
+  eq('...and reports the skip', memoed.ocrSkipped, 1);
+
+  globalThis.ROASTERY_PARSER_VERSION = savedVersion + 1;
+  const run4 = run();
+  eq('version bump re-OCRs the memoed document exactly once',
+    ocrCalls, ['pricelist-2026.pdf:91000']);
+  eq('version bump means nothing is skipped', run4.ocrSkipped, 0);
+  const run5 = run();
+  eq('and it is immediately re-memoed under the new version', ocrCalls.length, 0);
+  eq('re-memoed under new version reports the skip', run5.ocrSkipped, 1);
+  globalThis.ROASTERY_PARSER_VERSION = savedVersion;
+
+  /* --- a TRANSIENT OCR failure must never be memoed ----------------- *
+   * This is the arm a naive port gets wrong: roastery's original try/catch
+   * wrapped extractPdfText_ AND parseRoasteryInvoice_ together, so a Drive
+   * rate-limit would have been memoed and a real invoice discarded forever. */
+  freshSheets();
+  resetProps();
+  ocrText = { 'flaky.pdf': new Error('rate limit exceeded for OCR') };
+  allThreads = [thread([message('flaky.pdf', 12345, '2026-07-10T01:00:00Z')])];
+
+  const flaky1 = run();
+  eq('a thrown OCR counts as unparsed', flaky1.unparsed, 1);
+  const flaky2 = run();
+  eq('a transient OCR failure is NOT memoed - it retries next run',
+    ocrCalls, ['flaky.pdf:12345']);
+  eq('and reports no skip', flaky2.ocrSkipped, 0);
+
+  ocrText['flaky.pdf'] = INVOICE_TEXT;
+  const flaky3 = run();
+  eq('a recovered attachment ingests normally', flaky3.rowsAdded, 1);
+
+  global.GmailApp = savedGmail;
+  globalThis.extractPdfText_ = savedExtract;
+  globalThis.ROASTERY_PARSER_VERSION = savedVersion;
+  scriptProps = savedProps;
+})();
+
+console.log('roastery memo helpers');
+(function () {
+  const savedVersion = globalThis.ROASTERY_PARSER_VERSION;
+  const savedProps = scriptProps;
+  scriptProps = {};
+
+  eq('attachment key pairs name with byte size',
+    roasteryAttachmentKey_({ getName: () => 'a.pdf', getSize: () => 42 }), 'a.pdf:42');
+  check('same name, different size -> different key',
+    roasteryAttachmentKey_({ getName: () => 'a.pdf', getSize: () => 42 }) !==
+    roasteryAttachmentKey_({ getName: () => 'a.pdf', getSize: () => 43 }));
+
+  eq('absent memo loads as empty', roasteryLoadUnparseable_(), {});
+
+  roasterySaveUnparseable_({ 'x.pdf:1': 1000 });
+  eq('round-trips at the current version', roasteryLoadUnparseable_(), { 'x.pdf:1': 1000 });
+
+  globalThis.ROASTERY_PARSER_VERSION = savedVersion + 1;
+  eq('a version bump discards the whole memo', roasteryLoadUnparseable_(), {});
+  globalThis.ROASTERY_PARSER_VERSION = savedVersion;
+
+  scriptProps[ROASTERY_UNPARSEABLE_PROP] = '{not json';
+  eq('corrupt memo degrades to empty, not a throw', roasteryLoadUnparseable_(), {});
+
+  scriptProps = {};
+  const many = {};
+  for (let i = 0; i < ROASTERY_UNPARSEABLE_MAX_ + 50; i++) many['f' + i + '.pdf:1'] = i;
+  roasterySaveUnparseable_(many);
+  const kept = roasteryLoadUnparseable_();
+  eq('memo is capped at ROASTERY_UNPARSEABLE_MAX_',
+    Object.keys(kept).length, ROASTERY_UNPARSEABLE_MAX_);
+  check('oldest entry was evicted', kept['f0.pdf:1'] === undefined);
+  check('newest entry was kept',
+    kept['f' + (ROASTERY_UNPARSEABLE_MAX_ + 49) + '.pdf:1'] !== undefined);
+
+  // The memo must never resurrect a mayers key and vice versa.
+  check('roastery memo uses its OWN script property',
+    ROASTERY_UNPARSEABLE_PROP !== MAYERS_UNPARSEABLE_PROP);
+
+  globalThis.ROASTERY_PARSER_VERSION = savedVersion;
+  scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ */
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

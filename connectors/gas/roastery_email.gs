@@ -29,6 +29,35 @@ var ROASTERY_SEARCH = 'label:' + ROASTERY_GMAIL_LABEL + ' has:attachment -label:
 var ROASTERY_TZ = 'Australia/Sydney';
 var ROASTERY_DEPARTMENT = 'Roastery';
 
+/* --- Permanently-unparseable attachment memo -----------------------
+ * Ported from mayers.gs (fixed there 2026-08-15, latent here until now).
+ * A thread is only labelled once something parsed out of it (see
+ * roasteryDailyPull_impl_), so a document that can NEVER parse stays
+ * unlabelled, keeps matching ROASTERY_SEARCH, and is re-OCR'd every run
+ * forever. Drive OCR is the expensive, rate-limited step, so that is a
+ * standing quota leak the moment this feed goes live with any non-invoice
+ * attachment (a statement, a price list, a signed credit application).
+ *
+ * The memo remembers which attachments already came back unparseable and
+ * skips the OCR for them. Deliberately NOT a Gmail label on the thread: the
+ * thread must stay unlabelled so a NEW attachment added to it is still
+ * processed.
+ */
+var ROASTERY_UNPARSEABLE_PROP = 'ROASTERY_UNPARSEABLE';
+
+/* Bump whenever parseRoasteryInvoice_ or the regexes it uses change. The memo
+ * records "this text does not parse UNDER THIS PARSER", so a version bump
+ * discards the whole memo and every remembered document is retried exactly
+ * once against the new parser. That is what preserves the original
+ * "unparseable threads stay unlabelled so they're retried after a fix" intent.
+ * Start at 1: the Sample Bean Co parser is the first shipped version, and the
+ * real first-vendor parser will bump it. */
+var ROASTERY_PARSER_VERSION = 1;
+
+/* Runaway guard, not a working limit. Oldest entries are evicted first —
+ * guards the 9KB Script-Properties value limit. */
+var ROASTERY_UNPARSEABLE_MAX_ = 200;
+
 /* ------------------------------------------------------------------ *
  * Entry point
  * ------------------------------------------------------------------ */
@@ -44,7 +73,7 @@ function roasteryDailyPull() {
   var res = withScriptLock_(function () { return roasteryDailyPull_impl_(); });
   if (res === LOCK_TIMEOUT_) {
     Logger.log('roasteryDailyPull: could not acquire script lock — skipped this run');
-    return { rowsAdded: 0, duplicatesSkipped: 0, threadsProcessed: 0, unparsed: 0, locked: true };
+    return { rowsAdded: 0, duplicatesSkipped: 0, threadsProcessed: 0, unparsed: 0, ocrSkipped: 0, locked: true };
   }
   return res;
 }
@@ -58,6 +87,10 @@ function roasteryDailyPull_impl_() {
   var unparsed = 0;
   var seenAttachments = {}; // PDF name → true; one OCR per unique invoice per run
 
+  var unparseable = roasteryLoadUnparseable_();
+  var unparseableDirty = false;
+  var ocrSkipped = 0;
+
   for (var t = 0; t < threads.length; t++) {
     var messages = threads[t].getMessages();
     var threadParsed = 0;
@@ -68,14 +101,18 @@ function roasteryDailyPull_impl_() {
       if (seenAttachments[pdf.getName()]) continue; // same invoice already handled this run
       seenAttachments[pdf.getName()] = true;
 
+      // Known-unparseable under this parser version: skip the OCR, not the
+      // thread. The thread stays unlabelled either way.
+      var memoKey = roasteryAttachmentKey_(pdf);
+      if (unparseable[memoKey]) { ocrSkipped++; continue; }
+
       var fallbackDate = Utilities.formatDate(msg.getDate(), ROASTERY_TZ, 'yyyy-MM-dd');
-      try {
-        var text = extractPdfText_(pdf);
-        var row = parseRoasteryInvoice_(text, fallbackDate);
-        row.invoice_ref = row.invoice_ref || msg.getId();
-        rows.push(row);
+      var attempt = extractRoasteryInvoiceFromPdf_(pdf, fallbackDate);
+      if (attempt.parsed) {
+        attempt.parsed.invoice_ref = attempt.parsed.invoice_ref || msg.getId();
+        rows.push(attempt.parsed);
         threadParsed++;
-      } catch (err) {
+      } else {
         // LOUD, not silent — this is exactly the failure mode
         // fix-silent-ingest-failures exists to close (see phases/
         // fix-silent-ingest-failures/). Log with enough detail to act on, and
@@ -84,8 +121,15 @@ function roasteryDailyPull_impl_() {
         // hand; dedup on invoice_ref (or message id) makes a later
         // successful parse safe to re-ingest.
         Logger.log('roasteryDailyPull: UNPARSEABLE attachment "' + pdf.getName() +
-          '" in thread ' + threads[t].getId() + ', message ' + msg.getId() + ' — ' + err.message);
+          '" in thread ' + threads[t].getId() + ', message ' + msg.getId() + ' — ' + attempt.error);
         unparsed++;
+        // Only a DETERMINISTIC failure earns a memo entry. A failed OCR is
+        // transient (rate limit / Drive hiccup) — memoing it would permanently
+        // discard a real invoice on a bad day.
+        if (attempt.deterministic) {
+          unparseable[memoKey] = Date.now();
+          unparseableDirty = true;
+        }
       }
     }
     // Only mark a thread done once we got data out of it — failed/unparseable
@@ -93,11 +137,14 @@ function roasteryDailyPull_impl_() {
     if (threadParsed > 0) threads[t].addLabel(label);
   }
 
+  if (unparseableDirty) roasterySaveUnparseable_(unparseable);
+
   var sheet = ensureSheet(getHubSpreadsheet_(), SUPPLIERS_TAB, SUPPLIERS_HEADERS);
   var res = ingestSupplierRows('roastery', rows, extractedAt, sheet);
 
   Logger.log('roasteryDailyPull: ' + res.rowsAdded + ' added, ' + res.duplicatesSkipped +
-    ' dup, ' + unparsed + ' unparsed, ' + threads.length + ' threads');
+    ' dup, ' + unparsed + ' unparsed, ' + ocrSkipped + ' ocr-skipped, ' +
+    threads.length + ' threads');
 
   // Heartbeat gate mirrors square.gs's sitesOk pattern, NOT mayers's
   // always-stamp: mayers can always stamp because GmailApp.search returning
@@ -119,8 +166,98 @@ function roasteryDailyPull_impl_() {
     rowsAdded: res.rowsAdded,
     duplicatesSkipped: res.duplicatesSkipped,
     threadsProcessed: threads.length,
-    unparsed: unparsed
+    unparsed: unparsed,
+    ocrSkipped: ocrSkipped
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Unparseable-attachment memo
+ * ------------------------------------------------------------------ */
+
+/**
+ * OCR a PDF and parse it, separating a TRANSIENT extraction failure from a
+ * DETERMINISTIC parse failure. Only the latter may be memoed — memoing a Drive
+ * rate-limit would permanently discard a real invoice on a bad day.
+ *
+ * parseRoasteryInvoice_ RAISES rather than returning null (see its docstring),
+ * so both arms are try/catch here; the distinction is WHICH call threw.
+ * @param {GoogleAppsScript.Gmail.GmailAttachment} pdfBlob
+ * @param {string} fallbackDate — 'YYYY-MM-DD'
+ * @returns {{parsed:?Object, deterministic:boolean, error:?string}}
+ */
+function extractRoasteryInvoiceFromPdf_(pdfBlob, fallbackDate) {
+  var text = null;
+  try {
+    text = extractPdfText_(pdfBlob);
+  } catch (err) {
+    Logger.log('extractRoasteryInvoiceFromPdf_: PDF extraction failed — ' + err.message);
+    return { parsed: null, deterministic: false, error: err.message };
+  }
+  try {
+    return { parsed: parseRoasteryInvoice_(text, fallbackDate), deterministic: true, error: null };
+  } catch (err) {
+    return { parsed: null, deterministic: true, error: err.message };
+  }
+}
+
+/**
+ * Stable identity for an invoice attachment. Name alone is not enough — vendors
+ * reuse generic attachment names ('invoice.pdf') — so pair it with the byte size.
+ * @param {GoogleAppsScript.Gmail.GmailAttachment} pdf
+ * @returns {string}
+ */
+function roasteryAttachmentKey_(pdf) {
+  return pdf.getName() + ':' + pdf.getSize();
+}
+
+/**
+ * Attachment keys known to fail parsing under the CURRENT parser version.
+ * A version mismatch, absent property, or corrupt JSON all yield {} — i.e. the
+ * safe direction, "we remember nothing, so OCR everything once".
+ * @returns {Object<string, number>} key → epoch ms first memoed
+ */
+function roasteryLoadUnparseable_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(ROASTERY_UNPARSEABLE_PROP);
+  if (!raw) return {};
+  var memo;
+  try {
+    memo = JSON.parse(raw);
+  } catch (err) {
+    Logger.log('roasteryLoadUnparseable_: corrupt memo discarded — ' + err.message);
+    return {};
+  }
+  if (!memo || memo.version !== ROASTERY_PARSER_VERSION) return {};
+  return memo.keys || {};
+}
+
+/**
+ * Persist the memo, evicting oldest entries beyond ROASTERY_UNPARSEABLE_MAX_.
+ * @param {Object<string, number>} keys
+ */
+function roasterySaveUnparseable_(keys) {
+  var names = Object.keys(keys);
+  if (names.length > ROASTERY_UNPARSEABLE_MAX_) {
+    names.sort(function (a, b) { return keys[a] - keys[b]; }); // oldest first
+    var trimmed = {};
+    for (var i = names.length - ROASTERY_UNPARSEABLE_MAX_; i < names.length; i++) {
+      trimmed[names[i]] = keys[names[i]];
+    }
+    keys = trimmed;
+  }
+  PropertiesService.getScriptProperties().setProperty(
+    ROASTERY_UNPARSEABLE_PROP,
+    JSON.stringify({ version: ROASTERY_PARSER_VERSION, keys: keys })
+  );
+}
+
+/**
+ * Forget the memo so every attachment is OCR'd again on the next run.
+ * Zero-arg: the editor Run button passes no arguments.
+ */
+function resetRoasteryUnparseableMemo() {
+  PropertiesService.getScriptProperties().deleteProperty(ROASTERY_UNPARSEABLE_PROP);
+  Logger.log('resetRoasteryUnparseableMemo: memo cleared — next run re-OCRs everything');
 }
 
 /** Install a daily trigger for roasteryDailyPull. Idempotent. */
