@@ -880,13 +880,16 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
   middleware), so `/security-audit` can never reach `approve` for this repo as-is.
 
 ### Other open work
-- [ ] **Verify the `checkIngestStaleness` daily 11:00 trigger actually exists**
-      (Apps Script → Triggers — the Triggers page is the ONLY source of truth,
-      never the code). Both calendar alerts on record (2026-09-01, 2026-09-07)
-      were created by a MANUAL editor run, so nothing yet proves the trigger
-      fires on its own. If it is absent, alerting is exactly as blind as before
-      — it just fails silently instead of throwing. `installStalenessTrigger()`
-      installs it. Jake at the keyboard.
+- ~~Verify the `checkIngestStaleness` daily 11:00 trigger exists~~ ✅ **INSTALLED
+  2026-09-07 13:20** — `installStalenessTrigger: daily 11:00 Australia/Sydney
+  trigger installed`. It was NOT there before: every calendar alert on record
+  (2026-09-01, 2026-09-07) came from a manual editor run, so alerting had never
+  actually been autonomous. The log line (`staleness.gs:460`) prints only after
+  `.create()` succeeds, and :452-457 deletes any pre-existing handler first, so
+  exactly one trigger exists.
+  **First unattended run: 2026-09-08 11:00 AEST.** Expect `stale=1` —
+  `coffee_order_app` only (writer parked at roastery-wholesale 7+8). Anything
+  higher means a connector stopped, since all feeds were stamped fresh 2026-09-07.
 - ~~F2 resummarize-queue starvation~~ ✅ **FIXED 2026-09-07.** `orderAppResumSlice_`
   (`connectors/gas/orderapp.gs`) reserves the last slot for the NEWEST week, so the
   other cap-1 still drain oldest-first but a wedge of permanently-refused split weeks
