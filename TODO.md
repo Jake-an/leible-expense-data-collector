@@ -123,7 +123,9 @@ plan at `C:/Users/mioja/.claude/plans/graceful-brewing-piglet.md`:
       weeks below.
 - [ ] Raise or paginate past `INVOICE_PAGE_LIMIT = 40` — Ordermentum history
       is silently cut at ~1000 invoices/venue (`2023-05-29` is where the
-      window ran out, not where trading began).
+      window ran out, not where trading began). **Still firing 2026-09-07:**
+      supplier `b180d945` at venue `73cb4dc6` reported 60 pages against the
+      limit of 40 — 1000 read, oldest skipped, on every run.
 - [ ] The **24 SPLIT weeks — $92,885.74** — still NOT repairable by
       `weeklySummarize` (reads `Suppliers` only, would understate them);
       needs an archive-aware aggregate, blocked on the `_archive` cleanup above.
@@ -822,31 +824,24 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
      (~/.claude/docs/todo-hygiene.md). -->
 
 ### Open security findings (from /security-audit 2026-09-04, verdict `blocked`)
-- 🔴 **INGEST IS DOWN UNTIL THE CUTOVER IS FINISHED (as of 2026-09-06).** All three
-  unattended connectors have failed both nights since the commit — Food and Dairy Co,
-  Fresh and Chill, Ordermentum, `exit=1` on 05/09 and 06/09; last good run 04/09.
-  Cause confirmed in `logs/*.log`: `INGEST_TOKEN_<SOURCE> is not set … Nothing was
-  posted.` Fail-loud, not data loss — the credential resolves before any HTTP call.
-  Task Scheduler runs the **working tree**, so the rename broke scheduled runs at
-  COMMIT time, not deploy time. All three re-read a newest-first window with no date
-  filter, so the missed nights back-fill on the first successful run — do NOT
-  `--backfill`. Fix = finish the cutover (~15 min, `docs/ingest-token-cutover.md`).
-- ~~per-connector ingest tokens to bind `source` to the caller~~ **CODE DONE
-  2026-09-04, NOT YET CUT OVER.** `checkIngestToken_` + `INGEST_SOURCES_`
-  (`connectors/gas/Code.gs`) bind each token to one source; connectors carry
-  `INGEST_TOKEN_<SOURCE>`. ⚠ **Nothing is deployed and no Script Property is set** —
-  until Jake works through `docs/ingest-token-cutover.md` (needs him at the keyboard,
-  ~20 min) the hub still runs the old shared-token build and the HIGH is still live
-  in PROD. Values waiting in gitignored `credentials/ingest-tokens-2026-09-04.txt`.
-- ~~Bound `amount`/`total` in `validateIngest_`~~ **CODE DONE 2026-09-04, NOT YET
-  DEPLOYED.** `isValidIngestAmount_` requires a finite JS number with
-  `|v| <= MAX_INGEST_AMOUNT_` (1,000,000); negatives stay legal for credit notes.
-  Numeric strings are now REJECTED — `connectors/playwright/base_connector.py`
-  `_check_totals` and `ordermentum.py` `_as_amount` were changed to match. Ships
-  with the cutover deploy above.
-- [ ] **`.env.example` still lists no `INGEST_TOKEN_*` names** — this session could not
-  write it (env files are outside the assistant's permitted paths). Add the five names
-  with empty values so a fresh clone knows they exist. One-line job for Jake.
+- ~~🔴 INGEST IS DOWN UNTIL THE CUTOVER IS FINISHED~~ ✅ **RESOLVED 2026-09-07.**
+  Outage ran three nights (05/09, 06/09, 07/09; last good 04/09), one more than first
+  recorded. Cutover completed end to end: five Script Properties + five `.env` values
+  set by Jake, deployed as **v45** (deployment id unchanged, `/exec` URL stable, v44 is
+  the rollback anchor). `python scripts/verify_ingest_tokens.py` passes 6/6 sources and
+  all four spoof probes (`square`/`mayers`/`greenbean`/`shopify_orderapp`) are refused,
+  proving the fix is live in PROD. All three connectors re-run clean and the window
+  back-filled itself with **no `--backfill`**: food_dairy_co `rowsAdded 0` (nothing new
+  over the weekend), fresh_and_chill **+9**, ordermentum **+11 / 1 updated**.
+- ~~per-connector ingest tokens to bind `source` to the caller~~ ✅ **DONE + DEPLOYED
+  2026-09-07 (v45).** `checkIngestToken_` + `INGEST_SOURCES_` (`connectors/gas/Code.gs`)
+  bind each token to one source; connectors carry `INGEST_TOKEN_<SOURCE>`. The HIGH is
+  closed in PROD — verified by the spoof probes above, not by assumption.
+- ~~Bound `amount`/`total` in `validateIngest_`~~ ✅ **DEPLOYED 2026-09-07 (v45).**
+  `isValidIngestAmount_` requires a finite JS number with `|v| <= MAX_INGEST_AMOUNT_`
+  (1,000,000); negatives stay legal for credit notes. Numeric strings are REJECTED.
+- ~~**`.env.example` still lists no `INGEST_TOKEN_*` names**~~ ✅ **DONE 2026-09-07**
+  (commit `98ee3b6`) — all five names present with empty values.
 - Bind `department` to the source rather than only enum-checking it
   (`Code.gs:420-422`). MEDIUM.
 - `upsertRows_` silently drops a within-batch dedup-key collision (`Code.gs:746`) —
