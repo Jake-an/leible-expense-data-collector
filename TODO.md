@@ -870,12 +870,28 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
   (1,000,000); negatives stay legal for credit notes. Numeric strings are REJECTED.
 - ~~**`.env.example` still lists no `INGEST_TOKEN_*` names**~~ ✅ **DONE 2026-09-07**
   (commit `98ee3b6`) — all five names present with empty values.
-- Bind `department` to the source rather than only enum-checking it
-  (`Code.gs:420-422`). MEDIUM.
-- `upsertRows_` silently drops a within-batch dedup-key collision (`Code.gs:746`) —
-  caller cannot tell "true duplicate" from "data lost". MEDIUM.
-- `doGet` maps every live Summary column generically (`Code.gs:2495-2508`) — a future
-  column is auto-exposed to any token holder. LOW.
+- ~~Bind `department` to the source rather than only enum-checking it~~ ✅ **DONE +
+  DEPLOYED 2026-09-07 (v47)**, commit `e7dc6a2`. `INGEST_SOURCE_DEPARTMENTS_` +
+  `ingestDepartmentFor_` (`connectors/gas/Code.gs`) bind each source to one department
+  (cafe portals → `Cafe`, `coffee_order_app` → `Roastery`, shopspend → none, since
+  `SHOPSPEND_HEADERS` has no such column). Omission is untouched and still defaults to
+  `Cafe`. A coverage test asserts `INGEST_SOURCES_` and the department map cover each
+  other, so a new connector cannot arrive department-unbound. Mutation-checked: disabling
+  the guard fails 13 assertions.
+- ~~`upsertRows_` silently drops a within-batch dedup-key collision~~ ✅ **DONE +
+  DEPLOYED 2026-09-07 (v47)**, commit `6e19bbd`. `upsertRows_` now returns `collisions[]`
+  (key, batch index, dropped amount) and `unchangedSkipped`; `duplicatesSkipped` keeps its
+  old meaning as the total, so no consumer changed. Each collision is `Logger.log`'d one
+  line per row (covers the GAS-native callers that never read the return), `doPost` reports
+  `collisionsDropped`, and `BaseConnector.post` warns on stderr. Mutation-checked: 18 / 5 /
+  5 assertions across three mutations. Also fixed `makeSheet` missing `getName()`.
+- ~~`doGet` maps every live Summary column generically~~ ✅ **DONE + DEPLOYED 2026-09-07
+  (v47)**, commit `d7cec57`. `SUMMARY_PUBLIC_FIELDS_` whitelists the nine served fields;
+  anything else is dropped whatever its position in the live header row. Deliberately NOT
+  derived from `SUMMARY_HEADERS`. Verified against the external consumer before narrowing:
+  `LEIBLE_GM_COST_MONITOR` reads only `location`/`supplier`/`total`/`total_spend`/
+  `week_start`/`summarized_at`/`kind`, all still served. Live `doGet` probe on v47 returns
+  exactly those nine keys.
 - `runtime-defense` gate can never pass in GAS (wants Cloudflare security-headers
   middleware), so `/security-audit` can never reach `approve` for this repo as-is.
 
