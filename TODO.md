@@ -913,8 +913,21 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
   `LEIBLE_GM_COST_MONITOR` reads only `location`/`supplier`/`total`/`total_spend`/
   `week_start`/`summarized_at`/`kind`, all still served. Live `doGet` probe on v47 returns
   exactly those nine keys.
-- `runtime-defense` gate can never pass in GAS (wants Cloudflare security-headers
-  middleware), so `/security-audit` can never reach `approve` for this repo as-is.
+- ~~`runtime-defense` gate can never pass in GAS~~ ✅ **NO LONGER TRUE, 2026-09-08.**
+  That premise died with the global template fix: `check-runtime-defense.cjs` now
+  dispatches on runtime instead of probing only the repo root, so it finds our manifest
+  at `connectors/gas/appsscript.json` via `.clasp.json rootDir` and grades us as GAS.
+  Verified: `node ~/.claude/templates/security/check-runtime-defense.cjs .` → exit 0,
+  "✓ runtime-defense (GAS): 13 file(s) scanned, no UNACKNOWLEDGED gaps", with
+  `gas-anonymous-web-app` correctly read off `docs/security-baseline.json` as
+  acknowledged-not-fixed. The root-only probe used to fall through to the root
+  `pyproject.toml` and print a FALSE GREEN ("✓ Python, 18 files") without ever opening
+  the ANONYMOUS `doPost` that is this repo's whole attack surface.
+- [ ] **Run `/security-audit` on this repo** — now unblocked by the above and never yet
+  attempted end to end. Expect the 6 gates to be runnable; the two known shapes to watch
+  are `check-security-baseline.cjs` (we have a register) and whether `check-auth-coverage`
+  picks HEADLESS mode here (we serve no HtmlService page, so it should — and that is the
+  mode that CHECKS `doPost` instead of exempting it).
 
 ### Other open work
 - ~~Verify the `checkIngestStaleness` daily 11:00 trigger exists~~ ✅ **INSTALLED
