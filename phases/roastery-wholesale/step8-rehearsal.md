@@ -264,6 +264,17 @@ predates:
    `summary-self-heal`, is still `status: "error"`. So the dry run is expected to report a
    large set of **false** orphan candidates — potentially every non-pull-owned Summary row
    for every purged week.
+
+   > **CORRECTION 2026-09-09 (post-hoc).** Point 1 was wrong about the cause, and
+   > therefore wrong about the consequence. `FIX1b` was a **fixture** defect: the test
+   > built its dates from the real clock while asserting inside
+   > `withMockNow('2026-08-25')`, so its cutoff sat 15 days ahead of the implementation's
+   > and `outsideWeek` landed exactly ON the mock cutoff, where the guard's strict `<`
+   > stops biting. `summaryOrphanSweep_`'s purge-line guard was never broken — mutation
+   > check (guard deleted) reds FIX1b and only FIX1b. The dry run would **not** have
+   > reported false orphans for purged weeks. Suite now 2377/0. Skipping (g) was still a
+   > defensible call on the evidence available at the time, but the risk it avoided did
+   > not exist.
 2. **The destructive half is NOT frozen.** `SUMMARY_HEAL_FROZEN_ = false`
    (`Code.gs:169`, lifted in commit `652bf38`), so `runSummaryOrphanSweep()` will delete.
    And the dry run is not inert — it *records the candidate set as approved* into
@@ -439,6 +450,12 @@ main, its owning phase (`summary-self-heal`) is still `error`, and
 `SUMMARY_HEAL_FROZEN_ = false` in the live script — so its dry run would have armed a
 bogus approval set against an unfrozen delete path, for no benefit to this bring-up. It
 gates nothing here. Tracked as an open item in `TODO.md`, not as a passed check.
+
+> **CORRECTION 2026-09-09.** FIX1b is now GREEN (2377 passed / 0 failed) and was a
+> fixture defect, not a bug in the sweep — see the correction under (g) above. The
+> approval set the dry run records was never going to be bogus. (g) is still *skipped,
+> not passed*: it has not been run. `summary-self-heal` remains `status: "error"` on its
+> own (unrelated) `revise` verdict.
 
 ### Carried forward — both expected, neither a defect
 

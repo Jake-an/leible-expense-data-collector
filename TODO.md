@@ -59,15 +59,25 @@ Two things that were wrong in the plan and are worth remembering:
       can stamp**. Consequence: the `coffee_order_app` "never seen" staleness alert fires
       **daily until the Mon 09-14 06:00 run**. Expected, not a defect — but if it is
       still firing on Tue 09-15, that IS a defect and needs looking at.
-- [ ] **Step 8(g) was deliberately SKIPPED, not passed.**
-      `runSummaryOrphanSweepDryRun()`'s `FIX1b` test — *"a week past the purge line
-      yields ZERO candidates"* — is **RED on main** (the suite's only failure), its
-      owning phase `summary-self-heal` is still `status: error`, and
-      `SUMMARY_HEAL_FROZEN_ = false` in the LIVE script. The dry run is not inert: it
-      records its candidate set into `SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_`, which is the
-      gate `runSummaryOrphanSweep()` reads before deleting. So today an operator can dry-run
-      a bogus candidate set and then apply it. **Fix FIX1b or re-freeze before anyone runs
-      the sweep.**
+- [ ] **Step 8(g) was deliberately SKIPPED, not passed** — but the reason it was
+      skipped turned out to be wrong. **RESOLVED 2026-09-09: `FIX1b` was a FIXTURE
+      defect, not an implementation bug.** `summaryOrphanSweep_`'s purge-line guard
+      (`summary_audit.gs`, `rowWeek < purgeCutoff`) was never broken. The test derived
+      its fixture dates from the REAL clock while every assertion ran inside
+      `withMockNow('2026-08-25')`, putting the fixture's cutoff 15 days ahead of the
+      one the implementation computes; as the real clock advanced, `outsideWeek` crawled
+      onto the mock cutoff exactly — the one point where the guard's strict `<` stops
+      biting — so the case went permanently RED from 2026-09-08. Fixture now derives
+      from the pinned instant, plus two precondition asserts so a future drift onto the
+      boundary fails loudly instead of silently inverting the case. Suite **2377 passed,
+      0 failed**; mutation check (guard removed) reds FIX1b and only FIX1b.
+
+      **The "armed delete path" concern recorded here was therefore not real** — the
+      sweep does skip past-purge weeks, so a dry run cannot record a whole-history
+      candidate set into `SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_`. `SUMMARY_HEAL_FROZEN_`
+      remains `false` (Code.gs:169) by deliberate choice, not by oversight.
+      **Remaining:** re-run step 8(g) for real, and close out phase `summary-self-heal`
+      (still `status: error`).
 
 - [ ] **Follow-up: split a dedicated `COST_API_TOKEN`.** The producer doc §12
       flags that `?api=wholesaleSales` newly exposes order-level revenue for

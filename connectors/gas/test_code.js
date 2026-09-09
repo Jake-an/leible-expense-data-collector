@@ -9183,17 +9183,33 @@ withHealUnfrozen(function testSummaryOrphanSweep() {
   const sum = (wk, supplier, loc, total, dept, kind) =>
     [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, dept || 'Cafe', kind || 'spend'];
 
-  // The purge line and the SPLIT guard (FIX 1 below) both run off
-  // todayStr_(), which reads the REAL system clock (Code.gs:1618 uses a bare
-  // `new Date()` — withMockNow only patches Date.now(), so it cannot reach
-  // this call). Built relative to today, matching the pattern already
-  // established in testSummaryDriftGuard further down this file.
-  const today = todayStr_();
+  // The purge line and the SPLIT guard (FIX 1 below) both run off todayStr_(),
+  // which IS mockable — Code.gs:2221 reads `new Date(Date.now())`, changed
+  // from a bare `new Date()` precisely so withMockNow could reach it. Every
+  // assertion in this block runs inside withMockNow(TODAY), so the fixtures
+  // must be derived from that SAME pinned instant.
+  //
+  // They were previously derived from the real clock (copying the pattern in
+  // testSummaryDriftGuard below — which is correct THERE only because that
+  // block uses no withMockNow at all). Mixing the two clocks put the fixture's
+  // cutoff 15 days ahead of the one summaryOrphanSweep_ computes, and as the
+  // real clock advanced `outsideWeek` crawled up onto the mock cutoff exactly
+  // — the one place the guard's strict `<` stops biting — turning FIX1b
+  // permanently RED from 2026-09-08 on. The guard itself was never broken.
+  const today = withMockNow(TODAY, () => todayStr_());
   const cutoff = auditPurgeCutoff_(today);
   const insideDate = addDaysStr_(cutoff, 14);
   const outsideDate = addDaysStr_(cutoff, -14);
   const insideWeek = weekStartForDate_(insideDate);
   const outsideWeek = weekStartForDate_(outsideDate);
+
+  // Preconditions. Without these, a fixture that drifts onto the cutoff
+  // boundary inverts what FIX1a/1b/1c mean while still reading as a plain
+  // assertion failure — which is exactly how the bug above hid.
+  check('fixture precondition: outsideWeek (' + outsideWeek + ') is STRICTLY past the purge cutoff (' + cutoff + ')',
+    outsideWeek < cutoff);
+  check('fixture precondition: insideWeek (' + insideWeek + ') is inside the window (>= ' + cutoff + ')',
+    insideWeek >= cutoff);
 
   /* ---- 6. dry run: writes nothing, one log line PER candidate ----------- */
   seed(
@@ -9455,11 +9471,14 @@ console.log('summary_audit.gs / staleness.gs — checkSummaryDrift() drift guard
   const sum = (wk, supplier, loc, total) =>
     [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
 
-  // The purge line runs off todayStr_(), which reads the REAL system clock
-  // (Code.gs:1618 uses a bare `new Date()` — withMockNow only patches
-  // Date.now(), so it cannot reach this call). Fixtures are built RELATIVE
-  // to today, not to a fixed calendar date, or this suite goes stale the
-  // day it stops matching a hand-picked literal.
+  // The purge line runs off todayStr_(). Fixtures are built RELATIVE to today,
+  // not to a fixed calendar date, or this suite goes stale the day it stops
+  // matching a hand-picked literal. That is safe HERE only because this block
+  // runs no withMockNow — the fixtures and the implementation read the same
+  // (real) clock. todayStr_() IS mockable (Code.gs:2221, `new Date(Date.now())`),
+  // so any block that pins the clock must derive its fixtures from that pinned
+  // instant instead; see the orphan-sweep block above, where mixing the two
+  // clocks silently inverted a CRITICAL purge-line assertion.
   const today = todayStr_();
   const cutoff = auditPurgeCutoff_(today);
   const insideDate = addDaysStr_(cutoff, 14);    // well inside the window, long-completed
