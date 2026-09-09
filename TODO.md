@@ -92,7 +92,18 @@ Two things that were wrong in the plan and are worth remembering:
       by the suite, not by this log: `test_code.js` case 6 seeds genuine in-window
       orphans and gets exactly 2 candidates, so the detector demonstrably fires when
       there is something to find.
-- [ ] **Observability gap: the orphan-sweep dry run cannot tell "clean" from "blind".**
+- [x] **RESOLVED 2026-09-09 (commit `ec4822e`, GAS v49): the orphan-sweep dry run now
+      reports its week accounting.** `summaryOrphanSweep_` returns `weeksTotal` /
+      `weeksEvaluated` / `weeksSkippedPurge` / `weeksSkippedSplit`; the dry run logs the
+      split, appends *"(out of N week(s) actually evaluated)"* to the candidate count,
+      and emits a loud WARNING when `weeksEvaluated === 0` with weeks present — the one
+      case where 0 candidates must not be read as clean. Additive only; the gated apply
+      path reads `report.candidates` alone and is untouched. 12 assertions written
+      test-first (RED 2380/12 on `undefined`, GREEN 2392/0), mutation-checked three ways.
+      **Next 8(g) re-run will show the accounting** — that is what turns the earlier
+      `found 0` into a provable clean result rather than a possibly-blind one.
+
+      *Original problem, for the record:*
       `runSummaryOrphanSweepDryRun()` logs only `found N orphan candidate(s)`
       (`summary_audit.gs:632`). It never reports how many weeks it **evaluated** vs
       **skipped** (past-purge / SPLIT), so a 0 from "checked 26 weeks, all clean" and a 0
