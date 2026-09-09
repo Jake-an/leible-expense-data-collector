@@ -124,9 +124,12 @@ Two things that were wrong in the plan and are worth remembering:
       map-driven-gate-is-blind-not-red memory. Fix: have `summaryOrphanSweep_` return
       `weeksEvaluated` / `weeksSkippedPurge` / `weeksSkippedSplit` and log the split.
       Small and safe, but it touches a `.gs` so it needs a deploy - its own step.
-      **Remaining after that:** close out phase `summary-self-heal` (still
-      `status: error`, on an unrelated `revise` verdict about
-      `restoreWeekFromHealBackup_` whose tests are now green).
+      **Remaining after that:** ~~close out phase `summary-self-heal`~~ **DONE
+      2026-09-09 (0a76c0e)** - it was never a failed step: all 10 read `completed`
+      and the `error` was the phase-end gate's `revise` verdict. All 6 findings
+      traced to their closing commits (`5df302a`, `eab8615`, `bcf9a6d`) and
+      re-verified in current source, not just "tests are green". Closed
+      out-of-band; suites node 2415/0, pytest 526.
 
 - [ ] **ACTIONABLE: week `2026-08-31` is stale by $1,563.62 and will never self-heal.**
       `auditSummaryDrift()` run live 2026-09-09 15:38: `weeks audited 241 | clean 27 |
