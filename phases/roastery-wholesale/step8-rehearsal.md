@@ -4,53 +4,89 @@ Pre-computed expectations so the attended run is a checklist, not an improvisati
 Nothing here writes. Fill the **Actual** columns as you go — a check you did not run is a
 check that failed.
 
-## ⏰ Run this on or before **Sunday 2026-09-06**
+## ⏰ REBASELINED 2026-09-09 — the original window expired
 
-`wholesalePull` pulls the last 8 completed ISO weeks *as of the run date*. Verified against
-`lastCompletedWeeks_`:
+The first draft of this file said "run on or before Sunday 2026-09-06" so the window would
+match `prod-probe.md` exactly. **That date passed.** Rather than run blind against a stale
+baseline, the producer was re-probed live on **2026-09-09** and every expectation below is
+now sourced from that probe, not from `prod-probe.md`.
 
-| Run date | Window | Comparable to `prod-probe.md`? |
+`wholesalePull` pulls the last 8 completed ISO weeks *as of the run date*:
+
+| Run date | Window | Baseline |
 |---|---|---|
-| 2026-09-04 → 2026-09-06 | **W28 (07-06) … W35 (08-24)** | ✅ the exact 8 weeks the probe measured |
-| 2026-09-07 onward | W29 (07-13) … W36 (08-31) | ⚠️ W28 drops off, **W36 has no baseline** |
+| ~~2026-09-04 → 09-06~~ | ~~W28 … W35~~ | expired |
+| **2026-09-09 → 09-13** | **W29 (07-13) … W36 (08-31)** | ✅ the table below (probed 09-09) |
+| 2026-09-14 onward | W30 (07-20) … W37 (09-07) | ⚠️ **W29 drops off — its $1,211.70 is then uncollectable without a backfill** |
 
-Run inside the window and every figure below is a 1:1 diff. After it, W36 is new money you
-cannot check against anything.
+> **Run before Monday 2026-09-14.** Not for baseline reasons any more — the baseline is
+> fresh either way — but because W29 leaves the 8-week window that morning, taking
+> $1,211.70 of external revenue with it.
 
-## (b) Dry run — `wholesalePull({dryRun:true})`
+### The live 09-09 probe — all 8 weeks `ok:true`, all five diagnostics `true`
+
+| week | label | external | internal | ambiguous | unknown | all | orders |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 2026-07-13 | W29 | 1,211.70 | 12,665.83 | 388.60 | 0.00 | 14,266.13 | 6 |
+| 2026-07-20 | W30 | 3,746.30 | 14,053.80 | 0.00 | 0.00 | 17,800.10 | 8 |
+| 2026-07-27 | W31 | 4,887.40 | 13,399.77 | 373.19 | 0.00 | 18,660.36 | 8 |
+| 2026-08-03 | W32 | 1,397.15 | 15,312.77 | 0.00 | 0.00 | 16,709.92 | 6 |
+| 2026-08-10 | W33 | 1,200.30 | 12,895.79 | 418.08 | 0.00 | 14,514.17 | 7 |
+| 2026-08-17 | W34 | 1,595.65 | 13,323.35 | 0.00 | 0.00 | 14,919.00 | 7 |
+| 2026-08-24 | W35 | 2,271.70 | 13,980.20 | 0.00 | 0.00 | 16,251.90 | 5 |
+| 2026-08-31 | W36 | **0.00** | **0.00** | 0.00 | 0.00 | **0.00** | **0** |
+| | **total** | **16,310.20** | **95,631.51** | **1,179.87** | **0.00** | **113,121.58** | **47** |
+
+### ⚠️ W36 is genuinely empty — not a fetch failure
+
+W36 returns `ok:true`, `rowsScanned:166`, `positiveControlCount:22` and all five
+diagnostics `true`, with `orderCount:0` in every bucket. The producer filters to
+`Finalized`/`Archived`; the week closed 2026-09-06 and those orders have not been
+finalized yet. This is exactly the settlement lag `WHOLESALE_REPULL_WEEKS = 8` exists to
+absorb — a later run picks the money up. **Do not chase it, and do not treat
+`weeksWritten: 7` as a failure.**
+
+## (b) Dry run — `runWholesalePullDryRun()`
 
 Read the **return value**; these pulls log little. `byBucket` is in **dollars, summed
 across all 8 weeks** (per-week figures go to `Logger.log`, one line per week).
 
-| Return field | Expected (from `prod-probe.md` 8-week totals) | Actual |
+> ⚠️ **Use `runWholesalePullDryRun()`, not `wholesalePull({dryRun:true})`.** The editor's
+> Run dropdown calls the selected function with **no arguments**, so the form step8.md
+> asks for is unreachable from the UI — selecting `wholesalePull` there would silently
+> run a **wet** pull. The zero-arg wrapper (`orderapp.gs`) makes the identical dry call
+> and logs one line per bucket and per week.
+
+| Return field | Expected (live probe, 2026-09-09) | Actual |
 |---|---|---|
-| `byBucket.wholesale` | **18910.10** | |
-| `byBucket.internal` | **107095.09** | |
+| `byBucket.wholesale` | **16310.20** | |
+| `byBucket.internal` | **95631.51** | |
 | `byBucket.ambiguous` | **1179.87** | |
 | `byBucket.unknown` | **0** | |
 | `weeksRequested` | 8 | |
 | `weeksFetched` | 8 | |
-| `weeksWritten` | 8 | |
+| `weeksWritten` | **7** — W36 is empty, see above | |
+| `ordersFetched` | **47** | |
 | `failedWeeks` / `crossFootFailures` / `splitWeeks` | all `[]` | |
 | `dryRun` | `true` | |
 | `datesHealed` | 0 (nothing has ever been written) | |
 
-Per-week `Logger.log` lines should match the probe's `external`/`internal` columns:
-W28 2,599.90 · W29 1,211.70 · W30 3,746.30 · W31 4,887.40 · W32 1,397.15 · W33 1,200.30 ·
-W34 1,595.65 · W35 2,271.70.
+Per-week `Logger.log` lines should match the `external`/`internal` columns above:
+W29 1,211.70 · W30 3,746.30 · W31 4,887.40 · W32 1,397.15 · W33 1,200.30 ·
+W34 1,595.65 · W35 2,271.70 · W36 0.00.
 
-**Any discrepancy means the upstream changed since 2026-09-03 — explain it before (c).**
+**Any discrepancy means the upstream changed since 2026-09-09 — explain it before (c).**
 
 ### Why `splitWeeks` is expected to be empty
 
 `ARCHIVE_RETENTION_DAYS = 183` (`Code.gs:33`), so the archive cutoff as of the run is
-roughly **2026-03-05**. The oldest week in the window (W28, 2026-07-06) is ~60 days old —
+roughly **2026-03-09**. The oldest week in the window (W29, 2026-07-13) is ~58 days old —
 comfortably inside retention, so nothing in it should have been purged to `_archive`.
 
 This is a *derived* expectation, not a measured one: I could not read the live `_archive`
 tab. If `splitWeeks` comes back non-empty, do **not** treat it as a bug — it means that
 week genuinely has archived rows, the guard correctly wrote nothing for it, and
-`weeksWritten` will be below 8 by exactly that count.
+`weeksWritten` will be below **7** by exactly that count.
 
 ## (c) Wet run — `wholesalePull()`
 
@@ -60,31 +96,41 @@ week genuinely has archived rows, the guard correctly wrote nothing for it, and
 
 | Field | Expected | Actual |
 |---|---|---|
-| `rowsAdded` | == dry run's `rowsAdded` (≈ `ordersFetched`; probe saw `matched` 5–7/week) | |
+| `rowsAdded` | == dry run's `rowsAdded` (**≈ 47**; probe saw 5–8 orders/week, W36 zero) | |
 | `rowsUpdated` | 0 | |
 | `duplicatesSkipped` | 0 | |
 | `weeksResummarized` | 5 (the `GREENBEAN_RESUM_CAP`) | |
-| `weeksQueued` | 3 (8 affected − cap 5) — drains over the next runs | |
-| `heartbeatStamped` | **false** — see below. This is expected on run 1. | |
+| `weeksQueued` | **2** (7 affected − cap 5) — W36 wrote nothing, so it is not affected | |
+| `heartbeatStamped` | **false** — see below. Expected on EVERY run this week, not just run 1. | |
 
-### ⚠️ Run 1 will NOT stamp a heartbeat — and that is correct
+### ⚠️ NO run this week will stamp a heartbeat — corrected 2026-09-09
 
-The resummarize cap drains **oldest-first**: with all 8 window weeks affected, `toSummarize`
-takes W28–W32 and the **newest week (W35) lands in the overflow queue**. The heartbeat's
-`newestResumOk` condition therefore cannot be satisfied, so `heartbeatStamped` is `false`
-even though every week wrote cleanly.
+The original note here said the heartbeat fails on run 1 (resummarize cap, oldest-first)
+and **self-corrects on run 2**. With the shifted window that is no longer true, and the
+real reason is different and stronger.
 
-Verified by test, not by reasoning — `test_code.js` case20b asserts exactly this, and
-isolates it (all other heartbeat conditions pass in that fixture).
+`heartbeatStamped` is gated on the **newest** week in the window (`orderapp.gs:1683-1697`).
+That week is now **W36, which is genuinely empty**, so two of its six conditions are
+structurally false:
 
-**It self-corrects on run 2**, when the 3 queued weeks drain (3 < cap 5) and the newest
-week gets summarized. So:
+| condition | source | W36 value | passes? |
+|---|---|---|---|
+| `newestWroteRows` | `mapped.rows.length > 0` (`:1624`) | `0 > 0` | ❌ |
+| `newestGrossOk` | wholesale cents ≥ `WHOLESALE_GROSS_FLOOR` 800 (`:1690`) | `0 ≥ 80000` | ❌ |
 
-- Do **not** read a missing heartbeat on run 1 as a failed pull.
-- Do **not** re-run repeatedly trying to make it stamp — run (d) idempotency is that
-  second run, and it is what clears the queue.
-- `checkIngestStaleness()` in (f) watches `coffee_order_app` at 168h — but see the
-  never-seen hazard below, which the 168h override does **not** protect against.
+Nothing a re-run can do changes either one — the upstream week is empty. So:
+
+> **`heartbeatStamped: false` is the expected result of EVERY run from 2026-09-09 through
+> Sunday 2026-09-13, including a completely successful one.** Do not read it as a failed
+> pull, and do not re-run trying to make it stamp.
+
+**First real chance to stamp: the armed Monday 2026-09-14 06:00 trigger**, when W37
+(09-07–09-13) becomes the newest completed week. Every non-empty week probed clears the
+$800 floor comfortably (lowest: W33 at $1,200.30), so a normal W37 stamps.
+
+**Consequence for (f):** the `coffee_order_app` "never seen" staleness alert **will keep
+firing daily until that Monday run**, because the never-seen short-circuit fires before any
+threshold (see the hazard note below). A successful bring-up does not silence it this week.
 
 ### ⚠️ Two expected-but-alarming things
 
@@ -94,8 +140,8 @@ week gets summarized. So:
    not failing — a human resolves SHOPS in the Order app. It is signature-gated, so it
    will not re-alert every run while the condition is unchanged.
 2. **The DQ alert does NOT suppress the heartbeat.** `heartbeatStamped` is gated only on
-   the newest week's five conditions; `ambiguous` is not one of them. Expect an alert
-   **and** a stamped heartbeat together.
+   the newest week's own conditions; `ambiguous` is not one of them. So the alert is not
+   the reason the heartbeat is missing this week — the empty W36 is. Do not conflate them.
 
 ### doGet verification
 
@@ -105,7 +151,7 @@ carries stray whitespace). Bare `curl -sL`; do not add `-X` or a `Content-Type` 
 
 ```bash
 # wholesale revenue rows across the pulled window
-curl -sL "$EXEC_URL?token=$TOK&fn=summary&from=2026-07-06&to=2026-08-24&department=Roastery"
+curl -sL "$EXEC_URL?token=$TOK&fn=summary&from=2026-07-13&to=2026-08-31&department=Roastery"
 ```
 
 Confirm in the payload:
@@ -157,13 +203,32 @@ A source with no heartbeat is `stale: true` **immediately** — the 168h overrid
 This is exactly the false-alarm the original `staleness.gs` comment warned about — it was
 correct, and arming ahead of the writer re-opened it for the duration of the gap.
 
-**Mitigation: run step 7 and step 8 in the same sitting.** If they must be split, expect
-the alert and do not chase it. Note run 1 does not clear it either — the heartbeat only
-stamps once the newest week is resummarized, i.e. run 2 (see the run-1 note above).
+**Mitigation (superseded 2026-09-09):** step 7 is already closed and its scopes are live,
+so the gap is open right now — the alert has been firing daily since 2026-09-07. **No run
+this week closes it**, because the heartbeat cannot stamp while the empty W36 is the newest
+week (see the corrected heartbeat section above). Expect the alert through Sunday
+2026-09-13 and do not chase it; the armed Monday 2026-09-14 06:00 trigger is what clears
+it.
 
-## (g) Orphan sweep — `runSummaryOrphanSweepDryRun()`
+## (g) Orphan sweep — `runSummaryOrphanSweepDryRun()` — ⚠️ SKIP THIS WEEK
 
-Read-only. Record the candidates it reports; do not act on them in this step.
+**Recommend skipping (g) during this bring-up.** Two facts found 2026-09-09 that step8.md
+predates:
+
+1. **Its orphan detection has a known-RED test.** `test_code.js` FIX1b — *"a week past the
+   purge line yields ZERO candidates, not 'every row is an orphan'"* — **fails on `main`
+   today** (2374 passed / 1 failed, the only failure in the suite). The owning phase,
+   `summary-self-heal`, is still `status: "error"`. So the dry run is expected to report a
+   large set of **false** orphan candidates — potentially every non-pull-owned Summary row
+   for every purged week.
+2. **The destructive half is NOT frozen.** `SUMMARY_HEAL_FROZEN_ = false`
+   (`Code.gs:169`, lifted in commit `652bf38`), so `runSummaryOrphanSweep()` will delete.
+   And the dry run is not inert — it *records the candidate set as approved* into
+   `SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_`, which is exactly the gate the apply checks.
+
+Running (g) therefore arms a bogus approval set against a live delete path, for zero
+benefit to the wholesale bring-up. It gates nothing here. **Skip it, and note the skip.**
+If you do run it: read the candidates, and do **not** run `runSummaryOrphanSweep()`.
 
 ## Rollback reality
 

@@ -1812,3 +1812,58 @@ function wholesalePullRetry() {
   }
   wholesalePull();
 }
+
+/**
+ * Step 8(b) bring-up preview. The Apps Script editor's Run button calls the
+ * selected function with NO arguments, so `wholesalePull({dryRun:true})` —
+ * which step8.md asks for — is not reachable from the dropdown at all. This
+ * is that call, zero-arg, so the preview is actually runnable.
+ *
+ * Writes NOTHING: no ingest, no date-move cell writes, no weeklySummarize,
+ * no heartbeat, no data-quality alert (wholesalePull_impl_ gates all five on
+ * `dryRun`). Safe to run repeatedly.
+ *
+ * Logs one line per bucket and one per week rather than a single
+ * JSON.stringify — the editor truncates one big blob, and a preview nobody
+ * can read is not a preview.
+ * @returns {Object} wholesalePull's full result, with `dryRun:true`.
+ */
+function runWholesalePullDryRun() {
+  var res = wholesalePull({ dryRun: true });
+
+  Logger.log('=== WHOLESALE PULL — DRY RUN (nothing written) ===');
+  if (res.noToken) {
+    Logger.log('ORDER_APP_COST_TOKEN is not set — nothing fetched.');
+    return res;
+  }
+  if (res.locked) {
+    Logger.log('script lock busy — nothing fetched. Re-run in a minute.');
+    return res;
+  }
+
+  Logger.log('weeks requested/fetched/written: ' + res.weeksRequested + '/' +
+    res.weeksFetched + '/' + res.weeksWritten);
+  Logger.log('orders fetched: ' + res.ordersFetched);
+  Logger.log('would add/update/skip rows: ' + res.rowsAdded + '/' +
+    res.rowsUpdated + '/' + res.duplicatesSkipped);
+  Logger.log('dates that would be healed: ' + res.datesHealed);
+
+  var buckets = res.byBucket || {};
+  for (var b in buckets) {
+    if (Object.prototype.hasOwnProperty.call(buckets, b)) {
+      Logger.log('  BUCKET ' + b + '  $' + buckets[b]);
+    }
+  }
+  for (var f = 0; f < res.failedWeeks.length; f++) {
+    Logger.log('  FAILED WEEK ' + JSON.stringify(res.failedWeeks[f]));
+  }
+  for (var x = 0; x < res.crossFootFailures.length; x++) {
+    Logger.log('  CROSS-FOOT FAILURE ' + JSON.stringify(res.crossFootFailures[x]));
+  }
+  for (var s = 0; s < res.splitWeeks.length; s++) {
+    Logger.log('  SPLIT WEEK (archived rows, skipped) ' + res.splitWeeks[s]);
+  }
+
+  Logger.log('DRY RUN — nothing was written. Run wholesalePull() to apply.');
+  return res;
+}
