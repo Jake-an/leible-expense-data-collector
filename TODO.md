@@ -150,8 +150,24 @@ Two things that were wrong in the plan and are worth remembering:
       = 28 weeks carrying Summary rows, which is exactly the `weeks in Summary 28` the
       orphan sweep reported the same afternoon. The two independent tools reconcile.
 
-- [ ] **BLOCKER on the above: the two commands the audit tells you to run are unreachable
-      from the Run dropdown.** The audit's closing advice is
+- [x] **RESOLVED 2026-09-09 (commit pending, GAS v50): both commands are now reachable.**
+      Added `resummarizeWeekFromProperty()` (reads `SUMMARY_RESUMMARIZE_WEEK`) and gave
+      `auditSummaryDriftDetail()` optional `SUMMARY_AUDIT_MIN_WEEK` scoping. 23 assertions
+      written test-first (RED: 3 failures + a `ReferenceError`; GREEN 2415/0),
+      mutation-checked per guard.
+
+      **Correcting my own claim in the original item below:** I wrote that detail "cannot
+      be reached either". Wrong — `auditSummaryDriftDetail()` already existed and was
+      already zero-arg and deployed. What it lacked was *scoping*, so at 214 drifted weeks
+      it emits ~800 lines. Only `weeklySummarize(week)` was genuinely unreachable.
+
+      **Also corrected:** the wrapper's SPLIT guard is **defense-in-depth, not the only
+      protection** — `weeklySummarize`'s own guarded write path already skip-splits
+      (`Code.gs:2728`). The mutation check proved this: deleting the wrapper's guard does
+      not let a split week through. It earns its place by failing fast with a readable
+      reason before taking the script lock, not by being load-bearing.
+
+      *Original item, for the record:* The audit's closing advice is
       `weeklySummarize('<week_start>')` and "read the detail first" — but
       `weeklySummarize(weekStartOverride)` (`Code.gs:2972`) takes an argument and
       `auditSummaryDrift()` (`summary_audit.gs:943`) hard-codes `auditSummaryDrift_(false)`,

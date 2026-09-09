@@ -13973,5 +13973,174 @@ console.log('orderAppResumSlice_ - reserved newest slot');
 
 /* ------------------------------------------------------------------ */
 
+
+/* ------------------------------------------------------------------ *
+ * Zero-arg operator wrappers for the two commands auditSummaryDrift's own
+ * closing advice tells you to run. The GAS editor Run dropdown passes NO
+ * arguments, so weeklySummarize(week) was unreachable from it, and
+ * auditSummaryDriftDetail() existed but could not be scoped — at 214 drifted
+ * weeks it emits ~800 lines. Both follow the established property-driven
+ * pattern of restoreSummaryWeekFromBackup().
+ *
+ * resummarizeWeekFromProperty() is a WRITE path, so it refuses loudly on
+ * anything it cannot verify, and encodes two hard-won rules:
+ *  - never re-summarize a SPLIT week (a recompute understates it)
+ *  - never re-summarize a week that has not finished yet
+ * ------------------------------------------------------------------ */
+console.log('summary_audit.gs — zero-arg operator wrappers (detail scoping + guarded re-summarize)');
+(function testZeroArgOperatorWrappers() {
+  const savedSS = currentSS;
+  const savedProps = scriptProps;
+  const TS = '2026-09-09T09:00:00+10:00';
+
+  const sup = (date, supplier, total, ref, loc) =>
+    [date, supplier, total, ref, loc, 'src', TS, 'Cafe'];
+  const sum = (wk, supplier, loc, total) =>
+    [wk, addDaysStr_(wk, 6), supplier, loc, total, TS, 'Cafe', 'spend'];
+
+  function seed(supplierRows, summaryRows, archiveRows) {
+    currentSS = makeSpreadsheet();
+    scriptProps = {};
+    const supp = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    (supplierRows || []).forEach(function (r) { supp.appendRow(r); });
+    const summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
+    (summaryRows || []).forEach(function (r) { summ.appendRow(r); });
+    ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
+    const arch = ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
+    (archiveRows || []).forEach(function (r) { arch.appendRow(r); });
+  }
+  function summaryJSON() {
+    return JSON.stringify(currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues());
+  }
+
+  // Real clock, no withMockNow anywhere in this block — fixtures and the
+  // implementation therefore read the same clock. (The trap fixed in 21525e0.)
+  const today = todayStr_();
+  const doneWeek = weekStartForDate_(addDaysStr_(today, -21));   // finished weeks ago
+  const liveWeek = weekStartForDate_(today);                     // still in progress
+  check('fixture precondition: doneWeek (' + doneWeek + ') ENDED before today (' + today + ')',
+    addDaysStr_(doneWeek, 6) < today);
+  check('fixture precondition: liveWeek (' + liveWeek + ') has NOT ended yet',
+    addDaysStr_(liveWeek, 6) >= today);
+
+  /* ---- A. auditSummaryDriftDetail() — optional SUMMARY_AUDIT_MIN_WEEK ---- */
+
+  // A1. unset property keeps the pre-existing behaviour exactly: every week.
+  seed([sup(addDaysStr_(doneWeek, 1), 'Kent Paper', 100, 'K1', 'York')], []);
+  var rep = auditSummaryDriftDetail();
+  check('A1: with SUMMARY_AUDIT_MIN_WEEK unset, detail still audits every week (unchanged default)',
+    !!rep && !!rep.weeks && rep.weeks.some(function (w) { return w.week === doneWeek; }));
+
+  // A2. a valid property scopes the audit and says so.
+  var oldWeek = weekStartForDate_(addDaysStr_(doneWeek, -70));
+  seed([sup(addDaysStr_(doneWeek, 1), 'Kent Paper', 100, 'K1', 'York'),
+        sup(addDaysStr_(doneWeek, -70), 'Fresh and Chill', 50, 'F1', 'North')], []);
+  scriptProps.SUMMARY_AUDIT_MIN_WEEK = doneWeek;
+  clearLoggedMessages();
+  rep = auditSummaryDriftDetail();
+  check('A2: a valid SUMMARY_AUDIT_MIN_WEEK keeps the in-scope week',
+    !!rep && !!rep.weeks && rep.weeks.some(function (w) { return w.week === doneWeek; }));
+  check('A2: ...and drops every week older than it',
+    !!rep && !!rep.weeks && !rep.weeks.some(function (w) { return w.week === oldWeek; }));
+  check('A2: ...and the log states the scoping, so a short report is not read as a clean one',
+    lastLoggedMessages().some(function (m) { return m.indexOf('SUMMARY_AUDIT_MIN_WEEK') !== -1; }));
+
+  // A3. read-only path: an unparseable value degrades to the FULL audit with a
+  // notice — it must not silently scope to nothing and look clean.
+  seed([sup(addDaysStr_(doneWeek, 1), 'Kent Paper', 100, 'K1', 'York')], []);
+  scriptProps.SUMMARY_AUDIT_MIN_WEEK = 'last-tuesday';
+  clearLoggedMessages();
+  rep = auditSummaryDriftDetail();
+  check('A3: an unparseable SUMMARY_AUDIT_MIN_WEEK still audits every week (no silent empty scope)',
+    !!rep && !!rep.weeks && rep.weeks.some(function (w) { return w.week === doneWeek; }));
+  check('A3: ...and the bad value is named in the log',
+    lastLoggedMessages().some(function (m) { return m.indexOf('last-tuesday') !== -1; }));
+
+  /* ---- B. resummarizeWeekFromProperty() — guarded write ---------------- */
+
+  var before, res;
+
+  // B1. unset property refuses loudly and writes nothing.
+  seed([sup(addDaysStr_(doneWeek, 1), 'Kent Paper', 100, 'K1', 'York')],
+       [sum(doneWeek, 'Kent Paper', 'York', 55)]);
+  clearLoggedMessages();
+  before = summaryJSON();
+  res = resummarizeWeekFromProperty();
+  check('B1: an unset SUMMARY_RESUMMARIZE_WEEK is refused, not read as "do them all"',
+    !!res && /not set/i.test(String(res.refused)));
+  eq('B1: Summary is byte-identical after the refusal', summaryJSON(), before);
+  check('B1: the refusal names the property so the operator knows what to set',
+    lastLoggedMessages().some(function (m) { return m.indexOf('SUMMARY_RESUMMARIZE_WEEK') !== -1; }));
+
+  // B2. unparseable / impossible date refused.
+  scriptProps.SUMMARY_RESUMMARIZE_WEEK = '2026-02-31';
+  before = summaryJSON();
+  res = resummarizeWeekFromProperty();
+  check('B2: an impossible date (2026-02-31) is refused for BEING unparseable',
+    !!res && /unparseable/i.test(String(res.refused)));
+  eq('B2: Summary is byte-identical after the refusal', summaryJSON(), before);
+
+  // B3. a date that is not a week START is refused — summarizing from a
+  // mid-week date would silently target a different week than intended.
+  scriptProps.SUMMARY_RESUMMARIZE_WEEK = addDaysStr_(doneWeek, 2);
+  before = summaryJSON();
+  res = resummarizeWeekFromProperty();
+  check('B3: a mid-week date is refused for NOT BEING a week start',
+    !!res && /not a week start/i.test(String(res.refused)));
+  eq('B3: Summary is byte-identical after the refusal', summaryJSON(), before);
+
+  // B4. an unfinished week is refused — re-summarizing it freezes a partial
+  // figure that later invoices will never correct.
+  seed([sup(addDaysStr_(liveWeek, 1), 'Kent Paper', 100, 'K1', 'York')],
+       [sum(liveWeek, 'Kent Paper', 'York', 55)]);
+  scriptProps.SUMMARY_RESUMMARIZE_WEEK = liveWeek;
+  before = summaryJSON();
+  res = resummarizeWeekFromProperty();
+  check('B4: an unfinished week is refused for BEING unfinished',
+    !!res && /not finished/i.test(String(res.refused)));
+  eq('B4: Summary is byte-identical after the refusal', summaryJSON(), before);
+
+  // B5. a SPLIT week (any _archive row) is refused — a recompute of a split
+  // week understates it, the rule computeHealPlan_/summaryDriftCheck_ enforce.
+  seed([sup(addDaysStr_(doneWeek, 1), 'Kent Paper', 100, 'K1', 'York')],
+       [sum(doneWeek, 'Kent Paper', 'York', 55)],
+       [sup(addDaysStr_(doneWeek, 2), 'Kent Paper', 300, 'K2', 'York')]);
+  scriptProps.SUMMARY_RESUMMARIZE_WEEK = doneWeek;
+  clearLoggedMessages();
+  before = summaryJSON();
+  res = resummarizeWeekFromProperty();
+  // NOTE on what this can and cannot prove. weeklySummarize ALREADY has its own
+  // SPLIT guard deeper down (Code.gs skip-split), so deleting the wrapper's guard
+  // does NOT let a split week through — the data-safety assertions below stay green
+  // either way, and only the log-message assertion distinguishes the two. The
+  // wrapper's guard is deliberate defense-in-depth: it fails fast with an operator-
+  // readable reason before taking the script lock and doing a full read-modify-write.
+  // Do not read these B5 assertions as proof that the wrapper is the thing keeping
+  // split weeks safe; the deeper guard is.
+  check('B5: a SPLIT week is refused FOR BEING SPLIT (not incidentally refused downstream)',
+    !!res && /SPLIT/i.test(String(res.refused)));
+  eq('B5: Summary is byte-identical after the SPLIT refusal', summaryJSON(), before);
+  check('B5: the refusal says SPLIT, so it is not confused with a missing-property refusal',
+    lastLoggedMessages().some(function (m) { return /SPLIT/i.test(m); }));
+
+  // B6. the happy path: a complete, non-split week actually re-summarizes and
+  // the stale amount is corrected. Without this, every guard above could be
+  // passing simply because the wrapper refuses everything.
+  seed([sup(addDaysStr_(doneWeek, 1), 'Kent Paper', 100, 'K1', 'York')],
+       [sum(doneWeek, 'Kent Paper', 'York', 55)]);   // stale: says 55, source says 100
+  scriptProps.SUMMARY_RESUMMARIZE_WEEK = doneWeek;
+  res = resummarizeWeekFromProperty();
+  check('B6: a complete, non-split week is NOT refused', !!res && !res.refused);
+  var rows = currentSS.getSheetByName(SUMMARY_TAB).getDataRange().getValues().slice(1)
+    .filter(function (r) {
+      return coerceDateStr_(r[0]) === doneWeek && String(r[2]) === 'Kent Paper';
+    });
+  eq('B6: exactly one Summary row for the week+supplier (upserted, not duplicated)', rows.length, 1);
+  eq('B6: the stale amount was corrected 55 -> 100', rows.length ? Number(rows[0][4]) : null, 100);
+
+  currentSS = savedSS;
+  scriptProps = savedProps;
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

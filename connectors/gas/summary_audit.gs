@@ -1062,4 +1062,111 @@ function restoreSummaryWeekFromBackup() {
 
   return restoreWeekFromHealBackup_(week);
 }
-function auditSummaryDriftDetail() { return auditSummaryDrift_(true); }
+/* ------------------------------------------------------------------ *
+ * Operator entry points for the two commands auditSummaryDrift's own closing
+ * advice names. The GAS editor Run dropdown passes NO arguments (the gotcha
+ * that made step 8's wholesalePull({dryRun:true}) unreachable), so both are
+ * zero-arg and take their target from a Script Property, exactly like
+ * restoreSummaryWeekFromBackup / SUMMARY_RESTORE_WEEK.
+ * ------------------------------------------------------------------ */
+
+var SUMMARY_AUDIT_MIN_WEEK_PROP_ = 'SUMMARY_AUDIT_MIN_WEEK';
+var SUMMARY_RESUMMARIZE_WEEK_PROP_ = 'SUMMARY_RESUMMARIZE_WEEK';
+
+/**
+ * Read-only. Full drift audit WITH per-row detail. Optionally scoped to weeks
+ * >= the SUMMARY_AUDIT_MIN_WEEK script property — at 214 drifted weeks the
+ * unscoped detail run emits ~800 log lines, which is technically complete and
+ * practically unreadable.
+ *
+ * Being read-only, a bad property value DEGRADES to the full audit with a
+ * notice rather than refusing. The failure mode that must never happen here is
+ * silently scoping to nothing and presenting an empty report as a clean one.
+ * @returns {Object} the auditSummaryDrift_ report
+ */
+function auditSummaryDriftDetail() {
+  var raw = PropertiesService.getScriptProperties().getProperty(SUMMARY_AUDIT_MIN_WEEK_PROP_);
+  if (!raw) return auditSummaryDrift_(true);
+
+  var minWeek = resolveDateArg_(raw, null);
+  if (!minWeek) {
+    Logger.log('auditSummaryDriftDetail: ' + SUMMARY_AUDIT_MIN_WEEK_PROP_ + '=' + raw +
+      ' is not a valid YYYY-MM-DD date — IGNORING it and auditing every week. ' +
+      'Clear or correct the property to silence this.');
+    return auditSummaryDrift_(true);
+  }
+
+  Logger.log('auditSummaryDriftDetail: scoped to weeks >= ' + minWeek +
+    ' (' + SUMMARY_AUDIT_MIN_WEEK_PROP_ + '). Weeks older than this are NOT audited — ' +
+    'a short report here does not mean the rest is clean. Clear the property for the full audit.');
+  return auditSummaryDrift_(true, minWeek);
+}
+
+/**
+ * Re-summarize ONE week, named by the SUMMARY_RESUMMARIZE_WEEK script property.
+ * Zero-arg for the Run button; this is the reachable form of the
+ * weeklySummarize('<week_start>') the audit report tells operators to run.
+ *
+ * This WRITES, so unlike the detail wrapper it refuses loudly rather than
+ * guessing. Four guards, each one a rule learned the expensive way:
+ *  - property unset / unparseable -> refuse (never "do them all")
+ *  - not a week START -> refuse; snapping a mid-week date silently retargets
+ *    a different week than the operator typed
+ *  - week not finished -> refuse; re-summarizing an in-progress week freezes a
+ *    partial figure that later invoices in that week never correct
+ *  - SPLIT week (any _archive row) -> refuse; a recompute of a split week
+ *    UNDERSTATES it, the same reason computeHealPlan_ and summaryDriftCheck_
+ *    both skip split weeks. NOTE this one is defense-in-depth, not the only
+ *    line: weeklySummarize's own guarded write path already skip-splits. It
+ *    earns its place by failing fast with an operator-readable reason before
+ *    the script lock and a full read-modify-write, not by being load-bearing.
+ * @returns {{week:?string, refused:?string}|Object} weeklySummarize's result, or a refusal
+ */
+function resummarizeWeekFromProperty() {
+  var raw = PropertiesService.getScriptProperties().getProperty(SUMMARY_RESUMMARIZE_WEEK_PROP_);
+
+  if (!raw) {
+    Logger.log('resummarizeWeekFromProperty: ' + SUMMARY_RESUMMARIZE_WEEK_PROP_ +
+      ' script property is not set — set it to the week_start (YYYY-MM-DD) you want to ' +
+      're-summarize (see auditSummaryDriftDetail()), then re-run.');
+    return { week: null, refused: SUMMARY_RESUMMARIZE_WEEK_PROP_ + ' not set' };
+  }
+
+  var week = resolveDateArg_(raw, null);
+  if (!week) {
+    Logger.log('resummarizeWeekFromProperty: ' + SUMMARY_RESUMMARIZE_WEEK_PROP_ + '=' + raw +
+      ' is not a valid YYYY-MM-DD date');
+    return { week: null, refused: SUMMARY_RESUMMARIZE_WEEK_PROP_ + ' unparseable: ' + raw };
+  }
+
+  if (weekStartForDate_(week) !== week) {
+    Logger.log('resummarizeWeekFromProperty: REFUSED — ' + week + ' is not a week START ' +
+      '(its week begins ' + weekStartForDate_(week) + '). Set the property to the week_start ' +
+      'exactly as the audit report prints it; this is not snapped for you, because snapping ' +
+      'would summarize a different week than the one you typed.');
+    return { week: week, refused: 'not a week start: ' + week };
+  }
+
+  var weekEnd = addDaysStr_(week, 6);
+  var today = todayStr_();
+  if (weekEnd >= today) {
+    Logger.log('resummarizeWeekFromProperty: REFUSED — week ' + week + ' ends ' + weekEnd +
+      ' and today is ' + today + ', so the week is still in progress. Re-summarizing now ' +
+      'would freeze a partial figure that later invoices in this week never correct. ' +
+      'Wait until the week has completed.');
+    return { week: week, refused: 'week not finished: ends ' + weekEnd };
+  }
+
+  var split = weeksWithArchivedRows_([week]);
+  if (split && split.length) {
+    Logger.log('resummarizeWeekFromProperty: REFUSED — week ' + week + ' is SPLIT ' +
+      '(it has rows in ' + ARCHIVE_TAB + '). A recompute of a split week UNDERSTATES it, ' +
+      'which is why computeHealPlan_ and summaryDriftCheck_ skip split weeks too. ' +
+      'Repair a split week deliberately, not through this wrapper.');
+    return { week: week, refused: 'SPLIT week: ' + week };
+  }
+
+  Logger.log('resummarizeWeekFromProperty: re-summarizing week ' + week +
+    ' — this lands EVERY source change in that week at once.');
+  return weeklySummarize(week);
+}
