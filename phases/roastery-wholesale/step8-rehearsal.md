@@ -175,8 +175,22 @@ it proves the dedup key is doing its job, rather than nothing having happened.
 
 ## (e) Negative auth
 
-Clear `ORDER_APP_COST_TOKEN` → expect `{noToken:true}`, zero writes, and a *skip* (not a
-failure) in the run accounting. **Restore the token afterwards.**
+Expect `{noToken:true}`, zero writes, and a *skip* (not a failure) in the run accounting.
+
+> ⚠️ **RENAME the property key — do NOT delete the value and retype it.**
+> `getOrderAppToken_()` (`orderapp.gs:145-152`) only asks
+> `getProperty('ORDER_APP_COST_TOKEN')` and treats any falsy result as `noToken`. So
+> editing the **key** to `ORDER_APP_COST_TOKEN_BAK` takes the `noToken` path just as well
+> as deleting it — and the secret never leaves the store, never reaches the clipboard,
+> and never has to be retyped. Rename it back afterwards.
+>
+> This matters because the GAS Script Properties UI clips long values on paste
+> (see [[token-mismatch-rotate-typed-not-debug-clipboard]]): a delete-and-restore risks
+> silently truncating a token that four consumers share — `shopifyWeeklyPull`,
+> `greenBeanPull`, `wholesalePull` and shopSpend all read it.
+>
+> While it is renamed those four skip. Midweek that is free: the triggers are Mon 05:00 /
+> Mon 06:00 / Mon 07:00 / Tue 05:00, so nothing is due. Still, keep the window short.
 
 ## (f) Alerting — `checkIngestStaleness()`
 
