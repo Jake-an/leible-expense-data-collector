@@ -9201,8 +9201,10 @@ withHealUnfrozen(function testSummaryOrphanSweep() {
   const today = withMockNow(TODAY, () => todayStr_());
   const cutoff = auditPurgeCutoff_(today);
   const insideDate = addDaysStr_(cutoff, 14);
+  const insideDate2 = addDaysStr_(cutoff, 28);   // a second, distinct in-window week
   const outsideDate = addDaysStr_(cutoff, -14);
   const insideWeek = weekStartForDate_(insideDate);
+  const insideWeek2 = weekStartForDate_(insideDate2);
   const outsideWeek = weekStartForDate_(outsideDate);
 
   // Preconditions. Without these, a fixture that drifts onto the cutoff
@@ -9212,6 +9214,8 @@ withHealUnfrozen(function testSummaryOrphanSweep() {
     outsideWeek < cutoff);
   check('fixture precondition: insideWeek (' + insideWeek + ') is inside the window (>= ' + cutoff + ')',
     insideWeek >= cutoff);
+  check('fixture precondition: insideWeek2 (' + insideWeek2 + ') is inside the window and DISTINCT from insideWeek',
+    insideWeek2 >= cutoff && insideWeek2 !== insideWeek);
 
   /* ---- 6. dry run: writes nothing, one log line PER candidate ----------- */
   seed(
@@ -9414,6 +9418,64 @@ withHealUnfrozen(function testSummaryOrphanSweep() {
       JSON.stringify(before));
     check('the refusal is reported as aborted, not silently treated as success',
       !!result && (result.aborted === true || result.mode === 'aborted'));
+  });
+
+
+  /* ---- OBSERVABILITY (2026-09-09) — a zero must say WHY it is a zero.
+   * The live 8(g) dry run returned "found 0 orphan candidate(s)" and the log
+   * gave no way to tell that apart from a sweep that skipped every week and
+   * therefore looked at nothing. Same class as the map-driven auth gate that
+   * read green while the scope it checked was absent. summaryOrphanSweep_
+   * must report the week accounting, and the dry run must log it. */
+
+  // (i) a genuinely clean in-window week: evaluated, nothing skipped.
+  seed(
+    [sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum(insideWeek, 'Kent Paper', 'Leible York', 100)]);
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    eq('OBS: a clean in-window week reports 0 candidates', report.candidates.length, 0);
+    eq('OBS: ...and reports that it actually EVALUATED that week', report.weeksEvaluated, 1);
+    eq('OBS: ...with nothing skipped for the purge line', report.weeksSkippedPurge, 0);
+    eq('OBS: ...and nothing skipped as SPLIT', report.weeksSkippedSplit, 0);
+    eq('OBS: weeksTotal accounts for every distinct week in Summary', report.weeksTotal, 1);
+  });
+
+  // (ii) the BLIND zero — every week past the purge line. Same candidate
+  // count as (i), completely different meaning.
+  seed(
+    [],
+    [sum(outsideWeek, 'Kent Paper', 'Leible York', 500),
+     sum(addDaysStr_(outsideWeek, -7), 'Fresh and Chill', 'Leible North', 250)]);
+  withMockNow(TODAY, function () {
+    clearLoggedMessages();
+    const report = runSummaryOrphanSweepDryRun();
+    eq('OBS: a fully-skipped sweep still reports 0 candidates (the ambiguity being fixed)',
+      report.candidates.length, 0);
+    eq('OBS: ...but reports that it evaluated NOTHING', report.weeksEvaluated, 0);
+    eq('OBS: ...and attributes both skips to the purge line', report.weeksSkippedPurge, 2);
+    check('OBS: the log states the week accounting, so 0-clean and 0-blind are distinguishable',
+      lastLoggedMessages().some((m) => /evaluated/i.test(m) && /skipped/i.test(m)));
+    check('OBS: a sweep that evaluated no weeks at all says so LOUDLY, not just as a count',
+      lastLoggedMessages().some((m) => /evaluated NO weeks|nothing was checked|blind/i.test(m)));
+  });
+
+  // (iii) the accounting adds up when the two skip reasons are mixed, and a
+  // week that is BOTH past-purge and SPLIT is counted once, not twice.
+  seed(
+    [sup(insideDate, 'Kent Paper', 100, 'K1', 'Leible York')],
+    [sum(insideWeek, 'Kent Paper', 'Leible York', 100),   // evaluated
+     sum(insideWeek2, 'Butterboy', 'Leible York', 200),   // SPLIT (archive row below)
+     sum(outsideWeek, 'Fresh and Chill', 'X', 300)],      // past purge
+    { archiveRows: [sup(insideDate2, 'Butterboy', 200, 'B1', 'Leible York')] });
+  withMockNow(TODAY, function () {
+    const report = runSummaryOrphanSweepDryRun();
+    eq('OBS: mixed skips — one week evaluated', report.weeksEvaluated, 1);
+    eq('OBS: mixed skips — one week held back by the purge line', report.weeksSkippedPurge, 1);
+    eq('OBS: mixed skips — one week held back as SPLIT', report.weeksSkippedSplit, 1);
+    eq('OBS: every week is accounted for exactly once (no double-counting)',
+      report.weeksEvaluated + report.weeksSkippedPurge + report.weeksSkippedSplit,
+      report.weeksTotal);
   });
 
   currentSS = savedSS;

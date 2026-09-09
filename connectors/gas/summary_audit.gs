@@ -574,12 +574,22 @@ function summaryOrphanSweep_() {
   // Recompute each distinct week's batch once, not once per row. Weeks past
   // the purge line or SPLIT never get a computed-keys entry, so every live
   // row for them is skipped below rather than misread as an orphan.
+  // Week accounting. A bare "found 0 candidates" cannot be told apart from a
+  // sweep that skipped every week and therefore looked at nothing — the same
+  // way a map-driven gate reads green when the scope it checks is absent.
+  // Counted with the SAME precedence the guards below use (purge first, then
+  // SPLIT), so a week that is both is attributed once, never twice, and the
+  // three counts always sum to weeksTotal.
+  var weeksTotal = 0, weeksEvaluated = 0, weeksSkippedPurge = 0, weeksSkippedSplit = 0;
+
   var computedKeysByWeek = {};
   var weekList = Object.keys(weeks);
   for (var w = 0; w < weekList.length; w++) {
     var week = weekList[w];
-    if (week < purgeCutoff) continue;
-    if (archiveWeeks[week]) continue;
+    weeksTotal++;
+    if (week < purgeCutoff) { weeksSkippedPurge++; continue; }
+    if (archiveWeeks[week]) { weeksSkippedSplit++; continue; }
+    weeksEvaluated++;
     var weekEnd = addDaysStr_(week, 6);
     var recomputed = aggregateSupplierRows_(sourceRows, week, weekEnd, 'spend')
       .concat(aggregateSupplierRows_(revenueRows, week, weekEnd, 'revenue'));
@@ -613,7 +623,14 @@ function summaryOrphanSweep_() {
     });
   }
 
-  return { mode: 'dryRun', candidates: candidates };
+  return {
+    mode: 'dryRun',
+    candidates: candidates,
+    weeksTotal: weeksTotal,
+    weeksEvaluated: weeksEvaluated,
+    weeksSkippedPurge: weeksSkippedPurge,
+    weeksSkippedSplit: weeksSkippedSplit
+  };
 }
 
 /**
@@ -629,7 +646,17 @@ function runSummaryOrphanSweepDryRun() {
   if (report.error) { Logger.log('runSummaryOrphanSweepDryRun: ' + report.error); return report; }
 
   Logger.log('=== SUMMARY ORPHAN SWEEP — DRY RUN (nothing written) ===');
-  Logger.log('found ' + report.candidates.length + ' orphan candidate(s)');
+  Logger.log('weeks in Summary ' + report.weeksTotal +
+    ' | evaluated ' + report.weeksEvaluated +
+    ' | skipped past purge line ' + report.weeksSkippedPurge +
+    ' | skipped SPLIT ' + report.weeksSkippedSplit);
+  if (report.weeksTotal > 0 && report.weeksEvaluated === 0) {
+    Logger.log('!! WARNING: this sweep evaluated NO weeks — every week was skipped, so a ' +
+      'result of 0 candidates means NOTHING WAS CHECKED, not that Summary is clean. ' +
+      'Do NOT read this as a clean bill of health.');
+  }
+  Logger.log('found ' + report.candidates.length + ' orphan candidate(s)' +
+    ' (out of ' + report.weeksEvaluated + ' week(s) actually evaluated)');
   for (var c = 0; c < report.candidates.length; c++) {
     var cd = report.candidates[c];
     Logger.log('  ORPHAN row ' + (cd.row + 1) + '  week ' + cd.week + '  ' +
