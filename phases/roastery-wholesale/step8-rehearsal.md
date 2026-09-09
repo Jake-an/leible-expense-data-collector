@@ -278,3 +278,85 @@ reverts code, never data. The snapshot tabs from (a) are reference-only: a whole
 copy-back is **prohibited**, because restoring a whole tab deletes rows other producers
 wrote after the snapshot froze (`shopify_orderapp` writes `Summary` directly, `Labour`
 comes from an external sheet). Recovery is row-by-row, guided by the snapshot.
+
+---
+
+# Run record — 2026-09-09 (Jake at the keyboard, Apps Script editor)
+
+## (b) dry run — 12:21 — ✅ PASS
+
+`runWholesalePullDryRun()`. Every per-week line and every bucket matched the 09-09
+baseline exactly:
+
+```
+weeks requested/fetched/written: 8/8/8
+orders fetched: 47
+would add/update/skip rows: 47/0/0
+dates that would be healed: 0
+BUCKET wholesale  $16310.199999999997      (float artifact of 16,310.20)
+BUCKET internal   $95631.51
+BUCKET ambiguous  $1179.87
+BUCKET unknown    $0
+```
+
+Only deviation from the pre-run estimate: `weeksWritten` was **8**, not the predicted 7
+— an empty week still increments the counter. Estimate corrected in this file.
+
+## (c) wet run — 12:22 — ✅ PASS
+
+47 `Revenue` rows written across 7 weeks. The 5/run resummarize cap summarized
+**W29, W30, W31, W32 and W35** — the four oldest plus the newest, the newest slot being
+reserved by the F2 starvation fix (`c7ccfef`). Run log:
+
+```
+wholesalePull: 2 affected week(s) still queued beyond the 5/run cap (oldest: 2026-08-10)
+```
+
+`doGet` immediately after: those five weeks matched the producer to the cent on **both**
+the `wholesale` and `internal` channels; W33 and W34 read `$0.00` (Revenue written,
+Summary pending); W36 correctly `$0.00`.
+
+## (d) idempotency + queue drain — 12:35 — ✅ PASS
+
+`rowsAdded` 0 on `Revenue` (all 47 keys already present), and the 2 queued weeks drained:
+`weeklySummarize` ran for 2026-08-10 and 2026-08-17, no "still queued" line emitted.
+
+The signature gate on the data-quality alert also proved itself:
+
+```
+orderAppRaiseDataQualityAlert_: coffee_order_app condition unchanged (nmd5cg) — alert suppressed
+```
+
+— i.e. the `Leible Taiwan` ambiguous-bucket alert fired once on run 1 and did **not**
+re-alert on run 2, which is the designed behaviour.
+
+### Final reconciliation — `doGet` vs the 09-09 producer probe, ALL 7 weeks
+
+| week | hub `wholesale` | producer `external` | Δ | hub `internal` | producer `internal` | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| 2026-07-13 | 1,211.70 | 1,211.70 | **0.00** | 12,665.83 | 12,665.83 | **0.00** |
+| 2026-07-20 | 3,746.30 | 3,746.30 | **0.00** | 14,053.80 | 14,053.80 | **0.00** |
+| 2026-07-27 | 4,887.40 | 4,887.40 | **0.00** | 13,399.77 | 13,399.77 | **0.00** |
+| 2026-08-03 | 1,397.15 | 1,397.15 | **0.00** | 15,312.77 | 15,312.77 | **0.00** |
+| 2026-08-10 | 1,200.30 | 1,200.30 | **0.00** | 12,895.79 | 12,895.79 | **0.00** |
+| 2026-08-17 | 1,595.65 | 1,595.65 | **0.00** | 13,323.35 | 13,323.35 | **0.00** |
+| 2026-08-24 | 2,271.70 | 2,271.70 | **0.00** | 13,980.20 | 13,980.20 | **0.00** |
+| 2026-08-31 | 0.00 | 0.00 | **0.00** | 0.00 | 0.00 | **0.00** |
+| **total** | **16,310.20** | **16,310.20** | **0.00** | | | |
+
+`supplier` on every `wholesale` row is a real customer name — KiKi Dessert, Lane cove,
+63 Do, ADCO, ADCO Leppington, O3. Revenue locations present: `wholesale`, `internal`,
+`ambiguous`, `online`. The pre-existing `shopify_orderapp` online rows are untouched at
+$13,166.15 over the same window.
+
+**Roastery wholesale income is in the hub for the first time.**
+
+## Still open at this point
+
+- (e) negative auth — **rename** the key, do not retype the secret
+- (f) alerting — assert the event exists
+- (g) orphan sweep — **SKIP** (RED FIX1b + unfrozen delete path)
+- (h) arm the triggers, then verify four on the Triggers page
+- `heartbeatStamped` is still `false` and will stay so until the Mon 2026-09-14 06:00 run
+  (empty W36 is the newest week). The `coffee_order_app` never-seen alert keeps firing
+  daily until then. Both expected.
