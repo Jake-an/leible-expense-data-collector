@@ -396,24 +396,54 @@ at all is also the live proof that step 7's declared `calendar` scope is in effe
 is healthy. That alert is expected to keep firing daily until the Mon 2026-09-14 06:00 run
 stamps the first heartbeat (empty W36 blocks it until then).
 
-## (h) arm the triggers — 12:53 — ⏳ log OK, Triggers page NOT yet confirmed
+## (h) arm the triggers — 12:53 — ✅ PASS (confirmed on the Triggers page)
 
 ```
 installOrderAppTriggers: shopifyWeeklyPull Monday 05:00 + greenBeanPull Tuesday 05:00 +
 wholesalePull Monday 06:00 + wholesalePullRetry Monday 07:00 (Australia/Sydney) installed
 ```
 
-⚠️ **This log line is NOT acceptance.** The function is delete-then-create across all four
-handler names, and the step is explicit that the Triggers page is the only source of truth
-— a log line saying "installed" cannot prove `shopifyWeeklyPull` and `greenBeanPull`
-survived the delete half. Pending a human reading the page.
+That log line is not acceptance — the function is delete-then-create across all four
+handler names. **Verified by reading the Apps Script Triggers page**, which shows 8
+time-based triggers, all owned by Me, all on Head:
 
-## Still open at this point
+| function | last run | note |
+|---|---|---|
+| `wholesalePull` | — | ✅ new |
+| `wholesalePullRetry` | — | ✅ new |
+| `shopifyWeeklyPull` | — | ✅ survived (recreated — see below) |
+| `greenBeanPull` | — | ✅ survived (recreated — see below) |
+| `mayersDailyPull` | 9 Sept 06:32:05 | untouched |
+| `weeklySummarize` | 7 Sept 04:35:28 | untouched |
+| `checkIngestStaleness` | 9 Sept 11:02:46 | untouched |
+| `squareDailyPull` | 9 Sept 03:55:11 | untouched |
 
-- (e) negative auth — **rename** the key, do not retype the secret
-- (f) alerting — assert the event exists
-- (g) orphan sweep — **SKIP** (RED FIX1b + unfrozen delete path)
-- (h) arm the triggers, then verify four on the Triggers page
-- `heartbeatStamped` is still `false` and will stay so until the Mon 2026-09-14 06:00 run
-  (empty W36 is the newest week). The `coffee_order_app` never-seen alert keeps firing
-  daily until then. Both expected.
+Both halves of the contract hold: the four orderapp handlers exist, **and** the four
+unrelated triggers were not swept — `installOrderAppTriggers` deletes only its own handler
+names, as documented.
+
+### ⚠️ `shopifyWeeklyPull` showing "last run: —" is EXPECTED, not a lost trigger
+
+`shopifyWeeklyPull` and `greenBeanPull` both read `—` in the Last run column even though
+shopifyWeeklyPull demonstrably ran on 2026-09-07 (it wrote the W36 Summary row at 05:56).
+That is the delete-then-create working as designed: the recreated trigger is a **new
+trigger object** with no execution history. The schedule is unchanged. Do not read a blank
+Last run as a broken trigger — check Executions for the real history.
+
+## Final state — step 8 COMPLETE
+
+(a) ✅ · (b) ✅ · (c) ✅ · (d) ✅ · (e) ✅ · (f) ✅ · (g) **skipped, deliberately** · (h) ✅
+
+**(g) was skipped, not passed.** `runSummaryOrphanSweepDryRun()`'s FIX1b test is RED on
+main, its owning phase (`summary-self-heal`) is still `error`, and
+`SUMMARY_HEAL_FROZEN_ = false` in the live script — so its dry run would have armed a
+bogus approval set against an unfrozen delete path, for no benefit to this bring-up. It
+gates nothing here. Tracked as an open item in `TODO.md`, not as a passed check.
+
+### Carried forward — both expected, neither a defect
+
+1. `heartbeatStamped` is `false` and stays false until the **Mon 2026-09-14 06:00** run.
+   The newest window week (W36) is genuinely empty upstream, so `newestWroteRows` and
+   `newestGrossOk` cannot be satisfied by any re-run.
+2. Consequently the `coffee_order_app` "never seen" staleness alert keeps firing **daily
+   until that Monday**. The Monday 06:00 trigger is now armed and is what clears both.

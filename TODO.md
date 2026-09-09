@@ -18,32 +18,56 @@
 
 ## Active
 
-### ⚠ NEXT SESSION — build the roastery wholesale income connector (Jake, 2026-09-02)
+### ✅ Roastery wholesale income connector — LIVE 2026-09-09 (phase `roastery-wholesale`, PRD-14 built)
 
-Jake's call at close of 2026-09-02: **fix the connector next session.**
+**Runbook receipt — live bring-up 2026-09-09, Jake at the keyboard.** Steps 0-8 all
+closed; PRD-14 flipped to `built`. Full evidence:
+`phases/roastery-wholesale/step8-rehearsal.md` § "Run record".
 
-**1. Roastery wholesale income connector — IN BUILD (phase `roastery-wholesale`,
-PRD-14), steps 0-5 done as of 2026-09-04.**
+Roastery wholesale income reaches the hub for the first time. Final `doGet`
+reconciliation against a same-day producer probe — **all 7 non-empty weeks match to
+the cent on BOTH channels, delta $0.00**:
 
-**Never blocked on a credential — corrected 2026-09-04.** The owner is the Order
-app's own `?api=wholesaleSales` read endpoint, reached with the
-`ORDER_APP_COST_TOKEN` the collector already holds (the same token
-`shopifyWeeklyPull`/`greenBeanPull` use). The "Blocked on: the upstream API key"
-line that used to sit here was wrong from the start — see
-`phases/roastery-wholesale/prod-probe.md`.
+| | 7-week total (W29…W35) |
+|---|---:|
+| `location='wholesale'` (genuine external income) | **$16,310.20** |
+| `location='internal'` (inter-company transfers — NOT income) | $95,631.51 |
+| `location='ambiguous'` (`Leible Taiwan`, unresolved) | $1,179.87 |
 
-**Corrected magnitude (step 0 probe, PROD, 8 completed weeks 2026-W28..W35):**
-the **$10k+/week** figure this block used to cite is the `all` bucket, and
-**84.2%** of it ($107,095.09 of $127,185.06 over 8 weeks) is `internal` — beans
-moved to Leible's own cafes, an inter-company transfer already counted via those
-cafes' Square sales. Genuine **external** wholesale income is **~$2,364/week**
-($18,910.10 over 8 weeks, 14.9%). `wholesalePull` (built in steps 1-5) writes all
-four of the producer's buckets to `Revenue` as `channel` values
-(`wholesale`/`internal`/`ambiguous`/`unknown`), so only `wholesale` reaches the
-company headline downstream (see `docs/api.md`'s `ROASTERY_REVENUE_CHANNELS` note).
+Supplier names are real customers (KiKi Dessert, Lane cove, 63 Do, ADCO,
+ADCO Leppington, O3). Pre-existing `shopify_orderapp` online rows untouched at
+$13,166.15. Triggers confirmed **on the Triggers page**: `wholesalePull` Mon 06:00 +
+`wholesalePullRetry` Mon 07:00, alongside the surviving `shopifyWeeklyPull` Mon 05:00
+and `greenBeanPull` Tue 05:00.
 
-⚠ **Still true, carried:** the `roastery` feed is still the wrong connector to
-debug for this — it writes **SPEND**, not income.
+Two things that were wrong in the plan and are worth remembering:
+
+- **step8.md's `wholesalePull({dryRun:true})` was unrunnable.** The Apps Script editor's
+  Run dropdown passes **no arguments**, so following it literally would have run a WET
+  pull instead of the preview — through a one-way door. Fixed by adding the zero-arg
+  `runWholesalePullDryRun()`.
+- **The rehearsal's expected figures had expired** (window was W28…W35, actual run window
+  W29…W36). Rebaselined off a live 2026-09-09 probe before the wet run.
+
+⚠ **Still true, carried:** the `roastery` feed is a different thing entirely — it writes
+**SPEND**, not income. Don't debug it for wholesale revenue.
+
+- [ ] **Carried: no heartbeat until Mon 2026-09-14.** `heartbeatStamped` is gated on the
+      newest window week, and W36 (Aug 31–Sep 6) is genuinely empty upstream — the
+      producer filters to Finalized/Archived and the week hasn't settled. So
+      `newestWroteRows` and `newestGrossOk` are both structurally false and **no re-run
+      can stamp**. Consequence: the `coffee_order_app` "never seen" staleness alert fires
+      **daily until the Mon 09-14 06:00 run**. Expected, not a defect — but if it is
+      still firing on Tue 09-15, that IS a defect and needs looking at.
+- [ ] **Step 8(g) was deliberately SKIPPED, not passed.**
+      `runSummaryOrphanSweepDryRun()`'s `FIX1b` test — *"a week past the purge line
+      yields ZERO candidates"* — is **RED on main** (the suite's only failure), its
+      owning phase `summary-self-heal` is still `status: error`, and
+      `SUMMARY_HEAL_FROZEN_ = false` in the LIVE script. The dry run is not inert: it
+      records its candidate set into `SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_`, which is the
+      gate `runSummaryOrphanSweep()` reads before deleting. So today an operator can dry-run
+      a bogus candidate set and then apply it. **Fix FIX1b or re-freeze before anyone runs
+      the sweep.**
 
 - [ ] **Follow-up: split a dedicated `COST_API_TOKEN`.** The producer doc §12
       flags that `?api=wholesaleSales` newly exposes order-level revenue for

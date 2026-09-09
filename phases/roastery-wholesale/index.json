@@ -244,11 +244,14 @@
     {
       "step": 8,
       "name": "live-bring-up",
-      "status": "pending",
+      "status": "completed",
       "tdd": false,
       "covers": [
         "PRD-14"
-      ]
+      ],
+      "completed_at": "2026-09-09T13:00:00+09:00",
+      "closed_out_of_band": true,
+      "summary": "LIVE BRING-UP COMPLETE 2026-09-09, Jake at the keyboard in the Apps Script editor (out of band, not a runner dispatch). (a) snapshots taken. (b) dry run via the new zero-arg runWholesalePullDryRun wrapper -- step8.md's wholesalePull({dryRun:true}) is unreachable from the editor's Run dropdown, which passes no args, so the original instruction would have run a WET pull. Matched a fresh 2026-09-09 producer probe exactly: 47 orders, wholesale $16310.20, internal $95631.51, ambiguous $1179.87. (c) wet run wrote 47 Revenue rows over 7 weeks; the 5/run resummarize cap summarized W29-W32 + W35 and queued W33/W34. (d) drained the queue, rowsAdded 0. FINAL doGet reconciliation: ALL 7 non-empty weeks match the producer to the cent on BOTH the wholesale and internal channels, total external $16,310.20, delta $0.00; supplier names are real customers (KiKi Dessert, Lane cove, 63 Do, ADCO, ADCO Leppington, O3); shopify online rows untouched at $13,166.15. (e) negative auth passed by RENAMING the key (never retyping the secret): noToken path, zero writes, logged as a skip; restore verified by re-running. (f) calendar event confirmed to EXIST (created 2026-09-09T01:02:49Z), eventsCreated=0 being dedup; stale=1 of 8. (h) confirmed on the Triggers PAGE, not from the log: all four orderapp handlers present and the four unrelated triggers unswept. (g) DELIBERATELY SKIPPED, not passed -- runSummaryOrphanSweepDryRun's FIX1b test is RED on main, summary-self-heal is still error, and SUMMARY_HEAL_FROZEN_ is false, so its dry run would arm a bogus approval set against a live delete path. Tracked in TODO.md. CARRIED: heartbeatStamped is false and the coffee_order_app never-seen alert fires daily until the Mon 2026-09-14 06:00 run -- the empty W36 blocks the heartbeat and no re-run can change that. Evidence: phases/roastery-wholesale/step8-rehearsal.md."
     }
   ],
   "created_at": "2026-09-03T20:37:02+0900"
