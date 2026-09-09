@@ -76,8 +76,33 @@ Two things that were wrong in the plan and are worth remembering:
       sweep does skip past-purge weeks, so a dry run cannot record a whole-history
       candidate set into `SUMMARY_ORPHAN_SWEEP_APPROVED_PROP_`. `SUMMARY_HEAL_FROZEN_`
       remains `false` (Code.gs:169) by deliberate choice, not by oversight.
-      **Remaining:** re-run step 8(g) for real, and close out phase `summary-self-heal`
-      (still `status: error`).
+
+      **8(g) RUN AND PASSED, live, 2026-09-09 15:21** (Jake, Apps Script editor):
+      `runSummaryOrphanSweepDryRun()` -> **`found 0 orphan candidate(s)`**, nothing
+      written, execution completed clean. This is the live confirmation of the analysis
+      above: a broken purge guard would have reported false orphans across every purged
+      week. 8(g) is now **passed, not skipped** - the earlier "deliberately SKIPPED"
+      framing is superseded.
+
+      *Scope of that zero, stated honestly:* the sweep only evaluates weeks inside the
+      183-day repair window that are not SPLIT. "0 candidates" means **no orphans among
+      the weeks the sweep is permitted to touch** (~26 weeks, back to 2026-03-10) - it is
+      NOT a census of all ~169 weeks, and does not contradict the known historical drift
+      recorded in the summary-goes-stale-against-suppliers memory. Non-vacuity is backed
+      by the suite, not by this log: `test_code.js` case 6 seeds genuine in-window
+      orphans and gets exactly 2 candidates, so the detector demonstrably fires when
+      there is something to find.
+- [ ] **Observability gap: the orphan-sweep dry run cannot tell "clean" from "blind".**
+      `runSummaryOrphanSweepDryRun()` logs only `found N orphan candidate(s)`
+      (`summary_audit.gs:632`). It never reports how many weeks it **evaluated** vs
+      **skipped** (past-purge / SPLIT), so a 0 from "checked 26 weeks, all clean" and a 0
+      from "skipped everything" are byte-identical in the log - same class as the
+      map-driven-gate-is-blind-not-red memory. Fix: have `summaryOrphanSweep_` return
+      `weeksEvaluated` / `weeksSkippedPurge` / `weeksSkippedSplit` and log the split.
+      Small and safe, but it touches a `.gs` so it needs a deploy - its own step.
+      **Remaining after that:** close out phase `summary-self-heal` (still
+      `status: error`, on an unrelated `revise` verdict about
+      `restoreWeekFromHealBackup_` whose tests are now green).
 
 - [ ] **Follow-up: split a dedicated `COST_API_TOKEN`.** The producer doc §12
       flags that `?api=wholesaleSales` newly exposes order-level revenue for

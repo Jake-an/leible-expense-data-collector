@@ -443,7 +443,7 @@ Last run as a broken trigger — check Executions for the real history.
 
 ## Final state — step 8 COMPLETE
 
-(a) ✅ · (b) ✅ · (c) ✅ · (d) ✅ · (e) ✅ · (f) ✅ · (g) **skipped, deliberately** · (h) ✅
+(a) ✅ · (b) ✅ · (c) ✅ · (d) ✅ · (e) ✅ · (f) ✅ · (g) ✅ **run 2026-09-09** · (h) ✅
 
 **(g) was skipped, not passed.** `runSummaryOrphanSweepDryRun()`'s FIX1b test is RED on
 main, its owning phase (`summary-self-heal`) is still `error`, and
@@ -453,9 +453,27 @@ gates nothing here. Tracked as an open item in `TODO.md`, not as a passed check.
 
 > **CORRECTION 2026-09-09.** FIX1b is now GREEN (2377 passed / 0 failed) and was a
 > fixture defect, not a bug in the sweep — see the correction under (g) above. The
-> approval set the dry run records was never going to be bogus. (g) is still *skipped,
-> not passed*: it has not been run. `summary-self-heal` remains `status: "error"` on its
-> own (unrelated) `revise` verdict.
+> approval set the dry run records was never going to be bogus.
+>
+> **(g) HAS NOW BEEN RUN AND PASSED — live, 2026-09-09 15:21, Apps Script editor.**
+> `runSummaryOrphanSweepDryRun()` returned `found 0 orphan candidate(s)`; nothing was
+> written and execution completed clean. That is the live proof of the correction above:
+> a broken purge guard would have surfaced false orphans for every purged week. The
+> "skipped, not passed" status recorded in this section is superseded — (g) is passed.
+>
+> Two things this run does NOT establish, recorded so the zero is not over-read:
+> 1. **It is not a census.** The sweep evaluates only non-SPLIT weeks inside the 183-day
+>    window (~26 weeks, back to 2026-03-10). Known drift outside that window is untouched
+>    and unmeasured by this result.
+> 2. **The log cannot distinguish clean from blind.** It prints only the candidate count,
+>    never the evaluated/skipped week split, so a genuine zero and a zero from skipping
+>    everything look identical. Tracked as its own item in `TODO.md`.
+>
+> The dry run also armed the gate with `{count: 0, keys: []}` — the safest possible armed
+> state: `runSummaryOrphanSweep()` on that approval would delete nothing. The approval
+> expires 60 minutes after 15:21 (`SUMMARY_ORPHAN_SWEEP_APPROVAL_MAX_AGE_MS_`).
+>
+> `summary-self-heal` remains `status: "error"` on its own, unrelated `revise` verdict.
 
 ### Carried forward — both expected, neither a defect
 
