@@ -43,8 +43,9 @@ W36 returns `ok:true`, `rowsScanned:166`, `positiveControlCount:22` and all five
 diagnostics `true`, with `orderCount:0` in every bucket. The producer filters to
 `Finalized`/`Archived`; the week closed 2026-09-06 and those orders have not been
 finalized yet. This is exactly the settlement lag `WHOLESALE_REPULL_WEEKS = 8` exists to
-absorb — a later run picks the money up. **Do not chase it, and do not treat
-`weeksWritten: 7` as a failure.**
+absorb — a later run picks the money up. **Do not chase it.** Note it still counts
+toward `weeksWritten` (which is 8, not 7 — the counter is not guarded by a row check);
+what an empty week does change is `heartbeatStamped`, see (c).
 
 ## (b) Dry run — `runWholesalePullDryRun()`
 
@@ -65,7 +66,7 @@ across all 8 weeks** (per-week figures go to `Logger.log`, one line per week).
 | `byBucket.unknown` | **0** | |
 | `weeksRequested` | 8 | |
 | `weeksFetched` | 8 | |
-| `weeksWritten` | **7** — W36 is empty, see above | |
+| `weeksWritten` | **8** — an empty week still counts as written (no `continue` guards the counter at `orderapp.gs:1594`); CORRECTED 2026-09-09, the pre-run estimate of 7 was wrong | |
 | `ordersFetched` | **47** | |
 | `failedWeeks` / `crossFootFailures` / `splitWeeks` | all `[]` | |
 | `dryRun` | `true` | |
@@ -86,7 +87,7 @@ comfortably inside retention, so nothing in it should have been purged to `_arch
 This is a *derived* expectation, not a measured one: I could not read the live `_archive`
 tab. If `splitWeeks` comes back non-empty, do **not** treat it as a bug — it means that
 week genuinely has archived rows, the guard correctly wrote nothing for it, and
-`weeksWritten` will be below **7** by exactly that count.
+`weeksWritten` will be below **8** by exactly that count.
 
 ## (c) Wet run — `wholesalePull()`
 
@@ -166,12 +167,38 @@ Confirm in the payload:
 |---|---|---|
 | `rowsAdded` | 0 | |
 | `rowsUpdated` | 0 | |
-| `duplicatesSkipped` | == the first run's `rowsAdded` | |
+| `duplicatesSkipped` | **47** (== run 1's `rowsAdded`) | |
 | `Revenue` row count | unchanged | |
-| Summary `summarized_at` stamps | unchanged | |
+| `weeksResummarized` | **2** — the drained queue, see below | |
+| `weeksQueued` | **0** | |
+| Summary `summarized_at` on W29–W32, W35 | unchanged | |
+| Summary rows for **W33 + W34** | **newly created** — see below | |
 
 `duplicatesSkipped` rising to match the first run's `rowsAdded` is the positive signal —
 it proves the dedup key is doing its job, rather than nothing having happened.
+
+### ⚠️ Idempotent on `Revenue`, NOT on `Summary` — corrected 2026-09-09
+
+Run 1 wrote all 47 `Revenue` rows across 7 weeks, but the `GREENBEAN_RESUM_CAP` of 5 meant
+only 5 of them reached `Summary`: **W29, W30, W31, W32 and W35** (the four oldest plus the
+newest — the newest slot is reserved by the F2 starvation fix, commit `c7ccfef`). Run 1's
+own log named the remainder:
+
+```
+wholesalePull: 2 affected week(s) still queued beyond the 5/run cap (oldest: 2026-08-10)
+```
+
+So **W33 (08-10) and W34 (08-17) have Revenue rows but no Summary rows yet.** Confirmed by
+`doGet` immediately after run 1 — both weeks read `$0.00` at `location:'wholesale'` and
+`location:'internal'` while the other five matched the producer to the cent.
+
+> **Run (d) is what drains that queue.** Expect W33 and W34 to gain Summary rows, carrying
+> $1,200.30 + $1,595.65 external and $12,895.79 + $13,323.35 internal. That is the fix
+> landing, **not** an idempotency failure. Only the five weeks summarized in run 1 should
+> have unchanged `summarized_at` stamps.
+
+`heartbeatStamped` stays `false` on run (d) as well — the newest week is still the empty
+W36, and draining the queue does not change that.
 
 ## (e) Negative auth
 
