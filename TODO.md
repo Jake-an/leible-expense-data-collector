@@ -84,14 +84,27 @@ Two things that were wrong in the plan and are worth remembering:
       week. 8(g) is now **passed, not skipped** - the earlier "deliberately SKIPPED"
       framing is superseded.
 
-      *Scope of that zero, stated honestly:* the sweep only evaluates weeks inside the
-      183-day repair window that are not SPLIT. "0 candidates" means **no orphans among
-      the weeks the sweep is permitted to touch** (~26 weeks, back to 2026-03-10) - it is
-      NOT a census of all ~169 weeks, and does not contradict the known historical drift
-      recorded in the summary-goes-stale-against-suppliers memory. Non-vacuity is backed
-      by the suite, not by this log: `test_code.js` case 6 seeds genuine in-window
-      orphans and gets exactly 2 candidates, so the detector demonstrably fires when
-      there is something to find.
+      **CONFIRMED CLEAN 2026-09-09 15:32, re-run on GAS v49 with the new accounting:**
+      `weeks in Summary 28 | evaluated 25 | skipped past purge line 3 | skipped SPLIT 0`
+      -> `found 0 orphan candidate(s) (out of 25 week(s) actually evaluated)`. The zero is
+      **genuine, not blind** - 25 of the 28 weeks Summary holds were actually recomputed.
+
+      Reconciles exactly against known history: Summary spans `2026-02-23` (the oldest
+      week the 2026-08-25 drift repair wrote) through `2026-08-31` (last completed week;
+      W36 has not settled) = **28 weeks**, of which `2026-02-23`, `2026-03-02` and
+      `2026-03-09` fall before the `2026-03-10` purge cutoff = **3 skipped**, leaving
+      **25 evaluated**. Model and live agree on all three numbers.
+
+      *Correcting my own earlier note in this item:* I wrote that the zero "is NOT a
+      census of all ~169 weeks", implying Summary holds ~169 weeks and the sweep skips
+      most of them. **That was wrong about the mechanism.** Nothing prunes Summary - there
+      is no retention purge on it, so 28 weeks is everything it has ever held. The ~169
+      weeks are **Suppliers** weeks after the accidental backfill; ~141 of them have **no
+      Summary row at all**. That is the $436k drift, and it is *missing* data, the exact
+      inverse of what an orphan sweep looks for (Summary rows with no source). **The
+      orphan sweep is structurally incapable of seeing the drift** - a clean sweep is not
+      evidence about it in either direction. Do not read one as reassurance about the
+      other.
 - [x] **RESOLVED 2026-09-09 (commit `ec4822e`, GAS v49): the orphan-sweep dry run now
       reports its week accounting.** `summaryOrphanSweep_` returns `weeksTotal` /
       `weeksEvaluated` / `weeksSkippedPurge` / `weeksSkippedSplit`; the dry run logs the
@@ -114,6 +127,23 @@ Two things that were wrong in the plan and are worth remembering:
       **Remaining after that:** close out phase `summary-self-heal` (still
       `status: error`, on an unrelated `revise` verdict about
       `restoreWeekFromHealBackup_` whose tests are now green).
+
+- [ ] **Known limit (not a bug): the orphan sweep's blind tail grows one week every
+      Monday.** `weeksSkippedPurge` was 3 on 2026-09-09 and rises by exactly 1 per week
+      as `auditPurgeCutoff_` advances; those weeks can never be orphan-checked again.
+      Two things found while confirming this, both recorded in `summary_audit.gs`'s
+      guard comment:
+      - The guard's original rationale — *"past that line NEITHER tab holds the source
+        rows"* — is **false**. `archiveAndPurge_` deletes from `Suppliers` only;
+        `_archive` is append-only and never pruned (verified: no delete/clear touches
+        `ARCHIVE_TAB` anywhere). Since FIX 1a added the `_archive` merge, a past-purge
+        recompute is no longer structurally empty. The comment described pre-merge code.
+      - **The guard should stay anyway**, on the conservative argument instead: it feeds
+        a DELETE path, and `_archive`'s completeness for deep history is unverified
+        (`INVOICE_PAGE_LIMIT` truncation, pre-dedup duplicate copies). An incomplete
+        recompute understates a week and turns live rows into deletion candidates.
+        Relaxing it needs proof `_archive` is complete for those weeks first — being
+        blind costs detection coverage, being wrong costs data.
 
 - [ ] **Follow-up: split a dedicated `COST_API_TOKEN`.** The producer doc §12
       flags that `?api=wholesaleSales` newly exposes order-level revenue for

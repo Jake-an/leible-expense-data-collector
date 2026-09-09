@@ -534,9 +534,29 @@ var SUMMARY_ORPHAN_SWEEP_APPROVAL_MAX_AGE_MS_ = 60 * 60 * 1000;
  *  - source rows are Suppliers MERGED with _archive (auditDedupeSourceRows_),
  *    not Suppliers alone — otherwise every week whose invoices already moved
  *    to _archive recomputes empty and its live Summary row reads as an orphan.
- *  - weeks past auditPurgeCutoff_ are skipped entirely — past that line
- *    NEITHER tab holds the source rows any more, so a recompute is always
- *    empty and every row would misread as an orphan (~143 of 169 weeks).
+ *  - weeks past auditPurgeCutoff_ are skipped entirely.
+ *
+ *    CORRECTED 2026-09-09: the original rationale here — "past that line
+ *    NEITHER tab holds the source rows any more" — is FALSE. archiveAndPurge_
+ *    deletes from Suppliers only; _archive is append-only and is never pruned
+ *    (verified: no delete/clear touches ARCHIVE_TAB anywhere). So past the
+ *    purge line _archive DOES still hold the source rows, and since FIX 1a
+ *    added the auditDedupeSourceRows_ merge above, a past-purge recompute is
+ *    no longer structurally empty. That rationale described the pre-merge
+ *    code and was not updated when the merge landed.
+ *
+ *    The guard STAYS regardless, on the conservative argument rather than the
+ *    structural one: this feeds a DELETE path, and _archive's completeness for
+ *    deep history is unverified (backfilled history is truncated by
+ *    INVOICE_PAGE_LIMIT, and _archive carried duplicate copies before the
+ *    dedup guard). An incomplete recompute understates the week and turns live
+ *    rows into deletion candidates. Do not relax this without first proving
+ *    _archive is complete for the weeks in question — being blind here costs
+ *    only detection coverage, being wrong here costs data.
+ *
+ *    Known consequence, made visible by the weeksSkippedPurge counter: the
+ *    un-sweepable tail grows by exactly one week every Monday as the cutoff
+ *    advances (3 weeks on 2026-09-09). Expected, not a leak.
  *  - SPLIT weeks (rows in both Suppliers and _archive) are skipped entirely —
  *    a recompute of a SPLIT week understates it, the same reason
  *    computeHealPlan_ and summaryDriftCheck_ both skip/suppress SPLIT weeks.
