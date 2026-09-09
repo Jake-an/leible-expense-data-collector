@@ -372,6 +372,42 @@ That run also emitted no `weeklySummarize` lines at all — no week needed resum
 which is idempotency confirmed a second time — and the DQ signature gate suppressed the
 repeat alert again (`nmd5cg`).
 
+## (f) alerting — 12:54 — ✅ PASS
+
+```
+checkIngestStaleness: checked=8, stale=1, eventsCreated=0
+```
+
+`eventsCreated=0` is **dedup, not failure** — asserted the way the step requires, by
+confirming the event EXISTS rather than by reading the counter. Verified against the
+calendar itself:
+
+| field | value |
+|---|---|
+| title | `LEIBLE expense stale: coffee_order_app` |
+| created | `2026-09-09T01:02:49Z` (11:02 Sydney — the watchdog's own earlier run) |
+| body | "Last successful ingest for \"coffee_order_app\": never seen since the watchdog was installed." |
+
+So the alert for today already existed before the 12:54 manual run, and the title-keyed
+idempotency correctly declined to create a second one. CalendarApp reaching the calendar
+at all is also the live proof that step 7's declared `calendar` scope is in effect.
+
+`stale=1` of 8 checked — `coffee_order_app` is the **only** stale source; every other feed
+is healthy. That alert is expected to keep firing daily until the Mon 2026-09-14 06:00 run
+stamps the first heartbeat (empty W36 blocks it until then).
+
+## (h) arm the triggers — 12:53 — ⏳ log OK, Triggers page NOT yet confirmed
+
+```
+installOrderAppTriggers: shopifyWeeklyPull Monday 05:00 + greenBeanPull Tuesday 05:00 +
+wholesalePull Monday 06:00 + wholesalePullRetry Monday 07:00 (Australia/Sydney) installed
+```
+
+⚠️ **This log line is NOT acceptance.** The function is delete-then-create across all four
+handler names, and the step is explicit that the Triggers page is the only source of truth
+— a log line saying "installed" cannot prove `shopifyWeeklyPull` and `greenBeanPull`
+survived the delete half. Pending a human reading the page.
+
 ## Still open at this point
 
 - (e) negative auth — **rename** the key, do not retype the secret
