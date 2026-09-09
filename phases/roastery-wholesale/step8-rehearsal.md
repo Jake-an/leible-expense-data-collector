@@ -353,6 +353,25 @@ $13,166.15 over the same window.
 
 **Roastery wholesale income is in the hub for the first time.**
 
+## (e) negative auth — 12:47 — ✅ PASS
+
+Key renamed to `ORDER_APP_COST_TOKEN_BAK`; the value was never touched. `wholesalePull`
+took the fail-closed path and wrote nothing:
+
+```
+orderapp: ORDER_APP_COST_TOKEN not set — skipping
+orderapp: coffee_order_app skipped (not armed) — failcount reset, no heartbeat
+```
+
+Note it registered as a **skip**, not a failure — `orderAppRunSkipped_` reset the
+failcount rather than incrementing it, which is the correct accounting for "not armed".
+
+Key renamed back at 12:48 and the restore was **verified by re-running**, not assumed: all
+eight weeks fetched with figures identical to runs 1 and 2, so the token survived intact.
+That run also emitted no `weeklySummarize` lines at all — no week needed resummarizing,
+which is idempotency confirmed a second time — and the DQ signature gate suppressed the
+repeat alert again (`nmd5cg`).
+
 ## Still open at this point
 
 - (e) negative auth — **rename** the key, do not retype the secret
