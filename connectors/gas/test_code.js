@@ -6307,10 +6307,12 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   }
 
   // 8 completed weeks (oldest..newest) + the current, not-yet-completed week.
-  // todayStr_()/lastCompletedWeeks_ read a bare `new Date()`, which
-  // withMockNow cannot pin (see the shopify suite's note above) — so these
-  // are genuinely "today" in whatever environment the suite runs in, same
-  // convention as the shopify tests' weeks4.
+  // Deliberately unmocked: this block runs no withMockNow, so fixtures and
+  // implementation read the same (real) clock and stay consistent. Same
+  // convention as the shopify tests' weeks4. NOTE: todayStr_() IS mockable
+  // (Code.gs, `new Date(Date.now())`) — the old "it reads a bare new Date()"
+  // rationale is obsolete. If you ever pin the clock in this block, derive
+  // these weeks from the pinned instant too, or the two clocks diverge.
   const weeksAll = lastCompletedWeeks_(todayStr_(), 8);
   const currentWeekStart = weekStartForDate_(todayStr_());
 
@@ -10742,10 +10744,12 @@ withHealUnfrozen(function testPreviewMatchesApplyWindowFix2() {
   ensureSheet(currentSS, REVENUE_TAB, REVENUE_HEADERS);
   ensureSheet(currentSS, ARCHIVE_TAB, SUPPLIERS_HEADERS);
 
-  // Real system clock, deliberately NOT mocked — todayStr_() uses a bare
-  // `new Date()` (project gotcha: withMockNow only patches Date.now()), and
-  // previewSummaryHeal derives its window off todayStr_() same as the real
-  // run does, so this must match whatever "today" actually is at test time.
+  // Real system clock, deliberately NOT mocked: previewSummaryHeal derives its
+  // window off todayStr_() same as the real run does, and this block pins
+  // nothing, so both read the same clock. NOTE: todayStr_() IS mockable
+  // (Code.gs, `new Date(Date.now())`) — the old "bare new Date()" gotcha no
+  // longer applies. Pin the clock here and you must derive `today` from the
+  // pinned instant as well.
   const today = todayStr_();
   const last = getLastCompletedWeek_(today);
   function expectedWeeks(n) {
