@@ -35,9 +35,11 @@
     },
     {
       "dir": "summary-self-heal",
-      "status": "error",
+      "status": "completed",
       "needs_context_at": "2026-08-25T12:09:22+0900",
-      "failed_at": "2026-08-26T14:40:40+0900"
+      "failed_at": "2026-08-26T14:40:40+0900",
+      "completed_at": "2026-09-09T00:00:00+10:00",
+      "closeout_note": "phase-end review verdict \"revise\" resolved out-of-band; see review_closeout in the phase index"
     },
     {
       "dir": "roastery-wholesale",

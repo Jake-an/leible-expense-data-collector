@@ -462,5 +462,59 @@
       }
     ],
     "checked_at": "2026-08-26T14:40:40+0900"
+  },
+  "review_closeout": {
+    "closed_at": "2026-09-09T00:00:00+10:00",
+    "verdict": "resolved",
+    "method": "out-of-band — the fixes were already committed, so a re-review would diff empty",
+    "original_verdict": "revise (2026-08-26), 1 critical + 2 important + 3 minor",
+    "tests_run": {
+      "node connectors/gas/test_code.js": "2415 passed, 0 failed",
+      "python -m pytest -q": "526 passed"
+    },
+    "issues_closed": [
+      {
+        "sev": "critical",
+        "issue": "restoreWeekFromHealBackup_ by-week delete destroyed pull-owned rows",
+        "fixed_by": "5df302a",
+        "verified_at": "connectors/gas/Code.gs:2589-2612",
+        "evidence": "delete predicate is ownership-scoped (snapshotKeys tuple OR !summaryRowIsHealForeign_); heal-foreign rows absent from the snapshot are preserved and counted"
+      },
+      {
+        "sev": "important",
+        "issue": "empty-baseline marker reintroduced the ambiguous restore signal",
+        "fixed_by": "5df302a",
+        "verified_at": "connectors/gas/Code.gs:2592 + summary_audit.gs:1000-1017",
+        "evidence": "marker skipped from restorable; listSummaryHealBackups reports rows=0 and an explicit emptyBaseline flag/log line"
+      },
+      {
+        "sev": "important",
+        "issue": "weeklySummarize returned two incompatible shapes",
+        "fixed_by": "eab8615",
+        "verified_at": "connectors/gas/Code.gs weeklySummarize_impl_",
+        "evidence": "both shapes now carry success + refused; refused set iff ZERO weeks healed"
+      },
+      {
+        "sev": "minor",
+        "issue": "raiseCalendarAlert_ orphaned an event when setColor threw",
+        "fixed_by": "bcf9a6d",
+        "verified_at": "connectors/gas/staleness.gs:396-415",
+        "evidence": "creation is the success point; decoration moved to its own try, cache marked before it"
+      },
+      {
+        "sev": "minor",
+        "issue": "healWeeks_ seeded backedUpWeeks without the DATE_ARG_RE guard",
+        "fixed_by": "bcf9a6d",
+        "verified_at": "connectors/gas/Code.gs:2875",
+        "evidence": "if (DATE_ARG_RE.test(w)) backedUpWeeks[w] = true"
+      },
+      {
+        "sev": "minor",
+        "issue": "Labour alert title varied with the healed-week set, breaking dedup",
+        "fixed_by": "bcf9a6d",
+        "verified_at": "connectors/gas/Code.gs:3081-3086",
+        "evidence": "title anchors on newest healed week + a count; the full list moved to the body"
+      }
+    ]
   }
 }
