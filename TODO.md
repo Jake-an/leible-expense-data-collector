@@ -128,6 +128,51 @@ Two things that were wrong in the plan and are worth remembering:
       `status: error`, on an unrelated `revise` verdict about
       `restoreWeekFromHealBackup_` whose tests are now green).
 
+- [ ] **ACTIONABLE: week `2026-08-31` is stale by $1,563.62 and will never self-heal.**
+      `auditSummaryDrift()` run live 2026-09-09 15:38: `weeks audited 241 | clean 27 |
+      DRIFTED 214`, net under-reported **$353,485.43**. That headline is 99.6%
+      historical — **213 of the 214 drifted weeks are past the purge line**
+      ($351,921.81, spanning 2022-01-24 -> 2026-02-16, almost all "NO — archived only").
+      **Exactly one drifted week is inside the window:** `2026-08-31`, with **0 missing
+      rows but 7 STALE amounts**, $1,563.62 under-reported, source present in
+      `Suppliers`.
+
+      It will **not** fix itself: the weekly trigger summarizes only the *last completed*
+      week, so on Mon 2026-09-14 it writes `2026-09-07` and never revisits `2026-08-31`.
+      This is the classic "Summary written once, never revisited" mechanism.
+
+      Safe to re-summarize — verified, not assumed: the week is 9 days old, far inside
+      `ARCHIVE_RETENTION_DAYS=183`, so it cannot have `_archive` rows and cannot be SPLIT
+      (independently confirmed by the same-day orphan sweep reporting `skipped SPLIT 0`).
+      That clears the [[resummarize-split-week-understates]] hazard.
+
+      **Cross-check that both tools agree:** drift audit's 27 clean + 1 in-window drifted
+      = 28 weeks carrying Summary rows, which is exactly the `weeks in Summary 28` the
+      orphan sweep reported the same afternoon. The two independent tools reconcile.
+
+- [ ] **BLOCKER on the above: the two commands the audit tells you to run are unreachable
+      from the Run dropdown.** The audit's closing advice is
+      `weeklySummarize('<week_start>')` and "read the detail first" — but
+      `weeklySummarize(weekStartOverride)` (`Code.gs:2972`) takes an argument and
+      `auditSummaryDrift()` (`summary_audit.gs:943`) hard-codes `auditSummaryDrift_(false)`,
+      so detail (and its `minWeek` scoping) cannot be reached either. The GAS editor Run
+      button passes **no arguments** — the exact gotcha already hit on step 8 with
+      `wholesalePull({dryRun:true})`. Fix with the established zero-arg + script-property
+      pattern `restoreSummaryWeekFromBackup()` already uses:
+      - `auditSummaryDriftDetail()` -> `auditSummaryDrift_(true, <SUMMARY_AUDIT_MIN_WEEK>)`
+        — property-scoped so it does not dump detail for 214 weeks into a truncating log
+        (see [[gas-editor-log-truncates-one-big-blob]]).
+      - `resummarizeWeekFromProperty()` -> `weeklySummarize(<SUMMARY_RESUMMARIZE_WEEK>)`,
+        refusing loudly on an unset/invalid property, mirroring the restore wrapper.
+
+- [ ] **Observation, low priority: archive ordering looks inverted.** In the audit table
+      the OLDEST weeks (2022-01 -> 2023-05) report `srcInSuppliers: yes` while everything
+      from 2023-06 on reports `NO — archived only`. Both are far past the 183-day cutoff,
+      so the 2022 rows should already have been archived. Most likely they were
+      re-ingested by the recent backfill after the last scheduled `archiveAndPurge_` and
+      will sweep on the next scheduled run — harmless either way, since the audit merges
+      `_archive`. Worth a glance if it persists past the next Monday run.
+
 - [ ] **Known limit (not a bug): the orphan sweep's blind tail grows one week every
       Monday.** `weeksSkippedPurge` was 3 on 2026-09-09 and rises by exactly 1 per week
       as `auditPurgeCutoff_` advances; those weeks can never be orphan-checked again.
