@@ -18,6 +18,128 @@
 
 ## Active
 
+### 🔒 Security audit 2026-09-10 — verdict `blocked`, debt list
+
+First full 7-lens audit. Verdict at
+`~/.claude/metrics/security-reviews/bb4d367...f99.json` (schema 3, mode full).
+**Deploys are gated shut until a re-audit records `approve`.** 1 High (FIXED),
+18 Medium, 17 Low across 36 merged entries. The prior 2026-09-04 verdict was a v1
+stub (4 gates, 5 lenses, zero findings) — so the "never been run" claim was wrong,
+but nothing carried forward.
+
+- [x] **HIGH — unauthenticated email ingest. FIXED 2026-09-10 (2b42bf1).**
+      `mayers.gs:16` searched on the recipient alias with no `from:` clause and no
+      `getFrom()` check, so anyone emailing the alias reached `ingestSupplierRows`
+      — the upsert `doPost` reaches only after auth. Proven: a real $736.74 row was
+      overwritten in place with $99,999. Fixed with a per-message sender allowlist
+      in `MAYERS_ALLOWED_SENDERS`, fail-closed.
+      **⚠ ACTION: that Script Property must be set or Mayers ingest refuses.**
+
+- [ ] **`roastery_email.gs:28` — same shape as the Mayers High, label-gated.**
+      Not fixed. It is only as strong as the Gmail filter that applies the label:
+      if that filter matches on anything an outsider can control, it is the same
+      unauthenticated-ingest hole. Verify what applies the label before deciding
+      whether it needs the same allowlist.
+
+- [ ] **MEDIUM — formula injection on the upsert in-place path (`Code.gs:982`).**
+      `upsertRows_` guards its APPEND path via `sheetSafeRow_` but writes the stamp
+      column raw: `setValue(row[stampCol])`, where `extracted_at` is checked only
+      for truthiness (`validateIngest_:512`). A POST whose `extracted_at` starts
+      with `=` plants a live formula in Suppliers. Same bypass at `Code.gs:871`
+      (Sales) and `orderapp.gs:1168/1565` (date-move self-heal) — three of the four
+      in-place writers break the repo's own "every write is guarded" invariant.
+
+- [ ] **MEDIUM — shopspend money fields still use the coercion that was removed.**
+      `Code.gs:612-626` guards five money/count fields with `isNaN(Number(x))` —
+      exactly what `isValidIngestAmount_`'s docstring (`Code.gs:310-317`) says was
+      replaced for letting through `Infinity`, `''`, `[]`, `'45'`, `true`.
+      `MAX_INGEST_AMOUNT_` is never applied to `kind=shopspend` at all.
+
+- [ ] **MEDIUM — department authorization is bypassable by OMITTING the field.**
+      `validateIngest_:575` only checks `department` when present; the normalizers
+      then default to `DEFAULT_DEPARTMENT` (Cafe, `Code.gs:67`) rather than the
+      source-bound value. The gate validates a claim where it should ASSIGN.
+      Bounded today only because the one Roastery-bound source has no token set.
+
+- [ ] **MEDIUM — supplier + location attribution unbound to the authenticated source.**
+      `canonicalSupplier_:657` returns `row.supplier` verbatim; `row.location` is
+      copied verbatim; the Summary group key has NO source component. Any single
+      valid ingest token can attribute arbitrary spend to any supplier.
+
+- [ ] **MEDIUM — the read API over-exposes.** `doGetSummary_:2019` has an unbounded
+      `from`/`to` window and no row cap, on a Summary tab that is never purged,
+      behind one shared identity-less token — `from=1900-01-01` returns everything.
+      Worse, `SUMMARY_PUBLIC_FIELDS_` presents `supplier` as the privacy control,
+      but `aggregateSupplierRows_:2344` puts the Revenue **customer** name in that
+      field for every non-online channel, at per-customer grain. Named B2B
+      customers and their weekly revenue are served under a field a consumer reads
+      as a vendor.
+
+- [ ] **MEDIUM — `auth/drive` (entire Drive) for a `drive.file` job.**
+      `appsscript.json:8`. The only Drive uses are inserting and trashing the
+      script's own OCR doc (`mayers.gs:276/281/287`). Every other scope traced to a
+      real call and is right-sized. Matters because the webapp is
+      ANYONE_ANONYMOUS / USER_DEPLOYING.
+
+- [ ] **MEDIUM — the accepted-risk register rests on a false premise.**
+      `docs/security-baseline.json:4` accepts `gas-anonymous-web-app` on the stated
+      claim that `doPost`/`doGet` "are the entire anonymous surface". The Mayers
+      High disproves that. Re-word it or re-accept it deliberately.
+
+- [ ] **MEDIUM — the allowlist is green on the wrong file.**
+      `docs/auth-allowlist.json:6` exempts `examples/__test.gas.js:doGet`, which
+      sits outside clasp `rootDir` and never deploys, while
+      `connectors/gas/__test.gs` (a `.gs` inside rootDir, so it DOES ship) is
+      undeclared. Its own header says "Dev only, strip in PROD", and its arming
+      instruction is to add a dispatch as doGet's FIRST line — ahead of
+      `checkReadToken_`. Strip it from the deploy.
+
+- [ ] **MEDIUM — `git-backup.ps1:29` runs `git add -A` with no secret scan.**
+      Global hook, not repo code. `.env` and `credentials/` are correctly ignored
+      today, so nothing has leaked — but this is the mechanism by which a future
+      credential file could reach origin unattended.
+
+- [ ] **MEDIUM — no cap on `rows.length` + per-row `setValue` in the upsert path.**
+      `Code.gs:980`. A few thousand existing-key rows times two `setValue` calls
+      inside `withScriptLock_` gives an authenticated caller a partial-write timeout.
+
+- [ ] **MEDIUM — anonymous quota-exhaustion.** `Code.gs:386`. Auth is correctly
+      first, but every rejected request still costs a script execution, a
+      PropertiesService read and a Logger write, on a committed /exec URL.
+
+- [ ] **MEDIUM — unvalidated `date` and `extracted_at` at ingest.**
+      `date` is never format-checked and the heal window is frozen to 1
+      (`Code.gs:573`), so a crafted date parks spend in a week nothing recomputes.
+      `extracted_at` is any truthy value and staleness keeps the MAXIMUM per source
+      (`Code.gs:512`), so one row dated 2099 permanently blinds the watchdog.
+
+- [ ] **MEDIUM — shopspend tombstone breaker disabled by a payload field.**
+      `shopspend.gs:173` — a week named in caller-supplied `weeks_verified_empty`
+      is exempt from the blast-radius breaker entirely.
+
+- [ ] **LOW batch** — `verify_gate.sh:22` matches its own bypass token as an
+      unanchored substring of the whole command line, so any command merely
+      *mentioning* `SKIP_VERIFY=1` skips the deploy BLOCK · error text reflected to
+      anonymous callers (`Code.gs:470/2015/2069`) · pre-auth JSON.parse oracle
+      (`:388`) · log injection via `invoice_ref` newlines (`:993`) · read token in
+      the URL query string (`docs/api.md:15`) · OCR'd invoices left in Drive Trash
+      (`mayers.gs:287`) · no token-strength standard (`ingest-token-cutover.md:148`)
+      · `GAS_EXEC_URL` unvalidated before posting a live token
+      (`base_connector.py:189`) · order-app token in a URL with redirects followed
+      (`orderapp.gs:208`) · `rows:[]` stamps the heartbeat, keeping a dead source
+      green (`Code.gs:450`).
+
+- [ ] **TOOLING (global, not this repo) — two gates are blind here.**
+      `gates.cjs:86` resolves `appsscript.json` at repo root only, so the
+      **auth-coverage gate has never examined this project**; `surface.cjs` does the
+      same and graded the repo `runtime: python` with 0 entry points and 0 sinks.
+      Both are the fix that landed in `check-runtime-defense.cjs` on 2026-09-07 and
+      never propagated. Separately, `check-auth-coverage.gas.js:307` requires the
+      guard to be the literal first statement, but `doPost`/`doGet` open with
+      `try {` — so it flags both as ungated when both are guarded, and it can never
+      pass on this codebase.
+
+
 ### ✅ Roastery wholesale income connector — LIVE 2026-09-09 (phase `roastery-wholesale`, PRD-14 built)
 
 **Runbook receipt — live bring-up 2026-09-09, Jake at the keyboard.** Steps 0-8 all
