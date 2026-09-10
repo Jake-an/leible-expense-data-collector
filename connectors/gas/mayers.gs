@@ -16,6 +16,46 @@ var MAYERS_LABEL = 'expense-ingested';
 var MAYERS_SEARCH = 'deliveredto:(mio.jake+mayers@gmail.com) has:attachment -label:' + MAYERS_LABEL;
 var MAYERS_TZ = 'Australia/Sydney';
 
+/* The alias in MAYERS_SEARCH is a DESTINATION, never a credential. Anyone who
+ * learns it can mail a PDF here, and until 2026-09-10 that PDF was OCR'd and
+ * handed to ingestSupplierRows('mayers', ...) — the same upsert doPost reaches
+ * only AFTER checkIngestToken_. Because that upsert keys on
+ * source+invoice_ref, a crafted ref REPLACED a real invoice's amount in place
+ * (proven in test_code.js case I: a genuine 736.74 row became 99999), and a
+ * novel ref injected fabricated spend. Both propagate to Summary and to the
+ * external GM cost monitor. Raised as the single High of the 2026-09-10
+ * /security-audit. The sender allowlist below is the credential the alias never
+ * was; it lives in a Script Property so rotating it needs no code change and no
+ * address is committed. roastery_email.gs is the same shape, label-gated. */
+var MAYERS_ALLOWED_SENDERS_PROP_ = 'MAYERS_ALLOWED_SENDERS';
+
+/**
+ * Addresses permitted to deliver Mayers invoices, as a lowercased lookup.
+ * @returns {?Object} null when unset/blank — callers MUST refuse, never default open.
+ */
+function mayersAllowedSenders_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(MAYERS_ALLOWED_SENDERS_PROP_);
+  if (!raw || !String(raw).trim()) return null;
+  var out = {};
+  var parts = String(raw).split(',');
+  for (var i = 0; i < parts.length; i++) {
+    var a = parts[i].trim().toLowerCase();
+    if (a) out[a] = true;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * The bare address from a From header — 'Jake <a@b.com>' and 'a@b.com' both
+ * yield 'a@b.com'. Exact-match only: a substring test would admit
+ * evil-a@b.com.attacker.example (test_code.js case H).
+ */
+function mayersFromAddress_(from) {
+  var s = String(from || '');
+  var m = s.match(/<([^>]*)>/);
+  return (m ? m[1] : s).trim().toLowerCase();
+}
+
 /* --- Permanently-unparseable attachment memo -----------------------
  * A thread is only labelled once something parsed out of it (see mayersDailyPull),
  * so a document that can NEVER parse stays unlabelled, keeps matching
@@ -76,6 +116,25 @@ var MAYERS_DELIVER_TO_WINDOW_ = 120;
  * @returns {{rowsAdded:number, duplicatesSkipped:number, threadsProcessed:number, unparsed:number}}
  */
 function mayersDailyPull() {
+  // Fail CLOSED, and loudly. Refusing quietly would be worse than useless here:
+  // this pull stamps the staleness heartbeat even on an empty run because "for
+  // Mayers a quiet day is normal", so a silent refusal is indistinguishable
+  // from no deliveries and the watchdog could never fire. A refused run
+  // therefore returns early WITHOUT stamping, letting staleness surface it.
+  var allowedSenders = mayersAllowedSenders_();
+  if (!allowedSenders) {
+    Logger.log('mayersDailyPull: REFUSED — ' + MAYERS_ALLOWED_SENDERS_PROP_ + ' script ' +
+      'property is not set, so no sender can be verified and nothing will be ingested. ' +
+      'Set it to a comma-separated list of the address(es) that forward Mayers invoices ' +
+      'to the alias, then re-run. Heartbeat deliberately NOT stamped, so the staleness ' +
+      'watchdog reports this instead of reading it as a quiet day.');
+    return {
+      rowsAdded: 0, duplicatesSkipped: 0, threadsProcessed: 0, unparsed: 0,
+      ocrSkipped: 0, sendersRejected: 0,
+      refused: MAYERS_ALLOWED_SENDERS_PROP_ + ' not set'
+    };
+  }
+
   var label = getOrCreateLabel_(MAYERS_LABEL);
   var threads = GmailApp.search(MAYERS_SEARCH);
   var extractedAt = Utilities.formatDate(new Date(), MAYERS_TZ, "yyyy-MM-dd'T'HH:mm:ssXXX");
@@ -87,12 +146,28 @@ function mayersDailyPull() {
   var unparseable = mayersLoadUnparseable_();
   var unparseableDirty = false;
   var ocrSkipped = 0;
+  var sendersRejected = 0;
 
   for (var t = 0; t < threads.length; t++) {
     var messages = threads[t].getMessages();
     var threadParsed = 0;
     for (var m = 0; m < messages.length; m++) {
       var msg = messages[m];
+
+      // PER MESSAGE, not per thread: Gmail matches `deliveredto:` on the whole
+      // THREAD, so an attacker replying into a legitimate thread would sail
+      // past a thread-level check. Placed ahead of firstPdfAttachment_ so a
+      // hostile PDF is never OCR'd — that also stops the Drive/OCR quota burn
+      // being an unauthenticated lever.
+      var fromAddr = mayersFromAddress_(msg.getFrom());
+      if (!allowedSenders[fromAddr]) {
+        sendersRejected++;
+        Logger.log('mayersDailyPull: REJECTED a message from ' + fromAddr +
+          ' — not in ' + MAYERS_ALLOWED_SENDERS_PROP_ + '. Nothing OCR-ed or ingested ' +
+          'from it. If this sender is legitimate, add it to that property.');
+        continue;
+      }
+
       var pdf = firstPdfAttachment_(msg);
       if (!pdf) continue; // no PDF on this message (e.g. inline image only)
       if (seenAttachments[pdf.getName()]) continue; // same invoice already handled this run
@@ -141,7 +216,8 @@ function mayersDailyPull() {
     duplicatesSkipped: res.duplicatesSkipped,
     threadsProcessed: threads.length,
     unparsed: unparsed,
-    ocrSkipped: ocrSkipped
+    ocrSkipped: ocrSkipped,
+    sendersRejected: sendersRejected
   };
 }
 

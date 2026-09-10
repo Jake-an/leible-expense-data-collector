@@ -7151,10 +7151,13 @@ console.log('mayersDailyPull — unparseable-attachment memo (Drive OCR quota le
       getSize: () => size,
     };
   }
-  function message(name, size, dateIso) {
+  function message(name, size, dateIso, from) {
     return {
       getAttachments: () => [attachment(name, size)],
       getDate: () => new Date(dateIso),
+      // getFrom() is required since the 2026-09-10 sender-verification fix; a
+      // mock lacking it would make this whole block refuse and go vacuous.
+      getFrom: () => from || 'forwarder@example.test',
     };
   }
   function thread(messages) {
@@ -7180,7 +7183,11 @@ console.log('mayersDailyPull — unparseable-attachment memo (Drive OCR quota le
     return t;
   };
 
-  function resetProps() { scriptProps = { HUB_SHEET_ID: 'hub' }; }
+  function resetProps() {
+    // MAYERS_ALLOWED_SENDERS is required since the sender-verification fix -
+    // without it mayersDailyPull fails closed and every assertion here reads 0.
+    scriptProps = { HUB_SHEET_ID: 'hub', MAYERS_ALLOWED_SENDERS: 'forwarder@example.test' };
+  }
   function run() { ocrCalls = []; return mayersDailyPull(); }
 
   /* --- scenario: one real invoice + the statement ------------------ */
@@ -14140,6 +14147,211 @@ console.log('summary_audit.gs — zero-arg operator wrappers (detail scoping + g
 
   currentSS = savedSS;
   scriptProps = savedProps;
+})();
+
+
+/* ================================================================== *
+ * mayersDailyPull — SENDER VERIFICATION
+ *
+ * Closes the High from /security-audit 2026-09-10 (connectors/gas/mayers.gs:16):
+ * MAYERS_SEARCH filtered on the recipient alias only, with no `from:` clause and
+ * no getFrom() check anywhere in the pull, so ANYONE able to email
+ * mio.jake+mayers@gmail.com got their PDF OCR'd and handed to
+ * ingestSupplierRows('mayers', ...) — the same upsert doPost uses AFTER
+ * authentication. Because that upsert keys on source+invoice_ref, a crafted
+ * invoice_ref REPLACES a real Mayers row's amount in place; a novel one injects
+ * fabricated spend. Both reach Summary and the external GM cost monitor.
+ *
+ * The check is PER MESSAGE, not per thread: Gmail matches `deliveredto:` on the
+ * whole thread, so a per-thread check would still let an attacker who replies
+ * into an existing legitimate thread through.
+ * ================================================================== */
+console.log('mayersDailyPull — sender verification (security: unauthenticated email ingest)');
+(function () {
+  const savedGmail = global.GmailApp;
+  const savedExtract = globalThis.extractPdfText_;
+  const savedStamp = globalThis.stalenessStampHeartbeat_;
+
+  const INVOICE_TEXT = 'Invoice No: 3429816\nInvoice Date: 17-JUN-26\n' +
+    'Deliver To:\n5 BLUES ST\nNORTH SYDNEY NSW 2060\nTotal: 736.74';
+  const EVIL_TEXT = 'Invoice No: 3429816\nInvoice Date: 17-JUN-26\n' +
+    'Deliver To:\n5 BLUES ST\nNORTH SYDNEY NSW 2060\nTotal: 99999.00';
+
+  const GOOD = 'forwarder@example.test';
+  const EVIL = 'attacker@evil.example';
+
+  let ocrCalls = [];
+  let ocrText = {};
+  let allThreads = [];
+  let stamps = [];
+
+  function attachment(name, size) {
+    return {
+      getContentType: () => 'application/pdf',
+      getName: () => name,
+      getSize: () => size,
+    };
+  }
+  // getFrom() is new on this mock — the production code now reads it, so a mock
+  // without it would make every assertion below vacuous.
+  function message(name, size, dateIso, from) {
+    return {
+      getAttachments: () => [attachment(name, size)],
+      getDate: () => new Date(dateIso),
+      getFrom: () => from,
+    };
+  }
+  function thread(messages) {
+    const t = {
+      _labelled: false,
+      _messages: messages,
+      getMessages: () => t._messages,
+      addLabel: () => { t._labelled = true; },
+    };
+    return t;
+  }
+
+  global.GmailApp = {
+    search: () => allThreads.filter((t) => !t._labelled),
+    getUserLabelByName: () => ({ _name: MAYERS_LABEL }),
+    createLabel: () => ({ _name: MAYERS_LABEL }),
+  };
+  globalThis.extractPdfText_ = function (pdf) {
+    ocrCalls.push(pdf.getName());
+    const t = ocrText[pdf.getName()];
+    if (t instanceof Error) throw t;
+    return t;
+  };
+  globalThis.stalenessStampHeartbeat_ = function (source) { stamps.push(source); };
+
+  function setup(allowed) {
+    freshSheets();
+    scriptProps = { HUB_SHEET_ID: 'hub' };
+    if (allowed !== undefined) scriptProps.MAYERS_ALLOWED_SENDERS = allowed;
+    ocrCalls = [];
+    stamps = [];
+  }
+
+  /* --- A: an unapproved sender is refused outright ------------------ */
+  setup(GOOD);
+  ocrText = { 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([message('evil.pdf', 51200, '2026-06-17T04:10:24Z', EVIL)])];
+  const a = mayersDailyPull();
+  eq('A: an unapproved sender ingests NOTHING', a.rowsAdded, 0);
+  eq('A: ...and its PDF is never even OCR-ed (no Drive spend, no parse)', ocrCalls.length, 0);
+  eq('A: ...and it is counted as rejected, not silently dropped', a.sendersRejected, 1);
+
+  /* --- B: the approved sender still works (non-vacuity) ------------- */
+  setup(GOOD);
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z', GOOD)])];
+  const b = mayersDailyPull();
+  eq('B: the approved sender is ingested (guard does not block everything)', b.rowsAdded, 1);
+  eq('B: ...and was OCR-ed', ocrCalls.length, 1);
+  eq('B: ...and nothing was rejected', b.sendersRejected, 0);
+  eq('B: ...and a healthy run still stamps the heartbeat', stamps.length, 1);
+
+  /* --- C: display-name form and case are tolerated ------------------ */
+  setup('FORWARDER@Example.TEST');
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z',
+    'Fwd Bot <Forwarder@EXAMPLE.test>')])];
+  const c = mayersDailyPull();
+  eq('C: Name <addr> form and mixed case still match', c.rowsAdded, 1);
+
+  /* --- D: attacker REPLYING INTO a legitimate thread ---------------- *
+   * This is why the check is per-message. Gmail matches deliveredto: on the
+   * whole thread, so a per-thread check would admit this attacker's PDF. */
+  setup(GOOD);
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT, 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([
+    message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z', GOOD),
+    message('evil.pdf', 51200, '2026-06-18T04:10:24Z', EVIL),
+  ])];
+  const d = mayersDailyPull();
+  eq('D: a reply from an attacker in a LEGIT thread is refused', d.sendersRejected, 1);
+  eq('D: ...only the legitimate message is ingested', d.rowsAdded, 1);
+  eq('D: ...and the attacker PDF is never OCR-ed', ocrCalls.indexOf('evil.pdf'), -1);
+  // The real attack is NOT an extra row: both PDFs carry invoice_ref 3429816, so
+  // the attacker's row upserts on source+invoice_ref and REPLACES the amount in
+  // place. rowsAdded stays 1 either way, which is exactly why that assertion
+  // alone cannot see the defect -- assert the stored TOTAL.
+  const dRows = currentSS.getSheetByName(SUPPLIERS_TAB).getDataRange().getValues().slice(1)
+    .filter((r) => String(r[3]) === '3429816');
+  eq('D: ...exactly one row survives for that invoice_ref', dRows.length, 1);
+  eq('D: ...and its amount is the REAL 736.74, not the attacker 99999', Number(dRows[0][2]), 736.74);
+
+  /* --- E: unset property fails CLOSED, and LOUDLY ------------------- *
+   * Fail-closed matters here beyond the usual: mayers.gs stamps the heartbeat
+   * even on an empty run because 'a quiet day is normal', so a silent refusal
+   * would be indistinguishable from no deliveries and the watchdog could never
+   * fire. A refused run must therefore NOT stamp. */
+  setup(undefined);
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z', GOOD)])];
+  const e = mayersDailyPull();
+  eq('E: no allowlist configured => ingest nothing', e.rowsAdded, 0);
+  eq('E: ...refuses for the SPECIFIC reason, not incidentally', e.refused, 'MAYERS_ALLOWED_SENDERS not set');
+  eq('E: ...OCRs nothing', ocrCalls.length, 0);
+  eq('E: ...and does NOT stamp the heartbeat, so staleness can fire', stamps.length, 0);
+
+  /* --- F: a blank/whitespace property is treated as unset ----------- */
+  setup('   ');
+  allThreads = [thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z', GOOD)])];
+  const f = mayersDailyPull();
+  eq('F: a whitespace-only allowlist is unset, not an empty allowlist', f.refused, 'MAYERS_ALLOWED_SENDERS not set');
+
+  /* --- G: multiple senders, comma-separated ------------------------- */
+  setup('someone@else.example, ' + GOOD);
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z', GOOD)])];
+  const g = mayersDailyPull();
+  eq('G: a comma-separated allowlist matches any listed sender', g.rowsAdded, 1);
+
+  /* --- H: a substring near-miss must NOT match ---------------------- *
+   * evil-forwarder@example.test.attacker.example contains the allowed
+   * address as a substring; a naive indexOf check would admit it. */
+  setup(GOOD);
+  ocrText = { 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([message('evil.pdf', 51200, '2026-06-17T04:10:24Z',
+    'evil-forwarder@example.test.attacker.example')])];
+  const h = mayersDailyPull();
+  eq('H: a lookalike address containing the allowed one is REFUSED', h.rowsAdded, 0);
+  eq('H: ...and counted as rejected', h.sendersRejected, 1);
+
+  /* --- I: THE ACTUAL ATTACK - in-place overwrite across two runs ----- *
+   * Case D above passes even unfixed, and that is a trap worth recording:
+   * both PDFs arrive in ONE batch, and upsertRows_ silently DROPS a second
+   * row sharing a key within a batch, so the attacker's amount is discarded
+   * by accident rather than by any security control.
+   * The real attack is sequential: the legitimate invoice lands on Monday,
+   * the attacker mails the same invoice_ref on Tuesday, and the Tuesday run
+   * upserts on source+invoice_ref and REPLACES Monday's amount in place. That
+   * propagates to Summary and to the external GM cost monitor. */
+  setup(GOOD);
+  ocrText = { 'inv3429816.pdf': INVOICE_TEXT, 'evil.pdf': EVIL_TEXT };
+
+  // Run 1 - the genuine forward.
+  allThreads = [thread([message('inv3429816.pdf', 51200, '2026-06-17T04:10:24Z', GOOD)])];
+  mayersDailyPull();
+  const afterLegit = currentSS.getSheetByName(SUPPLIERS_TAB).getDataRange().getValues().slice(1)
+    .filter((r) => String(r[3]) === '3429816');
+  eq('I: run 1 stores the genuine invoice', Number(afterLegit[0][2]), 736.74);
+
+  // Run 2 - the attacker, a brand-new (unlabelled) thread of their own.
+  ocrCalls = [];
+  allThreads.push(thread([message('evil.pdf', 51200, '2026-06-18T04:10:24Z', EVIL)]));
+  const i2 = mayersDailyPull();
+  const afterAttack = currentSS.getSheetByName(SUPPLIERS_TAB).getDataRange().getValues().slice(1)
+    .filter((r) => String(r[3]) === '3429816');
+  eq('I: the attacker run rejects the sender', i2.sendersRejected, 1);
+  eq('I: ...never OCRs the hostile PDF', ocrCalls.indexOf('evil.pdf'), -1);
+  eq('I: ...and the REAL amount is NOT overwritten in place', Number(afterAttack[0][2]), 736.74);
+  eq('I: ...with still exactly one row for that invoice_ref', afterAttack.length, 1);
+
+  global.GmailApp = savedGmail;
+  globalThis.extractPdfText_ = savedExtract;
+  globalThis.stalenessStampHeartbeat_ = savedStamp;
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
