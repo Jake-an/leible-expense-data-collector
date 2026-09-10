@@ -131,7 +131,7 @@ Two things that were wrong in the plan and are worth remembering:
       re-verified in current source, not just "tests are green". Closed
       out-of-band; suites node 2415/0, pytest 526.
 
-- [ ] **ACTIONABLE: week `2026-08-31` is stale by $1,563.62 and will never self-heal.**
+- [x] **RESOLVED 2026-09-10 (GAS run 12:49): week `2026-08-31` re-summarized, $1,563.62 recovered.**
       `auditSummaryDrift()` run live 2026-09-09 15:38: `weeks audited 241 | clean 27 |
       DRIFTED 214`, net under-reported **$353,485.43**. That headline is 99.6%
       historical — **213 of the 214 drifted weeks are past the purge line**
@@ -152,6 +152,31 @@ Two things that were wrong in the plan and are worth remembering:
       **Cross-check that both tools agree:** drift audit's 27 clean + 1 in-window drifted
       = 28 weeks carrying Summary rows, which is exactly the `weeks in Summary 28` the
       orphan sweep reported the same afternoon. The two independent tools reconcile.
+
+      **OUTCOME — verified by a before/after pair, not assumed.** Jake set
+      `SUMMARY_RESUMMARIZE_WEEK=2026-08-31` and ran `resummarizeWeekFromProperty()`
+      (12:49:06). All four guards passed; the write reported
+      `supplierSummariesAdded=0, supplierSummariesUpdated=7` — exactly the 7 stale rows
+      the audit named, with `duplicatesSkipped=4` and `labourAdded=0/summaryAdded=0/
+      summaryUpdated=0` (Labour correctly moved nothing). The confirming
+      `auditSummaryDrift()` at 12:49:45:
+
+      | | before (09-09 15:38) | after (09-10 12:49) |
+      |---|---:|---:|
+      | weeks audited | 241 | 241 |
+      | clean | 27 | **28** |
+      | DRIFTED | 214 | **213** |
+      | rows with a stale amount | 7 | **0** |
+      | net under-reported | $353,485.43 | **$351,921.81** |
+
+      The net moved by **exactly $1,563.62**, `2026-08-31` no longer appears in the
+      drifted list, and stale amounts are now **zero repo-wide**.
+
+      **The Summary tab now has NO actionable drift.** All 213 remaining drifted weeks
+      are past the purge line (2026-03-11) — the accidental-backfill history spanning
+      2022-01-24 -> 2026-02-16, source in `_archive` only, structurally unrebuildable by
+      `weeklySummarize`. Backfilling that $351,921.81 is a business decision for Jake,
+      not a defect. Nothing here self-heals or degrades further.
 
 - [x] **RESOLVED 2026-09-09 (commit pending, GAS v50): both commands are now reachable.**
       Added `resummarizeWeekFromProperty()` (reads `SUMMARY_RESUMMARIZE_WEEK`) and gave
