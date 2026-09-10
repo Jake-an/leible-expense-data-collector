@@ -18,6 +18,46 @@
 
 ## Active
 
+### 🔧 Shopify online revenue — late-refund repair + pre-W28 gap
+
+- [ ] **Set `MAYERS_ALLOWED_SENDERS` correctly BEFORE the next deploy.** Verified
+      2026-09-10: the live value is `mio.jake+mayers@gmail.com` — the *destination*
+      alias, not the sender. Gmail rewrites `From` on a manual forward, so all 12
+      archived messages (9 threads, back to 2026-06-17) carry
+      `jake@leiblecoffee.com.au`. Left as-is, the sender check added in 2b42bf1
+      refuses **every** Mayers invoice the moment it goes live, and the only symptom
+      is a `REJECTED a message from ...` line in the execution log. Correct value,
+      exactly: `jake@leiblecoffee.com.au`. See [[forwarded-mail-allowlist-names-the-forwarder]].
+
+- [x] **W29 (week 2026-07-13) froze $101 high — repair path built 2026-09-10.**
+      A refund landed after `SHOPIFY_REPULL_WEEKS = 4` had aged the week out, so hub
+      showed $1,522.00 against the producer's $1,421.00 and no scheduled run could
+      ever reach back for it. Widening the constant does **not** fix a week already
+      outside the window, and a refund can always land after any finite window — so
+      the fix is an explicitly-named single week, not a bigger window.
+      `shopifyWeeklyPull_impl_(weeksOverride)` now takes an optional explicit week
+      list (defaulting to `lastCompletedWeeks_()`, scheduled path unchanged), driven
+      by zero-arg `shopifyRepullWeekFromProperty()` reading `SHOPIFY_REPULL_WEEK` —
+      the Run-button pattern, since the editor dropdown passes no arguments
+      ([[gas-run-button-needs-property-driven-wrappers]]). Four loud refusals
+      (unset / unparseable / not a week START / week not finished), each bound to its
+      own reason. The manual path runs **no** failure accounting: a hand-run repair
+      of an old week must not stamp the staleness heartbeat or reset the failcount,
+      or it reports the scheduled feed as healthy when it may be dead.
+      Tests: `test_code.js` cases J1–J9, suite **2475 passed, 0 failed**; mutation
+      check reds J6 (heartbeat guard removed) and J5 (override ignored), nothing else.
+
+- [ ] **Run the W29 repair live** (after deploy): Script Property
+      `SHOPIFY_REPULL_WEEK=2026-07-13`, Run `shopifyRepullWeekFromProperty()`, confirm
+      the log line names the week and `rowsUpdated: 1`, then **clear the property** so
+      a later Run-button press cannot silently re-pull a stale week.
+
+- [ ] **Pre-W28 online revenue never reached the hub — $11,314.65 at the producer.**
+      Same file (`orderapp.gs`); needs its own scoped backfill decision (which weeks,
+      and whether Summary rows for those weeks are rebuildable — `shopify_orderapp` is
+      the one Summary source that is *not* derived from Suppliers/Revenue, see
+      [[orderapp-summary-rows-are-unrebuildable]]).
+
 ### 🔒 Security audit 2026-09-10 — verdict `blocked`, debt list
 
 First full 7-lens audit. Verdict at

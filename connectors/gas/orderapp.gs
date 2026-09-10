@@ -12,6 +12,13 @@ var ORDERAPP_FAILCOUNT_PREFIX = 'ORDERAPP_FAILCOUNT_';
 var ORDERAPP_ALERT_THRESHOLD = 2;
 
 var SHOPIFY_REPULL_WEEKS = 4;
+// The window above is finite, so a refund landing after a week ages out
+// freezes a wrong figure that no scheduled run can ever reach back for
+// (week 2026-07-13 sat $101 above the producer for exactly this reason).
+// Widening the window does not fix a week already outside it, and any
+// finite window has the same hole — so the repair names ONE week here and
+// runs through shopifyRepullWeekFromProperty() below.
+var SHOPIFY_REPULL_WEEK_PROP_ = 'SHOPIFY_REPULL_WEEK';
 // Never 'shopify' — aggregateSupplierRows_ names online Revenue-tab Summary
 // groups by their `source`, so a channel='online', source='shopify' Revenue
 // row would produce the byte-identical Summary key as this writer and the
@@ -624,14 +631,20 @@ function shopifyValidWeekBody_(body, requestedWeek) {
   return { ok: true, weekStart: weekStart, grossSales: gross };
 }
 
-function shopifyWeeklyPull_impl_() {
+function shopifyWeeklyPull_impl_(weeksOverride) {
+  // A non-empty override is the MANUAL repair path. It deliberately runs no
+  // failure accounting at all: stamping the staleness heartbeat, or resetting
+  // the failcount, from a hand-run repull of an old week would report the
+  // SCHEDULED feed as healthy when it may be dead.
+  var manual = !!(weeksOverride && weeksOverride.length);
+
   var token = getOrderAppToken_();
   if (!token) {
-    orderAppRunSkipped_(SHOPIFY_ORDERAPP_SOURCE);
+    if (!manual) orderAppRunSkipped_(SHOPIFY_ORDERAPP_SOURCE);
     return { noToken: true };
   }
 
-  var weeks = lastCompletedWeeks_(todayStr_(), SHOPIFY_REPULL_WEEKS);
+  var weeks = manual ? weeksOverride : lastCompletedWeeks_(todayStr_(), SHOPIFY_REPULL_WEEKS);
   var pulledAt = Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
 
   var normalizedRows = [];
@@ -703,11 +716,81 @@ function shopifyWeeklyPull_impl_() {
 
   if (apiFailed) {
     result.apiFailed = true;
-  } else {
+  } else if (!manual) {
     orderAppRunSuccess_(SHOPIFY_ORDERAPP_SOURCE);
+  }
+  if (manual) {
+    result.manualWeek = weeks[0].start;
   }
 
   return result;
+}
+
+/**
+ * Re-pull ONE week of Shopify online revenue, named by the SHOPIFY_REPULL_WEEK
+ * script property. Zero-arg for the GAS editor Run button (which passes no
+ * args), and the only way to correct a week that SHOPIFY_REPULL_WEEKS has
+ * already aged out — the case a bigger window cannot fix, because a refund can
+ * always land after any finite window.
+ *
+ * This WRITES to Summary, so it refuses loudly rather than guessing. Same four
+ * guards as resummarizeWeekFromProperty(), each earned the expensive way:
+ *  - property unset / unparseable -> refuse (never "do them all")
+ *  - not a week START -> refuse; snapping a mid-week date silently retargets a
+ *    different week than the operator typed
+ *  - week not finished -> refuse; freezing a partial figure is the very bug
+ *    this wrapper exists to repair
+ * Lock-wrapped like shopifyWeeklyPull, because upsertRows_ reads the whole
+ * Summary sheet before writing it back.
+ *
+ * @returns {Object} shopifyWeeklyPull_impl_'s result (plus manualWeek), or
+ *   {week, refused} on a guard, or {locked:true}.
+ */
+function shopifyRepullWeekFromProperty() {
+  var raw = PropertiesService.getScriptProperties().getProperty(SHOPIFY_REPULL_WEEK_PROP_);
+
+  if (!raw) {
+    Logger.log('shopifyRepullWeekFromProperty: ' + SHOPIFY_REPULL_WEEK_PROP_ +
+      ' script property is not set — set it to the week_start (YYYY-MM-DD) of the week ' +
+      'whose Shopify figure needs correcting, then re-run.');
+    return { week: null, refused: SHOPIFY_REPULL_WEEK_PROP_ + ' not set' };
+  }
+
+  var week = resolveDateArg_(raw, null);
+  if (!week) {
+    Logger.log('shopifyRepullWeekFromProperty: ' + SHOPIFY_REPULL_WEEK_PROP_ + '=' + raw +
+      ' is not a valid YYYY-MM-DD date');
+    return { week: null, refused: SHOPIFY_REPULL_WEEK_PROP_ + ' unparseable: ' + raw };
+  }
+
+  if (weekStartForDate_(week) !== week) {
+    Logger.log('shopifyRepullWeekFromProperty: REFUSED — ' + week + ' is not a week START ' +
+      '(its week begins ' + weekStartForDate_(week) + '). Set the property to the week_start ' +
+      'exactly; this is not snapped for you, because snapping would re-pull a different week ' +
+      'than the one you typed.');
+    return { week: week, refused: 'not a week start: ' + week };
+  }
+
+  var weekEnd = addDaysStr_(week, 6);
+  var today = todayStr_();
+  if (weekEnd >= today) {
+    Logger.log('shopifyRepullWeekFromProperty: REFUSED — week ' + week + ' ends ' + weekEnd +
+      ' and today is ' + today + ', so the week is still in progress. The scheduled pull ' +
+      'already covers it; re-pulling now would freeze a partial figure.');
+    return { week: week, refused: 'week not finished: ends ' + weekEnd };
+  }
+
+  Logger.log('shopifyRepullWeekFromProperty: re-pulling week ' + week +
+    ' — manual repair, so this run stamps NO staleness heartbeat and leaves the ' +
+    'failcount alone; it must not vouch for the scheduled feed.');
+
+  var weeks = [{ label: isoWeekLabel_(week), start: week, end: weekEnd }];
+  var res = withScriptLock_(function () { return shopifyWeeklyPull_impl_(weeks); });
+  if (res === LOCK_TIMEOUT_) {
+    Logger.log('shopifyRepullWeekFromProperty: could not acquire script lock — nothing written');
+    return { week: week, locked: true };
+  }
+  return res;
 }
 
 /* ------------------------------------------------------------------ *

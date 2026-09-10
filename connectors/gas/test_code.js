@@ -14354,5 +14354,191 @@ console.log('mayersDailyPull — sender verification (security: unauthenticated 
   globalThis.stalenessStampHeartbeat_ = savedStamp;
 })();
 
+/* ------------------------------------------------------------------ *
+ * J. shopifyRepullWeekFromProperty() — repair a week the window aged out
+ * ------------------------------------------------------------------ *
+ * SHOPIFY_REPULL_WEEKS is a FINITE window (4). Week 2026-07-13 sat $101
+ * above the producer because a refund landed after that week aged out, and
+ * no scheduled run can ever reach back for it. Bumping the constant does
+ * not fix a week already outside it, and any finite window has the same
+ * hole — so the repair is an explicitly-named single week.
+ *
+ * Zero-arg because the GAS editor Run button passes no args. It WRITES, so
+ * it refuses loudly on every ambiguity rather than guessing, exactly like
+ * resummarizeWeekFromProperty() — and each refusal is bound to its OWN
+ * reason here, because a bare `!!res.refused` goes vacuous the moment a
+ * different guard starts firing first.
+ *
+ * The manual path deliberately runs NO failure accounting: stamping the
+ * staleness heartbeat (or resetting the failcount) from a hand-run repair
+ * of an old week would report the SCHEDULED feed as healthy when it is not.
+ */
+withMockNow('2026-08-06T00:00:00Z', function testShopifyRepullWeekFromProperty() {
+  console.log('\norderapp: shopifyRepullWeekFromProperty:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const savedStamp = globalThis.stalenessStampHeartbeat_;
+  const TOKEN = 'shopify-repull-token';
+  const FAILCOUNT_KEY = 'ORDERAPP_FAILCOUNT_shopify_orderapp';
+
+  // Every date fixture derives from the pinned instant — mixing a bare
+  // new Date() in here drifts a fixture onto a week boundary and reds with
+  // a false story attached.
+  const PINNED_TODAY = '2026-08-06';
+  const OLD_WEEK = lastCompletedWeeks_(PINNED_TODAY, 12)[0].start; // 11 weeks back: far outside the 4-week window
+  const MID_WEEK = addDaysStr_(OLD_WEEK, 3);                       // a Thursday inside that week
+  const CURRENT_WEEK = weekStartForDate_(PINNED_TODAY);            // still in progress
+
+  let heartbeats = [];
+  globalThis.stalenessStampHeartbeat_ = function (source) { heartbeats.push(source); };
+
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: TOKEN };
+    clearLoggedMessages();
+    heartbeats = [];
+    global.__forceLockTimeout = false;
+    // A refusal must not reach the network at all.
+    global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp must not be called on a refusal'); } };
+  }
+
+  function armOneWeek(weekStart, grossSales) {
+    global.UrlFetchApp = {
+      fetch: (url) => {
+        const m = /[?&]week=([^&]+)/.exec(String(url));
+        const label = m ? decodeURIComponent(m[1]) : null;
+        if (label !== isoWeekLabel_(weekStart)) {
+          throw new Error('armOneWeek: unexpected week requested: ' + label);
+        }
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => JSON.stringify({
+            ok: true,
+            meta: {
+              weekStart: weekStart + 'T00:00:00+10:00',
+              weekEndExclusive: addDaysStr_(addDaysStr_(weekStart, 6), 1) + 'T00:00:00+10:00',
+              snapshot: true
+            },
+            summary: { orderCount: 7, grossSales: grossSales }
+          })
+        };
+      }
+    };
+  }
+
+  function summaryDataRows() {
+    const sheet = currentSS.getSheetByName('Summary');
+    return sheet ? sheet.getDataRange().getValues().slice(1) : [];
+  }
+
+  /* --- J1: property unset -> refuse, write nothing, fetch nothing ------- */
+  reset();
+  let res = shopifyRepullWeekFromProperty();
+  eq('J1: refuses with the not-set reason', String(res && res.refused), 'SHOPIFY_REPULL_WEEK not set');
+  eq('J1: ...and week is null', res.week, null);
+  eq('J1: ...and no Summary row is written', summaryDataRows().length, 0);
+
+  /* --- J2: unparseable value -> refuse, naming the value ---------------- */
+  reset();
+  scriptProps.SHOPIFY_REPULL_WEEK = 'last tuesday';
+  res = shopifyRepullWeekFromProperty();
+  eq('J2: refuses with the unparseable reason',
+    String(res && res.refused), 'SHOPIFY_REPULL_WEEK unparseable: last tuesday');
+  eq('J2: ...and no Summary row is written', summaryDataRows().length, 0);
+
+  /* --- J3: mid-week date -> refuse rather than silently snapping -------- */
+  reset();
+  scriptProps.SHOPIFY_REPULL_WEEK = MID_WEEK;
+  res = shopifyRepullWeekFromProperty();
+  eq('J3: refuses with the not-a-week-start reason',
+    String(res && res.refused), 'not a week start: ' + MID_WEEK);
+  check('J3: ...and the log names the week it actually falls in',
+    lastLoggedMessages().some((m) => m.indexOf(OLD_WEEK) !== -1));
+  eq('J3: ...and no Summary row is written', summaryDataRows().length, 0);
+
+  /* --- J4: in-progress week -> refuse (would freeze a partial figure) --- */
+  reset();
+  scriptProps.SHOPIFY_REPULL_WEEK = CURRENT_WEEK;
+  res = shopifyRepullWeekFromProperty();
+  eq('J4: refuses with the week-not-finished reason',
+    String(res && res.refused), 'week not finished: ends ' + addDaysStr_(CURRENT_WEEK, 6));
+  eq('J4: ...and no Summary row is written', summaryDataRows().length, 0);
+
+  /* --- J5: a valid aged-out week -> exactly that ONE week is pulled ----- */
+  reset();
+  scriptProps.SHOPIFY_REPULL_WEEK = OLD_WEEK;
+  scriptProps[FAILCOUNT_KEY] = '2'; // scheduled feed is currently in alert
+  armOneWeek(OLD_WEEK, 1421.00);
+  res = shopifyRepullWeekFromProperty();
+
+  eq('J5: exactly one week requested', res.weeksRequested, 1);
+  eq('J5: ...fetched', res.weeksFetched, 1);
+  eq('J5: ...one Summary row added', res.rowsAdded, 1);
+  check('J5: ...with no apiFailed flag', !res.apiFailed);
+  check('J5: ...and no refusal', !res.refused);
+
+  const rows5 = summaryDataRows();
+  eq('J5: exactly one Summary row exists', rows5.length, 1);
+  eq('J5: ...for the named week', cellDate(rows5[0][0]), OLD_WEEK);
+  eq('J5: ...week_end', cellDate(rows5[0][1]), addDaysStr_(OLD_WEEK, 6));
+  eq('J5: ...source', String(rows5[0][2]), 'shopify_orderapp');
+  eq('J5: ...channel', String(rows5[0][3]), 'online');
+  eq('J5: ...carrying the corrected gross', Number(rows5[0][4]), 1421.00);
+  eq('J5: ...department', String(rows5[0][6]), 'Roastery');
+  eq('J5: ...kind', String(rows5[0][7]), 'revenue');
+
+  /* --- J6: a manual repair must NOT vouch for the scheduled feed -------- */
+  eq('J6: the manual run stamps NO staleness heartbeat', heartbeats.length, 0);
+  eq('J6: ...and leaves the failcount untouched', String(scriptProps[FAILCOUNT_KEY]), '2');
+
+  /* --- J7: a corrected figure updates the row in place, never appends --- */
+  armOneWeek(OLD_WEEK, 1320.00); // the $101 refund finally lands
+  const res7 = shopifyRepullWeekFromProperty();
+  eq('J7: the re-run updates rather than adds', res7.rowsUpdated, 1);
+  eq('J7: ...adding nothing', res7.rowsAdded, 0);
+  const rows7 = summaryDataRows();
+  eq('J7: ...still exactly one row for the week', rows7.length, 1);
+  eq('J7: ...now carrying the corrected figure', Number(rows7[0][4]), 1320.00);
+
+  /* --- J8: lock-wrapped, like every other Summary writer --------------- */
+  reset();
+  scriptProps.SHOPIFY_REPULL_WEEK = OLD_WEEK;
+  global.__forceLockTimeout = true;
+  const res8 = shopifyRepullWeekFromProperty();
+  check('J8: a lock timeout is reported, not silently swallowed', !!(res8 && res8.locked));
+  eq('J8: ...and nothing is written', summaryDataRows().length, 0);
+  global.__forceLockTimeout = false;
+
+  /* --- J9: the SCHEDULED path is unchanged — still the 4-week window --- */
+  reset();
+  const weeks4 = lastCompletedWeeks_(PINNED_TODAY, SHOPIFY_REPULL_WEEKS);
+  const requested = [];
+  global.UrlFetchApp = {
+    fetch: (url) => {
+      const m = /[?&]week=([^&]+)/.exec(String(url));
+      const label = m ? decodeURIComponent(m[1]) : null;
+      requested.push(label);
+      const w = weeks4.filter((x) => x.label === label)[0];
+      if (!w) throw new Error('J9: unexpected week ' + label);
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          ok: true,
+          meta: { weekStart: w.start + 'T00:00:00+10:00', weekEndExclusive: addDaysStr_(w.end, 1) + 'T00:00:00+10:00', snapshot: true },
+          summary: { orderCount: 1, grossSales: 10 }
+        })
+      };
+    }
+  };
+  const res9 = shopifyWeeklyPull_impl_();
+  eq('J9: the zero-arg scheduled pull still requests SHOPIFY_REPULL_WEEKS weeks',
+    res9.weeksRequested, SHOPIFY_REPULL_WEEKS);
+  eq('J9: ...and asks for exactly that many', requested.length, SHOPIFY_REPULL_WEEKS);
+  eq('J9: ...and DOES stamp the heartbeat', heartbeats.length, 1);
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+  globalThis.stalenessStampHeartbeat_ = savedStamp;
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
