@@ -52,11 +52,45 @@
       the log line names the week and `rowsUpdated: 1`, then **clear the property** so
       a later Run-button press cannot silently re-pull a stale week.
 
-- [ ] **Pre-W28 online revenue never reached the hub — $11,314.65 at the producer.**
-      Same file (`orderapp.gs`); needs its own scoped backfill decision (which weeks,
-      and whether Summary rows for those weeks are rebuildable — `shopify_orderapp` is
-      the one Summary source that is *not* derived from Suppliers/Revenue, see
-      [[orderapp-summary-rows-are-unrebuildable]]).
+- [ ] **⏳ TIME-CRITICAL — pre-W28 online revenue never reached the hub: 43 weeks,
+      $61,162.15, and it is decaying.** Probed live 2026-09-10 against both sides, so
+      these are census figures for the reachable range, not a window sample.
+      - Hub holds **9** `shopify_orderapp` Summary weeks: 2026-07-06 … 2026-08-31,
+        $14,138.65. Nothing earlier exists.
+      - Producer serves 2025-09-08 … onward and **hard-refuses** anything older:
+        `BAD_REQUEST — week 2025-WNN is more than ~1 year old`. 2025-09-01 already
+        refuses; 2025-09-08 still answers.
+      - Missing: **2025-09-08 → 2026-06-29, 43 weeks, $61,162.15.**
+      - **The earliest recoverable week ages out roughly every Monday.** Each week
+        this sits, ~$1.4k of history becomes permanently unrecoverable. The prior
+        $11,314.65 estimate was a bounded-window lower bound, not the total
+        (see [[probe-window-figures-are-not-a-census]]).
+      - Safe to write: nothing purges `Summary`, and `SUMMARY_KEY_COLS`
+        (week_start||department||kind||supplier||location) makes each week a unique
+        key, so these are pure inserts against weeks that currently have no
+        `shopify_orderapp` row — not a recompute of anything.
+
+      **Tooling built 2026-09-10 (needs deploy):** `shopifyBackfillDryRun()` /
+      `shopifyBackfillFromProperty()`, both zero-arg for the Run dropdown, reading
+      `SHOPIFY_BACKFILL_FROM` + `SHOPIFY_BACKFILL_TO` (both week starts, inclusive,
+      both REQUIRED — a defaulted bound is how a short backfill becomes a year-long
+      one). Refuses on unset / unparseable / not-a-week-START / inverted range /
+      unfinished end week, each bound to its own reason. Clamps to
+      `SHOPIFY_BACKFILL_MAX_WEEKS_` (20) per run to stay inside the GAS 6-minute
+      ceiling and reports `resumeAt` in the result AND the log. Runs no failure
+      accounting, same reasoning as the repull wrapper.
+
+      **Operator procedure** (43 weeks = 3 runs):
+      1. `SHOPIFY_BACKFILL_FROM=2025-09-08`, `SHOPIFY_BACKFILL_TO=2026-06-29`
+      2. Run `shopifyBackfillDryRun()` — read the per-week `would write` lines.
+      3. Run `shopifyBackfillFromProperty()` — covers 20 weeks, logs the resume week.
+      4. Set `SHOPIFY_BACKFILL_FROM` to that resume week; repeat 2–3 twice more.
+      5. **Clear both properties** when done, so a later Run-button press cannot
+         silently re-pull a stale range.
+
+      Tests: `test_code.js` cases K1–K12, suite **2533 passed, 0 failed**; mutation
+      check reds K6 (dry-run bypassed) and K10 (clamp removed), and removing the
+      inverted-range guard throws rather than refusing — so all three bite.
 
 ### 🔒 Security audit 2026-09-10 — verdict `blocked`, debt list
 

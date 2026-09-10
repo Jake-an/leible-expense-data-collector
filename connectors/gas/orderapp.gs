@@ -19,6 +19,17 @@ var SHOPIFY_REPULL_WEEKS = 4;
 // finite window has the same hole — so the repair names ONE week here and
 // runs through shopifyRepullWeekFromProperty() below.
 var SHOPIFY_REPULL_WEEK_PROP_ = 'SHOPIFY_REPULL_WEEK';
+
+// The hub's oldest shopify_orderapp Summary row is week 2026-07-06, but the
+// producer serves back ~1 year and hard-refuses BAD_REQUEST 'more than ~1
+// year old' beyond that — so the earlier weeks of online revenue that never
+// reached the hub become permanently unrecoverable one week at a time, every
+// Monday. shopifyBackfillFromProperty() below closes that range in bounded
+// chunks; the cap keeps one execution inside the GAS 6-minute ceiling and
+// the run reports the week to resume from rather than silently part-doing it.
+var SHOPIFY_BACKFILL_FROM_PROP_ = 'SHOPIFY_BACKFILL_FROM';
+var SHOPIFY_BACKFILL_TO_PROP_ = 'SHOPIFY_BACKFILL_TO';
+var SHOPIFY_BACKFILL_MAX_WEEKS_ = 20;
 // Never 'shopify' — aggregateSupplierRows_ names online Revenue-tab Summary
 // groups by their `source`, so a channel='online', source='shopify' Revenue
 // row would produce the byte-identical Summary key as this writer and the
@@ -631,12 +642,13 @@ function shopifyValidWeekBody_(body, requestedWeek) {
   return { ok: true, weekStart: weekStart, grossSales: gross };
 }
 
-function shopifyWeeklyPull_impl_(weeksOverride) {
+function shopifyWeeklyPull_impl_(weeksOverride, opts) {
   // A non-empty override is the MANUAL repair path. It deliberately runs no
   // failure accounting at all: stamping the staleness heartbeat, or resetting
   // the failcount, from a hand-run repull of an old week would report the
   // SCHEDULED feed as healthy when it may be dead.
   var manual = !!(weeksOverride && weeksOverride.length);
+  var dryRun = !!(opts && opts.dryRun);
 
   var token = getOrderAppToken_();
   if (!token) {
@@ -701,6 +713,33 @@ function shopifyWeeklyPull_impl_(weeksOverride) {
     }
   }
 
+  if (dryRun) {
+    // One log line per week, never one concatenated blob: the GAS editor
+    // truncates a single big message and the operator approves unread
+    // (see the gas-editor-log-truncates-one-big-blob learning).
+    var previewTotal = 0;
+    for (var d = 0; d < normalizedRows.length; d++) {
+      previewTotal += Number(normalizedRows[d][4]) || 0;
+      Logger.log('shopifyWeeklyPull (DRY RUN): would write ' + normalizedRows[d][0] +
+        ' .. ' + normalizedRows[d][1] + '  ' + SHOPIFY_ORDERAPP_SOURCE + '/online  $' +
+        (Number(normalizedRows[d][4]) || 0).toFixed(2));
+    }
+    Logger.log('shopifyWeeklyPull (DRY RUN): ' + normalizedRows.length + ' row(s), $' +
+      previewTotal.toFixed(2) + ' total — NOTHING written.');
+    return {
+      dryRun: true,
+      weeksRequested: weeks.length,
+      weeksFetched: weeksFetched,
+      rowsPreviewed: normalizedRows.length,
+      previewTotal: Math.round(previewTotal * 100) / 100,
+      rowsAdded: 0,
+      rowsUpdated: 0,
+      duplicatesSkipped: 0,
+      excludedGross: Math.round(excludedGross * 100) / 100,
+      apiFailed: apiFailed || undefined
+    };
+  }
+
   var ss = getHubSpreadsheet_();
   var summSheet = ensureSheet(ss, SUMMARY_TAB, SUMMARY_HEADERS);
   var upsertResult = upsertRows_(summSheet, normalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
@@ -721,6 +760,7 @@ function shopifyWeeklyPull_impl_(weeksOverride) {
   }
   if (manual) {
     result.manualWeek = weeks[0].start;
+    result.manualWeeks = weeks.length;
   }
 
   return result;
@@ -791,6 +831,150 @@ function shopifyRepullWeekFromProperty() {
     return { week: week, locked: true };
   }
   return res;
+}
+
+/**
+ * Shared body of the two zero-arg backfill wrappers below. Reads the range
+ * from SHOPIFY_BACKFILL_FROM / SHOPIFY_BACKFILL_TO (both week starts,
+ * inclusive) and re-pulls every week in it.
+ *
+ * Both bounds are REQUIRED. A defaulted bound on a range write is how a
+ * one-week job silently becomes a year-long one, and the producer refuses
+ * anything older than ~1 year, so a wrong FROM does not fail loudly — it
+ * just does less than the operator thinks. Every ambiguity refuses, bound to
+ * its own reason so an assertion on one guard cannot pass because a different
+ * guard fired.
+ *
+ * Over-long ranges are CLAMPED to SHOPIFY_BACKFILL_MAX_WEEKS_ rather than
+ * refused: a 43-week gap has to be closable, and one execution has to stay
+ * inside the GAS 6-minute ceiling. The clamped run says exactly which week to
+ * set FROM to next, in the log AND in resumeAt.
+ *
+ * @param {boolean} dryRun preview only — logs each row and writes nothing.
+ * @returns {Object} the pull result plus {from, to, resumeAt}, or {refused},
+ *   or {locked:true}.
+ */
+function shopifyBackfill_(dryRun) {
+  var props = PropertiesService.getScriptProperties();
+  var label = dryRun ? 'shopifyBackfillDryRun' : 'shopifyBackfillFromProperty';
+
+  var rawFrom = props.getProperty(SHOPIFY_BACKFILL_FROM_PROP_);
+  if (!rawFrom) {
+    Logger.log(label + ': ' + SHOPIFY_BACKFILL_FROM_PROP_ + ' script property is not set — ' +
+      'set it to the FIRST week_start (YYYY-MM-DD) to backfill, and ' +
+      SHOPIFY_BACKFILL_TO_PROP_ + ' to the last, then re-run.');
+    return { refused: SHOPIFY_BACKFILL_FROM_PROP_ + ' not set' };
+  }
+
+  var rawTo = props.getProperty(SHOPIFY_BACKFILL_TO_PROP_);
+  if (!rawTo) {
+    Logger.log(label + ': ' + SHOPIFY_BACKFILL_TO_PROP_ + ' script property is not set — ' +
+      'both bounds are required. There is deliberately no default: a defaulted end date ' +
+      'is how a short backfill silently becomes a year-long one.');
+    return { refused: SHOPIFY_BACKFILL_TO_PROP_ + ' not set' };
+  }
+
+  var from = resolveDateArg_(rawFrom, null);
+  if (!from) {
+    Logger.log(label + ': ' + SHOPIFY_BACKFILL_FROM_PROP_ + '=' + rawFrom + ' is not a valid YYYY-MM-DD date');
+    return { refused: SHOPIFY_BACKFILL_FROM_PROP_ + ' unparseable: ' + rawFrom };
+  }
+
+  var to = resolveDateArg_(rawTo, null);
+  if (!to) {
+    Logger.log(label + ': ' + SHOPIFY_BACKFILL_TO_PROP_ + '=' + rawTo + ' is not a valid YYYY-MM-DD date');
+    return { refused: SHOPIFY_BACKFILL_TO_PROP_ + ' unparseable: ' + rawTo };
+  }
+
+  if (weekStartForDate_(from) !== from) {
+    Logger.log(label + ': REFUSED — ' + SHOPIFY_BACKFILL_FROM_PROP_ + '=' + from +
+      ' is not a week START (its week begins ' + weekStartForDate_(from) + '). Not snapped ' +
+      'for you: snapping would backfill a different range than the one you typed.');
+    return { refused: SHOPIFY_BACKFILL_FROM_PROP_ + ' is not a week start: ' + from };
+  }
+
+  if (weekStartForDate_(to) !== to) {
+    Logger.log(label + ': REFUSED — ' + SHOPIFY_BACKFILL_TO_PROP_ + '=' + to +
+      ' is not a week START (its week begins ' + weekStartForDate_(to) + ').');
+    return { refused: SHOPIFY_BACKFILL_TO_PROP_ + ' is not a week start: ' + to };
+  }
+
+  if (from > to) {
+    Logger.log(label + ': REFUSED — the range runs backwards (' + from + ' to ' + to +
+      '). That is a typo, not an empty job, so it is refused rather than silently doing nothing.');
+    return { refused: 'range is inverted: ' + from + ' > ' + to };
+  }
+
+  var toEnd = addDaysStr_(to, 6);
+  var today = todayStr_();
+  if (toEnd >= today) {
+    Logger.log(label + ': REFUSED — the last week ' + to + ' ends ' + toEnd + ' and today is ' +
+      today + ', so it is still in progress. The scheduled pull already covers it; including ' +
+      'it here would freeze a partial figure.');
+    return { refused: 'week not finished: ends ' + toEnd };
+  }
+
+  var weeks = [];
+  var cursor = from;
+  while (cursor <= to) {
+    weeks.push({ label: isoWeekLabel_(cursor), start: cursor, end: addDaysStr_(cursor, 6) });
+    cursor = addDaysStr_(cursor, 7);
+  }
+
+  var resumeAt = null;
+  if (weeks.length > SHOPIFY_BACKFILL_MAX_WEEKS_) {
+    resumeAt = weeks[SHOPIFY_BACKFILL_MAX_WEEKS_].start;
+    Logger.log(label + ': the requested range is ' + weeks.length + ' weeks, over the ' +
+      SHOPIFY_BACKFILL_MAX_WEEKS_ + '-week cap — this run covers ' + from + ' to ' +
+      weeks[SHOPIFY_BACKFILL_MAX_WEEKS_ - 1].start + '. To resume, set ' +
+      SHOPIFY_BACKFILL_FROM_PROP_ + '=' + resumeAt + ' and run again.');
+    weeks = weeks.slice(0, SHOPIFY_BACKFILL_MAX_WEEKS_);
+  }
+
+  Logger.log(label + ': ' + (dryRun ? 'PREVIEWING ' : 'backfilling ') + weeks.length +
+    ' week(s), ' + weeks[0].start + ' to ' + weeks[weeks.length - 1].start +
+    '. Manual run: it stamps NO staleness heartbeat and leaves the failcount alone, ' +
+    'because it must not vouch for the scheduled feed.');
+
+  // The dry run reads only, so it does not hold the script lock for the whole
+  // fetch loop; the wet run must, because upsertRows_ reads the entire Summary
+  // sheet before writing it back.
+  var res;
+  if (dryRun) {
+    res = shopifyWeeklyPull_impl_(weeks, { dryRun: true });
+  } else {
+    res = withScriptLock_(function () { return shopifyWeeklyPull_impl_(weeks); });
+    if (res === LOCK_TIMEOUT_) {
+      Logger.log(label + ': could not acquire script lock — nothing written');
+      return { from: from, to: to, locked: true };
+    }
+  }
+
+  res.from = from;
+  res.to = to;
+  res.resumeAt = resumeAt;
+  return res;
+}
+
+/**
+ * Preview the backfill range without writing anything. Zero-arg because the
+ * GAS editor Run dropdown passes no arguments — a `{dryRun:true}` argument is
+ * unreachable from it, and following such an instruction literally runs the
+ * WET path through a one-way door (the exact trap hit by
+ * `wholesalePull({dryRun:true})` on the roastery-wholesale bring-up).
+ * @returns {Object} see shopifyBackfill_.
+ */
+function shopifyBackfillDryRun() {
+  return shopifyBackfill_(true);
+}
+
+/**
+ * Backfill SHOPIFY_BACKFILL_FROM..SHOPIFY_BACKFILL_TO into Summary. Run
+ * shopifyBackfillDryRun() first and read the per-week preview lines.
+ * @returns {Object} see shopifyBackfill_.
+ */
+function shopifyBackfillFromProperty() {
+  return shopifyBackfill_(false);
 }
 
 /* ------------------------------------------------------------------ *

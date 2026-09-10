@@ -14540,5 +14540,234 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyRepullWeekFromProperty()
   globalThis.stalenessStampHeartbeat_ = savedStamp;
 });
 
+/* ------------------------------------------------------------------ *
+ * K. shopifyBackfillFromProperty() / shopifyBackfillDryRun()
+ * ------------------------------------------------------------------ *
+ * The hub's first shopify_orderapp Summary row is week 2026-07-06. The
+ * producer serves back to ~1 year, so 43 earlier weeks of online revenue
+ * (~$61k) exist upstream and never reached the hub — and the producer hard-
+ * refuses BAD_REQUEST 'more than ~1 year old', so one more week becomes
+ * permanently unrecoverable every Monday. One week per Run-button press does
+ * not close that; this is the bounded range form.
+ *
+ * Bounded on purpose: MAX_WEEKS per run keeps a single execution inside the
+ * GAS 6-minute ceiling, and the run LOGS the week to resume from rather than
+ * silently doing part of the job. Dry run is a SEPARATE zero-arg function
+ * (the runWholesalePullDryRun precedent) because the editor Run dropdown
+ * passes no arguments, so a `{dryRun:true}` argument is unreachable and the
+ * operator would get a WET run through a one-way door.
+ */
+withMockNow('2026-08-06T00:00:00Z', function testShopifyBackfill() {
+  console.log('\norderapp: shopifyBackfillFromProperty / shopifyBackfillDryRun:');
+
+  const REAL_URL_FETCH = global.UrlFetchApp;
+  const savedStamp = globalThis.stalenessStampHeartbeat_;
+  const TOKEN = 'shopify-backfill-token';
+  const FAILCOUNT_KEY = 'ORDERAPP_FAILCOUNT_shopify_orderapp';
+
+  const PINNED_TODAY = '2026-08-06';
+  const B_FROM = lastCompletedWeeks_(PINNED_TODAY, 10)[0].start; // 9 weeks back
+  const B_TO = addDaysStr_(B_FROM, 14);                          // a 3-week span
+  const CURRENT_WEEK = weekStartForDate_(PINNED_TODAY);
+
+  let heartbeats = [];
+  globalThis.stalenessStampHeartbeat_ = function (source) { heartbeats.push(source); };
+
+  function reset() {
+    currentSS = makeSpreadsheet();
+    scriptProps = { ORDER_APP_COST_TOKEN: TOKEN };
+    clearLoggedMessages();
+    heartbeats = [];
+    global.__forceLockTimeout = false;
+    global.UrlFetchApp = { fetch: () => { throw new Error('UrlFetchApp must not be called on a refusal'); } };
+  }
+
+  // Deterministic gross per week so every assertion can be computed, not
+  // hardcoded: 100 for the first Monday of 2000 plus 10 per week elapsed.
+  function grossFor(weekStart) {
+    const days = Math.round((new Date(weekStart + 'T00:00:00Z').getTime()
+      - new Date('2000-01-03T00:00:00Z').getTime()) / 86400000);
+    return 100 + (days / 7) * 10;
+  }
+
+  // Serves ANY week the code asks for, and records the order asked in.
+  function armAnyWeek(requested) {
+    global.UrlFetchApp = {
+      fetch: (url) => {
+        const m = /[?&]week=([^&]+)/.exec(String(url));
+        const label = m ? decodeURIComponent(m[1]) : null;
+        if (requested) requested.push(label);
+        // Resolve the label back to its Monday by scanning a wide band around
+        // the pinned instant — the code owns label<->week, the fixture must not
+        // re-implement it.
+        let start = null;
+        for (let i = 0; i < 400; i++) {
+          const cand = addDaysStr_(CURRENT_WEEK, -7 * i);
+          if (isoWeekLabel_(cand) === label) { start = cand; break; }
+        }
+        if (!start) throw new Error('armAnyWeek: could not resolve label ' + label);
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => JSON.stringify({
+            ok: true,
+            meta: {
+              weekStart: start + 'T00:00:00+10:00',
+              weekEndExclusive: addDaysStr_(start, 7) + 'T00:00:00+10:00',
+              snapshot: true
+            },
+            summary: { orderCount: 3, grossSales: grossFor(start) }
+          })
+        };
+      }
+    };
+  }
+
+  function summaryDataRows() {
+    const sheet = currentSS.getSheetByName('Summary');
+    return sheet ? sheet.getDataRange().getValues().slice(1) : [];
+  }
+
+  /* --- K1/K2: both bounds are required, each refusing by its own name --- */
+  reset();
+  let res = shopifyBackfillFromProperty();
+  eq('K1: refuses when FROM is unset', String(res && res.refused), 'SHOPIFY_BACKFILL_FROM not set');
+  eq('K1: ...and writes nothing', summaryDataRows().length, 0);
+
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_FROM;
+  res = shopifyBackfillFromProperty();
+  eq('K2: refuses when TO is unset', String(res && res.refused), 'SHOPIFY_BACKFILL_TO not set');
+  eq('K2: ...and writes nothing', summaryDataRows().length, 0);
+
+  /* --- K3: a mid-week bound is refused, never snapped ------------------- */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = addDaysStr_(B_FROM, 2);
+  scriptProps.SHOPIFY_BACKFILL_TO = B_TO;
+  res = shopifyBackfillFromProperty();
+  eq('K3: refuses a FROM that is not a week start',
+    String(res && res.refused), 'SHOPIFY_BACKFILL_FROM is not a week start: ' + addDaysStr_(B_FROM, 2));
+  eq('K3: ...and writes nothing', summaryDataRows().length, 0);
+
+  /* --- K4: an inverted range is a typo, not an empty job ---------------- */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_TO;
+  scriptProps.SHOPIFY_BACKFILL_TO = B_FROM;
+  res = shopifyBackfillFromProperty();
+  eq('K4: refuses an inverted range',
+    String(res && res.refused), 'range is inverted: ' + B_TO + ' > ' + B_FROM);
+  eq('K4: ...and writes nothing', summaryDataRows().length, 0);
+
+  /* --- K5: the in-progress week can never be a bound -------------------- */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_FROM;
+  scriptProps.SHOPIFY_BACKFILL_TO = CURRENT_WEEK;
+  res = shopifyBackfillFromProperty();
+  eq('K5: refuses a TO week that has not finished',
+    String(res && res.refused), 'week not finished: ends ' + addDaysStr_(CURRENT_WEEK, 6));
+  eq('K5: ...and writes nothing', summaryDataRows().length, 0);
+
+  /* --- K6: DRY RUN previews every week and touches nothing -------------- */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_FROM;
+  scriptProps.SHOPIFY_BACKFILL_TO = B_TO;
+  const asked6 = [];
+  armAnyWeek(asked6);
+  const res6 = shopifyBackfillDryRun();
+  check('K6: the dry run reports itself as one', !!res6.dryRun);
+  eq('K6: ...covering all 3 weeks', res6.weeksRequested, 3);
+  eq('K6: ...previewing 3 rows', res6.rowsPreviewed, 3);
+  eq('K6: ...and writing NOTHING to Summary', summaryDataRows().length, 0);
+  eq('K6: ...adding no rows', res6.rowsAdded, 0);
+  // One log line per week, never one big blob: a single concatenated message
+  // is truncated by the GAS editor log and the operator approves unread.
+  const previewLines = lastLoggedMessages().filter((m) => m.indexOf('would write') !== -1);
+  eq('K6: ...logging one line per week', previewLines.length, 3);
+
+  /* --- K7: the WET run writes exactly those weeks, once each ------------ */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_FROM;
+  scriptProps.SHOPIFY_BACKFILL_TO = B_TO;
+  scriptProps[FAILCOUNT_KEY] = '2'; // scheduled feed currently in alert
+  const asked7 = [];
+  armAnyWeek(asked7);
+  const res7 = shopifyBackfillFromProperty();
+
+  eq('K7: 3 weeks requested', res7.weeksRequested, 3);
+  eq('K7: ...3 fetched', res7.weeksFetched, 3);
+  eq('K7: ...3 rows added', res7.rowsAdded, 3);
+  eq('K7: ...none updated', res7.rowsUpdated, 0);
+  check('K7: ...with no apiFailed flag', !res7.apiFailed);
+  eq('K7: ...asking the producer for exactly 3 weeks', asked7.length, 3);
+
+  const rows7 = summaryDataRows();
+  eq('K7: exactly 3 Summary rows', rows7.length, 3);
+  [0, 1, 2].forEach((i) => {
+    const wk = addDaysStr_(B_FROM, 7 * i);
+    const row = rows7.filter((r) => cellDate(r[0]) === wk)[0];
+    check('K7: a row exists for ' + wk, !!row);
+    if (!row) return;
+    eq('K7: ' + wk + ' week_end', cellDate(row[1]), addDaysStr_(wk, 6));
+    eq('K7: ' + wk + ' source', String(row[2]), 'shopify_orderapp');
+    eq('K7: ' + wk + ' channel', String(row[3]), 'online');
+    eq('K7: ' + wk + ' total', Number(row[4]), grossFor(wk));
+    eq('K7: ' + wk + ' department', String(row[6]), 'Roastery');
+    eq('K7: ' + wk + ' kind', String(row[7]), 'revenue');
+  });
+
+  /* --- K8: a backfill must not vouch for the scheduled feed ------------- */
+  eq('K8: the backfill stamps NO staleness heartbeat', heartbeats.length, 0);
+  eq('K8: ...and leaves the failcount untouched', String(scriptProps[FAILCOUNT_KEY]), '2');
+
+  /* --- K9: re-running the same range is idempotent ---------------------- */
+  armAnyWeek([]);
+  const res9 = shopifyBackfillFromProperty();
+  eq('K9: a repeat run adds nothing', res9.rowsAdded, 0);
+  eq('K9: ...and still leaves 3 rows', summaryDataRows().length, 3);
+
+  /* --- K10: an over-long range is CLAMPED, and says where to resume ----- */
+  reset();
+  const longFrom = lastCompletedWeeks_(PINNED_TODAY, 30)[0].start;
+  const longTo = lastCompletedWeeks_(PINNED_TODAY, 1)[0].start;
+  scriptProps.SHOPIFY_BACKFILL_FROM = longFrom;
+  scriptProps.SHOPIFY_BACKFILL_TO = longTo;
+  const asked10 = [];
+  armAnyWeek(asked10);
+  const res10 = shopifyBackfillFromProperty();
+
+  check('K10: SHOPIFY_BACKFILL_MAX_WEEKS_ is smaller than the requested span',
+    SHOPIFY_BACKFILL_MAX_WEEKS_ < 30);
+  eq('K10: the run is clamped to the cap', res10.weeksRequested, SHOPIFY_BACKFILL_MAX_WEEKS_);
+  eq('K10: ...and asks the producer only that many times', asked10.length, SHOPIFY_BACKFILL_MAX_WEEKS_);
+  eq('K10: ...reporting the week to resume from',
+    res10.resumeAt, addDaysStr_(longFrom, 7 * SHOPIFY_BACKFILL_MAX_WEEKS_));
+  check('K10: ...and saying so in the log',
+    lastLoggedMessages().some((m) => m.indexOf('resume') !== -1
+      && m.indexOf(addDaysStr_(longFrom, 7 * SHOPIFY_BACKFILL_MAX_WEEKS_)) !== -1));
+  eq('K10: ...writing exactly the clamped number of rows',
+    summaryDataRows().length, SHOPIFY_BACKFILL_MAX_WEEKS_);
+  eq('K10: ...oldest-first, starting at FROM', cellDate(summaryDataRows()[0][0]), longFrom);
+
+  /* --- K11: a range that fits the cap reports nothing to resume --------- */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_FROM;
+  scriptProps.SHOPIFY_BACKFILL_TO = B_TO;
+  armAnyWeek([]);
+  const res11 = shopifyBackfillFromProperty();
+  eq('K11: no resumeAt when the whole range fitted', res11.resumeAt, null);
+
+  /* --- K12: lock-wrapped, like every other Summary writer --------------- */
+  reset();
+  scriptProps.SHOPIFY_BACKFILL_FROM = B_FROM;
+  scriptProps.SHOPIFY_BACKFILL_TO = B_TO;
+  global.__forceLockTimeout = true;
+  const res12 = shopifyBackfillFromProperty();
+  check('K12: a lock timeout is reported, not silently swallowed', !!(res12 && res12.locked));
+  eq('K12: ...and nothing is written', summaryDataRows().length, 0);
+  global.__forceLockTimeout = false;
+
+  global.UrlFetchApp = REAL_URL_FETCH;
+  globalThis.stalenessStampHeartbeat_ = savedStamp;
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
