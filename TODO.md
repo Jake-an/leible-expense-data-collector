@@ -20,15 +20,6 @@
 
 ### 🔧 Shopify online revenue — late-refund repair + pre-W28 gap
 
-- [ ] **Set `MAYERS_ALLOWED_SENDERS` correctly BEFORE the next deploy.** Verified
-      2026-09-10: the live value is `mio.jake+mayers@gmail.com` — the *destination*
-      alias, not the sender. Gmail rewrites `From` on a manual forward, so all 12
-      archived messages (9 threads, back to 2026-06-17) carry
-      `jake@leiblecoffee.com.au`. Left as-is, the sender check added in 2b42bf1
-      refuses **every** Mayers invoice the moment it goes live, and the only symptom
-      is a `REJECTED a message from ...` line in the execution log. Correct value,
-      exactly: `jake@leiblecoffee.com.au`. See [[forwarded-mail-allowlist-names-the-forwarder]].
-
 - [x] **W29 (week 2026-07-13) froze $101 high — repair path built 2026-09-10.**
       A refund landed after `SHOPIFY_REPULL_WEEKS = 4` had aged the week out, so hub
       showed $1,522.00 against the producer's $1,421.00 and no scheduled run could
@@ -47,50 +38,50 @@
       Tests: `test_code.js` cases J1–J9, suite **2475 passed, 0 failed**; mutation
       check reds J6 (heartbeat guard removed) and J5 (override ignored), nothing else.
 
-- [ ] **Run the W29 repair live** (after deploy): Script Property
-      `SHOPIFY_REPULL_WEEK=2026-07-13`, Run `shopifyRepullWeekFromProperty()`, confirm
-      the log line names the week and `rowsUpdated: 1`, then **clear the property** so
-      a later Run-button press cannot silently re-pull a stale week.
+- [x] **W29 (week 2026-07-13) repaired LIVE 2026-09-16.** Deployed v51, set
+      `SHOPIFY_REPULL_WEEK=2026-07-13`, ran `shopifyRepullWeekFromProperty()`. The log
+      named the cause out loud — *"2026-W29 holds out $101.00 gross in excluded orders
+      (PENDING/cancelled; a refunded order drops its FULL amount)"*. Verified by doGet
+      probe: hub `2026-07-13` is now **$1,421.00** (was $1,522.00), matching the producer
+      to the cent, and the 9-week `shopify_orderapp` total moved $14,138.65 → $14,037.65,
+      a delta of exactly $101.00. Clear `SHOPIFY_REPULL_WEEK` if it is still set.
 
-- [ ] **⏳ TIME-CRITICAL — pre-W28 online revenue never reached the hub: 43 weeks,
-      $61,162.15, and it is decaying.** Probed live 2026-09-10 against both sides, so
-      these are census figures for the reachable range, not a window sample.
-      - Hub holds **9** `shopify_orderapp` Summary weeks: 2026-07-06 … 2026-08-31,
-        $14,138.65. Nothing earlier exists.
-      - Producer serves 2025-09-08 … onward and **hard-refuses** anything older:
-        `BAD_REQUEST — week 2025-WNN is more than ~1 year old`. 2025-09-01 already
-        refuses; 2025-09-08 still answers.
-      - Missing: **2025-09-08 → 2026-06-29, 43 weeks, $61,162.15.**
-      - **The earliest recoverable week ages out roughly every Monday.** Each week
-        this sits, ~$1.4k of history becomes permanently unrecoverable. The prior
-        $11,314.65 estimate was a bounded-window lower bound, not the total
-        (see [[probe-window-figures-are-not-a-census]]).
-      - Safe to write: nothing purges `Summary`, and `SUMMARY_KEY_COLS`
-        (week_start||department||kind||supplier||location) makes each week a unique
-        key, so these are pure inserts against weeks that currently have no
-        `shopify_orderapp` row — not a recompute of anything.
+- [ ] **⏳ DEADLINE MONDAY 2026-09-21 — the Shopify backfill is still UNWRITTEN, and
+      the window has already eaten one week.** The 2026-09-16 session ran
+      `shopifyBackfillDryRun()` and stopped; the WET `shopifyBackfillFromProperty()`
+      was never executed, so **zero** backfill rows exist (doGet: still 9
+      `shopify_orderapp` weeks, earliest 2026-07-06).
+      - **Lost: 2025-W37 (2025-09-08), $1,412.95** — reachable on 2026-09-10, refused by
+        2026-09-16. Gone permanently.
+      - Retention rule is now measured exactly: **the most recent 53 ISO weeks**, stepping
+        every Monday — not a rolling 365 days. See
+        [[orderapp-producer-refuses-weeks-over-a-year-old]].
+      - **Revised scope: 42 weeks, 2025-09-15 → 2026-06-29, $59,749.20.**
+      - **Next Monday 2026-09-21 takes 2025-09-15 ($1,572.80).**
 
-      **Tooling built 2026-09-10 (needs deploy):** `shopifyBackfillDryRun()` /
-      `shopifyBackfillFromProperty()`, both zero-arg for the Run dropdown, reading
-      `SHOPIFY_BACKFILL_FROM` + `SHOPIFY_BACKFILL_TO` (both week starts, inclusive,
-      both REQUIRED — a defaulted bound is how a short backfill becomes a year-long
-      one). Refuses on unset / unparseable / not-a-week-START / inverted range /
-      unfinished end week, each bound to its own reason. Clamps to
-      `SHOPIFY_BACKFILL_MAX_WEEKS_` (20) per run to stay inside the GAS 6-minute
-      ceiling and reports `resumeAt` in the result AND the log. Runs no failure
-      accounting, same reasoning as the repull wrapper.
+      **Do this — `TO` is set once, only `FROM` changes:**
+      ```
+      SHOPIFY_BACKFILL_TO = 2026-06-29            (set once, leave it)
+      run 1: SHOPIFY_BACKFILL_FROM = 2025-09-15 → shopifyBackfillFromProperty()  20 wks
+      run 2: SHOPIFY_BACKFILL_FROM = 2026-02-02 → shopifyBackfillFromProperty()  20 wks
+      run 3: SHOPIFY_BACKFILL_FROM = 2026-06-22 → shopifyBackfillFromProperty()   2 wks
+      then CLEAR both properties
+      ```
+      Type the literal date — a 2026-09-16 run pasted the placeholder `<resumeAt>` and
+      was correctly refused (`is not a valid YYYY-MM-DD date`). A run that reaches past
+      the retention boundary logs `orderapp: API error — BAD_REQUEST` for that week,
+      marks the run `apiFailed`, and **still writes every week that did fetch** — so a
+      partial run is progress, not a rollback.
 
-      **Operator procedure** (43 weeks = 3 runs):
-      1. `SHOPIFY_BACKFILL_FROM=2025-09-08`, `SHOPIFY_BACKFILL_TO=2026-06-29`
-      2. Run `shopifyBackfillDryRun()` — read the per-week `would write` lines.
-      3. Run `shopifyBackfillFromProperty()` — covers 20 weeks, logs the resume week.
-      4. Set `SHOPIFY_BACKFILL_FROM` to that resume week; repeat 2–3 twice more.
-      5. **Clear both properties** when done, so a later Run-button press cannot
-         silently re-pull a stale range.
-
-      Tests: `test_code.js` cases K1–K12, suite **2533 passed, 0 failed**; mutation
-      check reds K6 (dry-run bypassed) and K10 (clamp removed), and removing the
-      inverted-range guard throws rather than refusing — so all three bite.
+- [ ] **Mayers sender allowlist is FIXED — but 2 threads are stuck unparseable.**
+      `mayersDailyPull()` on 2026-09-16 logged `0 added, 0 dup, 0 unparsed,
+      2 ocr-skipped, 2 threads` with **no `REJECTED a message from ...` lines**, which
+      proves `MAYERS_ALLOWED_SENDERS` now matches the forwarder. But both remaining
+      unlabelled threads are in the deterministic-unparseable memo, so their PDFs are
+      skipped every run and nothing from them will ever reach Suppliers. One is the
+      2026-08-31 thread flagged earlier. Worth 10 minutes: open them and decide whether
+      each is a real invoice the parser can't read (needs a parser fix + memo clear) or
+      the monthly statement (correctly skipped). See [[mayers-gmail-pipeline-facts]].
 
 ### 🔒 Security audit 2026-09-10 — verdict `blocked`, debt list
 
