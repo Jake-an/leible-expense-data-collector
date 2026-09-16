@@ -46,32 +46,25 @@
       to the cent, and the 9-week `shopify_orderapp` total moved $14,138.65 → $14,037.65,
       a delta of exactly $101.00. Clear `SHOPIFY_REPULL_WEEK` if it is still set.
 
-- [ ] **⏳ DEADLINE MONDAY 2026-09-21 — the Shopify backfill is still UNWRITTEN, and
-      the window has already eaten one week.** The 2026-09-16 session ran
-      `shopifyBackfillDryRun()` and stopped; the WET `shopifyBackfillFromProperty()`
-      was never executed, so **zero** backfill rows exist (doGet: still 9
-      `shopify_orderapp` weeks, earliest 2026-07-06).
-      - **Lost: 2025-W37 (2025-09-08), $1,412.95** — reachable on 2026-09-10, refused by
-        2026-09-16. Gone permanently.
-      - Retention rule is now measured exactly: **the most recent 53 ISO weeks**, stepping
-        every Monday — not a rolling 365 days. See
-        [[orderapp-producer-refuses-weeks-over-a-year-old]].
-      - **Revised scope: 42 weeks, 2025-09-15 → 2026-06-29, $59,749.20.**
-      - **Next Monday 2026-09-21 takes 2025-09-15 ($1,572.80).**
+- [~] **Pre-W28 Shopify backfill — NOT DOING IT. Jake's call, 2026-09-16
+      ("don't worry about back fill").** Closed as a decision, not as forgotten work;
+      do not re-raise it as a discovery.
 
-      **Do this — `TO` is set once, only `FROM` changes:**
-      ```
-      SHOPIFY_BACKFILL_TO = 2026-06-29            (set once, leave it)
-      run 1: SHOPIFY_BACKFILL_FROM = 2025-09-15 → shopifyBackfillFromProperty()  20 wks
-      run 2: SHOPIFY_BACKFILL_FROM = 2026-02-02 → shopifyBackfillFromProperty()  20 wks
-      run 3: SHOPIFY_BACKFILL_FROM = 2026-06-22 → shopifyBackfillFromProperty()   2 wks
-      then CLEAR both properties
-      ```
-      Type the literal date — a 2026-09-16 run pasted the placeholder `<resumeAt>` and
-      was correctly refused (`is not a valid YYYY-MM-DD date`). A run that reaches past
-      the retention boundary logs `orderapp: API error — BAD_REQUEST` for that week,
-      marks the run `apiFailed`, and **still writes every week that did fetch** — so a
-      partial run is progress, not a rollback.
+      What that accepts: the hub's `shopify_orderapp` history starts at 2026-07-06 and
+      always will. 42 weeks / ~$59,749.20 of online revenue that exists at the producer
+      will never appear in `Summary`, so any report reading the hub understates Roastery
+      online revenue for every week before 2026-07-06. That is now the intended state.
+
+      The window keeps closing regardless — the producer serves only the most recent 53
+      ISO weeks and steps every Monday ([[orderapp-producer-refuses-weeks-over-a-year-old]]),
+      so the recoverable range shrinks by one week and ~$1.4k each Monday and reaches
+      zero around 2027-07. 2025-W37 ($1,412.95) already went on 2026-09-16.
+
+      **If that changes, nothing needs building** — `shopifyBackfillFromProperty()` and
+      `shopifyBackfillDryRun()` are live in v51 and tested (K1–K12). Set
+      `SHOPIFY_BACKFILL_TO` once to the last week wanted, then move
+      `SHOPIFY_BACKFILL_FROM` through the range in 20-week chunks, typing literal dates.
+      Re-probe the boundary first: the oldest reachable week will have moved.
 
 - [ ] **Mayers sender allowlist is FIXED — but 2 threads are stuck unparseable.**
       `mayersDailyPull()` on 2026-09-16 logged `0 added, 0 dup, 0 unparsed,
