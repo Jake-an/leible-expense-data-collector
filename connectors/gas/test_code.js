@@ -13344,22 +13344,37 @@ console.log('\narchiveAndPurge_ — batched writes:');
  * silent. This gate reads BOTH sides from disk and reds the suite instead.
  * ------------------------------------------------------------------ */
 (function () {
+  // Symbol -> the scopes that would ACCEPT that symbol's calls, narrowest
+  // first. An array rather than a string because a service can have more than
+  // one scope that legitimately covers it, and the manifest should be free to
+  // declare the narrowest one that still works. Direction 1 asks "is at least
+  // one of these declared"; direction 2 asks "is this declared scope on some
+  // used symbol's list". Neither direction can be satisfied by a scope no
+  // symbol names, which is the drift this gate exists to catch.
   var SYMBOL_SCOPES = {
-    SpreadsheetApp: 'https://www.googleapis.com/auth/spreadsheets',
-    GmailApp: 'https://www.googleapis.com/auth/gmail.modify',
-    DriveApp: 'https://www.googleapis.com/auth/drive',
-    Drive: 'https://www.googleapis.com/auth/drive',
+    SpreadsheetApp: ['https://www.googleapis.com/auth/spreadsheets'],
+    GmailApp: ['https://www.googleapis.com/auth/gmail.modify'],
+    // drive.file is enough for BOTH Drive symbols here and is what ships:
+    // extractPdfText_ inserts a temp Doc, reads it and trashes it, all files
+    // this script created, which is exactly what drive.file grants. The wide
+    // auth/drive stays listed as acceptable because a future call on a file
+    // the script did NOT create would genuinely need it - but see the
+    // narrowness assertion below, which reds if it is quietly re-declared.
+    DriveApp: ['https://www.googleapis.com/auth/drive.file',
+               'https://www.googleapis.com/auth/drive'],
+    Drive: ['https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/drive'],
     // DocumentApp was ABSENT from this map until 2026-09-07, which is exactly
     // why the documents scope shipped missing: extractPdfText_ opens the OCR'd
-    // temp Doc (mayers.gs:284), so the whole Mayers OCR path would have thrown
+    // temp Doc (mayers.gs), so the whole Mayers OCR path would have thrown
     // at the permission boundary inside the 6am trigger. A symbol missing here
     // makes BOTH directions of this gate blind to it.
-    DocumentApp: 'https://www.googleapis.com/auth/documents',
-    CalendarApp: 'https://www.googleapis.com/auth/calendar',
-    UrlFetchApp: 'https://www.googleapis.com/auth/script.external_request',
-    ScriptApp: 'https://www.googleapis.com/auth/script.scriptapp',
-    MailApp: 'https://www.googleapis.com/auth/script.send_mail',
-    Session: 'https://www.googleapis.com/auth/userinfo.email'
+    DocumentApp: ['https://www.googleapis.com/auth/documents'],
+    CalendarApp: ['https://www.googleapis.com/auth/calendar'],
+    UrlFetchApp: ['https://www.googleapis.com/auth/script.external_request'],
+    ScriptApp: ['https://www.googleapis.com/auth/script.scriptapp'],
+    MailApp: ['https://www.googleapis.com/auth/script.send_mail'],
+    Session: ['https://www.googleapis.com/auth/userinfo.email']
   };
 
   var manifest = JSON.parse(fs.readFileSync(path.join(GAS_DIR, 'appsscript.json'), 'utf8'));
@@ -13379,31 +13394,49 @@ console.log('\narchiveAndPurge_ — batched writes:');
   check('oauthScopes: the manifest declares an oauthScopes array', Array.isArray(manifest.oauthScopes));
   check('oauthScopes: at least one .gs file was actually scanned', gsFiles.length > 0);
 
-  // Direction 1 — every service symbol the code calls must have its scope
-  // declared. This is the one that prevents a silent runtime auth failure.
+  // Direction 1 — every service symbol the code calls must have one of its
+  // acceptable scopes declared. This is the one that prevents a silent runtime
+  // auth failure.
   Object.keys(SYMBOL_SCOPES).forEach(function (sym) {
     if (!usedSymbols[sym]) return;
-    check('oauthScopes: ' + sym + ' is used, so ' + SYMBOL_SCOPES[sym] + ' must be declared',
-      declared.indexOf(SYMBOL_SCOPES[sym]) !== -1);
+    check('oauthScopes: ' + sym + ' is used, so one of [' + SYMBOL_SCOPES[sym].join(', ') +
+      '] must be declared',
+      SYMBOL_SCOPES[sym].some(function (s) { return declared.indexOf(s) !== -1; }));
   });
 
   // Direction 2 — no scope beyond what a used symbol justifies. Catches a
   // typo'd or copy-pasted scope, and keeps the anonymous web-app deployment
   // from carrying more authority than its code can account for.
   var justified = {};
-  Object.keys(usedSymbols).forEach(function (sym) { justified[SYMBOL_SCOPES[sym]] = true; });
+  Object.keys(usedSymbols).forEach(function (sym) {
+    SYMBOL_SCOPES[sym].forEach(function (s) { justified[s] = true; });
+  });
   declared.forEach(function (scope) {
     check('oauthScopes: declared scope ' + scope + ' is justified by a call site',
       justified[scope] === true);
   });
 
+  // Direction 3 — the Drive scope must stay the NARROW one.
+  //
+  // Directions 1 and 2 both go green on either Drive scope, by design: the wide
+  // one really is acceptable for some future call. That makes re-widening the
+  // cheapest possible silent regression — one word in a manifest, no test moves,
+  // and an ANONYMOUS_ANYONE web app running as the owner picks up read/write on
+  // every file in Jake's Drive. Narrowed 2026-09-16 (audit debt: "auth/drive for
+  // a drive.file job"). If a call genuinely needs the wide scope, this assertion
+  // is the place to record that decision — change it deliberately, don't delete it.
+  check('oauthScopes: the Drive scope is the narrow drive.file',
+    declared.indexOf('https://www.googleapis.com/auth/drive.file') !== -1);
+  check('oauthScopes: the WIDE auth/drive is NOT declared (no silent re-widening)',
+    declared.indexOf('https://www.googleapis.com/auth/drive') === -1);
+
   // MailApp / Session are the two step 7 calls out as easy to miss: neither
   // is used today, so neither scope may be declared. If either ever ships,
   // Direction 1 above starts requiring its scope.
   check('oauthScopes: MailApp unused, so script.send_mail is NOT declared',
-    !usedSymbols.MailApp && declared.indexOf(SYMBOL_SCOPES.MailApp) === -1);
+    !usedSymbols.MailApp && declared.indexOf(SYMBOL_SCOPES.MailApp[0]) === -1);
   check('oauthScopes: Session unused, so userinfo.email is NOT declared',
-    !usedSymbols.Session && declared.indexOf(SYMBOL_SCOPES.Session) === -1);
+    !usedSymbols.Session && declared.indexOf(SYMBOL_SCOPES.Session[0]) === -1);
 })();
 
 
@@ -13744,6 +13777,12 @@ console.log('roasteryDailyPull - unparseable-attachment memo');
   // No total anywhere -> parseRoasteryInvoice_ RAISES -> deterministic failure.
   const PRICELIST_TEXT = 'Sample Bean Co - 2026 wholesale price list\nSingle origin, per kg.';
 
+  // Every message in this block needs an approved sender now that
+  // roasteryDailyPull verifies one. These cases are about the OCR memo, not
+  // about auth, so they all post as the approved forwarder; the sender guard
+  // has its own block (L) below.
+  const ROASTERY_GOOD = 'roastery-forwarder@example.test';
+
   let ocrCalls = [];
   let ocrText = {};
   let allThreads = [];
@@ -13756,12 +13795,13 @@ console.log('roasteryDailyPull - unparseable-attachment memo');
       getSize: () => size,
     };
   }
-  function message(name, size, dateIso) {
+  function message(name, size, dateIso, from) {
     const id = 'msg' + (++msgSeq);
     return {
       getAttachments: () => [attachment(name, size)],
       getDate: () => new Date(dateIso),
       getId: () => id,
+      getFrom: () => (from === undefined ? ROASTERY_GOOD : from),
     };
   }
   function thread(messages) {
@@ -13787,7 +13827,9 @@ console.log('roasteryDailyPull - unparseable-attachment memo');
     return t;
   };
 
-  function resetProps() { scriptProps = { HUB_SHEET_ID: 'hub' }; }
+  function resetProps() {
+    scriptProps = { HUB_SHEET_ID: 'hub', ROASTERY_ALLOWED_SENDERS: ROASTERY_GOOD };
+  }
   function run() { ocrCalls = []; return roasteryDailyPull(); }
 
   /* --- one real invoice + an unparseable price list ----------------- */
@@ -14768,6 +14810,238 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyBackfill() {
   global.UrlFetchApp = REAL_URL_FETCH;
   globalThis.stalenessStampHeartbeat_ = savedStamp;
 });
+
+
+/* ================================================================== *
+ * L. roasteryDailyPull — SENDER VERIFICATION
+ *
+ * The Mayers High (/security-audit 2026-09-10) was never Mayers-specific: a
+ * Gmail SEARCH is not an authentication check. Anything the search matched
+ * reached ingestSupplierRows — the same upsert doPost reaches only AFTER
+ * checkIngestToken_. roastery_email.gs was recorded as the same shape,
+ * unfixed, on the argument that it is label-gated: an outsider cannot apply
+ * `roastery/invoices` to Jake's mailbox.
+ *
+ * That argument is about a filter that does not exist yet. Checked 2026-09-16:
+ * neither Gmail label is present, so nothing has ever been ingested here AND
+ * there is no filter to audit. When someone does write that filter they will
+ * write it against whatever the vendor's mail looks like — a subject, a
+ * keyword, an attachment name — all attacker-controllable. The guard has to
+ * exist before the filter does, because arming the feed will not look like a
+ * security change to whoever arms it.
+ *
+ * These mirror the Mayers A–I cases one for one. The two places this file
+ * DIVERGES from mayers.gs are asserted explicitly rather than assumed: the
+ * refusal sits ahead of the script lock (L10), and the heartbeat was already
+ * gated rather than unconditional (L1).
+ * ================================================================== */
+console.log('\nroasteryDailyPull - sender verification (security: unauthenticated email ingest)');
+(function () {
+  const savedGmail = global.GmailApp;
+  const savedExtract = globalThis.extractPdfText_;
+  const savedStamp = globalThis.stalenessStampHeartbeat_;
+  const savedProps = scriptProps;
+
+  const REF = 'SBC-1041';
+  const INVOICE_TEXT = 'Sample Bean Co\nInvoice No: ' + REF +
+    '\nInvoice Date: 2026-07-06\nTotal Due: $482.50';
+  // Same invoice_ref, different amount — that is the in-place overwrite, not
+  // an extra row. Asserting on rowsAdded alone cannot see it (see L9).
+  const EVIL_TEXT = 'Sample Bean Co\nInvoice No: ' + REF +
+    '\nInvoice Date: 2026-07-06\nTotal Due: $99999.00';
+
+  const GOOD = 'roastery-forwarder@example.test';
+  const EVIL = 'attacker@evil.example';
+
+  let ocrCalls = [];
+  let ocrText = {};
+  let allThreads = [];
+  let stamps = [];
+  let msgSeq = 0;
+
+  function attachment(name, size) {
+    return {
+      getContentType: () => 'application/pdf',
+      getName: () => name,
+      getSize: () => size,
+    };
+  }
+  // getFrom() is new on this mock — the production code now reads it, so a
+  // mock without it would make every assertion below vacuous.
+  function message(name, size, dateIso, from) {
+    const id = 'lmsg' + (++msgSeq);
+    return {
+      getAttachments: () => [attachment(name, size)],
+      getDate: () => new Date(dateIso),
+      getId: () => id,
+      getFrom: () => from,
+    };
+  }
+  function thread(messages) {
+    const t = {
+      _labelled: false,
+      _messages: messages,
+      getId: () => 'lthr',
+      getMessages: () => t._messages,
+      addLabel: () => { t._labelled = true; },
+    };
+    return t;
+  }
+
+  global.GmailApp = {
+    search: () => allThreads.filter((t) => !t._labelled),
+    getUserLabelByName: () => ({ _name: ROASTERY_PROCESSED_LABEL }),
+    createLabel: () => ({ _name: ROASTERY_PROCESSED_LABEL }),
+  };
+  globalThis.extractPdfText_ = function (pdf) {
+    ocrCalls.push(pdf.getName());
+    const t = ocrText[pdf.getName()];
+    if (t instanceof Error) throw t;
+    return t;
+  };
+  globalThis.stalenessStampHeartbeat_ = function (source) { stamps.push(source); };
+
+  function setup(allowed) {
+    freshSheets();
+    scriptProps = { HUB_SHEET_ID: 'hub' };
+    if (allowed !== undefined) scriptProps.ROASTERY_ALLOWED_SENDERS = allowed;
+    ocrCalls = [];
+    stamps = [];
+    global.__forceLockTimeout = false;
+  }
+  function rowsForRef() {
+    return currentSS.getSheetByName(SUPPLIERS_TAB).getDataRange().getValues().slice(1)
+      .filter((r) => String(r[3]) === REF);
+  }
+
+  /* --- L1: an unapproved sender is refused outright ----------------- */
+  setup(GOOD);
+  ocrText = { 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([message('evil.pdf', 51200, '2026-07-06T02:00:00Z', EVIL)])];
+  const l1 = roasteryDailyPull();
+  eq('L1: an unapproved sender ingests NOTHING', l1.rowsAdded, 0);
+  eq('L1: ...and its PDF is never even OCR-ed (no Drive spend, no parse)', ocrCalls.length, 0);
+  eq('L1: ...and it is counted as rejected, not silently dropped', l1.sendersRejected, 1);
+  // Divergence from mayers, and the reason this file gates its heartbeat at
+  // all: a mailbox of nothing but rejected mail is a failure, not a quiet day.
+  eq('L1: ...and a run that rejected everything does NOT stamp the heartbeat', stamps.length, 0);
+
+  /* --- L2: the approved sender still works (non-vacuity) ------------ */
+  setup(GOOD);
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z', GOOD)])];
+  const l2 = roasteryDailyPull();
+  eq('L2: the approved sender is ingested (the guard does not block everything)', l2.rowsAdded, 1);
+  eq('L2: ...and was OCR-ed', ocrCalls.length, 1);
+  eq('L2: ...and nothing was rejected', l2.sendersRejected, 0);
+  eq('L2: ...and a healthy run still stamps the heartbeat', stamps, ['roastery']);
+
+  /* --- L3: display-name form and case are tolerated ----------------- */
+  setup('ROASTERY-Forwarder@Example.TEST');
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z',
+    'Fwd Bot <Roastery-Forwarder@EXAMPLE.test>')])];
+  eq('L3: Name <addr> form and mixed case still match', roasteryDailyPull().rowsAdded, 1);
+
+  /* --- L4: attacker REPLYING INTO a legitimately-labelled thread ----- *
+   * This is why the check is per-message. A Gmail label lives on the THREAD,
+   * so a per-thread check would admit this attacker's PDF. */
+  setup(GOOD);
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT, 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([
+    message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z', GOOD),
+    message('evil.pdf', 51200, '2026-07-07T02:00:00Z', EVIL),
+  ])];
+  const l4 = roasteryDailyPull();
+  eq('L4: a reply from an attacker in a LEGIT thread is refused', l4.sendersRejected, 1);
+  eq('L4: ...only the legitimate message is ingested', l4.rowsAdded, 1);
+  eq('L4: ...and the attacker PDF is never OCR-ed', ocrCalls.indexOf('evil.pdf'), -1);
+  const l4rows = rowsForRef();
+  eq('L4: ...exactly one row survives for that invoice_ref', l4rows.length, 1);
+  eq('L4: ...and its amount is the REAL 482.50, not the attacker 99999',
+    l4rows.length ? Number(l4rows[0][2]) : null, 482.5);
+
+  /* --- L5: unset property fails CLOSED, and LOUDLY ------------------ */
+  setup(undefined);
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z', GOOD)])];
+  const l5 = roasteryDailyPull();
+  eq('L5: no allowlist configured => ingest nothing', l5.rowsAdded, 0);
+  // Bound to the REASON: a bare !!refused goes vacuous the moment any other
+  // guard in this path starts refusing first.
+  eq('L5: ...refuses for the SPECIFIC reason, not incidentally',
+    l5.refused, 'ROASTERY_ALLOWED_SENDERS not set');
+  eq('L5: ...OCRs nothing', ocrCalls.length, 0);
+  eq('L5: ...and does NOT stamp the heartbeat', stamps.length, 0);
+
+  /* --- L6: a blank/whitespace property is treated as unset ---------- */
+  setup('   ');
+  allThreads = [thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z', GOOD)])];
+  eq('L6: a whitespace-only allowlist is unset, not an empty allowlist',
+    roasteryDailyPull().refused, 'ROASTERY_ALLOWED_SENDERS not set');
+
+  /* --- L7: multiple senders, comma-separated ------------------------ */
+  setup('someone@else.example, ' + GOOD);
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT };
+  allThreads = [thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z', GOOD)])];
+  eq('L7: a comma-separated allowlist matches any listed sender',
+    roasteryDailyPull().rowsAdded, 1);
+
+  /* --- L8: a substring near-miss must NOT match --------------------- *
+   * evil-roastery-forwarder@example.test.attacker.example contains the
+   * allowed address as a substring; a naive indexOf check would admit it. */
+  setup(GOOD);
+  ocrText = { 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([message('evil.pdf', 51200, '2026-07-06T02:00:00Z',
+    'evil-roastery-forwarder@example.test.attacker.example')])];
+  const l8 = roasteryDailyPull();
+  eq('L8: a lookalike address containing the allowed one is REFUSED', l8.rowsAdded, 0);
+  eq('L8: ...and counted as rejected', l8.sendersRejected, 1);
+
+  /* --- L9: THE ACTUAL ATTACK — in-place overwrite across two runs ---- *
+   * L4 passes even UNFIXED, and that is the trap worth recording: both PDFs
+   * arrive in ONE batch, and upsertRows_ silently DROPS a second row sharing
+   * a key within a batch, so the attacker's amount is discarded by accident
+   * rather than by any security control. The real attack is sequential — the
+   * genuine invoice lands, then the attacker mails the same invoice_ref, and
+   * THAT run replaces the stored amount in place. */
+  setup(GOOD);
+  ocrText = { 'inv-SBC-1041.pdf': INVOICE_TEXT, 'evil.pdf': EVIL_TEXT };
+
+  allThreads = [thread([message('inv-SBC-1041.pdf', 40100, '2026-07-06T02:00:00Z', GOOD)])];
+  roasteryDailyPull();
+  const afterLegit = rowsForRef();
+  eq('L9: run 1 stores the genuine invoice',
+    afterLegit.length ? Number(afterLegit[0][2]) : null, 482.5);
+
+  ocrCalls = [];
+  allThreads.push(thread([message('evil.pdf', 51200, '2026-07-07T02:00:00Z', EVIL)]));
+  const l9 = roasteryDailyPull();
+  const afterAttack = rowsForRef();
+  eq('L9: the attacker run rejects the sender', l9.sendersRejected, 1);
+  eq('L9: ...never OCRs the hostile PDF', ocrCalls.indexOf('evil.pdf'), -1);
+  eq('L9: ...and the REAL amount is NOT overwritten in place',
+    afterAttack.length ? Number(afterAttack[0][2]) : null, 482.5);
+  eq('L9: ...with still exactly one row for that invoice_ref', afterAttack.length, 1);
+
+  /* --- L10: the refusal happens BEFORE the script lock -------------- *
+   * Ordering, not cosmetics: a job that can never ingest must not take the
+   * lock and stall a healthy writer queued behind it. With the lock forced to
+   * time out AND no allowlist set, a `refused` proves the guard ran first —
+   * `locked` would prove it ran second. */
+  setup(undefined);
+  global.__forceLockTimeout = true;
+  const l10 = roasteryDailyPull();
+  eq('L10: an unconfigured run refuses WITHOUT taking the script lock',
+    l10.refused, 'ROASTERY_ALLOWED_SENDERS not set');
+  check('L10: ...so it never reports a lock timeout', !l10.locked);
+  global.__forceLockTimeout = false;
+
+  global.GmailApp = savedGmail;
+  globalThis.extractPdfText_ = savedExtract;
+  globalThis.stalenessStampHeartbeat_ = savedStamp;
+  scriptProps = savedProps;
+})();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

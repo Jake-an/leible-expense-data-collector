@@ -66,15 +66,26 @@
       `SHOPIFY_BACKFILL_FROM` through the range in 20-week chunks, typing literal dates.
       Re-probe the boundary first: the oldest reachable week will have moved.
 
-- [ ] **Mayers sender allowlist is FIXED — but 2 threads are stuck unparseable.**
-      `mayersDailyPull()` on 2026-09-16 logged `0 added, 0 dup, 0 unparsed,
-      2 ocr-skipped, 2 threads` with **no `REJECTED a message from ...` lines**, which
-      proves `MAYERS_ALLOWED_SENDERS` now matches the forwarder. But both remaining
-      unlabelled threads are in the deterministic-unparseable memo, so their PDFs are
-      skipped every run and nothing from them will ever reach Suppliers. One is the
-      2026-08-31 thread flagged earlier. Worth 10 minutes: open them and decide whether
-      each is a real invoice the parser can't read (needs a parser fix + memo clear) or
-      the monthly statement (correctly skipped). See [[mayers-gmail-pipeline-facts]].
+- [x] **Mayers: the 2 stuck threads are BOTH statements. Closed 2026-09-16.**
+      Opened them. `LEI04D_31 JUL 26.pdf` and `LEI04D_31 AUG 26.pdf`, both from
+      `noreply@mayers.com.au`, body "your monthly statement for <Month>". Neither is
+      an invoice, so the `2 ocr-skipped` in that run is the memo working exactly as
+      designed — no Mayers spend is missing because of it, and the memo must NOT be
+      cleared (that would buy two OCRs of the same two statements and re-memo them).
+      Counted: 9 threads match the alias search, `expense-ingested` covers 7, and the
+      2 uncovered are those statements. Recorded in `connectors/gas/mayers.gs` on the
+      memo block, including the tell — a statement attachment is named
+      `LEI04D_<DD MMM YY>.pdf`, an invoice carries its invoice number.
+
+- [ ] **The gap the memo cannot see: an invoice Jake never forwarded at all.**
+      Not a defect, and nothing above touches it — an unforwarded invoice never
+      reaches the alias, so there is no thread, no memo entry, no log line, and no
+      staleness signal (a quiet day stamps the heartbeat by design). The monthly
+      statement PDF is the only artifact that lists every invoice Mayers billed that
+      month, which makes it the reconciliation source if this is ever worth closing.
+      Worth noting August shows only ONE invoice thread (3463868) against a full
+      month's statement — that is a reason to read the AUG statement, not yet evidence
+      of a miss. See [[mayers-gmail-pipeline-facts]].
 
 ### 🔒 Security audit 2026-09-10 — verdict `blocked`, debt list
 
@@ -93,11 +104,24 @@ but nothing carried forward.
       in `MAYERS_ALLOWED_SENDERS`, fail-closed.
       **⚠ ACTION: that Script Property must be set or Mayers ingest refuses.**
 
-- [ ] **`roastery_email.gs:28` — same shape as the Mayers High, label-gated.**
-      Not fixed. It is only as strong as the Gmail filter that applies the label:
-      if that filter matches on anything an outsider can control, it is the same
-      unauthenticated-ingest hole. Verify what applies the label before deciding
-      whether it needs the same allowlist.
+- [x] **`roastery_email.gs` — same shape as the Mayers High. FIXED 2026-09-16.**
+      Resolved the "verify what applies the label" question first: checked the
+      mailbox and **neither `roastery/invoices` nor `roastery-ingested` exists**, so
+      there is no filter to audit and nothing has ever been ingested down this path.
+      That is the argument for fixing it now rather than deferring: the label will be
+      created by a filter written later, against whatever the vendor's mail happens to
+      look like — subject, keyword, attachment name, all attacker-controllable — and
+      arming the feed will not look like a security change to whoever arms it.
+      Added `ROASTERY_ALLOWED_SENDERS`: per-message (a label lives on the THREAD, so
+      a per-thread check admits a reply), ahead of `firstPdfAttachment_` so a hostile
+      PDF is never OCR'd, fail-closed on unset, and ahead of `withScriptLock_` so a
+      misconfigured job cannot stall a healthy writer behind it.
+      `mayersFromAddress_` became `emailFromAddress_` and is shared rather than
+      cloned — two copies of an address regex in two security guards is how one of
+      them drifts. Tests: cases L1–L10 in `test_code.js`, mirroring Mayers A–I.
+      **⚠ ACTION when this feed is armed: set `ROASTERY_ALLOWED_SENDERS` or the pull
+      refuses.** It refuses today too, which is correct — `roastery` is not in
+      `STALENESS_SOURCES`, so the withheld heartbeat raises no alert.
 
 - [ ] **MEDIUM — formula injection on the upsert in-place path (`Code.gs:982`).**
       `upsertRows_` guards its APPEND path via `sheetSafeRow_` but writes the stamp
@@ -133,16 +157,36 @@ but nothing carried forward.
       customers and their weekly revenue are served under a field a consumer reads
       as a vendor.
 
-- [ ] **MEDIUM — `auth/drive` (entire Drive) for a `drive.file` job.**
-      `appsscript.json:8`. The only Drive uses are inserting and trashing the
-      script's own OCR doc (`mayers.gs:276/281/287`). Every other scope traced to a
-      real call and is right-sized. Matters because the webapp is
-      ANYONE_ANONYMOUS / USER_DEPLOYING.
+- [x] **MEDIUM — `auth/drive` narrowed to `auth/drive.file`. 2026-09-16.**
+      Confirmed the only Drive consumer is `extractPdfText_` (`mayers.gs`), and all
+      three of its calls — `Drive.Files.insert`, `DocumentApp.openById`,
+      `DriveApp.getFileById().setTrashed()` — act on the temp Doc the script itself
+      just created, which is exactly what `drive.file` grants.
+      `SpreadsheetApp.openById` (incl. the external `LABOUR_SHEET_ID`) rides the
+      `spreadsheets` scope, not this one. The `oauthScopes` gate in `test_code.js`
+      now takes a LIST of acceptable scopes per symbol and separately asserts the
+      Drive scope is the narrow one, so re-widening reds instead of passing quietly.
+      **⚠ NOT verified against live Drive — a scope change needs re-authorization in
+      the editor.** Verify in one step: Run `resetMayersUnparseableMemo()` then
+      `mayersDailyPull()`. That forces two real OCRs; `0 added, 2 ocr-skipped` means
+      drive.file works (the statements re-memoed), while `PDF extraction failed` in
+      the log means it does not. The probe is self-cleaning either way — a thrown OCR
+      is transient and never memoed. Rollback: restore `auth/drive` in
+      `connectors/gas/appsscript.json`, redeploy, re-authorize.
 
-- [ ] **MEDIUM — the accepted-risk register rests on a false premise.**
-      `docs/security-baseline.json:4` accepts `gas-anonymous-web-app` on the stated
-      claim that `doPost`/`doGet` "are the entire anonymous surface". The Mayers
-      High disproves that. Re-word it or re-accept it deliberately.
+- [x] **MEDIUM — accepted-risk register's false premise corrected. 2026-09-16.**
+      `docs/security-baseline.json` no longer claims doPost/doGet "are the entire
+      anonymous surface". It now scopes that claim to the anonymous **web-app**
+      surface (which is true and re-verified) and carries a `scope_correction` block
+      recording what was wrong, why the acceptance decision still stands, and the
+      rule that keeps it honest: **enumerate ingest paths by DATA FLOW — every writer
+      that reaches a Sheet upsert — not by HTTP surface.** An auth-coverage tool
+      cannot see the Gmail path by construction: no HTTP entry point, a scheduled
+      trigger, and an email address for an "endpoint".
+      `accepted_at` / `expires` deliberately unchanged — this corrects a factual
+      claim, it does not re-accept the risk, and resetting the clock without Jake's
+      review would be exactly the wrong move. Gate re-run: `check-security-baseline`
+      green, 1 accepted risk within expiry.
 
 - [ ] **MEDIUM — the allowlist is green on the wrong file.**
       `docs/auth-allowlist.json:6` exempts `examples/__test.gas.js:doGet`, which

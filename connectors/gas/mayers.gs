@@ -49,8 +49,12 @@ function mayersAllowedSenders_() {
  * The bare address from a From header — 'Jake <a@b.com>' and 'a@b.com' both
  * yield 'a@b.com'. Exact-match only: a substring test would admit
  * evil-a@b.com.attacker.example (test_code.js case H).
+ *
+ * Shared, not Mayers-specific: roastery_email.gs guards on it too. Two copies
+ * of this regex in two security guards is how one of them quietly drifts, and
+ * the drifting one is the one nobody re-tests.
  */
-function mayersFromAddress_(from) {
+function emailFromAddress_(from) {
   var s = String(from || '');
   var m = s.match(/<([^>]*)>/);
   return (m ? m[1] : s).trim().toLowerCase();
@@ -65,6 +69,27 @@ function mayersFromAddress_(from) {
  * parse. Drive OCR is the expensive, rate-limited step in this connector, so
  * that is a standing quota leak (and the likely cause of the rate-limiting that
  * truncated the 2026-08-14 OCR harvest).
+ *
+ * RE-AUDITED 2026-09-16, after the sender allowlist landed. 9 threads now match,
+ * `expense-ingested` covers 7, and BOTH stragglers are monthly statements — the
+ * 31 JUL and the 31 AUG one. Neither is a missed invoice, so the two ocr-skipped
+ * lines in that day's log are the memo working, not spend going astray. Do NOT
+ * "fix" that by clearing the memo: resetMayersUnparseableMemo() buys two OCRs of
+ * the same two statements and re-memos them unchanged.
+ *
+ * The tell is the attachment name. A statement is `LEI04D_<DD MMM YY>.pdf` — the
+ * account code plus the period — and its body reads "your monthly statement for
+ * <Month>". An invoice thread reads "TAX INVOICE - <ref> from F.Mayer Imports Pty
+ * Ltd". Check the name before concluding a skipped attachment is a lost invoice.
+ *
+ * Statements arrive ~1/month and each one lands here permanently, so this memo
+ * grows ~12 entries a year against MAYERS_UNPARSEABLE_MAX_ of 200. That is the
+ * growth the runaway guard was sized for.
+ *
+ * What this memo canNOT see: an invoice Jake never forwarded at all. It never
+ * reaches the alias, so there is no thread, no memo entry and no log line. The
+ * statement PDF is the only artifact listing every invoice Mayers billed that
+ * month, which makes it the reconciliation source if that gap needs closing.
  *
  * The memo remembers which attachments already came back unparseable and skips
  * the OCR for them. Deliberately NOT a Gmail label on the thread: the thread must
@@ -159,7 +184,7 @@ function mayersDailyPull() {
       // past a thread-level check. Placed ahead of firstPdfAttachment_ so a
       // hostile PDF is never OCR'd — that also stops the Drive/OCR quota burn
       // being an unauthenticated lever.
-      var fromAddr = mayersFromAddress_(msg.getFrom());
+      var fromAddr = emailFromAddress_(msg.getFrom());
       if (!allowedSenders[fromAddr]) {
         sendersRejected++;
         Logger.log('mayersDailyPull: REJECTED a message from ' + fromAddr +
@@ -339,6 +364,15 @@ function extractMayersInvoiceFromPdf_(pdfBlob, fallbackDate) {
  * @param {GoogleAppsScript.Base.Blob} pdfBlob
  * @returns {string}
  */
+/* SCOPE NOTE (2026-09-16): this function is the ONLY Drive consumer in the
+ * project, which is why appsscript.json asks for drive.file and not drive.
+ * All three calls below act on the temp doc THIS SCRIPT just created, and
+ * drive.file grants exactly that: per-file access to files the app created.
+ * SpreadsheetApp.openById elsewhere rides the spreadsheets scope, not this one.
+ * If a future change opens a file the script did not create, drive.file will
+ * refuse it and the fix is that call, not a wider scope. Narrowing needs
+ * re-authorization in the editor; verify with resetMayersUnparseableMemo()
+ * then mayersDailyPull() and look for "PDF extraction failed" in the log. */
 function extractPdfText_(pdfBlob) {
   var fileId = null;
   try {

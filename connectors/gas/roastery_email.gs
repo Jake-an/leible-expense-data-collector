@@ -3,10 +3,11 @@
  * invoices that neither the coffee order app (Phase 4) nor the recurring
  * generator (Phase 3) already handles.
  *
- * Follows mayers.gs's pattern: Gmail label search → PDF attachment → Drive
- * OCR → parsed rows → ingestSupplierRows with department='Roastery'. Reuses
- * firstPdfAttachment_ / extractPdfText_ / getOrCreateLabel_ from mayers.gs —
- * same GAS project, no boundary crossed, no duplicate declarations.
+ * Follows mayers.gs's pattern: sender allowlist → Gmail label search → PDF
+ * attachment → Drive OCR → parsed rows → ingestSupplierRows with
+ * department='Roastery'. Reuses firstPdfAttachment_ / extractPdfText_ /
+ * getOrCreateLabel_ / emailFromAddress_ from mayers.gs — same GAS project, no
+ * boundary crossed, no duplicate declarations.
  *
  * ONE vendor only, deliberately (see the plan's "resist a generic parser" —
  * a generic parser is the exact failure mode this phase guards against).
@@ -28,6 +29,46 @@ var ROASTERY_PROCESSED_LABEL = 'roastery-ingested';
 var ROASTERY_SEARCH = 'label:' + ROASTERY_GMAIL_LABEL + ' has:attachment -label:' + ROASTERY_PROCESSED_LABEL;
 var ROASTERY_TZ = 'Australia/Sydney';
 var ROASTERY_DEPARTMENT = 'Roastery';
+
+/* --- Sender allowlist ----------------------------------------------
+ * The Mayers High (/security-audit 2026-09-10, fixed in 2b42bf1) was that a
+ * Gmail SEARCH is not an authentication check: anything matching the search
+ * reached ingestSupplierRows, the same upsert doPost reaches only AFTER
+ * checkIngestToken_. This file has always been the same shape, and the audit
+ * recorded it as unfixed-but-label-gated: ROASTERY_SEARCH keys on the Gmail
+ * label roastery/invoices, which an outsider cannot apply, so the hole is only
+ * as strong as whatever applies that label.
+ *
+ * Checked 2026-09-16: neither roastery/invoices nor roastery-ingested exists in
+ * the mailbox yet, so there is no filter to audit and nothing has ever been
+ * ingested down this path. That is precisely why the guard goes in NOW. The
+ * label will be created by a filter someone writes later, and a filter is
+ * written from whatever the vendor mail happens to look like — a subject line,
+ * a keyword, an attachment — all of which an outsider controls. The guard has
+ * to be in place BEFORE that filter exists, or the hole opens the day the feed
+ * is armed and nothing about arming it will look like a security change.
+ *
+ * Fails CLOSED and loudly, exactly like mayersAllowedSenders_. Lives in a
+ * Script Property so rotating it needs no code change and no address is
+ * committed.
+ */
+var ROASTERY_ALLOWED_SENDERS_PROP_ = 'ROASTERY_ALLOWED_SENDERS';
+
+/**
+ * Addresses permitted to deliver Roastery invoices, as a lowercased lookup.
+ * @returns {?Object} null when unset/blank — callers MUST refuse, never default open.
+ */
+function roasteryAllowedSenders_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(ROASTERY_ALLOWED_SENDERS_PROP_);
+  if (!raw || !String(raw).trim()) return null;
+  var out = {};
+  var parts = String(raw).split(',');
+  for (var i = 0; i < parts.length; i++) {
+    var a = parts[i].trim().toLowerCase();
+    if (a) out[a] = true;
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 /* --- Permanently-unparseable attachment memo -----------------------
  * Ported from mayers.gs (fixed there 2026-08-15, latent here until now).
@@ -67,18 +108,40 @@ var ROASTERY_UNPARSEABLE_MAX_ = 200;
  * the Suppliers tab, department='Roastery'. Not unit-tested (live Gmail/
  * Drive I/O) — same boundary as mayersDailyPull; parseRoasteryInvoice_ is
  * the pure, tested core.
- * @returns {{rowsAdded:number, duplicatesSkipped:number, threadsProcessed:number, unparsed:number}}
+ * @returns {{rowsAdded:number, duplicatesSkipped:number, threadsProcessed:number,
+ *            unparsed:number, ocrSkipped:number, sendersRejected:number,
+ *            refused:(string|undefined), locked:(boolean|undefined)}}
  */
 function roasteryDailyPull() {
-  var res = withScriptLock_(function () { return roasteryDailyPull_impl_(); });
+  // Ahead of withScriptLock_ deliberately: a misconfigured job should not take
+  // the script lock and block a healthy connector behind it. Returns WITHOUT
+  // stamping the heartbeat — same reasoning as mayersDailyPull's refusal, and
+  // the same reason this file's heartbeat is already gated rather than
+  // unconditional: a refusal must never read as a quiet day. ('roastery' is not
+  // in STALENESS_SOURCES yet, so today that withheld stamp raises no alert; it
+  // is correct in advance of the re-add, not decorative.)
+  var allowedSenders = roasteryAllowedSenders_();
+  if (!allowedSenders) {
+    Logger.log('roasteryDailyPull: REFUSED — ' + ROASTERY_ALLOWED_SENDERS_PROP_ + ' script ' +
+      'property is not set, so no sender can be verified and nothing will be ingested. ' +
+      'Set it to a comma-separated list of the address(es) that deliver Roastery ' +
+      'invoices, then re-run. Heartbeat deliberately NOT stamped.');
+    return {
+      rowsAdded: 0, duplicatesSkipped: 0, threadsProcessed: 0, unparsed: 0,
+      ocrSkipped: 0, sendersRejected: 0,
+      refused: ROASTERY_ALLOWED_SENDERS_PROP_ + ' not set'
+    };
+  }
+
+  var res = withScriptLock_(function () { return roasteryDailyPull_impl_(allowedSenders); });
   if (res === LOCK_TIMEOUT_) {
     Logger.log('roasteryDailyPull: could not acquire script lock — skipped this run');
-    return { rowsAdded: 0, duplicatesSkipped: 0, threadsProcessed: 0, unparsed: 0, ocrSkipped: 0, locked: true };
+    return { rowsAdded: 0, duplicatesSkipped: 0, threadsProcessed: 0, unparsed: 0, ocrSkipped: 0, sendersRejected: 0, locked: true };
   }
   return res;
 }
 
-function roasteryDailyPull_impl_() {
+function roasteryDailyPull_impl_(allowedSenders) {
   var label = getOrCreateLabel_(ROASTERY_PROCESSED_LABEL);
   var threads = GmailApp.search(ROASTERY_SEARCH);
   var extractedAt = Utilities.formatDate(new Date(), ROASTERY_TZ, "yyyy-MM-dd'T'HH:mm:ssXXX");
@@ -90,12 +153,28 @@ function roasteryDailyPull_impl_() {
   var unparseable = roasteryLoadUnparseable_();
   var unparseableDirty = false;
   var ocrSkipped = 0;
+  var sendersRejected = 0;
 
   for (var t = 0; t < threads.length; t++) {
     var messages = threads[t].getMessages();
     var threadParsed = 0;
     for (var m = 0; m < messages.length; m++) {
       var msg = messages[m];
+
+      // PER MESSAGE, not per thread: Gmail matches a label on the whole THREAD,
+      // so an attacker replying into a legitimately-labelled thread would sail
+      // past a thread-level check. Placed ahead of firstPdfAttachment_ so a
+      // hostile PDF is never OCR-ed — that also stops the Drive/OCR quota burn
+      // being a lever for anyone who gets a message into a labelled thread.
+      var fromAddr = emailFromAddress_(msg.getFrom());
+      if (!allowedSenders[fromAddr]) {
+        sendersRejected++;
+        Logger.log('roasteryDailyPull: REJECTED a message from ' + fromAddr +
+          ' — not in ' + ROASTERY_ALLOWED_SENDERS_PROP_ + '. Nothing OCR-ed or ingested ' +
+          'from it. If this sender is legitimate, add it to that property.');
+        continue;
+      }
+
       var pdf = firstPdfAttachment_(msg);
       if (!pdf) continue; // no PDF on this message
       if (seenAttachments[pdf.getName()]) continue; // same invoice already handled this run
@@ -144,7 +223,7 @@ function roasteryDailyPull_impl_() {
 
   Logger.log('roasteryDailyPull: ' + res.rowsAdded + ' added, ' + res.duplicatesSkipped +
     ' dup, ' + unparsed + ' unparsed, ' + ocrSkipped + ' ocr-skipped, ' +
-    threads.length + ' threads');
+    sendersRejected + ' sender-rejected, ' + threads.length + ' threads');
 
   // Heartbeat gate mirrors square.gs's sitesOk pattern, NOT mayers's
   // always-stamp: mayers can always stamp because GmailApp.search returning
@@ -159,7 +238,8 @@ function roasteryDailyPull_impl_() {
     stalenessStampHeartbeat_('roastery');
   } else {
     Logger.log('roasteryDailyPull: threads present but nothing ingested (' + unparsed +
-      ' unparsed) — NOT stamping heartbeat, so staleness will alert');
+      ' unparsed, ' + sendersRejected + ' sender-rejected) — NOT stamping heartbeat, ' +
+      'so staleness will alert');
   }
 
   return {
@@ -167,7 +247,8 @@ function roasteryDailyPull_impl_() {
     duplicatesSkipped: res.duplicatesSkipped,
     threadsProcessed: threads.length,
     unparsed: unparsed,
-    ocrSkipped: ocrSkipped
+    ocrSkipped: ocrSkipped,
+    sendersRejected: sendersRejected
   };
 }
 
