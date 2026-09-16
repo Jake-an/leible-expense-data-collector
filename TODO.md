@@ -173,6 +173,12 @@ but nothing carried forward.
       the log means it does not. The probe is self-cleaning either way — a thrown OCR
       is transient and never memoed. Rollback: restore `auth/drive` in
       `connectors/gas/appsscript.json`, redeploy, re-authorize.
+      Caveat on that probe: the existing grant is the WIDER `auth/drive`, which is a
+      superset, so Apps Script may keep honouring it and the narrower list only bites
+      at the next authorization. A green probe therefore proves OCR still works; it
+      does not by itself prove `drive.file` alone is sufficient. The conclusive test
+      is revoking the project's access and re-granting, which is worth doing only
+      if the narrowing needs to be relied on rather than merely shipped.
 
 - [x] **MEDIUM — accepted-risk register's false premise corrected. 2026-09-16.**
       `docs/security-baseline.json` no longer claims doPost/doGet "are the entire
