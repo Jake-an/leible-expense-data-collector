@@ -179,6 +179,16 @@ but nothing carried forward.
       does not by itself prove `drive.file` alone is sufficient. The conclusive test
       is revoking the project's access and re-granting, which is worth doing only
       if the narrowing needs to be relied on rather than merely shipped.
+      **Probed live 2026-09-17, 11:27 — OCR still works under drive.file.** Ran
+      `resetMayersUnparseableMemo()` then `mayersDailyPull()`:
+      `0 added, 0 dup, 2 unparsed, 0 ocr-skipped, 2 threads` over 12 seconds, with NO
+      `PDF extraction failed` line. Both signals are load-bearing — that line is a
+      Logger.log at the same level as the summary that DID appear, so its absence is
+      real rather than filtered, and a permission denial throws immediately, so 12s is
+      two genuine Drive OCR round-trips. Both statements re-memoed, so the next 6am
+      run should read `0 unparsed, 2 ocr-skipped` — passive confirmation, no action
+      needed. This proves the narrowing broke nothing; it is still NOT proof that
+      drive.file ALONE suffices, per the caveat above.
 
 - [x] **MEDIUM — accepted-risk register's false premise corrected. 2026-09-16.**
       `docs/security-baseline.json` no longer claims doPost/doGet "are the entire
