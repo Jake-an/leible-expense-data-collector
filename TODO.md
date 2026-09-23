@@ -263,13 +263,29 @@ but nothing carried forward.
       mutation-checked independently: reverting M-date reds exactly its 10
       cases; reverting M-stamp reds exactly its 15 cases (7 dedicated +
       8 updated passthrough assertions). Subject to step 0b (horizon) evidence
-      — main thread ran this separately; **0c sweep: pending main thread**.
+      — main thread ran this separately, read-only against the live Sheet, 2026-09-23:
+      **0b horizon:** max (date − extracted_at) is 5 days (ordermentum, 616 rows);
+      FDCo −1, F&C 2, Revenue −5, and nothing over 7 anywhere, so the 14-day cap
+      has headroom. **0c sweep:** no formula cells and no `= + - @` text cells in
+      any of the 13 tabs, no future stamps, no future dates, and ShopSpendPulls
+      max `to_week` is 2026-W31. ONE pre-existing defect, filed below: 8
+      trigger-event rows in Sales.
+      **Rollback point:** live @52 (deployed 2026-09-16), pre-change sha `31f87d7`.
+      Rollback = `clasp redeploy <deploymentId> --versionNumber 52`.
       **kent_paper** (`connectors/kent_paper.py:57-65`, commented-out stub) must
       emit `date` as `YYYY-MM-DD` when built, to pass this guard.
 
 - [ ] **MEDIUM — shopspend tombstone breaker disabled by a payload field.**
       `shopspend.gs:173` — a week named in caller-supplied `weeks_verified_empty`
       is exempt from the blast-radius breaker entirely.
+
+- [ ] **(Jake) Delete 8 junk rows in `Sales!A6:A13`.** Found by the 0c sweep 2026-09-23.
+      Two July trigger firings (extracted_at 2026-07-05 22:12 and 2026-07-12 22:12)
+      wrote the GAS trigger EVENT OBJECT (`{week-of-year=…, triggerUid=…}`) into
+      `date`, 4 sites each, all with `gross_sales=0`. The code cause is already
+      fixed (`square.gs:50-58`, `resolveDateArg_`), so these are residue only. No
+      money is affected, and no report reads `Sales` ([[weekly-report-reads-summary-only]]).
+      Needs Jake's OK before deleting.
 
 - [ ] **NEW — shopspend watchdog can still be blinded via `pull.from_week`/`to_week`.**
       Filed 2026-09-23 (plan `fluttering-frolicking-flute`, step 7). M-stamp
