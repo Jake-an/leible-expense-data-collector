@@ -272,6 +272,11 @@ but nothing carried forward.
       trigger-event rows in Sales.
       **Rollback point:** live @52 (deployed 2026-09-16), pre-change sha `31f87d7`.
       Rollback = `clasp redeploy <deploymentId> --versionNumber 52`.
+      **DEPLOYED @53, 2026-09-23.** Smoke check OK. Live probe with a valid FDCo token
+      (write-free): `date:'2026-7-1'` and `date:'2027-01-01'` were both refused with
+      `row 0 invalid date: …`, so the token was accepted and the new gate is live.
+      **⚠ Check the next nightly POST counters** for FDCo, F&C, Ordermentum and
+      shopspend. A validation error from an honest connector triggers the rollback.
       **kent_paper** (`connectors/kent_paper.py:57-65`, commented-out stub) must
       emit `date` as `YYYY-MM-DD` when built, to pass this guard.
 
