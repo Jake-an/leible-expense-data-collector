@@ -42,11 +42,11 @@ var SHOPIFY_ORDERAPP_SOURCE = 'shopify_orderapp';
 var WHOLESALE_SOURCE = 'coffee_order_app';
 
 // 8, not SHOPIFY_REPULL_WEEKS's 4: an order enters the wholesaleSales window
-// only once Invoice_Status reaches Finalized/Archived, which lags the
-// order-entry date, and Invoice_Total stays editable after that. The step-0
-// PROD probe saw non-zero `excluded` (in-week but not yet Finalized) in 2 of
-// 8 weeks — the lag is real, not theoretical, so the repull window has to
-// reach back far enough to self-heal it.
+// once it is swept (Invoice_Status 'Pending Entry' — producer filter widened
+// 2026-09-23 from Finalized/Archived, which lagged ~1 week and left the
+// Monday read of the just-closed week near-empty). An order swept after the
+// Monday pull, or an Invoice_Total edited later, still lands in an older
+// week, so the repull window has to reach back far enough to self-heal it.
 var WHOLESALE_REPULL_WEEKS_ = 8;
 var WHOLESALE_REPULL_WEEKS_PROP = 'WHOLESALE_REPULL_WEEKS';
 

@@ -326,11 +326,23 @@ but nothing carried forward.
       pass on this codebase.
 
 
-- [ ] **🔴 NEXT SESSION — re-check the wholesale amount. Jake 2026-09-23: "the figure
-      is still wrong."** Not investigated yet. First ask which figure, where it's seen
-      (doGet/Summary `location='wholesale'`, the weekly report, or GM_COST_MONITOR), and
-      what Jake expects it to be. Then reconcile hub vs producer for the same weeks
-      ([[roastery-wholesale-income-has-no-producer]]: the `all` bucket is ~84% internal).
+- [ ] **🔴 Wholesale ~$0 in GM Cost Monitor — ROOT-CAUSED 2026-09-23, fix committed,
+      DEPLOY BLOCKED.** The monitor's weekly Wholesale Revenue line read ~$0 because the
+      producer's `?api=wholesaleSales` counted only `Finalized`/`Archived`, which lags the
+      order week by about 1 week. At the Mon 06:00 pull the just-closed week was near-empty
+      (W38: $528.15 at the 09-21 read; W37's $2,283.60 landed a week late). Hub and monitor
+      were both correct given that input. Jake: "pull out the data right after sweep
+      submitted." Fix in `LEIBLE_Order_app` `a80ec23` counts `Pending Entry` (set at sweep
+      confirm, with the final `Invoice_Total`); `009c33c` repairs 2 CRLF-broken tests.
+      Neither is pushed or deployed: the `check-security-review` gate is BLOCKED (evidence
+      from 2026-09-10 is >7 days old). Remaining:
+      1. `/security-audit` in `LEIBLE_Order_app`, then `npm run deploy:dev`.
+      2. PROD needs Jake's "update real Sheet GAS" (`npm run deploy:prod`). The hub reads PROD.
+      3. Run `wholesalePull` in the hub editor, then doGet `from=2026-09-14`: W38
+         `wholesale` > $528.15, W37 unchanged at $2,283.60.
+      4. Mon 09-28 08:00: the monitor's W39 Wholesale Revenue is non-zero.
+      Remaining gap: orders swept after Mon 06:00 still miss that Monday's read (they heal in
+      the hub via the 8-week repull, but the monitor has already reported).
 
 ### ✅ Roastery wholesale income connector — LIVE 2026-09-09 (phase `roastery-wholesale`, PRD-14 built)
 
