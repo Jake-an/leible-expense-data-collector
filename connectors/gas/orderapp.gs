@@ -1432,11 +1432,11 @@ function greenBeanPull_impl_() {
     // either from correct data. Fix the cell here and resummarize BOTH weeks.
     var dateMoved = invoice.date !== snap.storedDate;
     if (dateMoved) {
-      suppSheet.getRange(snap.rowIndex, 1).setValue(invoice.date);
+      suppSheet.getRange(snap.rowIndex, 1).setValue(sheetSafeCell_(invoice.date));
       // Value+stamp convention (upsertRows_, appendSalesRow_): every in-place
       // correction refreshes extracted_at too, so the row answers "when was
       // this last touched?" truthfully.
-      suppSheet.getRange(snap.rowIndex, 7).setValue(extractedAt);
+      suppSheet.getRange(snap.rowIndex, 7).setValue(sheetSafeCell_(extractedAt));
       addAffectedWeek(weekStartForDate_(snap.storedDate)); // old week loses the invoice
       addAffectedWeek(weekStartForDate_(invoice.date));    // new week gains it
       Logger.log('greenBeanPull: ' + invoice.invoice_ref + ' date moved ' + snap.storedDate +
@@ -1829,8 +1829,8 @@ function wholesalePull_impl_(opts) {
       var snap = snapshot[key];
       if (snap && mrow.date !== snap.storedDate) {
         if (!dryRun) {
-          revSheet.getRange(snap.rowIndex, 1).setValue(mrow.date);
-          revSheet.getRange(snap.rowIndex, 8).setValue(extractedAt);
+          revSheet.getRange(snap.rowIndex, 1).setValue(sheetSafeCell_(mrow.date));
+          revSheet.getRange(snap.rowIndex, 8).setValue(sheetSafeCell_(extractedAt));
         }
         addAffectedWeek(weekStartForDate_(snap.storedDate));
         addAffectedWeek(weekStartForDate_(mrow.date));

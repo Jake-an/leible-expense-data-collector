@@ -13,6 +13,15 @@ value is rejected by `validateIngest_`.
 A tab `_staging` is a scratch area to test ingestion before trusting a connector —
 same columns as `Suppliers`.
 
+**Since 2026-09-23 (ingest-validation hardening, see `docs/ingest-contract.md`):**
+GAS owns every stamp — `doPost` overwrites a POSTed `extracted_at` (and every
+shopspend row's `fetched_at` / the pull's `fetched_at`) with its own server
+time before writing; a caller-supplied value is accepted and ignored. Every
+row's `date` must be a real `YYYY-MM-DD`, no more than 14 days ahead of today
+(Sydney), no lower bound. A row that omits `department` is ASSIGNED the
+authenticated source's bound department (`INGEST_SOURCE_DEPARTMENTS_`), not a
+blanket `Cafe` default.
+
 ## Tab `Suppliers` (invoice-level, all supplier sources — Cafe expenses + Roastery COGS)
 
 | Column | Type | Required | Description |

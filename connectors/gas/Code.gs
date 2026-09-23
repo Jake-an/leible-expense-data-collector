@@ -319,6 +319,60 @@ function isValidIngestAmount_(v) {
   return typeof v === 'number' && isFinite(v) && Math.abs(v) <= MAX_INGEST_AMOUNT_;
 }
 
+/**
+ * True iff `v` is a non-negative integer count (order_count / amended_count).
+ * Same coercion trap as money: `isNaN(Number(v))` lets through '45', '', [],
+ * true, Infinity. A count is never negative and never fractional.
+ */
+function isValidIngestCount_(v) {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0;
+}
+
+/**
+ * How far into the future a row's `date` may sit. FDCo desired-delivery
+ * dates and other legitimate forward-dated rows are real, but an
+ * unvalidated date lets a single caller park spend in a week nothing
+ * recomputes, or feed a 2099 stamp that would poison a forward-looking read.
+ * Named so it can be widened in one place if step 0b evidence calls for it.
+ */
+var MAX_INGEST_DATE_FUTURE_DAYS_ = 14;
+
+/**
+ * True iff `s` is a real calendar date in strict YYYY-MM-DD form, no more
+ * than MAX_INGEST_DATE_FUTURE_DAYS_ days ahead of today (Sydney). No lower
+ * bound — backfills reach back ~241 weeks and are legitimate.
+ *
+ * Reuses DATE_ARG_RE (which admits calendar-invalid strings like
+ * '2026-02-30') plus the same real-date round-trip check resolveDateArg_
+ * uses, so 'YYYY-MM-DDT...' and Date-like objects are rejected too (String()
+ * coercion of a Date object does not match DATE_ARG_RE).
+ */
+function isValidIngestDate_(s) {
+  if (typeof s !== 'string') return false;
+  if (!DATE_ARG_RE.test(s)) return false;
+  var d = new Date(s + 'T00:00:00Z');
+  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return false;
+  var today = new Date(todayStr_() + 'T00:00:00Z');
+  var maxMs = today.getTime() + MAX_INGEST_DATE_FUTURE_DAYS_ * 86400000;
+  return d.getTime() <= maxMs;
+}
+
+/**
+ * GAS's own server-time stamp for an ingest write, replacing whatever
+ * timestamp a caller sent. A caller-supplied extracted_at/fetched_at is
+ * unvalidated free text: a single 2099 stamp blinds the staleness watchdog
+ * (which takes the max per source) permanently. doPost overwrites
+ * body.extracted_at, each shopspend row's fetched_at, and body.pull.fetched_at
+ * with this before dispatch — the stamp becomes arrival time, not scrape
+ * time, which is harmless for a watchdog that exists to detect arrival.
+ *
+ * Date.now(), never a bare new Date(): withMockNow (test_code.js:~327) pins
+ * only Date.now, matching todayStr_'s convention.
+ */
+function ingestServerStamp_() {
+  return Utilities.formatDate(new Date(Date.now()), 'Australia/Sydney', "yyyy-MM-dd'T'HH:mm:ssXXX");
+}
+
 /* ------------------------------------------------------------------ *
  * Concurrency — one lock mechanism, wrapped at entry points only
  *
@@ -416,6 +470,44 @@ function doPost(e) {
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });
 
+    // Server stamps EVERY timestamp a caller sends, replacing it outright —
+    // see ingestServerStamp_. Applied after validateIngest_ (payload shape
+    // already known good) and before dispatch, so every ingest path
+    // (suppliers/revenue/shopspend rows + the shopspend pull marker) gets it.
+    var serverStamp_ = ingestServerStamp_();
+    body.extracted_at = serverStamp_;
+    if (Array.isArray(body.rows)) {
+      for (var si_ = 0; si_ < body.rows.length; si_++) {
+        if (body.rows[si_] && typeof body.rows[si_] === 'object' && 'fetched_at' in body.rows[si_]) {
+          body.rows[si_].fetched_at = serverStamp_;
+        }
+      }
+    }
+    if (body.pull && typeof body.pull === 'object') {
+      body.pull.fetched_at = serverStamp_;
+    }
+
+    // Department: assign the bound department when a row omits one.
+    // validateIngest_ already rejected any row claiming a department other
+    // than its source's binding, so only the omitted case reaches here.
+    // Fail closed if an authenticated source has no binding at all — should
+    // never happen (INGEST_SOURCES_/INGEST_SOURCE_DEPARTMENTS_ kept in
+    // parity, tested in M-dept), but a silent DEFAULT_DEPARTMENT fallback is
+    // exactly the bypass this guard closes.
+    var deptBinding_ = ingestDepartmentFor_(body.source);
+    if (!deptBinding_.bound) {
+      return jsonOut_({ result: 'error', message: 'source ' + body.source + ' has no department binding' });
+    }
+    if (deptBinding_.department !== null && Array.isArray(body.rows)) {
+      for (var di_ = 0; di_ < body.rows.length; di_++) {
+        var drow_ = body.rows[di_];
+        if (drow_ && typeof drow_ === 'object' &&
+            (drow_.department === undefined || drow_.department === null || drow_.department === '')) {
+          drow_.department = deptBinding_.department;
+        }
+      }
+    }
+
     var kind = body.kind || 'suppliers';
 
     var res = withScriptLock_(function () {
@@ -509,7 +601,10 @@ function validateIngest_(body) {
   if (!body || typeof body !== 'object') return { ok: false, message: 'body is not an object' };
   if (!body.source || typeof body.source !== 'string') return { ok: false, message: 'missing source' };
   if (!Array.isArray(body.rows)) return { ok: false, message: 'missing rows array' };
-  if (!body.extracted_at) return { ok: false, message: 'missing extracted_at' };
+  // extracted_at is no longer required or validated here: doPost overwrites
+  // it (and shopspend row.fetched_at / body.pull.fetched_at) with
+  // ingestServerStamp_() before dispatch, so any caller value — present,
+  // absent, or hostile — is accepted and ignored (M-stamp).
 
   var kind = body.kind || 'suppliers';
   if (kind !== 'suppliers' && kind !== 'revenue' && kind !== 'shopspend') {
@@ -571,6 +666,13 @@ function validateIngest_(body) {
     var r = body.rows[i];
     if (!r || typeof r !== 'object') return { ok: false, message: 'row ' + i + ' is not an object' };
     if (!r.date) return { ok: false, message: 'row ' + i + ' missing date' };
+    if (!isValidIngestDate_(r.date)) {
+      return {
+        ok: false,
+        message: 'row ' + i + ' invalid date: ' + r.date + ' (needs a real YYYY-MM-DD, no more than ' +
+          MAX_INGEST_DATE_FUTURE_DAYS_ + ' days ahead of today)'
+      };
+    }
 
     if (r.department !== undefined && r.department !== null && r.department !== '') {
       if (DEPARTMENTS.indexOf(String(r.department)) === -1) {
@@ -609,20 +711,32 @@ function validateIngest_(body) {
       }
       if (!r.week_start) return { ok: false, message: 'row ' + i + ' missing week_start' };
       if (!r.week_end) return { ok: false, message: 'row ' + i + ' missing week_end' };
-      if (r.total_ex_gst === undefined || r.total_ex_gst === null || isNaN(Number(r.total_ex_gst))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid total_ex_gst' };
+      if (!isValidIngestAmount_(r.total_ex_gst)) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' missing/invalid total_ex_gst (needs a finite JSON number, ' +
+            '|total_ex_gst| <= ' + MAX_INGEST_AMOUNT_ + ')'
+        };
       }
-      if (r.gst === undefined || r.gst === null || isNaN(Number(r.gst))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid gst' };
+      if (!isValidIngestAmount_(r.gst)) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' missing/invalid gst (needs a finite JSON number, |gst| <= ' +
+            MAX_INGEST_AMOUNT_ + ')'
+        };
       }
-      if (r.total_inc_gst === undefined || r.total_inc_gst === null || isNaN(Number(r.total_inc_gst))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid total_inc_gst' };
+      if (!isValidIngestAmount_(r.total_inc_gst)) {
+        return {
+          ok: false,
+          message: 'row ' + i + ' missing/invalid total_inc_gst (needs a finite JSON number, ' +
+            '|total_inc_gst| <= ' + MAX_INGEST_AMOUNT_ + ')'
+        };
       }
-      if (r.order_count === undefined || r.order_count === null || isNaN(Number(r.order_count))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid order_count' };
+      if (!isValidIngestCount_(r.order_count)) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid order_count (needs a non-negative integer)' };
       }
-      if (r.amended_count === undefined || r.amended_count === null || isNaN(Number(r.amended_count))) {
-        return { ok: false, message: 'row ' + i + ' missing/invalid amended_count' };
+      if (!isValidIngestCount_(r.amended_count)) {
+        return { ok: false, message: 'row ' + i + ' missing/invalid amended_count (needs a non-negative integer)' };
       }
     } else if (kind === 'revenue') {
       if (!isValidIngestAmount_(r.amount)) {
@@ -868,7 +982,7 @@ function appendSalesRow_(sheet, normalizedRow) {
   }
 
   sheet.getRange(existingRowNum, 3).setValue(normalizedRow[2]); // gross_sales (col C)
-  sheet.getRange(existingRowNum, 5).setValue(normalizedRow[4]); // extracted_at (col E)
+  sheet.getRange(existingRowNum, 5).setValue(sheetSafeCell_(normalizedRow[4])); // extracted_at (col E)
   return { appended: false, updated: true };
 }
 
@@ -979,7 +1093,7 @@ function upsertRows_(sheet, normalizedRows, keyCols, amountCol, stampCol) {
 
     sheet.getRange(existingRowNum, amountCol + 1).setValue(newAmount);
     if (stampCol !== undefined && stampCol !== null) {
-      sheet.getRange(existingRowNum, stampCol + 1).setValue(row[stampCol]);
+      sheet.getRange(existingRowNum, stampCol + 1).setValue(sheetSafeCell_(row[stampCol]));
     }
     rowsUpdated++;
     updates.push({ key: key, from: existingAmount, to: newAmount });

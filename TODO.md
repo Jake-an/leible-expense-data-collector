@@ -123,25 +123,43 @@ but nothing carried forward.
       refuses.** It refuses today too, which is correct — `roastery` is not in
       `STALENESS_SOURCES`, so the withheld heartbeat raises no alert.
 
-- [ ] **MEDIUM — formula injection on the upsert in-place path (`Code.gs:982`).**
-      `upsertRows_` guards its APPEND path via `sheetSafeRow_` but writes the stamp
-      column raw: `setValue(row[stampCol])`, where `extracted_at` is checked only
-      for truthiness (`validateIngest_:512`). A POST whose `extracted_at` starts
-      with `=` plants a live formula in Suppliers. Same bypass at `Code.gs:871`
-      (Sales) and `orderapp.gs:1168/1565` (date-move self-heal) — three of the four
-      in-place writers break the repo's own "every write is guarded" invariant.
+- [x] **MEDIUM — formula injection on the upsert in-place path (`Code.gs:982`).
+      FIXED 2026-09-23 (plan `fluttering-frolicking-flute`).**
+      `sheetSafeCell_` now guards the two Code.gs in-place `setValue` sites
+      (`upsertRows_` stamp column, `appendSalesRow_`) and the two orderapp.gs
+      date-move self-heal sites (`orderapp.gs` greenBeanPull_impl_ + wholesalePull_impl_,
+      both the date cell and the extracted_at refresh). Tests:
+      `testSheetFormulaInjectionGuard`'s M-formula cases (`upsertRows_
+      stamp-column in-place write is guarded`, `appendSalesRow_ in-place
+      extracted_at write is guarded`) — mutation-checked, red on revert, nothing
+      else moves. The two orderapp.gs sites got the same code fix but no
+      dedicated integration test: a literal `'=1+1'` `dateLocal` crashes
+      `weekStartForDate_` (`RangeError: Invalid time value` on
+      `d.toISOString()`) before the setValue guard is reached — a pre-existing
+      crash-safety gap, unrelated to formula injection, filed below.
 
-- [ ] **MEDIUM — shopspend money fields still use the coercion that was removed.**
-      `Code.gs:612-626` guards five money/count fields with `isNaN(Number(x))` —
-      exactly what `isValidIngestAmount_`'s docstring (`Code.gs:310-317`) says was
-      replaced for letting through `Infinity`, `''`, `[]`, `'45'`, `true`.
-      `MAX_INGEST_AMOUNT_` is never applied to `kind=shopspend` at all.
+- [x] **MEDIUM — shopspend money fields still use the coercion that was removed.
+      FIXED 2026-09-23.**
+      `total_ex_gst`/`gst`/`total_inc_gst` now go through `isValidIngestAmount_`
+      (same `MAX_INGEST_AMOUNT_` ceiling as `total`/`amount`); `order_count`/
+      `amended_count` go through a new `isValidIngestCount_` (non-negative
+      integer). Tests: `testMShopspendFieldCoercion`, 34 cases across
+      `'45'`/`''`/`[]`/`true`/`Infinity`/over-cap/negative/fractional, plus an
+      end-to-end doPost case. Mutation-checked: reverting to
+      `isNaN(Number(x))` reds exactly those 34 M-shopspend cases.
 
-- [ ] **MEDIUM — department authorization is bypassable by OMITTING the field.**
-      `validateIngest_:575` only checks `department` when present; the normalizers
-      then default to `DEFAULT_DEPARTMENT` (Cafe, `Code.gs:67`) rather than the
-      source-bound value. The gate validates a claim where it should ASSIGN.
-      Bounded today only because the one Roastery-bound source has no token set.
+- [x] **MEDIUM — department authorization is bypassable by OMITTING the field.
+      FIXED 2026-09-23.**
+      `doPost` now ASSIGNS the bound department (`ingestDepartmentFor_`) to any
+      row that omits one, after `validateIngest_` passes — the one intended
+      behaviour change: an omitted-department `coffee_order_app` revenue row
+      now lands `Roastery` instead of the old `DEFAULT_DEPARTMENT` ('Cafe')
+      fallback (no live poster today — its token is unset). Fails closed if an
+      authenticated source has no binding at all. Tests: `testMDepartmentAssignment`
+      (4 cases: coffee_order_app→Roastery, shopspend null-bound no-op,
+      unbound-source fail-closed, legacy Cafe-bound-still-Cafe regression) plus
+      the pre-existing `testDepartmentBoundToSource` key-parity check. Mutation-
+      checked: reverting reds exactly the 3 behavioural M-dept cases.
 
 - [ ] **MEDIUM — supplier + location attribution unbound to the authenticated source.**
       `canonicalSupplier_:657` returns `row.supplier` verbatim; `row.location` is
@@ -225,15 +243,44 @@ but nothing carried forward.
       first, but every rejected request still costs a script execution, a
       PropertiesService read and a Logger write, on a committed /exec URL.
 
-- [ ] **MEDIUM — unvalidated `date` and `extracted_at` at ingest.**
-      `date` is never format-checked and the heal window is frozen to 1
-      (`Code.gs:573`), so a crafted date parks spend in a week nothing recomputes.
-      `extracted_at` is any truthy value and staleness keeps the MAXIMUM per source
-      (`Code.gs:512`), so one row dated 2099 permanently blinds the watchdog.
+- [x] **MEDIUM — unvalidated `date` and `extracted_at` at ingest. FIXED 2026-09-23.**
+      `date` is now strict real `YYYY-MM-DD`, no more than
+      `MAX_INGEST_DATE_FUTURE_DAYS_` (14) days ahead of today (Sydney), no lower
+      bound (backfills reach back ~241 weeks). `extracted_at` stops being
+      caller-supplied entirely: `doPost` overwrites `body.extracted_at`, every
+      shopspend row's `fetched_at`, and `body.pull.fetched_at` with
+      `ingestServerStamp_()` (GAS server time) before dispatch — a caller value
+      is accepted and ignored, so a 2099 stamp can no longer reach the sheet or
+      blind the staleness watchdog. Tests: `testMDateValidation` (10 cases:
+      malformed formats, calendar-invalid `2026-02-30`, a Date object,
+      today+15 rejected, today+14 and a 2021 backfill date accepted, refusal
+      names the row + date, doPost end-to-end) and `testMServerStamp` (7 cases
+      across extracted_at/shopspend row fetched_at/pull.fetched_at, plus the
+      shopspend watchdog reading a real non-2099 `lastPullMs`), plus ~10
+      pre-existing doPost passthrough assertions updated to expect the server
+      stamp instead of the payload literal (`test_code.js` ~765, ~2600,
+      ~2618, ~2647, ~2661, ~3626, ~3808-3821, ~4026-4031). Both guards
+      mutation-checked independently: reverting M-date reds exactly its 10
+      cases; reverting M-stamp reds exactly its 15 cases (7 dedicated +
+      8 updated passthrough assertions). Subject to step 0b (horizon) evidence
+      — main thread ran this separately; **0c sweep: pending main thread**.
+      **kent_paper** (`connectors/kent_paper.py:57-65`, commented-out stub) must
+      emit `date` as `YYYY-MM-DD` when built, to pass this guard.
 
 - [ ] **MEDIUM — shopspend tombstone breaker disabled by a payload field.**
       `shopspend.gs:173` — a week named in caller-supplied `weeks_verified_empty`
       is exempt from the blast-radius breaker entirely.
+
+- [ ] **NEW — shopspend watchdog can still be blinded via `pull.from_week`/`to_week`.**
+      Filed 2026-09-23 (plan `fluttering-frolicking-flute`, step 7). M-stamp
+      fixed `pull.fetched_at` (server-stamped, can no longer freeze
+      `lastPullMs` in the future), but `shopSpendWatchdogEvaluate_`
+      (`shopspend.gs:516-539`) also derives week coverage from the payload's
+      own `from_week`/`to_week` span (`shopSpendCoveredWeeks_`) — an
+      authenticated caller can still claim an arbitrarily wide span and mark
+      weeks covered that were never actually pulled. Out of this plan's locked
+      scope (4 Mediums only); do not claim the shopspend watchdog is fully
+      hardened.
 
 - [ ] **LOW batch** — `verify_gate.sh:22` matches its own bypass token as an
       unanchored substring of the whole command line, so any command merely

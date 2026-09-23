@@ -38,6 +38,19 @@ company headline the external GM cost monitor reads every Monday 08:00.
 `API_READ_TOKEN` is the **read** secret for `doGet` and buys nothing here —
 there is deliberately no fallback to it.
 
+**Since 2026-09-23 (ingest-validation hardening): GAS owns every stamp.**
+`doPost` overwrites `body.extracted_at`, every shopspend row's `fetched_at`,
+and `body.pull.fetched_at` with its own server time (`ingestServerStamp_()`,
+Sydney tz) before dispatch — whatever a caller sends in those fields
+(present, absent, or hostile) is accepted and ignored. Send a real value if
+you like; it will not be stored.
+
+**Every row's `date` must be a real `YYYY-MM-DD` calendar date, no more than
+14 days ahead of today (Sydney) — no lower bound.** `validateIngest_` rejects
+the row (and the WHOLE batch, since it fails closed on the first bad row) with
+`row N invalid date: <value> (needs a real YYYY-MM-DD, no more than 14 days
+ahead of today)`. A malformed or malicious `date` never reaches the sheet.
+
 The allowlist as of 2026-09-04:
 
 | `source` | script property + `.env` name |
@@ -105,9 +118,10 @@ isFinite(amount)`, a strict date shape, non-blank `order_ref` — precisely beca
 
 Lands in the `Revenue` tab (`docs/schema.md`), dedup key `source + order_ref`.
 Required per row: `date`, `channel`, `customer`, `amount` (a JSON number, not
-a numeric string), `order_ref`. `department` is optional — omitted defaults
-to `DEFAULT_DEPARTMENT` (`Cafe`); if present it must be exactly `Cafe` or
-`Roastery`.
+a numeric string), `order_ref`. `department` is optional — **omitted is
+ASSIGNED the source's bound department** (`doPost`, since the 2026-09-23
+ingest-validation hardening; see below), not `DEFAULT_DEPARTMENT`; if present
+it must be exactly `Cafe` or `Roastery` and match the source's binding.
 
 **`channel: "online"` is reserved for the `shopify_orderapp` feed
 (`orderapp.gs`, `shopifyWeeklyPull`, PRD-10) and is MECHANICALLY REJECTED at
@@ -252,9 +266,12 @@ malformed and will fail again identically.
   | `coffee_order_app` | `Roastery` |
   | `shopspend`, `shopspend-backfill` | *no department at all* |
 
-  Omitting `department` is unaffected and still defaults to
-  `DEFAULT_DEPARTMENT` (`Cafe`) in the normalizers — only an explicit claim is
-  checked. A crossed claim is rejected per row, e.g. `row 0 department
+  **Since 2026-09-23, omitting `department` is ASSIGNED the source's bound
+  department by `doPost`** (null-bound sources like `shopspend` get none) —
+  no longer a `DEFAULT_DEPARTMENT` (`Cafe`) normalizer fallback. The one
+  behaviour change: an omitted-department `coffee_order_app` row now lands
+  `Roastery`, not `Cafe` (no live poster today). An explicit claim is still
+  checked against the binding. A crossed claim is rejected per row, e.g. `row 0 department
   Roastery is not permitted for source food_dairy_co (bound to Cafe)`; a
   shopspend payload carrying one is rejected with `row 0 sets department, but
   source shopspend writes no department column` (the `ShopSpend` tab has no
