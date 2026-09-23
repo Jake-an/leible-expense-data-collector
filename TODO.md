@@ -326,6 +326,12 @@ but nothing carried forward.
       pass on this codebase.
 
 
+- [ ] **🔴 NEXT SESSION — re-check the wholesale amount. Jake 2026-09-23: "the figure
+      is still wrong."** Not investigated yet. First ask which figure, where it's seen
+      (doGet/Summary `location='wholesale'`, the weekly report, or GM_COST_MONITOR), and
+      what Jake expects it to be. Then reconcile hub vs producer for the same weeks
+      ([[roastery-wholesale-income-has-no-producer]]: the `all` bucket is ~84% internal).
+
 ### ✅ Roastery wholesale income connector — LIVE 2026-09-09 (phase `roastery-wholesale`, PRD-14 built)
 
 **Runbook receipt — live bring-up 2026-09-09, Jake at the keyboard.** Steps 0-8 all
