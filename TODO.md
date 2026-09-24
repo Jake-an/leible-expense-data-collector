@@ -326,8 +326,14 @@ but nothing carried forward.
       pass on this codebase.
 
 
-- [ ] **🔴 Wholesale ~$0 in GM Cost Monitor — ROOT-CAUSED 2026-09-23, fix committed,
-      DEPLOY BLOCKED.** The monitor's weekly Wholesale Revenue line read ~$0 because the
+- [ ] **🟡 Wholesale ~$0 in GM Cost Monitor — FIX LIVE ON PROD 2026-09-24, awaiting the
+      Mon 09-28 check.** Steps 1–2 below are DONE: Order app PROD @200, DEV @298 (commits
+      a80ec23 + docs e690bc4 + 3320e41; audit 9 `waived_by_jake` on an older High).
+      Producer probe on 09-24 (`?api=wholesaleSales`, external): W37 $2,283.60 (unchanged), W38
+      $1,858.15 (all 9 orders now Finalized, so W38 does not exercise Pending Entry), W39
+      not yet swept (6 excluded, blank status). The hub still holds W38 = $528.15 until
+      `wholesalePull` runs (Mon 06:00 trigger, or by hand in the editor).
+      Original note follows. The monitor's weekly Wholesale Revenue line read ~$0 because the
       producer's `?api=wholesaleSales` counted only `Finalized`/`Archived`, which lags the
       order week by about 1 week. At the Mon 06:00 pull the just-closed week was near-empty
       (W38: $528.15 at the 09-21 read; W37's $2,283.60 landed a week late). Hub and monitor
