@@ -326,8 +326,15 @@ but nothing carried forward.
       pass on this codebase.
 
 
-- [ ] **🟡 Wholesale ~$0 in GM Cost Monitor — FIX LIVE ON PROD 2026-09-24, awaiting the
-      Mon 09-28 check.** Steps 1–2 below are DONE: Order app PROD @200, DEV @298 (commits
+- [x] **✅ Wholesale ~$0 in GM Cost Monitor — VERIFIED hub-side 2026-10-12.** doGet
+      `fn=summary&department=Roastery&from=2026-08-31`: the newest week's `wholesale` is
+      non-zero at its FIRST Monday write, before the 08:00 monitor read — W40 (09-28)
+      $1,609.90, stamped 10-05 06:50 and unchanged since; W41 (10-05) $1,005.70, stamped
+      10-12 06:50. Pre-fix W38 was $528.15 at its first read (final $1,858.15). W39's first
+      read (09-28) can't be confirmed: its row was re-stamped 10-05 (now $1,974.30). Steps
+      3–4 below are closed by this probe; the monitor's own screen was not checked from here.
+      Still open: orders swept after Mon 06:00 miss that Monday's read (W41's $1,005.70 may
+      be partial). Steps 1–2 below are DONE: Order app PROD @200, DEV @298 (commits
       a80ec23 + docs e690bc4 + 3320e41; audit 9 `waived_by_jake` on an older High).
       Producer probe on 09-24 (`?api=wholesaleSales`, external): W37 $2,283.60 (unchanged), W38
       $1,858.15 (all 9 orders now Finalized, so W38 does not exercise Pending Entry), W39
