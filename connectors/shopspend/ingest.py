@@ -24,6 +24,11 @@ import base_connector as bc
 
 _LOCKED_RETRY_DELAY_SECONDS = 60
 
+# Max weeks_verified_empty per payload. MUST match MAX_WEEKS_VERIFIED_EMPTY_ in
+# connectors/gas/Code.gs: validateIngest_ refuses a payload carrying more, so a
+# long backfill with many zero-row weeks has to be split across requests.
+MAX_WEEKS_VERIFIED_EMPTY = 8
+
 
 class IngestFailed(Exception):
     """Raised when the shopspend ingest endpoint rejects a request, or its
@@ -248,11 +253,19 @@ def post_pull(
         for week in sorted(complete_weeks_only):
             week_rows = rows_by_week[week]
 
-            if len(chunk) + len(week_rows) <= chunk_size:
+            # Zero-row weeks add nothing to len(chunk), so the row cap alone
+            # never closes a chunk of verified-empty weeks; cap them explicitly.
+            chunk_verified_n = sum(1 for w in chunk_weeks if w in verified_empty_set)
+            verified_full = (
+                week in verified_empty_set and chunk_verified_n >= MAX_WEEKS_VERIFIED_EMPTY
+            )
+            if len(chunk) + len(week_rows) <= chunk_size and not verified_full:
                 chunk.extend(week_rows)
                 chunk_weeks.append(week)
             else:
-                if chunk:
+                # `or chunk_weeks`: a chunk of only zero-row (verified-empty)
+                # weeks has no rows but must still be sent, or its weeks vanish.
+                if chunk or chunk_weeks:
                     _send_declared(chunk, chunk_weeks)
                 chunk = list(week_rows)
                 chunk_weeks = [week]

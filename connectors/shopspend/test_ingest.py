@@ -967,3 +967,64 @@ def test_read_token_is_not_accepted_for_ingest(monkeypatch):
 
     assert "INGEST_TOKEN_SHOPSPEND" in str(exc_info.value)
     assert fake_post.call_count == 0, "nothing may be posted on the read token"
+
+
+# --------------------------------------------------------------------------- #
+# weeks_verified_empty is capped per payload (GAS MAX_WEEKS_VERIFIED_EMPTY_ = 8)
+# --------------------------------------------------------------------------- #
+
+
+def _empty_week_labels(n):
+    return [f"2026-W{w:02d}" for w in range(10, 10 + n)]
+
+
+@pytest.mark.parametrize(
+    "n_empty, expected_sizes",
+    [(0, []), (8, [8]), (9, [8, 1]), (20, [8, 8, 4])],
+)
+def test_verified_empty_weeks_are_chunked_to_the_gas_cap(monkeypatch, n_empty, expected_sizes):
+    """GAS refuses any payload carrying more than 8 weeks_verified_empty. Zero-row
+    weeks add nothing to a chunk's row count, so row-based packing put them ALL in
+    one payload and a long backfill was refused wholesale."""
+    assert ingest.MAX_WEEKS_VERIFIED_EMPTY == 8
+    empty = _empty_week_labels(n_empty)
+    # One real week with rows, so row data must still arrive exactly once too.
+    rows = _week_rows("2026-W40", "2026-09-28", 3, start_i=500)
+    weeks_complete = sorted(empty + ["2026-W40"])
+
+    fake_post = _FakePost([_ok_resp() for _ in range(30)])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    ingest.post_pull(
+        rows,
+        _pull(),
+        exec_url=PROD_URL,
+        weeks_complete=weeks_complete,
+        weeks_verified_empty=empty,
+    )
+
+    reqs = _data_requests(fake_post)
+    sizes = [len(r.get("weeks_verified_empty") or []) for r in reqs]
+    assert [s for s in sizes if s] == expected_sizes
+    assert all(s <= 8 for s in sizes)
+
+    sent_empty = [w for r in reqs for w in (r.get("weeks_verified_empty") or [])]
+    assert sorted(sent_empty) == sorted(empty), "every empty week sent exactly once"
+    sent_complete = [w for r in reqs for w in (r.get("weeks_complete") or [])]
+    assert sorted(sent_complete) == weeks_complete, "every declared week sent exactly once"
+    sent_rows = [row["invoice_ref"] if "invoice_ref" in row else json.dumps(row, sort_keys=True)
+                 for r in reqs for row in r["rows"]]
+    assert len(sent_rows) == 3 and len(set(sent_rows)) == 3, "row data delivered exactly once"
+    for r in reqs:
+        assert set(r.get("weeks_verified_empty") or []) <= set(r.get("weeks_complete") or [])
+
+
+def test_refused_verified_empty_chunk_raises_and_is_not_dropped(monkeypatch):
+    empty = _empty_week_labels(9)
+    fake_post = _FakePost([_ok_resp(), _error_resp("refused"), _ok_resp()])
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    with pytest.raises(ingest.IngestFailed):
+        ingest.post_pull(
+            [], _pull(), exec_url=PROD_URL, weeks_complete=empty, weeks_verified_empty=empty
+        )
