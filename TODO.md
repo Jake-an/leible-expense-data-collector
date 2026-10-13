@@ -1396,6 +1396,12 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 - Telegram notifications when connectors go `blocked`
 
 ## Batch candidates
+- [security Medium M1] connectors/gas/Code.gs:511 — An ingest token is bound to a SOURCE but not to a KIND. (audit 2026-10-13)
+- [security Medium M1] connectors/gas/Code.gs:771 — Supplier identity is caller-controlled and unbound to the authenticated source (re-verified from the 2026-09-10 audit, unchanged; previously Code. (audit 2026-10-13)
+- [security Medium M1] connectors/gas/Code.gs:771 — Supplier and location attribution are not bound to the authenticated source (re-verified, unchanged since 2026-09-10; previously Code. (audit 2026-10-13)
+- [security Medium M1] connectors/gas/shopspend.gs:173 — The shopspend tombstone blast-radius breaker is disabled by a caller flag with no cap (re-verified, unchanged). (audit 2026-10-13)
+- [security Medium (none)] C:/Users/mioja/.claude/hooks/git-backup.ps1:29 — An unattended daemon stages, commits and pushes everything not gitignored, with no secret scan on that path - this is the mechanism by which a credential file could still reach origin even though . (audit 2026-10-13)
+- [security Medium (none)] docs/auth-allowlist.json:6 — The allowlist's only exempt entry names a file that never deploys, while the deployed twin is undeclared - the gate is green on the wrong file. (audit 2026-10-13)
 <!-- Work spotted but not done. Append DURING the session, one line each, always naming
      the file/area it touches. Source for the Next batches block at "lets stop here"
      (~/.claude/docs/todo-hygiene.md). -->

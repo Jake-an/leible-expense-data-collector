@@ -7,8 +7,15 @@ node_modules/
 !.claude/hooks/
 !.claude/commands/
 
-.env
-.env.local
+# Secrets by SHAPE, not exact name — the backup hook commits anything not ignored,
+# so a stray copy (.env.bak, ingest-tokens-*.txt saved outside credentials/) must
+# still be caught.
+.env*
+!.env.example
+*token*.txt
+*secret*.txt
+*.pem
+*.key
 credentials/
 *.credentials.json
 secrets/
