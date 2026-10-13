@@ -22,3 +22,11 @@
 **/phases/**
 **/*.log
 **/*.md
+
+# connectors/gas/__test.gs is the DORMANT /__test live-verification template
+# (serveLiveTest_ / runLiveSelfTest_ / liveCheckDbConnected_). Nothing live
+# routes into it — doGet has no fn=__test arm (grep-verified 2026-10-13) — so it
+# must not deploy: a dev-only, SCRIPT_KEY-gated self-test has no business on the
+# ANYONE_ANONYMOUS PROD deployment. Arming it is a deliberate change: remove
+# this line in the same commit that wires doGet to it.
+__test.gs
