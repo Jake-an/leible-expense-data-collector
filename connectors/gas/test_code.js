@@ -15489,5 +15489,74 @@ console.log('\nGroup M — ingest-validation hardening:');
   });
 })();
 
+(function testWeeksVerifiedEmptyCap() {
+  console.log('\nshopspend — weeks_verified_empty is capped; tombstones are logged per week (SEC-D):');
+  var row = function (shop, week, start, end) {
+    return { date: start, shop_id: shop, week_label: week, week_start: start, week_end: end,
+      order_count: 3, amended_count: 0, total_ex_gst: 100, gst: 0, total_inc_gst: 100 };
+  };
+  var dataRows = function () {
+    var sh = currentSS.getSheetByName(SHOPSPEND_TAB);
+    return sh ? sh.getDataRange().getValues().slice(1) : [];
+  };
+  // Seed 6 present shops (above the 5-shop breaker floor) in W31 and W32.
+  var seed = function () {
+    freshSheets();
+    var rows = [];
+    for (var s = 1; s <= 6; s++) {
+      rows.push(row('shopD' + s, '2026-W31', '2026-07-27', '2026-08-02'));
+      rows.push(row('shopD' + s, '2026-W32', '2026-08-03', '2026-08-09'));
+    }
+    var r = doPostJson({ kind: 'shopspend', source: 'shopspend', extracted_at: 'TS', rows: rows,
+      weeks_complete: ['2026-W31', '2026-W32'] });
+    eq('SEC-D: seed 12 present shop-weeks', r.rowsAdded, 12);
+  };
+  var weeks = function (from, n) {
+    var out = [];
+    for (var w = from; w < from + n; w++) out.push('2026-W' + (w < 10 ? '0' : '') + w);
+    return out;
+  };
+
+  check('SEC-D: MAX_WEEKS_VERIFIED_EMPTY_ is a small positive cap',
+    typeof MAX_WEEKS_VERIFIED_EMPTY_ === 'number' && MAX_WEEKS_VERIFIED_EMPTY_ >= 4 && MAX_WEEKS_VERIFIED_EMPTY_ <= 16);
+  var cap = typeof MAX_WEEKS_VERIFIED_EMPTY_ === 'number' ? MAX_WEEKS_VERIFIED_EMPTY_ : 8;
+
+  // Over the cap: refused outright, nothing tombstoned (no truncation).
+  seed();
+  var before = dataRows().length;
+  var many = weeks(31, cap + 1);
+  var big = doPostJson({ kind: 'shopspend', source: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: many, weeks_verified_empty: many });
+  eq('SEC-D: weeks_verified_empty of cap+1 weeks → error', big.result, 'error');
+  check('SEC-D: ...reason names weeks_verified_empty and the cap (' + big.message + ')',
+    String(big.message || '').indexOf('weeks_verified_empty') !== -1 &&
+    String(big.message || '').indexOf(String(cap)) !== -1);
+  eq('SEC-D: ...and NOT truncated: zero tombstones written', dataRows().length, before);
+
+  // Legit: one verified-empty week (what the weekly run sends) still tombstones,
+  // breaker-exempt, and each tombstoned week is logged.
+  seed();
+  loggedMessages.length = 0;
+  var one = doPostJson({ kind: 'shopspend', source: 'shopspend', extracted_at: 'TS', rows: [],
+    weeks_complete: ['2026-W32'], weeks_verified_empty: ['2026-W32'] });
+  eq('SEC-D: single verified-empty week → ok', one.result, 'ok');
+  eq('SEC-D: ...tombstones all 6 present shops in that week', one.tombstonesWritten, 6);
+  var tombLogs = loggedMessages.filter(function (m) { return /tombstoned/.test(m) && /2026-W32/.test(m); });
+  eq('SEC-D: ...and logs exactly one line for the tombstoned week', tombLogs.length, 1);
+  check('SEC-D: ...naming the count and source (' + tombLogs[0] + ')',
+    !!tombLogs[0] && tombLogs[0].indexOf('6') !== -1 && tombLogs[0].indexOf('shopspend') !== -1);
+
+  // Exactly at the cap is accepted (a --backfill window fits with headroom).
+  seed();
+  loggedMessages.length = 0;
+  var atCap = weeks(31, cap);
+  var full = doPostJson({ kind: 'shopspend', source: 'shopspend-backfill', extracted_at: 'TS', rows: [],
+    weeks_complete: atCap, weeks_verified_empty: atCap });
+  eq('SEC-D: exactly cap weeks → ok', full.result, 'ok');
+  eq('SEC-D: ...tombstones both seeded weeks (12)', full.tombstonesWritten, 12);
+  eq('SEC-D: ...one log line per week actually tombstoned (2, not ' + cap + ')',
+    loggedMessages.filter(function (m) { return /tombstoned/.test(m); }).length, 2);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

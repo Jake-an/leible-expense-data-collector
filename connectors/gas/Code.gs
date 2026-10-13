@@ -610,6 +610,18 @@ function isValidWeekLabel_(s) {
   return week >= 1 && week <= 53;
 }
 
+/**
+ * SEC-D: the most weeks one payload may declare verified-empty. A
+ * verified-empty week is EXEMPT from the tombstone blast-radius breaker
+ * (shopspend.gs), so without a cap one rows:[] request could zero every
+ * present shop-week across arbitrarily many weeks. Legitimate senders
+ * (connectors/shopspend/runner.py): the weekly run declares 1 week, --backfill
+ * at most _BACKFILL_WEEKS = 4. 8 is that window with 2x headroom. Over the cap
+ * is REFUSED, never truncated — a truncated list would silently drop weeks the
+ * sender believes it declared.
+ */
+var MAX_WEEKS_VERIFIED_EMPTY_ = 8;
+
 function isValidWeekLabelArray_(v) {
   if (!Array.isArray(v)) return false;
   for (var i = 0; i < v.length; i++) {
@@ -690,6 +702,13 @@ function validateIngest_(body) {
   if (body.weeks_verified_empty !== undefined) {
     if (!isValidWeekLabelArray_(body.weeks_verified_empty)) {
       return { ok: false, message: 'invalid weeks_verified_empty' };
+    }
+    if (body.weeks_verified_empty.length > MAX_WEEKS_VERIFIED_EMPTY_) {
+      return {
+        ok: false,
+        message: 'weeks_verified_empty has ' + body.weeks_verified_empty.length + ' weeks; at most ' +
+          MAX_WEEKS_VERIFIED_EMPTY_ + ' per payload (split the pull)'
+      };
     }
     var weeksCompleteSet_ = {};
     var weeksCompleteArr_ = Array.isArray(body.weeks_complete) ? body.weeks_complete : [];

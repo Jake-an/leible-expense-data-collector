@@ -159,6 +159,7 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull,
 
   var tombstones = [];
   var tombstonesSkipped = [];
+  var tombstonedWeeks = []; // SEC-D: one durable log line per week actually tombstoned
 
   for (var candWeek in candidatesByWeek) {
     if (!Object.prototype.hasOwnProperty.call(candidatesByWeek, candWeek)) continue;
@@ -221,6 +222,7 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull,
       }
       tombstones.push(tombstone);
     }
+    tombstonedWeeks.push({ week: candWeek, count: candidates.length, verifiedEmpty: isVerifiedEmpty, present: presentCount });
   }
 
   // 4. Block write: collect all rows to append and write once.
@@ -228,6 +230,16 @@ function ingestShopSpendRows(source, rows, extractedAt, sheet, pullsSheet, pull,
   if (block.length > 0) {
     var lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, block.length, SHOPSPEND_HEADERS.length).setValues(sheetSafeBlock_(block));
+  }
+
+  // SEC-D: tombstoning zeroes shop-weeks the GM monitor reads, and a
+  // verified-empty week bypasses the breaker — so every week that was actually
+  // tombstoned leaves an audit line, after the write that made it real.
+  for (var tw = 0; tw < tombstonedWeeks.length; tw++) {
+    var tinfo = tombstonedWeeks[tw];
+    Logger.log('ingestShopSpendRows: tombstoned ' + tinfo.count + ' of ' + tinfo.present +
+      ' present shop-week(s) for week ' + tinfo.week +
+      (tinfo.verifiedEmpty ? ' (verified-empty, breaker-exempt)' : '') + ' (source=' + source + ')');
   }
 
   // Write ShopSpendPulls row as commit marker.
