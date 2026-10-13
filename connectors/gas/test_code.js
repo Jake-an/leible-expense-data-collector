@@ -15015,6 +15015,17 @@ console.log('\nroasteryDailyPull - sender verification (security: unauthenticate
     'Fwd Bot <Roastery-Forwarder@EXAMPLE.test>')])];
   eq('L3: Name <addr> form and mixed case still match', roasteryDailyPull().rowsAdded, 1);
 
+  /* --- L3b: allowlisted address smuggled into the DISPLAY NAME -------- *
+   * emailFromAddress_ used to take the FIRST <...> group, so a quoted display
+   * name carrying the allowlisted address won over the real (attacker) one. */
+  setup(GOOD);
+  ocrText = { 'evil.pdf': EVIL_TEXT };
+  allThreads = [thread([message('evil.pdf', 51200, '2026-07-06T02:00:00Z',
+    '"<' + GOOD + '>" <' + EVIL + '>')])];
+  const l3b = roasteryDailyPull();
+  eq('L3b: quoted "<allowlisted>" display name + attacker address is refused', l3b.rowsAdded, 0);
+  eq('L3b: ...and counted as rejected', l3b.sendersRejected, 1);
+
   /* --- L4: attacker REPLYING INTO a legitimately-labelled thread ----- *
    * This is why the check is per-message. A Gmail label lives on the THREAD,
    * so a per-thread check would admit this attacker's PDF. */
@@ -15338,6 +15349,30 @@ console.log('\nGroup M — ingest-validation hardening:');
   eq('M-dept: legacy Cafe-bound source omitted department → ok', legacyRes.result, 'ok');
   var legacyRow = currentSS.getSheetByName('Suppliers').getDataRange().getValues()[1];
   eq('M-dept: ...still defaults to Cafe (unchanged behaviour)', legacyRow[7], 'Cafe');
+})();
+
+(function testEmailFromAddressSpoofing() {
+  console.log('\nmayers — emailFromAddress_ resists display-name spoofing (SEC-A):');
+  var ok = 'jake@example.test';
+  // Plain forms must still parse.
+  eq('SEC-A: bare address', emailFromAddress_('Jake@Example.TEST'), ok);
+  eq('SEC-A: Name <addr>', emailFromAddress_('Jake <jake@example.test>'), ok);
+  eq('SEC-A: "Name" <addr>', emailFromAddress_('"Jake" <jake@example.test>'), ok);
+  eq('SEC-A: "Last, First" <addr> (comma inside quotes)', emailFromAddress_('"Smith, Jake" <jake@example.test>'), ok);
+  eq('SEC-A: escaped quote inside quoted name', emailFromAddress_('"Jake \\"J\\" S" <jake@example.test>'), ok);
+  // The bypasses: each must NOT yield the allowlisted address.
+  var quoted = emailFromAddress_('"<jake@example.test>" <attacker@attacker.example>');
+  check('SEC-A: quoted "<allowlisted>" display name does not yield the allowlisted address (got ' + JSON.stringify(quoted) + ')',
+    quoted !== ok);
+  eq('SEC-A: ...it resolves to the REAL (last) address', quoted, 'attacker@attacker.example');
+  eq('SEC-A: unquoted jake@x <evil@y> is ambiguous → ""',
+    emailFromAddress_('jake@example.test <attacker@attacker.example>'), '');
+  eq('SEC-A: two unquoted <...> groups are ambiguous → ""',
+    emailFromAddress_('<jake@example.test> <attacker@attacker.example>'), '');
+  eq('SEC-A: unquoted "<" in display name is ambiguous → ""',
+    emailFromAddress_('a<b <attacker@attacker.example>'), '');
+  eq('SEC-A: unterminated quote is ambiguous → ""',
+    emailFromAddress_('"<jake@example.test> <attacker@attacker.example>'), '');
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

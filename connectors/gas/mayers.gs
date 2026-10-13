@@ -55,9 +55,39 @@ function mayersAllowedSenders_() {
  * the drifting one is the one nobody re-tests.
  */
 function emailFromAddress_(from) {
-  var s = String(from || '');
-  var m = s.match(/<([^>]*)>/);
-  return (m ? m[1] : s).trim().toLowerCase();
+  // SECURITY (SEC-A): the display name is attacker-controlled. The old
+  // first-<...>-group parse let `"<allowlisted@x>" <attacker@y>` resolve to the
+  // allowlisted address. So: drop quoted strings first (honouring \" escapes),
+  // then require AT MOST one <...> group with nothing address-like outside it.
+  // Anything ambiguous returns '' — which no allowlist entry ever equals, so
+  // an ambiguous From fails closed (rejected), never open.
+  var s = String(from || '').trim();
+  var stripped = '';
+  var inQuote = false;
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (inQuote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === '"') { inQuote = false; stripped += ' '; }
+      continue;
+    }
+    if (ch === '"') { inQuote = true; continue; }
+    stripped += ch;
+  }
+  if (inQuote) return ''; // unterminated quote — cannot tell name from address
+
+  var opens = stripped.split('<').length - 1;
+  var closes = stripped.split('>').length - 1;
+  if (opens === 0 && closes === 0) {
+    // Bare-address form. A quoted string with no <addr> is not an address.
+    if (stripped !== s) return '';
+    return s.toLowerCase();
+  }
+  if (opens !== 1 || closes !== 1) return '';
+  var m = stripped.match(/^([^<>]*)<([^<>]*)>\s*$/);
+  if (!m) return '';
+  if (m[1].indexOf('@') !== -1) return ''; // unquoted address in the display name
+  return m[2].trim().toLowerCase();
 }
 
 /* --- Permanently-unparseable attachment memo -----------------------
