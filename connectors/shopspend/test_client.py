@@ -954,7 +954,7 @@ def test_fetch_coverage_raises_on_non_json_body(monkeypatch):
 
 
 def test_fetch_coverage_error_result_never_leaks_token(monkeypatch, capsys):
-    secret = "super-secret-read-token"  # noqa: S105 — fake, test-only value
+    secret = "dummy-read-token"  # noqa: S105 — fake, test-only value
     monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
     monkeypatch.setenv("GAS_READ_TOKEN", secret)
     fake_get = _FakeGet([_FakeResponse(json_body={"result": "error", "message": "unauthorized"})])
@@ -971,7 +971,7 @@ def test_fetch_coverage_error_result_never_leaks_token(monkeypatch, capsys):
 
 
 def test_fetch_coverage_non_json_never_leaks_token(monkeypatch, capsys):
-    secret = "super-secret-read-token"  # noqa: S105 — fake, test-only value
+    secret = "dummy-read-token"  # noqa: S105 — fake, test-only value
     monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
     monkeypatch.setenv("GAS_READ_TOKEN", secret)
     fake_get = _FakeGet(
@@ -1021,7 +1021,7 @@ def test_fetch_coverage_converts_every_transport_error_to_transient(monkeypatch,
 
 
 def test_fetch_coverage_transport_error_never_leaks_token(monkeypatch):
-    secret = "super-secret-read-token"  # noqa: S105 — fake, test-only value
+    secret = "dummy-read-token"  # noqa: S105 — fake, test-only value
     monkeypatch.setenv("GAS_EXEC_URL", "https://example.invalid/exec")
     monkeypatch.setenv("GAS_READ_TOKEN", secret)
     monkeypatch.setattr(

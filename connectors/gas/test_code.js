@@ -14492,7 +14492,7 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyRepullWeekFromProperty()
 
   const REAL_URL_FETCH = global.UrlFetchApp;
   const savedStamp = globalThis.stalenessStampHeartbeat_;
-  const TOKEN = 'shopify-repull-token';
+  const TOKEN = 'dummy-shopify-repull-token';
   const FAILCOUNT_KEY = 'ORDERAPP_FAILCOUNT_shopify_orderapp';
 
   // Every date fixture derives from the pinned instant — mixing a bare
@@ -14676,7 +14676,7 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyBackfill() {
 
   const REAL_URL_FETCH = global.UrlFetchApp;
   const savedStamp = globalThis.stalenessStampHeartbeat_;
-  const TOKEN = 'shopify-backfill-token';
+  const TOKEN = 'dummy-shopify-backfill-token';
   const FAILCOUNT_KEY = 'ORDERAPP_FAILCOUNT_shopify_orderapp';
 
   const PINNED_TODAY = '2026-08-06';
