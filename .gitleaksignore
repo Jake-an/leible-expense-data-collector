@@ -1,0 +1,4 @@
+# Fake test-only token in committed TDD evidence (phases/shopspend step 9 RED run).
+# The log is evidence, so it is fingerprinted here rather than edited.
+phases/shopspend/step9-red.log:generic-assigned-secret:54
+phases/shopspend/step9-red.log:generic-assigned-secret:70
