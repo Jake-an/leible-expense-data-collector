@@ -1396,12 +1396,11 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 - Telegram notifications when connectors go `blocked`
 
 ## Batch candidates
-- [security Medium M1] connectors/gas/Code.gs:511 — An ingest token is bound to a SOURCE but not to a KIND. (audit 2026-10-13)
-- [security Medium M1] connectors/gas/Code.gs:771 — Supplier identity is caller-controlled and unbound to the authenticated source (re-verified from the 2026-09-10 audit, unchanged; previously Code. (audit 2026-10-13)
-- [security Medium M1] connectors/gas/Code.gs:771 — Supplier and location attribution are not bound to the authenticated source (re-verified, unchanged since 2026-09-10; previously Code. (audit 2026-10-13)
-- [security Medium M1] connectors/gas/shopspend.gs:173 — The shopspend tombstone blast-radius breaker is disabled by a caller flag with no cap (re-verified, unchanged). (audit 2026-10-13)
-- [security Medium (none)] C:/Users/mioja/.claude/hooks/git-backup.ps1:29 — An unattended daemon stages, commits and pushes everything not gitignored, with no secret scan on that path - this is the mechanism by which a credential file could still reach origin even though . (audit 2026-10-13)
-- [security Medium (none)] docs/auth-allowlist.json:6 — The allowlist's only exempt entry names a file that never deploys, while the deployed twin is undeclared - the gate is green on the wrong file. (audit 2026-10-13)
+- ~~[security] Code.gs:511 kind unbound, Code.gs:771 supplier unbound, shopspend.gs:173 tombstone cap, git-backup.ps1 secret scan~~ ✅ DONE 2026-10-13, deployed v54 (3266891 11cd450 9226280 d13e747 3693805 c06b37c; hook 2390c51 in ~/.claude). Mayers display-name spoof High also fixed (3266891).
+- [security #10, needs Jake] `docs/auth-allowlist.json:6` — exempt entry names non-deploying `examples/__test.gas.js`; `[]` makes the gate flag it. Options: keep / move examples/ to a gate-skipped dir / rootDir-aware gate. `__test.gs` itself is now .claspignore'd (3693805). Do AFTER the auth-coverage gate job.
+- [security gate] auth-coverage fallback can't find `connectors/gas/appsscript.json` (root-only probe) AND reports Code.gs doPost/doGet as UNGATED although doPost calls `checkIngestToken_` — `~/.claude/templates/security/check-auth-coverage*` (rootDir via .clasp.json, guard detection inside try). Blocks every `approve`.
+- [security gate] secret-scan fails on fake fixtures — rename to `dummy`-flavoured values in `connectors/shopspend/test_client.py:957,974,1024`, `connectors/gas/test_code.js:14495,14679`; `.gitleaksignore` fingerprints for `phases/shopspend/step9-red.log:54,70` (TDD evidence, don't edit).
+- [shopspend] `connectors/shopspend/ingest.py:247-261` sends all verified-empty weeks in one payload; GAS now refuses >8 (`MAX_WEEKS_VERIFIED_EMPTY_`). Split into ≤8-week payloads so long manual `--from-week/--to-week` ranges still work.
 <!-- Work spotted but not done. Append DURING the session, one line each, always naming
      the file/area it touches. Source for the Next batches block at "lets stop here"
      (~/.claude/docs/todo-hygiene.md). -->
