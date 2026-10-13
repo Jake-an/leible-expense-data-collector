@@ -299,6 +299,34 @@ var INGEST_SOURCE_DEPARTMENTS_ = {
 };
 
 /**
+ * The KIND half of the same allowlist (SEC-B): source -> the payload kinds
+ * that source's token may write. checkIngestToken_ binds a token to a
+ * source, but doPost dispatched on body.kind alone, so a supplier-portal
+ * token could post kind='revenue' or kind='shopspend' rows (or rows:[] with
+ * weeks_verified_empty, tombstoning shop-weeks) into tabs it never feeds.
+ *
+ * Derived from the real producers, not guessed:
+ *  - food_dairy_co / fresh_and_chill / kent_paper / ordermentum — Playwright
+ *    BaseConnector.post sends NO kind, which defaults to 'suppliers'.
+ *  - shopspend / 'shopspend-backfill' — connectors/shopspend/ingest.py sends
+ *    kind:'shopspend' on every payload, for both source strings.
+ *  - coffee_order_app — docs/ingest-contract.md §1: kind:'revenue' only (its
+ *    suppliers-kind shape is separately rejected in validateIngest_).
+ *
+ * Every INGEST_SOURCES_ key MUST appear here — test_code.js (SEC-B) asserts
+ * parity, as M-dept does for INGEST_SOURCE_DEPARTMENTS_.
+ */
+var INGEST_SOURCE_KINDS_ = {
+  food_dairy_co: ['suppliers'],
+  fresh_and_chill: ['suppliers'],
+  kent_paper: ['suppliers'],
+  ordermentum: ['suppliers'],
+  shopspend: ['shopspend'],
+  'shopspend-backfill': ['shopspend'],
+  coffee_order_app: ['revenue']
+};
+
+/**
  * The magnitude ceiling on any single ingested money value. Nothing this
  * business invoices or earns comes near $1M on one line, and the cap is what
  * stops a single POST (or a scraper reading a mangled cell) from swinging
@@ -639,6 +667,19 @@ function validateIngest_(body) {
         };
       }
     }
+  }
+
+  // Kind is bound to source (INGEST_SOURCE_KINDS_). hasOwnProperty, not a bare
+  // lookup, so 'constructor' and friends are never treated as bound. An
+  // unbound source is only reachable by calling validateIngest_ directly (doPost
+  // refuses it at checkIngestToken_), the same convention as the department map.
+  if (Object.prototype.hasOwnProperty.call(INGEST_SOURCE_KINDS_, body.source) &&
+      INGEST_SOURCE_KINDS_[body.source].indexOf(kind) === -1) {
+    return {
+      ok: false,
+      message: 'kind ' + kind + ' is not permitted for source ' + body.source +
+        ' (allowed: ' + INGEST_SOURCE_KINDS_[body.source].join(', ') + ')'
+    };
   }
 
   if (body.weeks_complete !== undefined && !isValidWeekLabelArray_(body.weeks_complete)) {

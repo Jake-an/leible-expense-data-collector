@@ -13632,8 +13632,8 @@ console.log('\narchiveAndPurge_ — batched writes:');
   scriptProps = allTokens();
   freshSheets();
   const backfill = post({
-    source: 'shopspend-backfill', kind: 'suppliers', extracted_at: 'TS',
-    rows: [{ date: '2026-07-15', total: 10, invoice_ref: 'BF-1' }],
+    source: 'shopspend-backfill', kind: 'shopspend', extracted_at: 'TS',
+    rows: [{ date: '2026-07-27', shop_id: 'BF-1', week_label: '2026-W31', week_start: '2026-07-27', week_end: '2026-08-02', order_count: 1, amended_count: 0, total_ex_gst: 10, gst: 0, total_inc_gst: 10 }],
     token: SHOPSPEND_TOKEN
   });
   eq('shopspend-backfill authenticates with INGEST_TOKEN_SHOPSPEND', backfill.result, 'ok');
@@ -13644,8 +13644,8 @@ console.log('\narchiveAndPurge_ — batched writes:');
     scriptProps = allTokens();
     freshSheets();
     const res = post({
-      source: 'shopspend-backfill', kind: 'suppliers', extracted_at: 'TS',
-      rows: [{ date: '2026-07-15', total: 10, invoice_ref: 'BF-2' }],
+      source: 'shopspend-backfill', kind: 'shopspend', extracted_at: 'TS',
+      rows: [{ date: '2026-07-27', shop_id: 'BF-2', week_label: '2026-W31', week_start: '2026-07-27', week_end: '2026-08-02', order_count: 1, amended_count: 0, total_ex_gst: 10, gst: 0, total_inc_gst: 10 }],
       token: tok
     });
     eq('shopspend-backfill claimed by a foreign token [' + tok + ']: UNAUTHORIZED',
@@ -15373,6 +15373,67 @@ console.log('\nGroup M — ingest-validation hardening:');
     emailFromAddress_('a<b <attacker@attacker.example>'), '');
   eq('SEC-A: unterminated quote is ambiguous → ""',
     emailFromAddress_('"<jake@example.test> <attacker@attacker.example>'), '');
+})();
+
+(function testIngestKindBoundToSource() {
+  console.log('\ningest — kind is bound to source (SEC-B):');
+  var dataRows = function (tab) {
+    var sh = currentSS.getSheetByName(tab);
+    return sh ? sh.getDataRange().getValues().length - 1 : 0;
+  };
+  var supRow = function () { return { date: '2026-07-01', total: 45, invoice_ref: 'SECB-1' }; };
+  var revRow = function () {
+    return { date: '2026-07-01', channel: 'wholesale', customer: 'Acme Cafe', amount: 500, order_ref: 'SECB-ORD-1' };
+  };
+  var ssRow = function () {
+    return { date: '2026-07-27', shop_id: 'shop_1', week_label: '2026-W31',
+      week_start: '2026-07-27', week_end: '2026-08-02',
+      order_count: 12, amended_count: 1, total_ex_gst: 500, gst: 0, total_inc_gst: 500 };
+  };
+
+  // Parity: every token-bearing source has a kind binding, and vice versa.
+  var tokenKeys = Object.keys(INGEST_SOURCES_).sort();
+  var kindKeys = (typeof INGEST_SOURCE_KINDS_ === 'object' && INGEST_SOURCE_KINDS_) ? Object.keys(INGEST_SOURCE_KINDS_).sort() : [];
+  eq('SEC-B: every ingest source is kind-bound (and vice versa)', kindKeys.join(','), tokenKeys.join(','));
+
+  // THE HOLE: a supplier-portal token writing another tab.
+  freshSheets();
+  var r1 = doPostJson({ kind: 'revenue', source: 'kent_paper', extracted_at: 'TS', rows: [revRow()] });
+  eq('SEC-B: kent_paper posting kind=revenue → error', r1.result, 'error');
+  check('SEC-B: ...with a kind-not-permitted reason (' + r1.message + ')',
+    String(r1.message || '').indexOf('not permitted for source kent_paper') !== -1);
+  eq('SEC-B: ...and nothing written to Revenue', dataRows(REVENUE_TAB), 0);
+
+  freshSheets();
+  var r2 = doPostJson({ kind: 'shopspend', source: 'food_dairy_co', extracted_at: 'TS', rows: [ssRow()] });
+  eq('SEC-B: food_dairy_co posting kind=shopspend → error', r2.result, 'error');
+  check('SEC-B: ...with a kind-not-permitted reason (' + r2.message + ')',
+    String(r2.message || '').indexOf('not permitted for source food_dairy_co') !== -1);
+  eq('SEC-B: ...and nothing written to ShopSpend', dataRows(SHOPSPEND_TAB), 0);
+  eq('SEC-B: ...nor to ShopSpendPulls', dataRows(SHOPSPEND_PULLS_TAB), 0);
+
+  freshSheets();
+  var r3 = doPostJson({ kind: 'suppliers', source: 'shopspend', extracted_at: 'TS', rows: [supRow()] });
+  eq('SEC-B: shopspend posting kind=suppliers → error', r3.result, 'error');
+  eq('SEC-B: ...and nothing written to Suppliers', dataRows(SUPPLIERS_TAB), 0);
+
+  // Legitimate pairs still work.
+  ['food_dairy_co', 'fresh_and_chill', 'kent_paper', 'ordermentum'].forEach(function (src) {
+    freshSheets();
+    var row = supRow();
+    if (src === 'ordermentum') row.supplier = 'Tuga Pastry';
+    var ok = doPostJson({ source: src, extracted_at: 'TS', rows: [row] }); // no kind = BaseConnector shape
+    eq('SEC-B: ' + src + ' suppliers (kind omitted) still ok', ok.result, 'ok');
+  });
+  ['shopspend', 'shopspend-backfill'].forEach(function (src) {
+    freshSheets();
+    var ok = doPostJson({ kind: 'shopspend', source: src, extracted_at: 'TS', rows: [ssRow()] });
+    eq('SEC-B: ' + src + ' kind=shopspend still ok', ok.result, 'ok');
+  });
+  freshSheets();
+  var rv = doPostJson({ kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS', rows: [revRow()] });
+  eq('SEC-B: coffee_order_app kind=revenue still ok', rv.result, 'ok');
+  eq('SEC-B: ...and lands in Revenue', dataRows(REVENUE_TAB), 1);
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
