@@ -2133,7 +2133,7 @@ const NOW = new Date('2026-07-16T01:00:00Z').getTime();   // 11:00 Sydney, Thu 1
     source: 'food_dairy_co',
     token: 'dummy-hb-token',
     extracted_at: '2026-07-16T11:00:00+10:00',
-    rows: [{ date: '2026-07-15', supplier: 'FDCo', total: 10, invoice_ref: 'INV1', location: 'Leible York' }],
+    rows: [{ date: '2026-07-15', supplier: 'Food and Dairy Co', total: 10, invoice_ref: 'INV1', location: 'Leible York' }],
   };
   const r1 = JSON.parse(doPost({ postData: { contents: JSON.stringify(payload) } }).getContent());
   eq('doPost ingested', r1.rowsAdded, 1);
@@ -13237,7 +13237,7 @@ console.log('\narchiveAndPurge_ — batched writes:');
 
   const suppliersBody = {
     source: 'food_dairy_co', extracted_at: 'TS',
-    rows: [{ date: '2026-07-15', supplier: 'FDCo', total: 10, invoice_ref: 'INV-T1', location: 'Leible York' }]
+    rows: [{ date: '2026-07-15', supplier: 'Food and Dairy Co', total: 10, invoice_ref: 'INV-T1', location: 'Leible York' }]
   };
   const revenueBody = {
     source: 'coffee_order_app', kind: 'revenue', extracted_at: 'TS',
@@ -15434,6 +15434,59 @@ console.log('\nGroup M — ingest-validation hardening:');
   var rv = doPostJson({ kind: 'revenue', source: 'coffee_order_app', extracted_at: 'TS', rows: [revRow()] });
   eq('SEC-B: coffee_order_app kind=revenue still ok', rv.result, 'ok');
   eq('SEC-B: ...and lands in Revenue', dataRows(REVENUE_TAB), 1);
+})();
+
+(function testSupplierBoundToSource() {
+  console.log('\ningest — supplier name is bound to source (SEC-C):');
+  var supRows = function () {
+    var sh = currentSS.getSheetByName(SUPPLIERS_TAB);
+    return sh ? sh.getDataRange().getValues().slice(1) : [];
+  };
+  var post = function (src, supplier) {
+    var row = { date: '2026-07-01', total: 45, invoice_ref: 'SECC-1' };
+    if (supplier !== undefined) row.supplier = supplier;
+    return doPostJson({ source: src, extracted_at: 'TS', rows: [row] });
+  };
+
+  // Cross-attribution: a single-supplier source claiming another supplier.
+  [['kent_paper', 'Mayers'], ['fresh_and_chill', 'Kent Paper'], ['food_dairy_co', 'Tuga Pastry']].forEach(function (c) {
+    freshSheets();
+    var r = post(c[0], c[1]);
+    eq('SEC-C: ' + c[0] + ' claiming supplier ' + c[1] + ' → error', r.result, 'error');
+    check('SEC-C: ...reason names the supplier binding (' + r.message + ')',
+      String(r.message || '').indexOf('not permitted for source ' + c[0]) !== -1);
+    eq('SEC-C: ...and nothing written to Suppliers', supRows().length, 0);
+  });
+
+  // Multi-supplier source claiming a name a single-supplier source owns.
+  ['Mayers', "Mayer's Fine Food", 'Food and Dairy Co', 'KENT PAPER PTY LTD', 'Fresh & Chill'].forEach(function (name) {
+    freshSheets();
+    var r = post('ordermentum', name);
+    eq('SEC-C: ordermentum claiming owned supplier "' + name + '" → error', r.result, 'error');
+    eq('SEC-C: ...and nothing written', supRows().length, 0);
+  });
+
+  // Defence in depth: the normalizer pins a single-supplier source's name.
+  eq('SEC-C: canonicalSupplier_ pins kent_paper to Kent Paper regardless of row.supplier',
+    canonicalSupplier_('kent_paper', { supplier: 'Mayers' }), 'Kent Paper');
+
+  // Legitimate traffic keeps working.
+  freshSheets();
+  eq('SEC-C: food_dairy_co with its own name (what the connector sends) → ok',
+    post('food_dairy_co', 'Food and Dairy Co').result, 'ok');
+  eq('SEC-C: ...stored as Food and Dairy Co', supRows()[0][1], 'Food and Dairy Co');
+  freshSheets();
+  eq('SEC-C: kent_paper with no supplier field → ok', post('kent_paper').result, 'ok');
+  eq('SEC-C: ...stored as Kent Paper', supRows()[0][1], 'Kent Paper');
+  freshSheets();
+  eq('SEC-C: fresh_and_chill with a case/spacing variant of its own name → ok',
+    post('fresh_and_chill', 'fresh and chill').result, 'ok');
+  eq('SEC-C: ...stored under the canonical name (Summary key unchanged)', supRows()[0][1], 'Fresh and Chill');
+  ['Tuga Pastry', 'Butterboy', "Allie's Foods", 'Fuel Bakery'].forEach(function (name) {
+    freshSheets();
+    eq('SEC-C: ordermentum supplier ' + name + ' → ok', post('ordermentum', name).result, 'ok');
+    eq('SEC-C: ...stored verbatim', supRows()[0][1], name);
+  });
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

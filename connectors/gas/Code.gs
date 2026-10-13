@@ -799,6 +799,8 @@ function validateIngest_(body) {
         };
       }
       if (!r.invoice_ref) return { ok: false, message: 'row ' + i + ' missing invoice_ref' };
+      var supplierRefusal = supplierClaimRefusal_(body.source, r.supplier);
+      if (supplierRefusal) return { ok: false, message: 'row ' + i + ' ' + supplierRefusal };
     }
   }
   return { ok: true };
@@ -809,8 +811,53 @@ function validateIngest_(body) {
  * otherwise fall back to the SUPPLIER_NAMES map, then the raw source.
  */
 function canonicalSupplier_(source, row) {
+  // SEC-C: a single-supplier source (one with a SUPPLIER_NAMES entry) is ALWAYS
+  // its own supplier — row.supplier can never re-attribute its spend.
+  // validateIngest_ refuses a mismatching row before it gets here; this pin is
+  // defence in depth for the GAS-native callers that skip validateIngest_.
+  if (Object.prototype.hasOwnProperty.call(SUPPLIER_NAMES, source)) return SUPPLIER_NAMES[source];
   if (row && row.supplier) return String(row.supplier);
-  return SUPPLIER_NAMES[source] || source;
+  return source;
+}
+
+/**
+ * Comparison form of a supplier name: lowercased, '&' read as 'and', every
+ * non-alphanumeric dropped — so "Mayer's Fine Food" -> 'mayersfinefood' and
+ * "Fresh & Chill" -> 'freshandchill'.
+ */
+function supplierNameKey_(name) {
+  return String(name || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * SEC-C: may `source` write a Suppliers row whose row.supplier is `supplier`?
+ * Returns null when permitted, else the refusal reason.
+ *
+ *  - Single-supplier source (has a SUPPLIER_NAMES entry): row.supplier must be
+ *    absent or name-key-equal to its own canonical name (FDCo sends exactly
+ *    'Food and Dairy Co'; fresh_and_chill / kent_paper send none).
+ *  - Any other source (ordermentum spans Tuga/Butterboy/Allie's/Fuel): may
+ *    carry row.supplier, but not one CONTAINING a name a single-supplier
+ *    source owns — otherwise one connector's token could move spend into
+ *    another supplier's Summary bucket (Summary key and the GM monitor's
+ *    read are unchanged; only the attribution is policed).
+ */
+function supplierClaimRefusal_(source, supplier) {
+  if (supplier === undefined || supplier === null || supplier === '') return null;
+  var claimed = supplierNameKey_(supplier);
+  if (Object.prototype.hasOwnProperty.call(SUPPLIER_NAMES, source)) {
+    if (claimed === supplierNameKey_(SUPPLIER_NAMES[source])) return null;
+    return 'supplier ' + supplier + ' is not permitted for source ' + source +
+      ' (bound to ' + SUPPLIER_NAMES[source] + ')';
+  }
+  for (var owner in SUPPLIER_NAMES) {
+    if (!Object.prototype.hasOwnProperty.call(SUPPLIER_NAMES, owner)) continue;
+    if (claimed.indexOf(supplierNameKey_(SUPPLIER_NAMES[owner])) !== -1) {
+      return 'supplier ' + supplier + ' is not permitted for source ' + source +
+        ' (' + SUPPLIER_NAMES[owner] + ' is owned by source ' + owner + ')';
+    }
+  }
+  return null;
 }
 
 /**
