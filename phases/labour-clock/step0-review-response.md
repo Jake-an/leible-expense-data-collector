@@ -1,11 +1,6 @@
-# Step 0 review response (round 1)
+# Step 0 review response — round 2
 
-Fixed in connectors/gas/labour.gs, with new tests in connectors/gas/test_code.js (L2 block):
-- [important] HOLIDAYS malformed date now throws naming the HOLIDAYS row. This also stops the NaN span suppressing labour_holidays_expiring, so no separate guard in labourHolidayAlerts_.
-- [minor] Duplicate CONFIG composite key now throws naming the row.
-- [minor] RATES effective_from must match yyyy-MM-dd, otherwise it throws naming the row (blank also rejected).
-
-Not changed:
-- [minor] connectors/shopspend/test_ingest.py reformat: out of this step's scope. I did not revert history. Move to a style commit if unwanted.
-- [minor] weak L1 checks: reviewer says "later cleanup"; RED tests must not be modified.
-- [minor] commit hygiene (duplicate subjects, step0-*.log): history rewrite is out of scope; gitignore the logs in a follow-up.
+- **[important] HOLIDAYS named row with blank date** — Accepted, verified. `labour.gs` `labourReadConfig_` skipped rows when the date key was empty (`if (d)`). Now throws `labour: HOLIDAYS row N has a name but no date` when the name is non-blank; fully blank rows are still skipped. Added test in `test_code.js` (after the malformed-date check): named row with blank date throws naming HOLIDAYS. Full suite: 2790 passed, 0 failed.
+- **[minor] test_ingest.py reformat** — Non-blocking, accepted as-is; no change.
+- **[minor] people-key test asserts key only** — Non-blocking; RED-committed test left untouched.
+- **[minor] commit hygiene / run logs** — Non-blocking; history rewrite out of scope. No change.

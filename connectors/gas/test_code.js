@@ -15647,6 +15647,8 @@ console.log('\nGroup M — ingest-validation hardening:');
   check('L2 header drift: missing HOLIDAYS tab throws naming HOLIDAYS (' + noHol + ')', noHol !== null && /HOLIDAYS/.test(noHol));
   var badHol = throwsFromImpl(function () { read(mkTabs({ HOLIDAYS: [HOL_HDR.slice(), ['26/12/2026', 'Boxing']] })); });
   check('L2 malformed HOLIDAYS date throws naming HOLIDAYS (' + badHol + ')', badHol !== null && /HOLIDAYS/.test(badHol));
+  var noDateHol = throwsFromImpl(function () { read(mkTabs({ HOLIDAYS: [HOL_HDR.slice(), ['', 'Mystery Day']] })); });
+  check('L2 named HOLIDAYS row with blank date throws naming HOLIDAYS (' + noDateHol + ')', noDateHol !== null && /HOLIDAYS/.test(noDateHol));
   var dupCfg = mkTabs(); dupCfg.CONFIG.push(dupCfg.CONFIG[1].slice());
   var dupErr = throwsFromImpl(function () { read(dupCfg); });
   check('L2 duplicate CONFIG key throws naming CONFIG (' + dupErr + ')', dupErr !== null && /CONFIG/.test(dupErr));

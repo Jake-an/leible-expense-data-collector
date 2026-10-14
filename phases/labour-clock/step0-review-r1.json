@@ -1,0 +1,47 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/gas/labour.gs",
+      "line": 149,
+      "summary": "HOLIDAYS date cells are not format-validated: a malformed date (e.g. '26/12/2026') is stored as a map key and silently ignored by the alert and by the later PH lookup. Verified by probe: with that row present, labourHolidayAlerts_(cfg, '2027-10-31') returns [] instead of labour_holidays_expiring, because the sorted-last malformed key makes labourDayNumber_ return NaN and 'NaN <= 60' is false.",
+      "suggestion": "After labourDateKey_, require /^\\d{4}-\\d{2}-\\d{2}$/ and throw naming the HOLIDAYS row (same loud-failure pattern as the multiplier check). Optionally guard labourHolidayAlerts_ so a NaN span cannot suppress the expiring alert. Add a test: a malformed HOLIDAYS date throws."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 142,
+      "summary": "Duplicate CONFIG (type|basis|band|day) rows overwrite each other silently; the last row wins with no error.",
+      "suggestion": "Throw on a duplicate composite key naming the row, since a silent overwrite of a pay multiplier is the same class of failure the step is meant to prevent."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 170,
+      "summary": "RATES effective_from is passed through labourDateKey_ without validation, so a blank or malformed date is stored as an empty or junk string with no error.",
+      "suggestion": "Validate the yyyy-MM-dd shape here as well, or leave it for step 1 with a note. This is not on the step-0 test list, so it is not blocking."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/shopspend/test_ingest.py",
+      "line": 1015,
+      "summary": "An unrelated Python reformat (sent_rows list comprehension) landed in the labour-clock step-0 commit range. It is out of scope for this step.",
+      "suggestion": "Move it to its own style commit, or confirm it is intentional. It does not affect the labour tests."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 15640,
+      "summary": "Two L1 checks use check() on a boolean with no value assertion ('people keyed by lower-cased trimmed email' only proves the key exists, not that the rendered values are right). Weak but not wrong.",
+      "suggestion": "Assert the people entry's employment_type and rate_basis via eq() in a later cleanup."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/labour-clock/index.json",
+      "line": 1,
+      "summary": "Commit hygiene: two commits share the subject 'step 0 — config-and-holidays' (152024f and 83b6043), and ~6,000 lines of step0-red.log and step0-green.log were committed alongside the code.",
+      "suggestion": "Keep the run logs out of the repo, or gitignore them, in a follow-up. Not blocking."
+    }
+  ]
+}

@@ -153,7 +153,11 @@ function labourReadConfig_(tabs) {
     if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
       throw new Error('labour: HOLIDAYS row ' + (n + 2) + ' has malformed date ' + JSON.stringify(r[t.idx.date]));
     }
-    if (d) cfg.holidays[d] = labourStr_(r[t.idx.name]);
+    if (!d) {
+      if (labourStr_(r[t.idx.name]) !== '') throw new Error('labour: HOLIDAYS row ' + (n + 2) + ' has a name but no date');
+      return;
+    }
+    cfg.holidays[d] = labourStr_(r[t.idx.name]);
   });
 
   t = labourTabIndex_(tabs, 'LOCATIONS');
