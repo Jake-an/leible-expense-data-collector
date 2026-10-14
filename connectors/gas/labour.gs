@@ -759,3 +759,124 @@ function labourRunChecks_(ctx) {
     labourHolidayAlerts_(ctx.cfg, ctx.today));
   return { stop: false, refuse: ex.refuse, alerts: alerts, lastAlertedYear: july.lastAlertedYear };
 }
+
+/* ------------------------------------------------------------------ *
+ * Phase 1 — seed the LEIBLE Labour Sheet from the old Onboarding tabs.
+ * Pure: takes the source tabs as 2-D arrays (row 0 = header, read by
+ * header NAME) and returns the new Sheet's tabs. Only emails, rates,
+ * dates and award levels are copied — never names, bank or profile data.
+ * ------------------------------------------------------------------ */
+
+var LABOUR_CLOCK_TAB_ORDER_ = ['CLOCK_RAW', 'CONFIG', 'HOLIDAYS', 'LOCATIONS', 'RATES', 'PEOPLE', 'LABOUR_COST'];
+
+var LABOUR_CLOCK_COST_HEADERS_ = ['iso_week', 'week_start', 'week_end', 'location', 'location_code', 'department',
+  'hours', 'base', 'uplift', 'gross', 'super', 'total', 'shift_count', 'exception_count', 'computed_at'];
+
+// The Onboarding app writes employmentType as the literal 'casual' for everyone
+// (Engine_Onboarding.js:75), and its award rates are casual-LOADED (AWARD_RATES
+// Level 1 = 31.19 = 24.95 x 1.25). Phase 4's payroll check is the backstop.
+var LABOUR_SEED_EMPLOYMENT_TYPE_ = 'casual';
+var LABOUR_SEED_RATE_BASIS_ = 'loaded';
+
+// 'Level 3' / 'L3' / 3 -> 3; 'Intro' / 'Introductory' -> 'intro'; anything else -> ''.
+function labourParseAwardLevel_(v) {
+  var s = labourStr_(v).toLowerCase();
+  if (s === 'intro' || s === 'introductory') return 'intro';
+  var m = /^(?:level\s*|l)?(\d+)$/.exec(s);
+  if (!m) return '';
+  var n = Number(m[1]);
+  return n >= 0 && n <= 6 ? n : '';
+}
+
+// Header-name index for a source tab; throws naming the tab and column.
+function labourSourceIndex_(src, tab, cols, optional) {
+  var rows = src && src[tab];
+  if (!rows || !rows.length) {
+    if (optional) return null;
+    throw new Error('labour seed: source tab ' + tab + ' is missing or empty');
+  }
+  var hdr = rows[0].map(function (h) { return labourStr_(h).toLowerCase(); });
+  var idx = {};
+  cols.forEach(function (c) {
+    var i = hdr.indexOf(c.toLowerCase());
+    if (i === -1) throw new Error('labour seed: source tab ' + tab + ' has no column ' + c);
+    idx[c] = i;
+  });
+  return { rows: rows.slice(1), idx: idx };
+}
+
+function labourBuildSeed_(src) {
+  var loc = labourSourceIndex_(src, 'LC_LOCATIONS', ['roster_location', 'shop_code']);
+  var rates = labourSourceIndex_(src, 'STAFF_RATES', ['email', 'base_rate', 'effective_from', 'shop_code']);
+  var alias = labourSourceIndex_(src, 'STAFF_ALIAS', ['email'], true);
+  var prof = labourSourceIndex_(src, 'STAFF_PROFILE', ['email', 'currentAwardLevel']);
+
+  var locations = [LABOUR_CLOCK_EXPECTED_HEADERS_.LOCATIONS.slice()];
+  loc.rows.forEach(function (r) {
+    var name = labourStr_(r[loc.idx.roster_location]);
+    if (name === '') return;
+    var code = labourStr_(r[loc.idx.shop_code]);
+    locations.push([name, code, code.toLowerCase() === 'roastery' ? 'Roastery' : 'Cafe', '']);
+  });
+
+  // One rate per email + effective date: an any-shop row ('' or '*') wins;
+  // otherwise the first shop-specific row, counted as a conflict if others differ.
+  // A blank / zero / non-numeric rate is skipped (Number('') is 0 — never seed a $0
+  // fallback); a shift with no usable rate then goes to exceptions, loudly.
+  var byKey = {};
+  var order = [];
+  var ratesSkipped = 0;
+  rates.rows.forEach(function (r) {
+    var email = labourStr_(r[rates.idx.email]).toLowerCase();
+    if (email === '') return;
+    var rate = labourPositiveNumber_(r[rates.idx.base_rate]);
+    if (rate === null) { ratesSkipped++; return; }
+    var eff = labourDayKey_(r[rates.idx.effective_from], 'STAFF_RATES effective_from');
+    var shop = labourStr_(r[rates.idx.shop_code]);
+    var anyShop = shop === '' || shop === '*';
+    var k = email + '|' + eff;
+    if (!Object.prototype.hasOwnProperty.call(byKey, k)) {
+      byKey[k] = { email: email, eff: eff, rate: rate, anyShop: anyShop, rates: {} };
+      order.push(k);
+    } else if (anyShop && !byKey[k].anyShop) {
+      byKey[k].rate = rate;
+      byKey[k].anyShop = true;
+    }
+    if (!anyShop) byKey[k].rates[rate] = true;
+  });
+  var rateConflicts = 0;
+  var rateRows = order.map(function (k) {
+    var e = byKey[k];
+    if (!e.anyShop && Object.keys(e.rates).length > 1) rateConflicts++;
+    return [e.email, e.rate, e.eff];
+  }).sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0; });
+
+  var levels = {};
+  prof.rows.forEach(function (r) {
+    var email = labourStr_(r[prof.idx.email]).toLowerCase();
+    if (email !== '') levels[email] = labourParseAwardLevel_(r[prof.idx.currentAwardLevel]);
+  });
+  var emails = {};
+  rateRows.forEach(function (r) { emails[r[0]] = true; });
+  if (alias) alias.rows.forEach(function (r) { var e = labourStr_(r[alias.idx.email]).toLowerCase(); if (e) emails[e] = true; });
+  Object.keys(levels).forEach(function (e) { emails[e] = true; });
+  var peopleWithoutLevel = 0;
+  var people = [LABOUR_CLOCK_EXPECTED_HEADERS_.PEOPLE.slice()].concat(Object.keys(emails).sort().map(function (e) {
+    var lvl = Object.prototype.hasOwnProperty.call(levels, e) ? levels[e] : '';
+    if (lvl === '') peopleWithoutLevel++;
+    return [e, LABOUR_SEED_EMPLOYMENT_TYPE_, lvl, LABOUR_SEED_RATE_BASIS_];
+  }));
+
+  var tabs = {
+    CLOCK_RAW: [Object.keys(LABOUR_CLOCK_COLS).map(function (k) { return LABOUR_CLOCK_COLS[k]; })],
+    CONFIG: LABOUR_CLOCK_MULTIPLIER_SEED_.map(function (r) { return r.slice(); }),
+    HOLIDAYS: [LABOUR_CLOCK_EXPECTED_HEADERS_.HOLIDAYS.slice()].concat(
+      LABOUR_NSW_HOLIDAYS_SEED_.map(function (h) { return [h.date, h.name]; })),
+    LOCATIONS: locations,
+    RATES: [LABOUR_CLOCK_EXPECTED_HEADERS_.RATES.slice()].concat(rateRows),
+    PEOPLE: people,
+    LABOUR_COST: [LABOUR_CLOCK_COST_HEADERS_.slice()]
+  };
+  return { tabs: tabs, counts: { locations: locations.length - 1, rates: rateRows.length, people: people.length - 1,
+    holidays: tabs.HOLIDAYS.length - 1, rateConflicts: rateConflicts, ratesSkipped: ratesSkipped, peopleWithoutLevel: peopleWithoutLevel } };
+}

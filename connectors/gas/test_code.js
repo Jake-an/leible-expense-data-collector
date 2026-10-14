@@ -439,6 +439,7 @@ load('shopspend.gs');
 load('summary_audit.gs');
 load('summary_drift_repair.gs');  // TEMPORARY — deleted with the file after the repair verifies
 load('labour.gs');  // pure labour-cost calc (phase labour-clock)
+load('labour_setup.gs');  // Labour Sheet one-off setup (Phase 1)
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -16537,6 +16538,158 @@ console.log('\nGroup M — ingest-validation hardening:');
   c15.multipliers['full_time|any|all|saturday'] = 1.25;
   var r15 = call('labourCostShift_', { personEmail: 'a@example.test', date: new Date(2026, 9, 10), hours: 2, rate: 40, location: 'Loc A' }, c15);
   eq('H15 costShift: Date-typed shift date -> saturday, costed', r15 && [r15.ok, r15.dayType, r15.gross], [true, 'saturday', 100]);
+})();
+
+// ---- labour-clock Phase 1: Labour Sheet setup (seed transforms + labourSetupSheet_) ----
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function call(n) {
+    var a = Array.prototype.slice.call(arguments, 1);
+    try { return has(n) ? globalThis[n].apply(null, a) : null; } catch (e) { return { threw: String(e && e.message || e) }; }
+  }
+  function threw(fn) { try { fn(); return null; } catch (e) { return String(e && e.message || e); } }
+
+  // ---- award level text -> PEOPLE level ----
+  eq('SU1 "Level 3" -> 3', call('labourParseAwardLevel_', 'Level 3'), 3);
+  eq('SU1b " level 1 " -> 1', call('labourParseAwardLevel_', ' level 1 '), 1);
+  eq('SU1c "L5" -> 5', call('labourParseAwardLevel_', 'L5'), 5);
+  eq('SU1d number 4 -> 4', call('labourParseAwardLevel_', 4), 4);
+  eq('SU1e "Introductory" -> intro', call('labourParseAwardLevel_', 'Introductory'), 'intro');
+  eq('SU1f "Intro" -> intro', call('labourParseAwardLevel_', 'Intro'), 'intro');
+  eq('SU1g "Level 9" (out of range) -> blank', call('labourParseAwardLevel_', 'Level 9'), '');
+  eq('SU1h "Supervisor" -> blank', call('labourParseAwardLevel_', 'Supervisor'), '');
+  eq('SU1i blank -> blank', call('labourParseAwardLevel_', ''), '');
+
+  // ---- seed from the old Onboarding tabs (header row 0, read by header NAME) ----
+  var SECRET_NAME = 'Zzfixture Personname';
+  function src() {
+    return {
+      LC_LOCATIONS: [['roster_location', 'shop_code'], ['York St', 'york'], ['Roastery Site', 'roastery'], ['', '']],
+      STAFF_RATES: [['email', 'name', 'base_rate', 'effective_from', 'shop_code'],
+        [' A@Example.test ', SECRET_NAME, 31.19, '2026-04-26', ''],
+        ['a@example.test', SECRET_NAME, 34.00, '2026-07-01', 'york'],
+        ['a@example.test', SECRET_NAME, 33.05, '2026-07-01', '*'],
+        ['b@example.test', SECRET_NAME, 30.00, new Date(2026, 3, 26), 'york'],
+        ['b@example.test', SECRET_NAME, 32.00, new Date(2026, 3, 26), 'pitt']],
+      STAFF_ALIAS: [['blip_name', 'email'], [SECRET_NAME, 'c@example.test']],
+      STAFF_PROFILE: [['staffProfileId', 'legalName', 'email', 'currentAwardLevel', 'bankAccount'],
+        ['sp_1', SECRET_NAME, 'a@example.test', 'Level 3', '999999'],
+        ['sp_2', SECRET_NAME, 'B@example.test', 'Supervisor', '999999'],
+        ['sp_3', SECRET_NAME, 'd@example.test', 'Introductory', '999999']]
+    };
+  }
+  var seed = call('labourBuildSeed_', src()) || {};
+  var T = seed.tabs || {};
+  eq('SU2 tab set', Object.keys(T).sort(), ['CLOCK_RAW', 'CONFIG', 'HOLIDAYS', 'LABOUR_COST', 'LOCATIONS', 'PEOPLE', 'RATES']);
+  eq('SU2b LOCATIONS: roastery -> Roastery, others Cafe, live blank, blank rows skipped', T.LOCATIONS,
+    [['location', 'code', 'department', 'live'], ['York St', 'york', 'Cafe', ''], ['Roastery Site', 'roastery', 'Roastery', '']]);
+  eq('SU3 RATES: one row per email+date, any-shop row preferred, Date cells -> yyyy-MM-dd, name dropped', T.RATES,
+    [['person_email', 'rate', 'effective_from'], ['a@example.test', 31.19, '2026-04-26'],
+      ['a@example.test', 33.05, '2026-07-01'], ['b@example.test', 30, '2026-04-26']]);
+  eq('SU3b rate conflicts counted (b has two shop-specific rates on one date)', seed.counts && seed.counts.rateConflicts, 1);
+  eq('SU4 PEOPLE: union of rates/alias/profile emails, casual, loaded, parsed level', T.PEOPLE,
+    [['person_email', 'employment_type', 'level', 'rate_basis'],
+      ['a@example.test', 'casual', 3, 'loaded'], ['b@example.test', 'casual', '', 'loaded'],
+      ['c@example.test', 'casual', '', 'loaded'], ['d@example.test', 'casual', 'intro', 'loaded']]);
+  eq('SU4b people without a usable level counted', seed.counts && seed.counts.peopleWithoutLevel, 2);
+  check('SU4c no name / bank value / profile id copied into any tab',
+    !!seed.tabs && JSON.stringify(seed.tabs).indexOf(SECRET_NAME) === -1 && JSON.stringify(seed.tabs).indexOf('999999') === -1 &&
+    JSON.stringify(seed.tabs).indexOf('sp_1') === -1);
+  eq('SU5 CLOCK_RAW is header-only, columns = LABOUR_CLOCK_COLS headers', T.CLOCK_RAW,
+    [Object.keys(globalThis.LABOUR_CLOCK_COLS || {}).map(function (k) { return globalThis.LABOUR_CLOCK_COLS[k]; })]);
+  eq('SU5b LABOUR_COST is header-only', T.LABOUR_COST && T.LABOUR_COST.length, 1);
+  eq('SU5c CONFIG = multiplier seed', T.CONFIG, globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_);
+  eq('SU5d HOLIDAYS = header + NSW seed', T.HOLIDAYS && T.HOLIDAYS.length, (globalThis.LABOUR_NSW_HOLIDAYS_SEED_ || []).length + 1);
+  check('SU6 the seed is readable by the engine (labourReadConfig_ round-trip)',
+    !!seed.tabs && threw(function () { globalThis.labourReadConfig_(seed.tabs); }) === null);
+  var noAlias = src(); delete noAlias.STAFF_ALIAS;
+  check('SU6b STAFF_ALIAS is optional', threw(function () { globalThis.labourBuildSeed_(noAlias); }) === null && has('labourBuildSeed_'));
+  var noLoc = src(); delete noLoc.LC_LOCATIONS;
+  var e6c = threw(function () { globalThis.labourBuildSeed_(noLoc); });
+  check('SU6c missing LC_LOCATIONS throws naming it (' + e6c + ')', e6c !== null && /LC_LOCATIONS/.test(e6c));
+  var badHdr = src(); badHdr.STAFF_RATES[0] = ['mail', 'name', 'rate', 'from', 'shop'];
+  var e6d = threw(function () { globalThis.labourBuildSeed_(badHdr); });
+  check('SU6d STAFF_RATES header drift throws naming the column (' + e6d + ')', e6d !== null && /STAFF_RATES/.test(e6d) && /email/.test(e6d));
+
+  // ---- labourSetupSheet_(props, app): creates once, writes, stores the id ----
+  function fakeProps(init) {
+    var p = Object.assign({}, init);
+    return { _p: p, getProperty: function (k) { return k in p ? p[k] : null; }, setProperty: function (k, v) { p[k] = String(v); } };
+  }
+  function fakeSrcSS(tabs) {
+    return { getSheetByName: function (n) {
+      return Object.prototype.hasOwnProperty.call(tabs, n) ? { getDataRange: function () { return { getValues: function () { return tabs[n]; } }; } } : null;
+    } };
+  }
+  function fakeApp(srcTabs) {
+    var log = { created: [], opened: [], written: {}, names: [], frozen: {} };
+    function sheet(name) {
+      var s = { _name: name,
+        setName: function (n) { log.names[log.names.indexOf(s._name)] = n; s._name = n; return s; },
+        getRange: function (r, c, nr, nc) { return { setValues: function (v) {
+          if (r !== 1 || c !== 1 || nr !== v.length || nc !== v[0].length) throw new Error('bad geometry for ' + s._name);
+          log.written[s._name] = v; } }; },
+        setFrozenRows: function (n) { log.frozen[s._name] = n; } };
+      log.names.push(name);
+      return s;
+    }
+    var newSS = { _sheets: [sheet('Sheet1')], getId: function () { return 'NEWID'; }, getUrl: function () { return 'https://docs.google.com/spreadsheets/d/NEWID'; },
+      getSheets: function () { return newSS._sheets.slice(); },
+      insertSheet: function (n) { var s = sheet(n); newSS._sheets.push(s); return s; } };
+    return { _log: log,
+      create: function (n) { log.created.push(n); return newSS; },
+      openById: function (id) { log.opened.push(id); return fakeSrcSS(srcTabs); } };
+  }
+  function run(props, app) { return call('labourSetupSheet_', props, app); }
+
+  var pA = fakeProps({ LABOUR_CLOCK_SHEET_ID: 'EXISTING' }); var aA = fakeApp(src());
+  var rA = run(pA, aA) || {};
+  eq('SU7 already set -> refused already_set, nothing created or opened', [rA.refused, aA._log.created.length, aA._log.opened.length], ['already_set', 0, 0]);
+  var pB = fakeProps({}); var aB = fakeApp(src());
+  var rB = run(pB, aB) || {};
+  eq('SU8 LABOUR_SHEET_ID unset -> refused onboarding_sheet_unset, nothing created', [rB.refused, aB._log.created.length], ['onboarding_sheet_unset', 0]);
+  var bad = src(); delete bad.LC_LOCATIONS;
+  var pC = fakeProps({ LABOUR_SHEET_ID: 'OLD' }); var aC = fakeApp(bad);
+  var rC = run(pC, aC);
+  check('SU9 bad source -> throws BEFORE any Sheet is created', !!rC && !!rC.threw && aC._log.created.length === 0 && pC._p.LABOUR_CLOCK_SHEET_ID === undefined);
+
+  var blankRate = src();
+  blankRate.STAFF_RATES.push(['e@example.test', SECRET_NAME, '', '2026-07-01', ''], ['e@example.test', SECRET_NAME, 0, '2026-08-01', ''],
+    ['e@example.test', SECRET_NAME, 'n/a', '2026-09-01', '']);
+  var sb = call('labourBuildSeed_', blankRate) || {};
+  check('SU3c blank / zero / non-numeric rates are skipped, never a $0 rate',
+    !!sb.tabs && sb.tabs.RATES.every(function (r, i) { return i === 0 || (typeof r[1] === 'number' && r[1] > 0); }) &&
+    JSON.stringify(sb.tabs.RATES).indexOf('e@example.test') === -1);
+  eq('SU3d skipped rate rows counted', sb.counts && sb.counts.ratesSkipped, 3);
+
+  // A seed the engine rejects must stop setup before any Sheet exists.
+  var savedSeed = globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_;
+  var rC2, aC2, pC2;
+  try {
+    globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_ = savedSeed.map(function (r, i) { return i === 1 ? r.slice(0, 4).concat([0], r.slice(5)) : r; });
+    pC2 = fakeProps({ LABOUR_SHEET_ID: 'OLD' }); aC2 = fakeApp(src());
+    rC2 = run(pC2, aC2);
+  } finally { globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_ = savedSeed; }
+  check('SU9b seed the engine rejects (zero multiplier) -> throws BEFORE any Sheet is created',
+    !!rC2 && !!rC2.threw && aC2._log.created.length === 0 && pC2._p.LABOUR_CLOCK_SHEET_ID === undefined);
+
+  var pD = fakeProps({ LABOUR_SHEET_ID: 'OLD' }); var aD = fakeApp(src());
+  var rD = run(pD, aD) || {};
+  eq('SU10 happy path: ok, one "LEIBLE Labour" created, source opened by LABOUR_SHEET_ID',
+    [rD.ok, aD._log.created, aD._log.opened], [true, ['LEIBLE Labour'], ['OLD']]);
+  eq('SU10b property LABOUR_CLOCK_SHEET_ID stored', pD._p.LABOUR_CLOCK_SHEET_ID, 'NEWID');
+  eq('SU10c tabs in order, default Sheet1 renamed (no stray tab)', aD._log.names,
+    ['CLOCK_RAW', 'CONFIG', 'HOLIDAYS', 'LOCATIONS', 'RATES', 'PEOPLE', 'LABOUR_COST']);
+  var seedD = call('labourBuildSeed_', src()) || { tabs: {} };
+  eq('SU10d every tab written with its seed rows', Object.keys(seedD.tabs).length === 7 && Object.keys(seedD.tabs).every(function (k) {
+    return JSON.stringify(aD._log.written[k]) === JSON.stringify(seedD.tabs[k]); }), true);
+  check('SU10e header row frozen on every tab', aD._log.names.every(function (n) { return aD._log.frozen[n] === 1; }));
+  eq('SU10f result carries id, url and counts', [rD.id, typeof rD.url, rD.counts && rD.counts.people], ['NEWID', 'string', 4]);
+  check('SU10g result carries no email / name (safe to Logger.log)',
+    JSON.stringify(rD).indexOf('@example.test') === -1 && JSON.stringify(rD).indexOf(SECRET_NAME) === -1);
+  var rE = run(pD, aD) || {};
+  eq('SU11 second run refuses (one Sheet, ever)', [rE.refused, aD._log.created.length], ['already_set', 1]);
+  check('SU12 zero-arg editor wrapper labourSetupSheet exists', has('labourSetupSheet') && globalThis.labourSetupSheet.length === 0);
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
