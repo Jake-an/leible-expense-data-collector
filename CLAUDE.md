@@ -34,6 +34,7 @@ Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staf
 - Only operate on Jake's own / authorized accounts.
 
 ## Canonical IDs
+- **Labour Sheet ("LEIBLE Labour"):** `1OZQviboah1pzvZRlGHsXItDBF8cBXyKF8V_AAzKP5r0` (script property `LABOUR_CLOCK_SHEET_ID`; created once by `labourSetupSheet()` 2026-10-14 — never recreate).
 - **Sheet:** `13h4BNTrj5UhHo-XCFdOjimaCOTx4hjhTxR-m-OkvFdI` · **scriptId:** `1Wc6QMqEGWX6cTTcVnrgE3Fynj7R-TeDudgzmjGALsOFYxc13qJ_jTBwn` (tracked in `config/clasp.json`).
 - **One project, one deployment.** Never `clasp create-script` again; never mint a new deployment. The single deployment id lives in `config/deployment.json` and is updated in place (`clasp redeploy`).
 
