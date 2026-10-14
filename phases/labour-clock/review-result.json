@@ -1,0 +1,41 @@
+{
+  "verdict": "approve",
+  "issues": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "summary": "labourRunChecks_/labourCheckExceptions_ fail OPEN on a malformed ctx: if the wiring phase omits shiftsTotal (undefined), total becomes NaN, `total > 0` is false and the >10% refusal can never fire; likewise rowCount undefined never triggers the zero-rows stop (strict `=== 0`). Pure functions with no caller yet, so this is not live today. The wiring phase should validate ctx numerics (typeof number && isFinite) and throw, rather than relying on these guards."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "summary": "Step-4 concern CONFIRMED, still latent: labourJulyAlert_ (and step 0's labourHolidayAlerts_) use String(today).slice(). A Date argument gives year NaN, and `lastAlertedYear >= NaN` is false, so the alert fires every run and returns lastAlertedYear NaN for the caller to persist. labourDateKey_ already exists and handles Date cells; normalising `today` through it would close this. Acceptable for now because the documented contract is an ISO string and there is no caller yet."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "summary": "LABOUR_PAYGUIDE_SEED_ seeds only employment_type 'casual' rows, all effective 2026-07-01. Once wired, every full-time/part-time PEOPLE row, and every observation dated before 2026-07-01, lands in labour_payguide_stale ('refresh it') on every run. That alert is noise and misnames a coverage gap as staleness. Combined with the case-sensitive employment_type/rate_basis match (step-4 concern, confirmed: PEOPLE values are only trimmed, not lower-cased, while labourLevelBand_ does lower-case), a 'Casual' entry also reads as 'stale'. Suggest a distinct 'no guide rows for <type>/<basis>' outcome before wiring."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "summary": "labourPayGuideCheck_ emits one line per OBSERVATION, not per person. If the wiring passes one observation per shift, the mismatch/nomatch alerts repeat the same person's line N times, unlike labourExceptionAlerts_, which dedupes per person."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "summary": "Step-4 concerns confirmed as cosmetic or contract-only: labour_drop prints g.total and the median unrounded (labourRound2_ exists), and labourCheckDrop_'s newest-first ordering contract for `history` is stated only in the step file, not in a code comment. o.date vs effective_from is a string comparison, correct only for ISO strings, the same latent Date-input risk as today."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "summary": "Step-4 concern assessed as ACCEPTABLE: the G2/G3 'cfg unchanged' checks would pass against a null stub in isolation. In the suite, though, each is paired with key/line assertions on the same pg() result that require real output, so the mutation that matters (correct alerts plus a mutated cfg) is caught. Not vacuous in practice."
+    }
+  ],
+  "verification": {
+    "tests": "node connectors/gas/test_code.js -> 3012 passed, 0 failed (baseline 2718)",
+    "tdd_evidence": "steps 0-4 are all tdd:true, and all carry tdd_evidence.red and .green in index.json",
+    "purity_grep": "no SpreadsheetApp|PropertiesService|UrlFetchApp|Utilities|Logger|CalendarApp|DriveApp|GmailApp|new Date()|Date.now matches in labour.gs",
+    "scope": "diff vs scaffold e7db6c2^: labour.gs (+721), test_code.js (+892), docs/PRD.md (PRD-15..20 rows), and connectors/shopspend/test_ingest.py (formatter-only reflow, no semantic change). Code.gs is untouched; no auth/secrets/ingest surface touched; no Sheet writes, so the two-runtime boundary holds"
+  }
+}

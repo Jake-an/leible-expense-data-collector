@@ -1,0 +1,47 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 16390,
+      "summary": "The 'cfg unchanged' assertions (G2 at line 16390, G3 at line 16395) pass vacuously against a null-returning stub, because the pg() helper compares cfg before/after regardless of whether labourPayGuideCheck_ returned anything. The RED classifier flagged the same weakness.",
+      "suggestion": "Not fixable in GREEN without editing a RED-committed test, so record it as a known gap. Future tests of this kind should also assert the alert output is an array before checking cfg. The implementation itself does not mutate cfg (it only reads), so this is a test-strength gap, not a behavioural defect."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 654,
+      "summary": "labourJulyAlert_ assumes `today` is an ISO 'YYYY-MM-DD' string. If the wiring phase passes a Date object, String(today).slice(0,4) yields a non-year, the year becomes NaN, and the 'once per year' guard breaks (the alert can re-fire every run).",
+      "suggestion": "Document the ISO-string contract in the function comment, or normalise `today` in the wiring phase (e.g. Utilities-free local formatting at the boundary). Add an assertion or guard when the year parses to NaN."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 673,
+      "summary": "The pay-guide filter compares employment_type and rate_basis with strict equality against raw PEOPLE values (trimmed but not lower-cased). A PEOPLE entry of 'Casual' will match no guide row, so the check reports labour_payguide_stale ('no pay-guide row effective on or before ...') when the real problem is a case mismatch. Step 0 already noted that PEOPLE values are unvalidated.",
+      "suggestion": "Lower-case employment_type and rate_basis on both sides (or validate them at config read) so the stale alert only fires for genuinely missing guide rows."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 673,
+      "summary": "o.date is compared to r.effective_from as a string. This is correct for ISO strings (the shifts and exceptions carry string dates), but a Date object would compare by coercion and silently mis-filter the guide rows.",
+      "suggestion": "Add a comment stating that observation dates are ISO strings, or assert the type when the wiring phase builds observations."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 643,
+      "summary": "The labour_drop line interpolates g.total as a raw float (e.g. 6999.9999999), and the median is printed unrounded, so alert lines can show long decimals in the editor log.",
+      "suggestion": "Round the total and median to cents for display only, keeping the comparison on unrounded values."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 642,
+      "summary": "labourCheckDrop_ takes prior.slice(0, 4) and assumes `history` arrays are ordered newest-first, but nothing in the function or its header documents that ordering contract. A wiring-phase caller that passes oldest-first gets a silently wrong median.",
+      "suggestion": "Document 'newest first' next to the history parameter in the function comment."
+    }
+  ]
+}
