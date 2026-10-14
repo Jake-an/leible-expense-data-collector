@@ -438,6 +438,7 @@ load('roastery_email.gs');
 load('shopspend.gs');
 load('summary_audit.gs');
 load('summary_drift_repair.gs');  // TEMPORARY — deleted with the file after the repair verifies
+load('labour.gs');  // pure labour-cost calc (phase labour-clock)
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness

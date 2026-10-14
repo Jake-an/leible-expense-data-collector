@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "labour-clock",
+  "steps": [
+    {
+      "step": 0,
+      "name": "config-and-holidays",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-16",
+        "PRD-20"
+      ]
+    },
+    {
+      "step": 1,
+      "name": "rows-to-shifts",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-15"
+      ]
+    },
+    {
+      "step": 2,
+      "name": "cost-shift",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-16",
+        "PRD-17"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "group-week-location",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-18"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "checks-and-alerts",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-19",
+        "PRD-20"
+      ]
+    }
+  ],
+  "created_at": "2026-10-14T00:00:00+0900"
+}
