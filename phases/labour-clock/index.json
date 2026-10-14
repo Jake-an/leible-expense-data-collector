@@ -86,7 +86,7 @@
     {
       "step": 2,
       "name": "cost-shift",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -106,7 +106,8 @@
           "at": "2026-10-14T10:31:25+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "labour.gs: LABOUR_SG_RATES_, labourSgRate_, labourDayType_ (PH>Sun>Sat), labourCostShift_ (pinned classification, exceptions); 2920 pass, 0 fail under TZ=UTC and Australia/Sydney."
     },
     {
       "step": 3,

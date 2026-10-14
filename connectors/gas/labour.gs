@@ -394,3 +394,53 @@ function labourRowsToShifts_(rows, range, cfg) {
 
   return { shifts: shifts, exceptions: exceptions };
 }
+
+/* ------------------------------------------------------------------ *
+ * Step 2 — cost one shift (PRD-16, PRD-17). Pure: classification comes
+ * from the PINNED PEOPLE row, never inferred from the rate. No rounding
+ * here; rounding happens once at the group boundary.
+ * ------------------------------------------------------------------ */
+
+// Superannuation guarantee, ascending by effective date. The only legislated dated constant.
+var LABOUR_SG_RATES_ = [{ from: '2024-07-01', rate: 0.115 }, { from: '2025-07-01', rate: 0.12 }];
+
+function labourSgRate_(date) {
+  var key = String(date);
+  var best = null;
+  LABOUR_SG_RATES_.forEach(function (r) { if (r.from <= key) best = r; });
+  if (best === null) throw new Error('labour: no superannuation rate for ' + key + ' (table starts ' + LABOUR_SG_RATES_[0].from + ')');
+  return best.rate;
+}
+
+function labourDayType_(date, cfg) {
+  var key = String(date);
+  if (Object.prototype.hasOwnProperty.call(cfg.holidays, key) && cfg.holidays[key]) return 'public_holiday';
+  var p = key.split('-');
+  var dow = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]))).getUTCDay();
+  if (dow === 0) return 'sunday';
+  if (dow === 6) return 'saturday';
+  return 'weekday';
+}
+
+function labourCostShift_(shift, cfg) {
+  function fail(reason, detail) {
+    return { ok: false, exception: { reason: reason, recordId: shift.recordId, personEmail: shift.personEmail,
+      date: shift.date, location: shift.location, detail: detail } };
+  }
+  if (!cfg.people || !Object.prototype.hasOwnProperty.call(cfg.people, shift.personEmail)) {
+    return fail('person_not_in_people', shift.personEmail + ' is not in PEOPLE');
+  }
+  var p = cfg.people[shift.personEmail];
+  if (labourStr_(p.employment_type) === '' || labourStr_(p.level) === '' || labourStr_(p.rate_basis) === '') {
+    return fail('person_incomplete', 'PEOPLE row needs employment_type, level and rate_basis');
+  }
+  var dayType = labourDayType_(shift.date, cfg);
+  var multiplier = labourMultiplier_(cfg, p.employment_type, p.rate_basis, p.level, dayType);
+  var sgRate = labourSgRate_(shift.date);
+  var base = shift.hours * shift.rate;
+  var gross = base * multiplier;
+  var sup = gross * sgRate;
+  return { ok: true, dayType: dayType, multiplier: multiplier, base: base, gross: gross, uplift: gross - base,
+    sgRate: sgRate, super: sup, total: gross + sup,
+    employmentType: p.employment_type, level: p.level, rateBasis: p.rate_basis };
+}
