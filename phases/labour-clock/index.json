@@ -86,7 +86,7 @@
     {
       "step": 2,
       "name": "cost-shift",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -114,7 +114,23 @@
       },
       "tdd_state": "red_done",
       "summary": "labour.gs: LABOUR_SG_RATES_, labourSgRate_, labourDayType_ (PH>Sun>Sat), labourCostShift_ (pinned classification, exceptions); 2920 pass, 0 fail under TZ=UTC and Australia/Sydney.",
-      "completed_at": "2026-10-14T10:32:12+0900"
+      "completed_at": "2026-10-14T10:32:12+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 4,
+        "fix_rounds": 0,
+        "result_file": "phases/labour-clock/step2-review.json",
+        "checked_at": "2026-10-14T10:33:52+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] labourDayType_ does not validate the date key. A non-ISO input such as a Date object String()-ed to 'Wed Oct 07 2026 ...' gives NaN components, new Date(NaN).getUTCDay() is NaN, and the function silently returns 'weekday' instead of failing loud.",
+        "[review] labourCostShift_ does not check that shift.hours and shift.rate are finite numbers. A NaN or string value flows silently into base, gross, super and total with no exception row.",
+        "[review] An unrecognised non-blank PEOPLE level (e.g. 7, 'Level 3') makes labourLevelBand_ throw, which aborts the whole costing call rather than returning a person_incomplete exception row. The brief only specifies a throw for a missing multiplier and a blank level for person_incomplete, so this is a gap, not a violation.",
+        "[review] Full per-step run logs (step2-red.log and step2-green.log, about 3,167 lines each) are committed to git alongside the code."
+      ]
     },
     {
       "step": 3,
@@ -124,7 +140,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-18"
-      ]
+      ],
+      "started_at": "2026-10-14T10:33:52+0900"
     },
     {
       "step": 4,

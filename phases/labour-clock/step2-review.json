@@ -1,0 +1,33 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 418,
+      "summary": "labourDayType_ does not validate the date key. A non-ISO input such as a Date object String()-ed to 'Wed Oct 07 2026 ...' gives NaN components, new Date(NaN).getUTCDay() is NaN, and the function silently returns 'weekday' instead of failing loud.",
+      "suggestion": "Guard with the same /^\\d{4}-\\d{2}-\\d{2}$/ check used for RATES effective_from (labour.gs:181) and throw on a mismatch. Not reachable from the current pipeline: shift dates pass through labourDateKey_ (labour.gs:152) first."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 439,
+      "summary": "labourCostShift_ does not check that shift.hours and shift.rate are finite numbers. A NaN or string value flows silently into base, gross, super and total with no exception row.",
+      "suggestion": "Either guard with typeof/isFinite and return a fail('bad_hours_or_rate', ...) exception, or add a comment that the caller (labourRowsToShifts_) guarantees numeric hours and rate. Nothing in the step 2 tests covers this path."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 205,
+      "summary": "An unrecognised non-blank PEOPLE level (e.g. 7, 'Level 3') makes labourLevelBand_ throw, which aborts the whole costing call rather than returning a person_incomplete exception row. The brief only specifies a throw for a missing multiplier and a blank level for person_incomplete, so this is a gap, not a violation.",
+      "suggestion": "Decide whether a typo'd level should abort the week (loud, current behaviour, consistent with the prohibition on catching throws) or become a person_incomplete exception. If the latter, catch it in labourCostShift_ before the multiplier lookup and only that error. Either way, add a test that pins the choice."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/labour-clock/step2-red.log",
+      "line": 1,
+      "summary": "Full per-step run logs (step2-red.log and step2-green.log, about 3,167 lines each) are committed to git alongside the code.",
+      "suggestion": "Confirm this matches the convention used by earlier phases. If not, gitignore the logs and keep only step2-red-check.json and index.json tdd_evidence as the record."
+    }
+  ]
+}
