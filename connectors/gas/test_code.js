@@ -16270,5 +16270,185 @@ console.log('\nGroup M — ingest-validation hardening:');
   check('Z2 a cost.ok:false entry THROWS', msg !== null);
 })();
 
+/* ------------------------------------------------------------------ *
+ * labour-clock step 4: checks-and-alerts (PRD-19, PRD-20). Null-safe: a
+ * missing symbol must fail assertions, not crash before the summary.
+ * Dummy data only.
+ * ------------------------------------------------------------------ */
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function call(n) { return has(n) ? globalThis[n].apply(null, Array.prototype.slice.call(arguments, 1)) : null; }
+  function keys(al) { return Array.isArray(al) ? al.map(function (a) { return a.key; }) : null; }
+  function byKey(al, k) { return Array.isArray(al) ? al.filter(function (a) { return a.key === k; })[0] || null : null; }
+  function lines(al, k) { var a = byKey(al, k); return a ? a.lines : null; }
+  function near10(a) { return typeof a === 'number' && Math.abs(a - 0.1) < 1e-9; }
+
+  // ---- zero rows ----
+  var z = call('labourCheckZeroRows_', 0, '2026-W42');
+  check('Z1 zero rows -> stop:true', !!z && z.stop === true);
+  eq('Z1 alert key labour_zero_rows', z && keys(z.alerts), ['labour_zero_rows']);
+  check('Z1 alert names the week', !!z && JSON.stringify(z.alerts).indexOf('2026-W42') !== -1);
+  var z2 = call('labourCheckZeroRows_', 5, '2026-W42');
+  eq('Z2 non-zero rows -> no stop, no alerts', z2 && [z2.stop, z2.alerts], [false, []]);
+
+  // ---- exceptions ratio ----
+  var e10 = call('labourCheckExceptions_', 9, 1);
+  check('E1 exactly 10% (1 of 10) NOT refused', !!e10 && e10.refuse === false && near10(e10.rate));
+  eq('E1 informational labour_exceptions alert', e10 && keys(e10.alerts), ['labour_exceptions']);
+  eq('E1 single count line', e10 && lines(e10.alerts, 'labour_exceptions') && lines(e10.alerts, 'labour_exceptions').length, 1);
+  var e11 = call('labourCheckExceptions_', 16, 2);
+  check('E2 11% (2 of 18) refused', !!e11 && e11.refuse === true);
+  eq('E2 labour_exceptions_refused alert', e11 && keys(e11.alerts).indexOf('labour_exceptions_refused') !== -1, true);
+  var e0 = call('labourCheckExceptions_', 0, 0);
+  eq('E3 0 and 0 -> rate 0, no refuse, no alerts', e0 && [e0.rate, e0.refuse, e0.alerts], [0, false, []]);
+  var eNone = call('labourCheckExceptions_', 10, 0);
+  eq('E4 no exceptions -> no alerts', eNone && [eNone.refuse, eNone.alerts], [false, []]);
+
+  // ---- person missing ----
+  var pm = call('labourExceptionAlerts_', [
+    { reason: 'person_not_in_people', personEmail: 'newbie@example.test', date: '2026-10-06' },
+    { reason: 'person_not_in_people', personEmail: 'newbie@example.test', date: '2026-10-07' },
+    { reason: 'person_not_in_people', personEmail: 'other@example.test', date: '2026-10-07' },
+    { reason: 'unpaired', personEmail: 'x@example.test', date: '2026-10-07' }]);
+  eq('P1 one labour_person_missing alert', pm && keys(pm), ['labour_person_missing']);
+  eq('P1 one line per distinct person, email only', lines(pm, 'labour_person_missing'), ['newbie@example.test', 'other@example.test']);
+  eq('P2 no person_not_in_people -> no alerts', call('labourExceptionAlerts_', [{ reason: 'unpaired', personEmail: 'x@example.test' }]), []);
+
+  // ---- rate change ----
+  function sh(email, rate) { return { personEmail: email, rate: rate }; }
+  var rc = call('labourCheckRateChange_', [sh('a@example.test', 30), sh('a@example.test', 30), sh('b@example.test', 25)],
+    [sh('a@example.test', 28), sh('b@example.test', 25), sh('c@example.test', 40)]);
+  eq('R1 one rate_change alert', rc && keys(rc), ['labour_rate_change']);
+  eq('R1 line is "email: old -> new"', lines(rc, 'labour_rate_change'), ['a@example.test: 28 -> 30']);
+  eq('R2 unchanged -> none', call('labourCheckRateChange_', [sh('a@example.test', 30)], [sh('a@example.test', 30)]), []);
+  eq('R3 person only in one week -> none', call('labourCheckRateChange_', [sh('a@example.test', 30)], [sh('b@example.test', 20)]), []);
+  var r4 = call('labourCheckRateChange_', [sh('a@example.test', 30.01)], [sh('a@example.test', 30)]);
+  eq('R4 1-cent change IS reported', r4 && keys(r4), ['labour_rate_change']);
+  var r5 = call('labourCheckRateChange_', [sh('a@example.test', 30), sh('a@example.test', 30), sh('a@example.test', 31)],
+    [sh('a@example.test', 30)]);
+  eq('R5 modal rate used (one odd shift ignored)', r5, []);
+
+  // ---- drop ----
+  function g(loc, total) { return { location: loc, total: total }; }
+  var d699 = call('labourCheckDrop_', [g('Loc A', 6990)], { 'Loc A': [10000, 10000, 10000, 10000] });
+  eq('D1 69.9% of median -> labour_drop', d699 && keys(d699), ['labour_drop']);
+  eq('D1 one line per location', lines(d699, 'labour_drop') && lines(d699, 'labour_drop').length, 1);
+  eq('D2 exactly 70% -> no alert', call('labourCheckDrop_', [g('Loc A', 7000)], { 'Loc A': [10000, 10000, 10000, 10000] }), []);
+  eq('D3 median uses latest 4 only (5th, tiny, ignored)', call('labourCheckDrop_', [g('Loc A', 7500)],
+    { 'Loc A': [10000, 10000, 10000, 10000, 100] }), []);
+  eq('D3b median of 4 = mean of middle two (6000 vs 70% of 6000 = 4200 -> ok)',
+    call('labourCheckDrop_', [g('Loc A', 4300)], { 'Loc A': [10000, 10000, 2000, 2000] }), []);
+  var d3 = call('labourCheckDrop_', [g('Loc A', 100)], { 'Loc A': [10000, 10000, 10000] });
+  eq('D4 3 prior weeks -> labour_drop_unchecked', d3 && keys(d3), ['labour_drop_unchecked']);
+  check('D4 line says "drop check UNCHECKED"', !!d3 && JSON.stringify(d3).indexOf('drop check UNCHECKED') !== -1);
+  check('D4 line states the 3 weeks available', !!d3 && JSON.stringify(lines(d3, 'labour_drop_unchecked')).indexOf('3') !== -1);
+  var d0 = call('labourCheckDrop_', [g('Loc B', 100)], {});
+  eq('D5 location with no history -> UNCHECKED', d0 && keys(d0), ['labour_drop_unchecked']);
+  var dm = call('labourCheckDrop_', [g('Loc A', 100), g('Loc B', 9000)], { 'Loc A': [10000, 10000, 10000, 10000], 'Loc B': [10000] });
+  eq('D6 mixed: one drop + one unchecked', dm && keys(dm).sort(), ['labour_drop', 'labour_drop_unchecked']);
+
+  // ---- 1 July ----
+  var j1 = call('labourJulyAlert_', '2026-07-01', 2025);
+  eq('J1 1 July, last 2025 -> alert, year 2026', j1 && [j1.alert && j1.alert.key, j1.lastAlertedYear], ['labour_reverify_multipliers', 2026]);
+  check('J1 cites the research doc', !!j1 && !!j1.alert && JSON.stringify(j1.alert).indexOf('docs/labour-award-research.md') !== -1);
+  var j2 = call('labourJulyAlert_', '2026-07-02', 2026);
+  eq('J2 already alerted -> null, year unchanged', j2 && [j2.alert, j2.lastAlertedYear], [null, 2026]);
+  var j3 = call('labourJulyAlert_', '2026-06-30', 2025);
+  eq('J3 before 1 July -> null, year unchanged', j3 && [j3.alert, j3.lastAlertedYear], [null, 2025]);
+  var j4 = call('labourJulyAlert_', '2027-07-01', 2026);
+  eq('J4 next year alerts again', j4 && [j4.alert && j4.alert.key, j4.lastAlertedYear], ['labour_reverify_multipliers', 2027]);
+  var j5 = call('labourJulyAlert_', '2026-10-14', 2025);
+  eq('J5 later in year, not yet alerted -> alert', j5 && [j5.alert && j5.alert.key, j5.lastAlertedYear], ['labour_reverify_multipliers', 2026]);
+
+  // ---- pay guide ----
+  var guide = [
+    { effective_from: '2025-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 1, rate: 30.00 },
+    { effective_from: '2025-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 2, rate: 31.00 },
+    { effective_from: '2025-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 3, rate: 31.20 },
+    { effective_from: '2025-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 4, rate: 40.00 },
+    { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 1, rate: 33.00 },
+    { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 2, rate: 34.00 },
+    { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 3, rate: 35.00 },
+    { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'hourly', level: 4, rate: 44.00 }
+  ];
+  function mk(level) {
+    return { multipliers: {}, holidays: {}, locations: {}, rates: {},
+      people: { 'a@example.test': { employment_type: 'casual', level: level, rate_basis: 'hourly' } } };
+  }
+  function pg(level, rate, date) {
+    var c = mk(level);
+    var before = JSON.stringify(c);
+    var out = has('labourPayGuideCheck_')
+      ? globalThis.labourPayGuideCheck_([{ personEmail: 'a@example.test', rate: rate, date: date }], c, guide) : null;
+    return { out: out, unchanged: JSON.stringify(c) === before };
+  }
+  var p1 = pg(1, 30.00, '2025-10-01');
+  eq('G1 exact match of pinned level -> nothing', p1.out, []);
+  var p2 = pg(1, 40.00, '2025-10-01');
+  eq('G2 fits a different single level -> labour_payguide_mismatch', keys(p2.out), ['labour_payguide_mismatch']);
+  eq('G2 line text', lines(p2.out, 'labour_payguide_mismatch'), ['a@example.test: pinned L1, rate fits L4']);
+  check('G2 cfg.people deep-equal before/after (never re-classifies)', p2.unchanged);
+  var p3 = pg(1, 31.10, '2025-10-01');
+  eq('G3 within 1% of two adjacent levels -> labour_payguide_ambiguous', keys(p3.out), ['labour_payguide_ambiguous']);
+  check('G3 lists BOTH candidate levels', JSON.stringify(p3.out).indexOf('L2') !== -1 && JSON.stringify(p3.out).indexOf('L3') !== -1);
+  check('G3 does not pick (no mismatch alert)', byKey(p3.out, 'labour_payguide_mismatch') === null);
+  check('G3 cfg unchanged', p3.unchanged);
+  var p4 = pg(1, 38.00, '2025-10-01');
+  eq('G4 above-award rate -> nomatch only', keys(p4.out), ['labour_payguide_nomatch']);
+  var p5 = pg(1, 33.00, '2026-07-01');
+  eq('G5 on/after 1 July matches NEW guide row -> nothing', p5.out, []);
+  var p5b = pg(1, 30.00, '2026-07-01');
+  check('G5 old rate after 1 July does NOT fit (an alert is raised)', Array.isArray(p5b.out) && p5b.out.length === 1);
+  var p6 = pg(1, 30.00, '2025-06-30');
+  eq('G6 observation before any guide row -> labour_payguide_stale', keys(p6.out), ['labour_payguide_stale']);
+  var p7 = pg(1, 30.29, '2025-10-01');
+  eq('G7 within +1.0% of pinned level fits -> nothing', p7.out, []);
+  var p8 = pg(1, 30.31, '2025-10-01');
+  check('G8 just over 1.0% does not fit pinned', Array.isArray(p8.out) && p8.out.length === 1);
+  check('G9 seed guide constant LABOUR_PAYGUIDE_SEED_ is defined', (function () {
+    try { return Array.isArray(LABOUR_PAYGUIDE_SEED_) && LABOUR_PAYGUIDE_SEED_.length > 0; } catch (e) { return false; }
+  })());
+
+  // ---- aggregator ----
+  function ctx(over) {
+    var c = {
+      week: '2026-W42', rowCount: 10,
+      groups: [g('Loc A', 10000)], shiftsTotal: 10, exceptions: [],
+      thisWeekShifts: [sh('a@example.test', 30)], prevWeekShifts: [sh('a@example.test', 30)],
+      history: { 'Loc A': [10000, 10000, 10000, 10000] },
+      today: '2026-10-14', lastAlertedYear: 2026, payGuide: guide, observations: [],
+      cfg: { multipliers: {}, holidays: { '2026-12-25': 'x', '2027-12-25': 'y' }, locations: {}, rates: {}, people: {} }
+    };
+    Object.keys(over || {}).forEach(function (k) { c[k] = over[k]; });
+    return c;
+  }
+  var a0 = call('labourRunChecks_', ctx());
+  eq('A1 clean week -> no stop/refuse, no alerts', a0 && [a0.stop, a0.refuse, a0.alerts, a0.lastAlertedYear], [false, false, [], 2026]);
+  var az = call('labourRunChecks_', ctx({ rowCount: 0, groups: [g('Loc A', 1)],
+    thisWeekShifts: [sh('a@example.test', 99)] }));
+  check('A2 zero rows -> stop:true', !!az && az.stop === true);
+  eq('A2 only zero-rows alert (no drop/rate)', az && keys(az.alerts), ['labour_zero_rows']);
+  var ah = call('labourRunChecks_', ctx({ rowCount: 0, cfg: { multipliers: {}, holidays: { '2026-11-30': 'x' }, locations: {}, rates: {}, people: {} } }));
+  eq('A3 zero rows + holiday alert still aggregated', ah && keys(ah.alerts).sort(), ['labour_holidays_expiring', 'labour_zero_rows']);
+  var ax = call('labourRunChecks_', ctx({
+    shiftsTotal: 16, exceptions: [{ reason: 'person_not_in_people', personEmail: 'newbie@example.test' }, { reason: 'unpaired', personEmail: '' }],
+    groups: [g('Loc A', 100), g('Loc B', 5)], lastAlertedYear: 2025,
+    thisWeekShifts: [sh('a@example.test', 31)],
+    cfg: { multipliers: {}, holidays: { '2026-11-30': 'x' }, locations: {}, rates: {}, people: {} } }));
+  eq('A4 exact alert keys', ax && keys(ax.alerts).sort(), [
+    'labour_drop', 'labour_drop_unchecked', 'labour_exceptions_refused', 'labour_holidays_expiring',
+    'labour_person_missing', 'labour_rate_change', 'labour_reverify_multipliers']);
+  check('A4 refuse:true', !!ax && ax.refuse === true);
+  eq('A4 lastAlertedYear advanced', ax && ax.lastAlertedYear, 2026);
+
+  // ---- alert shape ----
+  var all = [].concat((ax && ax.alerts) || [], (p3.out || []), (p2.out || []), (p4.out || []), (p6.out || []), (d3 || []), (z && z.alerts) || []);
+  check('S1 shape sample is non-empty', all.length >= 10);
+  check('S1 every alert has non-empty key + title; lines are single-line strings', all.every(function (a) {
+    return a && typeof a.key === 'string' && a.key !== '' && typeof a.title === 'string' && a.title !== '' &&
+      Array.isArray(a.lines) && a.lines.every(function (l) { return typeof l === 'string' && l !== '' && !/[\r\n]/.test(l); });
+  }));
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

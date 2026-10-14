@@ -189,7 +189,9 @@
         "PRD-19",
         "PRD-20"
       ],
-      "started_at": "2026-10-14T10:38:01+0900"
+      "started_at": "2026-10-14T10:38:01+0900",
+      "blocked_at": "2026-10-14T10:40:36+0900",
+      "blocked_reason": "RED classifier produced no readable verdict after 2 attempts"
     }
   ],
   "created_at": "2026-10-14T00:00:00+0900"

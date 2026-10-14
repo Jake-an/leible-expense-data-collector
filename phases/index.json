@@ -49,7 +49,8 @@
     },
     {
       "dir": "labour-clock",
-      "status": "pending"
+      "status": "blocked",
+      "blocked_at": "2026-10-14T10:42:11+0900"
     }
   ]
 }
