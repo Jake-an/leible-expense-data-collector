@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 66 failures are the right kind for RED: assertions that got undefined, null, \"no-read\", or \"undefined-fn\" where the module under test has no implementation yet (readConfig/seed/alert functions absent or returning nothing). Examples: L2 header drift expects a throw naming CONFIG but got null; L5 live-cell parsing got \"no-read\"; L7 multiplier lookups got undefined; L10 alerts got \"undefined-fn\" (the function itself is missing); L9 seed holiday count got 0. No failure is a syntax/import error or broken test harness. Caveat: 2720 assertions pass, and two L1 checks pass while reading got 0 (\"multipliers populated from seed\", \"holidays populated from seed\"). A check named 'populated' passing at 0 may be vacuous or inverted, so it should be inspected once the implementation lands. It does not change this RED verdict, because the failing set is independently explained by missing implementation."
+}

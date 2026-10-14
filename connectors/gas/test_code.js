@@ -15559,5 +15559,173 @@ console.log('\nGroup M — ingest-validation hardening:');
     loggedMessages.filter(function (m) { return /tombstoned/.test(m); }).length, 2);
 })();
 
+/* ------------------------------------------------------------------ *
+ * labour-clock step 0: config reader, multiplier lookup, holiday alerts
+ * (PRD-16, PRD-20). Null-safe: a missing symbol must fail an assertion,
+ * not crash the file before the summary line.
+ * ------------------------------------------------------------------ */
+(function () {
+  function seed(name, dflt) { return typeof globalThis[name] === 'undefined' ? dflt : globalThis[name]; }
+  function thrown(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
+  function has(fnName) { return typeof globalThis[fnName] === 'function'; }
+
+  var CFG_HDR = ['employment_type', 'rate_basis', 'level_band', 'day_type', 'multiplier', 'source_url', 'as_of'];
+  var HOL_HDR = ['date', 'name'];
+  var LOC_HDR = ['location', 'code', 'department', 'live'];
+  var RATE_HDR = ['person_email', 'rate', 'effective_from'];
+  var PPL_HDR = ['person_email', 'employment_type', 'level', 'rate_basis'];
+
+  var cfgSeed = seed('LABOUR_CLOCK_MULTIPLIER_SEED_', []);
+  var holSeed = seed('LABOUR_NSW_HOLIDAYS_SEED_', []);
+
+  // Seed is header + data rows; tolerate a header-less seed too.
+  function cfgRows() {
+    var skip = cfgSeed.length && cfgSeed[0][0] === 'employment_type' ? 1 : 0;
+    var rows = cfgSeed.slice(skip).map(function (r) { return r.slice(); });
+    // Seed missing (RED): keep one placeholder row so row-mutating cases still reach the code under test.
+    return rows.length ? rows : [['casual', 'unloaded', 'L3-6', 'weekday', 1.25, 'u', '2026-10-14']];
+  }
+  function mkTabs(over) {
+    var t = {
+      CONFIG: [CFG_HDR.slice()].concat(cfgRows()),
+      HOLIDAYS: [HOL_HDR.slice()].concat(holSeed.map(function (h) { return [h.date, h.name]; })),
+      LOCATIONS: [LOC_HDR.slice(), ['Loc A', 'LA', 'Cafe', 'TRUE'], ['Loc B', 'LB', 'Roastery', 'yes']],
+      RATES: [RATE_HDR.slice(), ['Alice@Example.test', 25.5, '2026-07-01']],
+      PEOPLE: [PPL_HDR.slice(), [' Alice@Example.test ', 'casual', 'Intro', 'unloaded'], ['bob@example.test', 'full_time', 3, 'any']]
+    };
+    Object.keys(over || {}).forEach(function (k) { if (over[k] === null) delete t[k]; else t[k] = over[k]; });
+    return t;
+  }
+  function read(tabs) {
+    if (!has('labourReadConfig_')) throw new Error('labourReadConfig_ undefined');
+    return globalThis.labourReadConfig_(tabs);
+  }
+  function readOrNull(tabs) { try { return read(tabs); } catch (e) { return null; } }
+  function mult(cfg, a, b, c, d) { return has('labourMultiplier_') ? globalThis.labourMultiplier_(cfg, a, b, c, d) : undefined; }
+  // Message of a throw, but only a REAL throw from the function under test.
+  function throwsFromImpl(fn) {
+    if (!has('labourMultiplier_') || !has('labourReadConfig_')) return null;
+    return thrown(fn);
+  }
+
+  // ---- seed shape ----
+  var seedData = cfgSeed.slice(cfgSeed.length && cfgSeed[0][0] === 'employment_type' ? 1 : 0);
+  check('L0 seed: multiplier seed is a non-empty array', Array.isArray(cfgSeed) && cfgSeed.length > 0);
+  eq('L0 seed: header row is the CONFIG header', cfgSeed[0], CFG_HDR);
+  var find = function (t, b, l, d) {
+    var r = seedData.filter(function (x) { return x[0] === t && x[1] === b && x[2] === l && x[3] === d; })[0];
+    return r ? r[4] : undefined;
+  };
+  eq('L0 seed: casual/unloaded/L3-6/sunday = 1.75', find('casual', 'unloaded', 'L3-6', 'sunday'), 1.75);
+  eq('L0 seed: casual/unloaded/L0-2/sunday = 1.5', find('casual', 'unloaded', 'L0-2', 'sunday'), 1.5);
+  eq('L0 seed: casual/loaded/L3-6/sunday = 1.4', find('casual', 'loaded', 'L3-6', 'sunday'), 1.4);
+  eq('L0 seed: casual/loaded/L0-2/public_holiday = 2', find('casual', 'loaded', 'L0-2', 'public_holiday'), 2);
+  eq('L0 seed: full_time/any/all/public_holiday = 2.25', find('full_time', 'any', 'all', 'public_holiday'), 2.25);
+  eq('L0 seed: part_time/any/all/saturday = 1.25', find('part_time', 'any', 'all', 'saturday'), 1.25);
+  check('L0 seed: every row carries as_of 2026-10-14 and a MA000119 url',
+    seedData.length > 0 && seedData.every(function (r) { return r[6] === '2026-10-14' && /MA000119/.test(r[5]); }));
+  eq('L0 seed: alert window constant is 60', seed('LABOUR_HOLIDAY_ALERT_DAYS_', null), 60);
+
+  // ---- readConfig happy path ----
+  var cfg = readOrNull(mkTabs());
+  check('L1 readConfig: happy path returns an object', !!cfg);
+  var c = cfg || { multipliers: {}, holidays: {}, locations: {}, rates: {}, people: {} };
+  eq('L1 readConfig: multipliers populated from seed', Object.keys(c.multipliers).length, seedData.length);
+  eq('L1 readConfig: holidays populated from seed', Object.keys(c.holidays).length, holSeed.length);
+  eq('L1 readConfig: location keyed as written, live parsed',
+    c.locations['Loc A'], { code: 'LA', department: 'Cafe', live: true });
+  eq('L1 readConfig: second location live via "yes"', c.locations['Loc B'] && c.locations['Loc B'].live, true);
+  eq('L1 readConfig: rates keyed by lower-cased email',
+    c.rates['alice@example.test'], [{ rate: 25.5, effective_from: '2026-07-01' }]);
+  check('L1 readConfig: people keyed by lower-cased trimmed email', !!c.people['alice@example.test'] && !!c.people['bob@example.test']);
+
+  // ---- header drift ----
+  var renamed = mkTabs(); renamed.CONFIG[0][4] = 'mult';
+  var e1 = throwsFromImpl(function () { read(renamed); });
+  check('L2 header drift: renamed CONFIG column throws naming CONFIG (' + e1 + ')', e1 !== null && /CONFIG/.test(e1));
+  var noHol = throwsFromImpl(function () { read(mkTabs({ HOLIDAYS: null })); });
+  check('L2 header drift: missing HOLIDAYS tab throws naming HOLIDAYS (' + noHol + ')', noHol !== null && /HOLIDAYS/.test(noHol));
+  var noCol = mkTabs(); noCol.PEOPLE = [['person_email', 'employment_type', 'level'], ['a@example.test', 'casual', 1]];
+  var e3 = throwsFromImpl(function () { read(noCol); });
+  check('L2 header drift: missing PEOPLE column throws naming PEOPLE (' + e3 + ')', e3 !== null && /PEOPLE/.test(e3));
+
+  // ---- bad multiplier cells ----
+  [['blank', ''], ['abc', 'abc'], ['zero', 0], ['negative', -1.25]].forEach(function (p) {
+    var t = mkTabs(); t.CONFIG[1][4] = p[1];
+    var e = throwsFromImpl(function () { read(t); });
+    check('L3 bad multiplier (' + p[0] + ') throws (' + e + ')', e !== null);
+  });
+
+  // ---- department ----
+  var badDept = mkTabs(); badDept.LOCATIONS[1][2] = 'Warehouse';
+  var ed = throwsFromImpl(function () { read(badDept); });
+  check('L4 unknown department throws (' + ed + ')', ed !== null && /department/i.test(ed));
+
+  // ---- live parse ----
+  [[true, true], ['TRUE', true], ['yes', true], ['Y', true], ['true', true], ['', false], ['maybe', false], [null, false]].forEach(function (p) {
+    var t = mkTabs(); t.LOCATIONS = [LOC_HDR.slice(), ['Loc X', 'LX', 'Cafe', p[0]]];
+    var r = readOrNull(t);
+    eq('L5 live cell ' + JSON.stringify(p[0]) + ' -> ' + p[1], r && r.locations['Loc X'] ? r.locations['Loc X'].live : 'no-read', p[1]);
+  });
+
+  // ---- holiday date coercion (local components) ----
+  var tz = mkTabs({ HOLIDAYS: [HOL_HDR.slice(), ['2026-04-25', 'Str'], [new Date(2026, 11, 26), 'Obj'], [new Date(2026, 0, 1, 0, 0, 0), 'Midnight']] });
+  var rz = readOrNull(tz);
+  eq('L6 holiday string cell keyed', rz && rz.holidays['2026-04-25'], 'Str');
+  eq('L6 holiday Date cell keyed via local components', rz && rz.holidays['2026-12-26'], 'Obj');
+  eq('L6 holiday local-midnight Date not shifted a day', rz && rz.holidays['2026-01-01'], 'Midnight');
+
+  // ---- labourMultiplier_ ----
+  eq('L7 casual/unloaded/weekday = 1.25', mult(c, 'casual', 'unloaded', 'Intro', 'weekday'), 1.25);
+  eq('L7 casual/loaded/weekday = 1.00', mult(c, 'casual', 'loaded', 3, 'weekday'), 1);
+  var ftW = mult(c, 'full_time', 'unloaded', 3, 'weekday');
+  check('L7 full_time differs from casual on same inputs', ftW !== undefined && ftW !== mult(c, 'casual', 'unloaded', 3, 'weekday'));
+  eq('L7 full_time falls back to any/all (public_holiday 2.25)', mult(c, 'full_time', 'loaded', '4', 'public_holiday'), 2.25);
+  eq('L7 casual loaded L2 Sunday = 1.2', mult(c, 'casual', 'loaded', 2, 'sunday'), 1.2);
+  eq('L7 casual loaded L3 Sunday = 1.4', mult(c, 'casual', 'loaded', 3, 'sunday'), 1.4);
+  eq('L7 casual unloaded L2 Sunday = 1.5', mult(c, 'casual', 'unloaded', '2', 'sunday'), 1.5);
+  eq('L7 casual unloaded L3 Sunday = 1.75', mult(c, 'casual', 'unloaded', 3, 'sunday'), 1.75);
+  check('L7 level 0 and Intro share the L0-2 band',
+    mult(c, 'casual', 'unloaded', 0, 'saturday') !== undefined &&
+    mult(c, 'casual', 'unloaded', 0, 'saturday') === mult(c, 'casual', 'unloaded', 'Intro', 'saturday'));
+
+  // ---- missing combination throws ----
+  var oneRow = readOrNull(mkTabs({ CONFIG: [CFG_HDR.slice(), ['casual', 'unloaded', 'L3-6', 'weekday', 1.25, 'u', '2026-10-14']] }));
+  var em = oneRow ? throwsFromImpl(function () { mult(oneRow, 'casual', 'unloaded', 3, 'sunday'); }) : null;
+  check('L8 absent combination throws "labour: no multiplier for" (' + em + ')',
+    em !== null && /labour: no multiplier for casual\/unloaded\/L3-6\/sunday/.test(em));
+  var del = mkTabs();
+  del.CONFIG = del.CONFIG.filter(function (r, i) { return i === 0 || !(r[0] === 'casual' && r[1] === 'unloaded' && r[2] === 'L3-6' && r[3] === 'sunday'); });
+  var cd = readOrNull(del);
+  var ed2 = cd ? throwsFromImpl(function () { mult(cd, 'casual', 'unloaded', 4, 'sunday'); }) : null;
+  check('L8 one deleted row from a valid config throws, not 1.0 (' + ed2 + ')',
+    ed2 !== null && /labour: no multiplier for/.test(ed2));
+
+  // ---- seed holidays ----
+  var dates = holSeed.map(function (h) { return h.date; });
+  check('L9 seed holidays non-empty', dates.length > 0);
+  ['2026-04-25', '2026-12-26', '2027-04-26', '2026-04-27', '2026-12-28', '2027-12-27', '2027-12-28', '2027-12-25', '2027-12-26', '2027-04-25']
+    .forEach(function (d) { check('L9 seed holidays contain ' + d, dates.indexOf(d) !== -1); });
+  check('L9 seed holidays have no August Bank Holiday',
+    dates.length > 0 && !dates.some(function (d) { return /^20(26|27)-08/.test(d); }) && !holSeed.some(function (h) { return /bank/i.test(h.name); }));
+  eq('L9 seed 2026 count matches research doc (13)', dates.filter(function (d) { return d.indexOf('2026') === 0; }).length, 13);
+  eq('L9 seed 2027 count matches research doc (14)', dates.filter(function (d) { return d.indexOf('2027') === 0; }).length, 14);
+
+  // ---- holiday alerts ----
+  function alerts(cf, today) { return has('labourHolidayAlerts_') ? globalThis.labourHolidayAlerts_(cf, today) : null; }
+  function keys(a) { return a ? a.map(function (x) { return x.key; }) : 'undefined-fn'; }
+  eq('L10 alerts: 2027-10-31 (58 days) -> expiring', keys(alerts(c, '2027-10-31')), ['labour_holidays_expiring']);
+  eq('L10 alerts: 2027-10-29 (60 days) -> expiring, boundary inclusive', keys(alerts(c, '2027-10-29')), ['labour_holidays_expiring']);
+  eq('L10 alerts: 2027-10-28 (61 days) -> none', keys(alerts(c, '2027-10-28')), []);
+  var exp = alerts(c, '2027-10-31');
+  check('L10 expiring alert title states end date and refresh source',
+    !!exp && !!exp[0] && /2027-12-28/.test(exp[0].title) && /refresh from nsw\.gov\.au/.test(exp[0].title) && Array.isArray(exp[0].lines));
+  var other = { multipliers: {}, holidays: { '2026-01-01': 'x', '2030-12-31': 'y' }, locations: {}, rates: {}, people: {} };
+  eq('L10 alerts: no holidays in today\'s year -> empty alert', keys(alerts(other, '2028-03-01')), ['labour_holidays_empty']);
+  eq('L10 alerts: fully empty table -> exactly one empty alert',
+    keys(alerts({ multipliers: {}, holidays: {}, locations: {}, rates: {}, people: {} }, '2026-10-14')), ['labour_holidays_empty']);
+  eq('L10 alerts: healthy mid-year -> none', keys(alerts(c, '2026-10-14')), []);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
