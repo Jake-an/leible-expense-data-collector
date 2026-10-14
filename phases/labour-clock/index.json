@@ -6,7 +6,7 @@
     {
       "step": 0,
       "name": "config-and-holidays",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -26,7 +26,8 @@
           "at": "2026-10-14T10:13:38+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "labour.gs: config reader, multiplier lookup (throws on missing), NSW 2026-27 holiday seed + 60-day/empty alerts; 2786 pass, 0 fail."
     },
     {
       "step": 1,
