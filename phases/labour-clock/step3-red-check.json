@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 32 failures are implementation-side. The suite loaded and ran (2920 passed, 32 failed), so there is no import or syntax error in the test file. The visible FAIL lines fail on missing behaviour: labourIsoWeek_ returns null for every input (I1, I2, I4, W1, W2), week/row aggregation returns null (B1, O1-O3, M1, R1, R2), location-to-department mapping returns null (D1), and exception-only groups are not emitted (X1-X3, Z1). Several expected throws are absent (D2 department disagreement, Z2 cost.ok:false). These are the failures a missing implementation should produce. The output tail is truncated, so failures above it were not inspected individually."
+}

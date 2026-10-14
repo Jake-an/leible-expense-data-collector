@@ -16118,5 +16118,157 @@ console.log('\nGroup M — ingest-validation hardening:');
   eq('D2 labourDayType_ identical under every TZ', tzOut.every(function (x) { return x === 'weekday,weekday,saturday,sunday'; }), true);
 })();
 
+/* ------------------------------------------------------------------ *
+ * labour-clock step 3: group-week-location (PRD-18). Null-safe: a missing
+ * symbol must fail assertions, not crash before the summary. Dummy data only.
+ * ------------------------------------------------------------------ */
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function thrown(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
+  function near(a, b, tol) { return typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= tol; }
+  function grp(costed, exc) { return has('labourGroup_') ? globalThis.labourGroup_(costed, exc || []) : null; }
+  function item(date, loc, dept, hours, base, uplift, sup) {
+    var gross = base + uplift;
+    return {
+      shift: { date: date, location: loc, locationCode: loc === 'Loc B' ? 'LB' : 'LA', department: dept, hours: hours },
+      cost: { ok: true, base: base, uplift: uplift, gross: gross, super: sup, total: gross + sup }
+    };
+  }
+  function iso(d) { return has('labourIsoWeek_') ? globalThis.labourIsoWeek_(d) : null; }
+
+  // ---- labourIsoWeek_ ----
+  eq('I1 Mon 2026-10-12 -> week 12..18, 2026-W42',
+    iso('2026-10-12'), { weekStart: '2026-10-12', weekEnd: '2026-10-18', isoWeek: '2026-W42' });
+  eq('I1 Sun 2026-10-11 -> previous week', iso('2026-10-11'), { weekStart: '2026-10-05', weekEnd: '2026-10-11', isoWeek: '2026-W41' });
+  eq('I2 2026-12-31 and 2027-01-01 share 2026-W53',
+    [iso('2026-12-31') && iso('2026-12-31').isoWeek, iso('2027-01-01') && iso('2027-01-01').isoWeek], ['2026-W53', '2026-W53']);
+  eq('I2 week 2026-12-28..2027-01-03', iso('2027-01-01') && [iso('2027-01-01').weekStart, iso('2027-01-01').weekEnd], ['2026-12-28', '2027-01-03']);
+  var agree = has('labourIsoWeek_') && has('isoWeekLabel_') &&
+    ['2026-10-11', '2026-10-12', '2026-12-31', '2027-01-01', '2024-12-30', '2028-01-02', '2026-01-01', '2028-02-29'].every(function (d) {
+      return globalThis.labourIsoWeek_(d).isoWeek === globalThis.isoWeekLabel_(d);
+    });
+  check('I3 labourIsoWeek_ agrees with isoWeekLabel_ (orderapp.gs) on the same inputs', agree);
+  var savedTZ = process.env.TZ;
+  var tzOut = ['UTC', 'Australia/Sydney', 'Pacific/Kiritimati', 'America/Los_Angeles'].map(function (tz) {
+    process.env.TZ = tz;
+    var a = iso('2026-10-12'), b = iso('2027-01-01');
+    return a && b ? [a.weekStart, a.weekEnd, a.isoWeek, b.isoWeek].join(',') : 'none';
+  });
+  if (savedTZ === undefined) delete process.env.TZ; else process.env.TZ = savedTZ;
+  eq('I4 labourIsoWeek_ identical under every TZ', tzOut.every(function (x) { return x === '2026-10-12,2026-10-18,2026-W42,2026-W53'; }), true);
+
+  // ---- basic grouping ----
+  var r = grp([
+    item('2026-10-05', 'Loc A', 'Cafe', 8, 240, 60, 36),
+    item('2026-10-06', 'Loc A', 'Cafe', 6, 180, 45, 27),
+    item('2026-10-07', 'Loc A', 'Cafe', 4, 100, 25, 15)
+  ]);
+  eq('B1 three shifts, one loc, one week -> one row', r && r.length, 1);
+  var row = r && r[0];
+  eq('B1 row identity', row && [row.weekStart, row.weekEnd, row.isoWeek, row.location, row.locationCode, row.department],
+    ['2026-10-05', '2026-10-11', '2026-W41', 'Loc A', 'LA', 'Cafe']);
+  eq('B1 row sums', row && [row.hours, row.base, row.uplift, row.gross, row.super, row.total, row.shiftCount, row.exceptionCount],
+    [18, 520, 130, 650, 78, 728, 3, 0]);
+
+  // ---- ordering ----
+  r = grp([
+    item('2026-10-06', 'Loc B', 'Cafe', 1, 10, 0, 1),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 10, 0, 1)
+  ]);
+  eq('O1 two locations same week -> sorted by location', r && r.map(function (x) { return x.location; }), ['Loc A', 'Loc B']);
+  r = grp([
+    item('2026-10-13', 'Loc A', 'Cafe', 1, 10, 0, 1),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 10, 0, 1)
+  ]);
+  eq('O2 two weeks same location -> week order', r && r.map(function (x) { return x.weekStart; }), ['2026-10-05', '2026-10-12']);
+  r = grp([
+    item('2026-10-13', 'Loc A', 'Cafe', 1, 10, 0, 1),
+    item('2026-10-06', 'Loc B', 'Cafe', 1, 10, 0, 1),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 10, 0, 1)
+  ]);
+  eq('O3 sorted by weekStart then location', r && r.map(function (x) { return x.weekStart + '|' + x.location; }),
+    ['2026-10-05|Loc A', '2026-10-05|Loc B', '2026-10-12|Loc A']);
+
+  // ---- Monday week boundary ----
+  r = grp([
+    item('2026-10-11', 'Loc A', 'Cafe', 5, 100, 50, 18),
+    item('2026-10-12', 'Loc A', 'Cafe', 5, 100, 0, 12)
+  ]);
+  eq('W1 Sun 10-11 and Mon 10-12 -> DIFFERENT ISO weeks', r && r.map(function (x) { return x.isoWeek; }), ['2026-W41', '2026-W42']);
+  r = grp([
+    item('2026-12-31', 'Loc A', 'Cafe', 5, 100, 0, 12),
+    item('2027-01-01', 'Loc A', 'Cafe', 5, 100, 0, 12)
+  ]);
+  eq('W2 ISO year boundary -> ONE row 2026-W53 with 2 shifts', r && [r.length, r[0].isoWeek, r[0].shiftCount], [1, '2026-W53', 2]);
+
+  // ---- 7-shift mixed week: components agree within a cent ----
+  r = grp([
+    item('2026-10-05', 'Loc A', 'Cafe', 7.5, 225.37, 225.37, 54.0888),
+    item('2026-10-06', 'Loc A', 'Cafe', 6.3333, 190.4111, 47.6028, 28.5617),
+    item('2026-10-07', 'Loc A', 'Cafe', 8.1667, 245.0333, 61.2583, 36.7355),
+    item('2026-10-08', 'Loc A', 'Cafe', 4.25, 127.5557, 31.8889, 19.1333),
+    item('2026-10-09', 'Loc A', 'Cafe', 5.9, 177.0049, 44.2512, 26.5507),
+    item('2026-10-10', 'Loc A', 'Cafe', 9.1111, 273.3377, 54.6675, 39.3601),
+    item('2026-10-11', 'Loc A', 'Cafe', 3.3333, 99.9999, 49.9999, 17.9999)
+  ]);
+  row = r && r[0];
+  check('M1 7 shifts -> one row of 7', !!row && r.length === 1 && row.shiftCount === 7);
+  check('M1 base + uplift ~ gross within a cent', !!row && near(row.base + row.uplift, row.gross, 0.01));
+  check('M1 gross + super ~ total within a cent', !!row && near(row.gross + row.super, row.total, 0.01));
+  check('M1 every money field is whole cents',
+    !!row && ['base', 'uplift', 'gross', 'super', 'total'].every(function (k) { return near(row[k], Math.round(row[k] * 100) / 100, 1e-9); }));
+
+  // ---- rounding once, at the group ----
+  r = grp([
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 10.004, 0, 1.2004),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 10.004, 0, 1.2004),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 10.004, 0, 1.2004)
+  ]);
+  row = r && r[0];
+  eq('R1 gross is round2 of the true sum (30.012 -> 30.01), not the sum of rounded shifts', row && row.gross, 30.01);
+  eq('R1 super round2 of 3.6012 -> 3.6', row && row.super, 3.6);
+  eq('R1 total is round2 of UNROUNDED gross+super (33.6132 -> 33.61)', row && row.total, 33.61);
+  r = grp([
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 0.004, 0, 0),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 0.004, 0, 0),
+    item('2026-10-06', 'Loc A', 'Cafe', 1, 0.004, 0, 0)
+  ]);
+  eq('R2 three 0.4-cent shifts sum to 1 cent (per-shift rounding would give 0)', r && r[0].gross, 0.01);
+
+  // ---- department ----
+  r = grp([item('2026-10-06', 'Loc B', 'Roastery', 1, 10, 0, 1)]);
+  eq('D1 roastery location -> Roastery', r && r[0].department, 'Roastery');
+  r = grp([item('2026-10-06', 'Loc A', 'Cafe', 1, 10, 0, 1)]);
+  eq('D1 cafe location -> Cafe', r && r[0].department, 'Cafe');
+  var msg = has('labourGroup_') ? thrown(function () {
+    globalThis.labourGroup_([
+      item('2026-10-06', 'Loc A', 'Cafe', 1, 10, 0, 1),
+      item('2026-10-07', 'Loc A', 'Roastery', 1, 10, 0, 1)
+    ], []);
+  }) : null;
+  check('D2 department disagreement inside one group THROWS', msg !== null);
+
+  // ---- exceptions ----
+  r = grp([], [{ reason: 'no_rate', date: '2026-10-06', location: 'Loc A' }, { reason: 'unpaired', date: '2026-10-07', location: 'Loc A' }]);
+  row = r && r[0];
+  check('X1 exception-only group is emitted', !!r && r.length === 1);
+  eq('X1 shiftCount 0, exceptionCount 2, money 0',
+    row && [row.shiftCount, row.exceptionCount, row.hours, row.base, row.uplift, row.gross, row.super, row.total],
+    [0, 2, 0, 0, 0, 0, 0, 0]);
+  eq('X1 exception-only row keys on week + location', row && [row.weekStart, row.isoWeek, row.location], ['2026-10-05', '2026-W41', 'Loc A']);
+  r = grp([item('2026-10-06', 'Loc A', 'Cafe', 1, 10, 0, 1)], [{ reason: 'no_rate', date: '2026-10-07', location: 'Loc A' }]);
+  eq('X2 costed + exception in same group -> shiftCount 1, exceptionCount 1', r && [r.length, r[0].shiftCount, r[0].exceptionCount], [1, 1, 1]);
+  r = grp([], [{ reason: 'unpaired', date: '2026-10-06', location: '' }, { reason: 'unpaired', date: '2026-10-06' }]);
+  eq('X3 exceptions with no location counted under (unknown)', r && [r.length, r[0].location, r[0].exceptionCount], [1, '(unknown)', 2]);
+
+  // ---- empty / invalid ----
+  eq('Z1 empty costed + empty exceptions -> []', grp([], []), []);
+  msg = has('labourGroup_') ? thrown(function () {
+    globalThis.labourGroup_([{ shift: { date: '2026-10-06', location: 'Loc A', department: 'Cafe', hours: 1 },
+      cost: { ok: false, exception: { reason: 'person_not_in_people' } } }], []);
+  }) : null;
+  check('Z2 a cost.ok:false entry THROWS', msg !== null);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
