@@ -54,7 +54,7 @@
     {
       "step": 1,
       "name": "rows-to-shifts",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -73,7 +73,8 @@
           "at": "2026-10-14T10:24:59+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "labour.gs: LABOUR_CLOCK_COLS, labourSydneyParts_ (NSW DST, TZ-independent), labourRowsToShifts_ (dedup, 5 exception reasons, rates fallback); 2880 pass, 0 fail under TZ=UTC and Australia/Sydney."
     },
     {
       "step": 2,

@@ -244,3 +244,153 @@ function labourHolidayAlerts_(cfg, today) {
   }
   return [];
 }
+
+/* ------------------------------------------------------------------ *
+ * Step 1 — clock rows -> shifts (PRD-15). Columns are located by header
+ * text via LABOUR_CLOCK_COLS, the single remap point for the Zap.
+ * ------------------------------------------------------------------ */
+
+var LABOUR_CLOCK_COLS = {
+  person_email: 'person_email', person_name: 'person_name', clock_in: 'clock_in', clock_out: 'clock_out',
+  hours: 'hours', break_minutes: 'break_minutes', location: 'location', rate: 'rate', record_id: 'record_id'
+};
+
+var LABOUR_CLOCK_MS_HOUR_ = 3600000;
+
+// Epoch ms of the first Sunday of month `m` (0-based) in UTC year y, at hh:00 UTC-day-zero.
+function labourFirstSundayUtc_(y, m) {
+  var dow = new Date(Date.UTC(y, m, 1)).getUTCDay();
+  return Date.UTC(y, m, 1 + ((7 - dow) % 7));
+}
+
+// NSW offset in hours at UTC instant ms: AEDT (11) from 02:00 std on the first Sunday of
+// October to 03:00 daylight on the first Sunday of April, else AEST (10).
+function labourSydneyOffsetHours_(ms) {
+  var y = new Date(ms + 10 * LABOUR_CLOCK_MS_HOUR_).getUTCFullYear();
+  var endMs = labourFirstSundayUtc_(y, 3) + 3 * LABOUR_CLOCK_MS_HOUR_ - 11 * LABOUR_CLOCK_MS_HOUR_;
+  var startMs = labourFirstSundayUtc_(y, 9) + 2 * LABOUR_CLOCK_MS_HOUR_ - 10 * LABOUR_CLOCK_MS_HOUR_;
+  return (ms < endMs || ms >= startMs) ? 11 : 10;
+}
+
+function labourSydneyParts_(v) {
+  var ms = null;
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    ms = v.getTime();
+  } else {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(labourStr_(v));
+    if (m) {
+      var local = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0));
+      if (m[7] === 'Z') {
+        ms = local;
+      } else if (m[7]) {
+        var sign = m[7].charAt(0) === '-' ? -1 : 1;
+        var digits = m[7].slice(1).replace(':', '');
+        ms = local - sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2))) * 60000;
+      } else {
+        ms = local - labourSydneyOffsetHours_(local - 10 * LABOUR_CLOCK_MS_HOUR_) * LABOUR_CLOCK_MS_HOUR_;
+      }
+    }
+  }
+  if (ms === null || !isFinite(ms)) return null;
+  var d = new Date(ms + labourSydneyOffsetHours_(ms) * LABOUR_CLOCK_MS_HOUR_);
+  return {
+    date: d.getUTCFullYear() + '-' + labourPad2_(d.getUTCMonth() + 1) + '-' + labourPad2_(d.getUTCDate()),
+    ms: ms
+  };
+}
+
+function labourPositiveNumber_(v) {
+  if (labourStr_(v) === '') return null;
+  var n = Number(v);
+  return (isFinite(n) && n > 0) ? n : null;
+}
+
+function labourRateFallback_(cfg, email, date) {
+  var list = (cfg.rates && Object.prototype.hasOwnProperty.call(cfg.rates, email)) ? cfg.rates[email] : [];
+  var best = null;
+  list.forEach(function (r) {
+    if (r.effective_from <= date && (best === null || r.effective_from > best.effective_from)) best = r;
+  });
+  return best ? best.rate : null;
+}
+
+function labourRowsToShifts_(rows, range, cfg) {
+  var hdr = (rows[0] || []).map(labourStr_);
+  var ix = {};
+  Object.keys(LABOUR_CLOCK_COLS).forEach(function (k) {
+    var i = hdr.indexOf(LABOUR_CLOCK_COLS[k]);
+    if (i === -1) throw new Error('labour: CLOCK_RAW is missing column "' + LABOUR_CLOCK_COLS[k] + '"');
+    ix[k] = i;
+  });
+
+  // Parse every non-blank row, then dedup (latest clock-out wins; ties -> later row).
+  var winners = {};
+  var order = [];
+  for (var n = 1; n < rows.length; n++) {
+    var r = rows[n];
+    if (!Array.isArray(r) || !r.some(function (c) { return labourStr_(c) !== ''; })) continue;
+    var email = labourStr_(r[ix.person_email]).toLowerCase();
+    var cin = labourSydneyParts_(r[ix.clock_in]);
+    var cout = labourSydneyParts_(r[ix.clock_out]);
+    var id = labourStr_(r[ix.record_id]);
+    var key = id !== '' ? 'id:' + id : (cin ? 'pe:' + email + '|' + cin.ms : 'row:' + n);
+    var rec = { row: r, n: n, email: email, cin: cin, cout: cout, id: id,
+      outMs: cout ? cout.ms : -Infinity };
+    if (!Object.prototype.hasOwnProperty.call(winners, key)) {
+      order.push(key);
+      winners[key] = rec;
+    } else if (rec.outMs >= winners[key].outMs) {
+      winners[key] = rec;
+    }
+  }
+
+  var shifts = [];
+  var exceptions = [];
+  order.map(function (k) { return winners[k]; })
+    .sort(function (a, b) { return a.n - b.n; })
+    .forEach(function (rec) {
+      var r = rec.row;
+      var date = rec.cin ? rec.cin.date : '';
+      if (rec.cin && (date < range.start || date > range.end)) return;
+      var location = labourStr_(r[ix.location]);
+      function raise(reason, detail) {
+        exceptions.push({ reason: reason, recordId: rec.id, personEmail: rec.email, date: date, location: location, detail: detail });
+      }
+
+      var hours = null;
+      var cell = labourPositiveNumber_(r[ix.hours]);
+      if (!rec.cin) return raise('unpaired', 'clock-in missing or unparseable');
+      if (rec.cout) {
+        var brk = labourPositiveNumber_(r[ix.break_minutes]) || 0;
+        hours = Math.round(((rec.cout.ms - rec.cin.ms) / LABOUR_CLOCK_MS_HOUR_ - brk / 60) * 10000) / 10000;
+        if (rec.cout.ms < rec.cin.ms) return raise('negative', 'clock-out is before clock-in');
+        if (hours <= 0) return raise('negative', 'computed hours ' + hours + ' <= 0 after break');
+      } else if (cell !== null) {
+        hours = cell;
+      } else {
+        return raise('unpaired', 'clock-out missing or unparseable and no hours cell');
+      }
+      if (hours > 16) return raise('over_16h', 'shift is ' + hours + ' hours');
+      if (!Object.prototype.hasOwnProperty.call(cfg.locations, location)) {
+        return raise('unknown_location', 'location "' + location + '" is not in LOCATIONS');
+      }
+
+      var rate = labourPositiveNumber_(r[ix.rate]);
+      var rateSource = 'row';
+      if (rate === null) {
+        rate = labourRateFallback_(cfg, rec.email, date);
+        rateSource = 'rates_fallback';
+      }
+      if (rate === null) return raise('no_rate', 'no row rate and no RATES entry effective on ' + date);
+
+      var loc = cfg.locations[location];
+      shifts.push({
+        recordId: rec.id, personEmail: rec.email, personName: labourStr_(r[ix.person_name]), date: date,
+        clockInMs: rec.cin.ms, clockOutMs: rec.cout ? rec.cout.ms : null, hours: hours,
+        location: location, locationCode: loc.code, department: loc.department,
+        rate: rate, rateSource: rateSource
+      });
+    });
+
+  return { shifts: shifts, exceptions: exceptions };
+}
