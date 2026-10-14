@@ -15700,7 +15700,9 @@ console.log('\nGroup M — ingest-validation hardening:');
     mult(c, 'casual', 'unloaded', 0, 'saturday') === mult(c, 'casual', 'unloaded', 'Intro', 'saturday'));
 
   // ---- missing combination throws ----
-  var oneRow = readOrNull(mkTabs({ CONFIG: [CFG_HDR.slice(), ['casual', 'unloaded', 'L3-6', 'weekday', 1.25, 'u', '2026-10-14']] }));
+  // PEOPLE limited to the casual person: a full_time PEOPLE row is (correctly) rejected by a casual-only CONFIG.
+  var oneRow = readOrNull(mkTabs({ CONFIG: [CFG_HDR.slice(), ['casual', 'unloaded', 'L3-6', 'weekday', 1.25, 'u', '2026-10-14']],
+    PEOPLE: [PPL_HDR.slice(), ['alice@example.test', 'casual', 'Intro', 'unloaded']] }));
   var em = oneRow ? throwsFromImpl(function () { mult(oneRow, 'casual', 'unloaded', 3, 'sunday'); }) : null;
   check('L8 absent combination throws "labour: no multiplier for" (' + em + ')',
     em !== null && /labour: no multiplier for casual\/unloaded\/L3-6\/sunday/.test(em));
@@ -16387,12 +16389,12 @@ console.log('\nGroup M — ingest-validation hardening:');
   var p2 = pg(1, 40.00, '2025-10-01');
   eq('G2 fits a different single level -> labour_payguide_mismatch', keys(p2.out), ['labour_payguide_mismatch']);
   eq('G2 line text', lines(p2.out, 'labour_payguide_mismatch'), ['a@example.test: pinned L1, rate fits L4']);
-  check('G2 cfg.people deep-equal before/after (never re-classifies)', p2.unchanged);
+  check('G2 cfg.people deep-equal before/after (never re-classifies)', Array.isArray(p2.out) && p2.out.length > 0 && p2.unchanged);
   var p3 = pg(1, 31.10, '2025-10-01');
   eq('G3 within 1% of two adjacent levels -> labour_payguide_ambiguous', keys(p3.out), ['labour_payguide_ambiguous']);
   check('G3 lists BOTH candidate levels', JSON.stringify(p3.out).indexOf('L2') !== -1 && JSON.stringify(p3.out).indexOf('L3') !== -1);
   check('G3 does not pick (no mismatch alert)', byKey(p3.out, 'labour_payguide_mismatch') === null);
-  check('G3 cfg unchanged', p3.unchanged);
+  check('G3 cfg unchanged', Array.isArray(p3.out) && p3.out.length > 0 && p3.unchanged);
   var p4 = pg(1, 38.00, '2025-10-01');
   eq('G4 above-award rate -> nomatch only', keys(p4.out), ['labour_payguide_nomatch']);
   var p5 = pg(1, 33.00, '2026-07-01');
@@ -16448,6 +16450,93 @@ console.log('\nGroup M — ingest-validation hardening:');
     return a && typeof a.key === 'string' && a.key !== '' && typeof a.title === 'string' && a.title !== '' &&
       Array.isArray(a.lines) && a.lines.every(function (l) { return typeof l === 'string' && l !== '' && !/[\r\n]/.test(l); });
   }));
+})();
+
+// ---- labour-clock hardening: Date-typed cells, impossible dates, PEOPLE validation ----
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function threw(fn) { try { fn(); return null; } catch (e) { return String(e && e.message || e); } }
+  // Never let one throwing case abort the suite: a throw becomes a value the assert reports.
+  function call(n) {
+    var a = Array.prototype.slice.call(arguments, 1);
+    try { return has(n) ? globalThis[n].apply(null, a) : null; } catch (e) { return { threw: String(e && e.message || e) }; }
+  }
+  var hcfg = { multipliers: {}, holidays: { '2026-10-05': 'Labour Day' }, locations: {}, rates: {}, people: {} };
+
+  // Date objects (what the Sheet returns) are accepted via LOCAL components.
+  eq('H1 dayType: Date Sat 2026-10-10 -> saturday', call('labourDayType_', new Date(2026, 9, 10), hcfg), 'saturday');
+  eq('H1b dayType: Date holiday 2026-10-05 -> public_holiday', call('labourDayType_', new Date(2026, 9, 5), hcfg), 'public_holiday');
+  eq('H1c dayType: Date at local midnight is not shifted by UTC', call('labourDayType_', new Date(2026, 9, 11, 0, 0, 0), hcfg), 'sunday');
+  check('H2 dayType: String()-ed Date throws, never silently "weekday"',
+    threw(function () { globalThis.labourDayType_('Wed Oct 07 2026 00:00:00 GMT+1100', hcfg); }) !== null);
+  check('H3 isoWeek: impossible 2026-02-30 throws', threw(function () { globalThis.labourIsoWeek_('2026-02-30'); }) !== null);
+  check('H3b isoWeek: 2026-13-01 throws', threw(function () { globalThis.labourIsoWeek_('2026-13-01'); }) !== null);
+  eq('H4 isoWeek: Date 2026-10-14 -> week of 2026-10-12', (call('labourIsoWeek_', new Date(2026, 9, 14)) || {}).weekStart, '2026-10-12');
+  eq('H5 sgRate: Date 2025-07-01 -> 0.12', call('labourSgRate_', new Date(2025, 6, 1)), 0.12);
+  check('H5b sgRate: garbage date throws', threw(function () { globalThis.labourSgRate_('soon'); }) !== null);
+
+  var j1 = call('labourJulyAlert_', new Date(2026, 9, 14), 2025);
+  eq('H6 julyAlert: Date today -> alert, year 2026', j1 && [j1.alert && j1.alert.key, j1.lastAlertedYear], ['labour_reverify_multipliers', 2026]);
+  var j2 = call('labourJulyAlert_', new Date(2026, 9, 15), 2026);
+  eq('H6b julyAlert: Date today, already alerted -> no re-fire', j2 && [j2.alert, j2.lastAlertedYear], [null, 2026]);
+  check('H7 julyAlert: unparseable today throws (guard cannot go NaN)',
+    threw(function () { globalThis.labourJulyAlert_('Wed Oct 14 2026', 2026); }) !== null);
+  var hcfgH = { multipliers: {}, holidays: { '2026-12-25': 'Christmas', '2027-12-27': 'x' }, locations: {}, rates: {}, people: {} };
+  eq('H7b holidayAlerts: Date today accepted', call('labourHolidayAlerts_', hcfgH, new Date(2026, 9, 14)), []);
+
+  function costed(date) {
+    return { shift: { date: date, location: 'Loc A', locationCode: 'LA', department: 'Cafe', hours: 1 },
+      cost: { ok: true, base: 10, uplift: 0, gross: 10, super: 1.2 } };
+  }
+  check('H8 group: costed shift with malformed date throws (no "(unknown)" money row)',
+    threw(function () { globalThis.labourGroup_([costed('2026-10-1')], []); }) !== null);
+  check('H8b group: costed shift with missing date throws',
+    threw(function () { globalThis.labourGroup_([costed('')], []); }) !== null);
+  var g9 = call('labourGroup_', [costed(new Date(2026, 9, 14))], [{ date: new Date(2026, 9, 15), location: 'Loc A' }]) || [];
+  eq('H9 group: Date-typed shift + exception land in week 2026-10-12, one row',
+    g9.map(function (g) { return [g.weekStart, g.shiftCount, g.exceptionCount]; }), [['2026-10-12', 1, 1]]);
+  var g9b = call('labourGroup_', [], [{ date: '', location: 'Loc A' }]) || [];
+  eq('H9b group: exception with no date still buckets as (unknown)', g9b.map(function (g) { return g.isoWeek; }), ['(unknown)']);
+
+  // Pay guide: case-insensitive type/basis, Date observation date.
+  var guide = [{ effective_from: '2025-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 1, rate: 30 },
+    { effective_from: '2025-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 4, rate: 40 }];
+  var pcfg = { people: { 'a@example.test': { employment_type: 'Casual', level: 1, rate_basis: 'Loaded' } } };
+  var pg1 = call('labourPayGuideCheck_', [{ personEmail: 'a@example.test', rate: 40, date: '2025-10-01' }], pcfg, guide) || [];
+  eq('H10 payGuide: "Casual"/"Loaded" matches guide rows -> mismatch, not stale', pg1.map(function (a) { return a.key; }), ['labour_payguide_mismatch']);
+  var pg2 = call('labourPayGuideCheck_', [{ personEmail: 'a@example.test', rate: 30, date: new Date(2025, 9, 1) }], pcfg, guide);
+  eq('H10b payGuide: Date observation date -> exact match, nothing', pg2, []);
+
+  // PEOPLE validated + normalised at config-read time.
+  var CFG_HDR = ['employment_type', 'rate_basis', 'level_band', 'day_type', 'multiplier', 'source_url', 'as_of'];
+  var PPL_HDR = ['person_email', 'employment_type', 'level', 'rate_basis'];
+  function tabs(people) {
+    return {
+      CONFIG: [CFG_HDR, ['casual', 'unloaded', 'L0-2', 'weekday', 1.25, 'u', '2026-10-14'],
+        ['full_time', 'any', 'all', 'weekday', 1, 'u', '2026-10-14']],
+      HOLIDAYS: [['date', 'name']],
+      LOCATIONS: [['location', 'code', 'department', 'live'], ['Loc A', 'LA', 'Cafe', 'TRUE']],
+      RATES: [['person_email', 'rate', 'effective_from']],
+      PEOPLE: [PPL_HDR].concat(people)
+    };
+  }
+  function readP(people) { return has('labourReadConfig_') ? globalThis.labourReadConfig_(tabs(people)) : null; }
+  var c11 = (function () { try { return readP([['a@example.test', ' Casual ', 1, 'Unloaded']]); } catch (e) { return null; } })();
+  eq('H11 PEOPLE type/basis normalised to CONFIG spelling',
+    c11 && [c11.people['a@example.test'].employment_type, c11.people['a@example.test'].rate_basis], ['casual', 'unloaded']);
+  var e12 = threw(function () { readP([['a@example.test', 'casul', 1, 'unloaded']]); });
+  check('H12 PEOPLE unknown employment_type throws naming PEOPLE + value (' + e12 + ')', e12 !== null && /PEOPLE/.test(e12) && /casul/.test(e12));
+  var e13 = threw(function () { readP([['a@example.test', 'casual', 1, 'unlaoded']]); });
+  check('H13 PEOPLE unknown rate_basis throws naming PEOPLE + value (' + e13 + ')', e13 !== null && /PEOPLE/.test(e13) && /unlaoded/.test(e13));
+  var e14 = threw(function () { readP([['a@example.test', 'casual', 'Level 3', 'unloaded']]); });
+  check('H14 PEOPLE unrecognised level throws naming PEOPLE (' + e14 + ')', e14 !== null && /PEOPLE/.test(e14));
+  check('H14b PEOPLE blank fields still allowed (person_incomplete handles them later)',
+    threw(function () { readP([['a@example.test', '', '', '']]); }) === null);
+
+  var c15 = { multipliers: {}, holidays: {}, locations: {}, rates: {}, people: { 'a@example.test': { employment_type: 'full_time', level: 3, rate_basis: 'any' } } };
+  c15.multipliers['full_time|any|all|saturday'] = 1.25;
+  var r15 = call('labourCostShift_', { personEmail: 'a@example.test', date: new Date(2026, 9, 10), hours: 2, rate: 40, location: 'Loc A' }, c15);
+  eq('H15 costShift: Date-typed shift date -> saturday, costed', r15 && [r15.ok, r15.dayType, r15.gross], [true, 'saturday', 100]);
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

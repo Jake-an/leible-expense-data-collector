@@ -101,6 +101,18 @@ function labourDateKey_(v) {
   return labourStr_(v).slice(0, 10);
 }
 
+// Cell (string or Date) -> 'yyyy-MM-dd' that is a REAL calendar date, else throws naming `what`.
+// The Sheet hands back Date objects; String(date) / 2026-02-30 must fail loud, never mis-bucket.
+function labourDayKey_(v, what) {
+  var k = labourDateKey_(v);
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(k);
+  var d = m && new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (!d || d.getUTCMonth() !== Number(m[2]) - 1 || d.getUTCDate() !== Number(m[3])) {
+    throw new Error('labour: bad ' + (what || 'date') + ' ' + JSON.stringify(String(v)) + ' (want yyyy-MM-dd)');
+  }
+  return k;
+}
+
 // Maps each expected column to its index; throws naming the tab and column.
 function labourTabIndex_(tabs, name) {
   var rows = tabs && tabs[name];
@@ -139,8 +151,9 @@ function labourReadConfig_(tabs) {
     if (!isFinite(m) || m <= 0) {
       throw new Error('labour: CONFIG row ' + (n + 2) + ' has invalid multiplier ' + JSON.stringify(raw));
     }
-    var mk = labourMultKey_(labourStr_(r[t.idx.employment_type]), labourStr_(r[t.idx.rate_basis]),
-      labourStr_(r[t.idx.level_band]), labourStr_(r[t.idx.day_type]));
+    var mk = labourMultKey_(labourStr_(r[t.idx.employment_type]).toLowerCase(),
+      labourStr_(r[t.idx.rate_basis]).toLowerCase(), labourStr_(r[t.idx.level_band]),
+      labourStr_(r[t.idx.day_type]).toLowerCase());
     if (Object.prototype.hasOwnProperty.call(cfg.multipliers, mk)) {
       throw new Error('labour: CONFIG row ' + (n + 2) + ' duplicates key ' + JSON.stringify(mk));
     }
@@ -185,13 +198,33 @@ function labourReadConfig_(tabs) {
     (cfg.rates[email] = cfg.rates[email] || []).push({ rate: rate, effective_from: eff });
   });
 
+  // PEOPLE is validated against CONFIG here, so a typo fails at read time naming the row,
+  // not later as a 'no multiplier' throw. Blank fields stay legal (person_incomplete).
+  var knownTypes = {};
+  var knownBases = {};
+  Object.keys(cfg.multipliers).forEach(function (k) {
+    var parts = k.split('|');
+    knownTypes[parts[0]] = true;
+    knownBases[parts[1]] = true;
+  });
   t = labourTabIndex_(tabs, 'PEOPLE');
-  t.rows.forEach(function (r) {
-    cfg.people[labourStr_(r[t.idx.person_email]).toLowerCase()] = {
-      employment_type: labourStr_(r[t.idx.employment_type]),
-      level: r[t.idx.level],
-      rate_basis: labourStr_(r[t.idx.rate_basis])
-    };
+  t.rows.forEach(function (r, n) {
+    var email = labourStr_(r[t.idx.person_email]).toLowerCase();
+    var type = labourStr_(r[t.idx.employment_type]).toLowerCase();
+    var basis = labourStr_(r[t.idx.rate_basis]).toLowerCase();
+    var where = 'labour: PEOPLE row ' + (n + 2) + ' (' + email + ')';
+    if (type !== '' && !knownTypes[type]) {
+      throw new Error(where + ' has unknown employment_type ' + JSON.stringify(r[t.idx.employment_type]) +
+        ' (CONFIG has ' + Object.keys(knownTypes).sort().join(', ') + ')');
+    }
+    if (basis !== '' && !knownBases[basis]) {
+      throw new Error(where + ' has unknown rate_basis ' + JSON.stringify(r[t.idx.rate_basis]) +
+        ' (CONFIG has ' + Object.keys(knownBases).sort().join(', ') + ')');
+    }
+    if (labourStr_(r[t.idx.level]) !== '') {
+      try { labourLevelBand_(r[t.idx.level]); } catch (e) { throw new Error(where + ': ' + e.message); }
+    }
+    cfg.people[email] = { employment_type: type, level: r[t.idx.level], rate_basis: basis };
   });
 
   return cfg;
@@ -223,8 +256,9 @@ function labourDayNumber_(key) {
 }
 
 function labourHolidayAlerts_(cfg, today) {
+  today = labourDayKey_(today, 'today');
   var dates = Object.keys(cfg.holidays).sort();
-  var year = String(today).slice(0, 4);
+  var year = today.slice(0, 4);
   var inYear = dates.filter(function (d) { return d.slice(0, 4) === year; }).length;
   if (inYear === 0) {
     return [{
@@ -234,7 +268,7 @@ function labourHolidayAlerts_(cfg, today) {
     }];
   }
   var end = dates[dates.length - 1];
-  var left = labourDayNumber_(end) - labourDayNumber_(String(today));
+  var left = labourDayNumber_(end) - labourDayNumber_(today);
   if (left <= LABOUR_HOLIDAY_ALERT_DAYS_) {
     return [{
       key: 'labour_holidays_expiring',
@@ -405,7 +439,7 @@ function labourRowsToShifts_(rows, range, cfg) {
 var LABOUR_SG_RATES_ = [{ from: '2024-07-01', rate: 0.115 }, { from: '2025-07-01', rate: 0.12 }];
 
 function labourSgRate_(date) {
-  var key = String(date);
+  var key = labourDayKey_(date, 'shift date');
   var best = null;
   LABOUR_SG_RATES_.forEach(function (r) { if (r.from <= key) best = r; });
   if (best === null) throw new Error('labour: no superannuation rate for ' + key + ' (table starts ' + LABOUR_SG_RATES_[0].from + ')');
@@ -413,7 +447,7 @@ function labourSgRate_(date) {
 }
 
 function labourDayType_(date, cfg) {
-  var key = String(date);
+  var key = labourDayKey_(date, 'shift date');
   if (Object.prototype.hasOwnProperty.call(cfg.holidays, key) && cfg.holidays[key]) return 'public_holiday';
   var p = key.split('-');
   var dow = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]))).getUTCDay();
@@ -453,8 +487,7 @@ function labourCostShift_(shift, cfg) {
 function labourRound2_(x) { return Math.round(x * 100) / 100; }
 
 function labourIsoWeek_(date) {
-  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date));
-  if (!m) throw new Error('labour: bad date "' + date + '" (want yyyy-MM-dd)');
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(labourDayKey_(date));
   var DAY = 86400000;
   var ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   var isoDay = new Date(ms).getUTCDay() || 7;           // Mon=1..Sun=7
@@ -471,10 +504,11 @@ function labourIsoWeek_(date) {
 
 function labourGroup_(costed, exceptions) {
   var groups = {};
-  function slot(date, location, code) {
-    var wk = /^\d{4}-\d{2}-\d{2}$/.test(String(date))
-      ? labourIsoWeek_(date)
-      : { weekStart: '', weekEnd: '', isoWeek: '(unknown)' };
+  // Costed shifts carry money, so a bad date throws; exceptions may legitimately lack one.
+  function exceptionWeek(date) {
+    try { return labourIsoWeek_(date); } catch (e) { return { weekStart: '', weekEnd: '', isoWeek: '(unknown)' }; }
+  }
+  function slot(wk, location, code) {
     var loc = labourStr_(location) === '' ? '(unknown)' : labourStr_(location);
     var k = wk.weekStart + '|' + loc;
     if (!Object.prototype.hasOwnProperty.call(groups, k)) {
@@ -490,7 +524,7 @@ function labourGroup_(costed, exceptions) {
   (costed || []).forEach(function (c) {
     if (!c || !c.cost || c.cost.ok !== true) throw new Error('labour: labourGroup_ got a cost that is not ok');
     var s = c.shift;
-    var g = slot(s.date, s.location, s.locationCode);
+    var g = slot(labourIsoWeek_(s.date), s.location, s.locationCode);
     if (g.department !== '' && g.department !== s.department) {
       throw new Error('labour: department disagrees within ' + g.isoWeek + ' / ' + g.location +
         ' ("' + g.department + '" vs "' + s.department + '")');
@@ -504,7 +538,7 @@ function labourGroup_(costed, exceptions) {
     g.total += c.cost.gross + c.cost.super;
     g.shiftCount++;
   });
-  (exceptions || []).forEach(function (e) { slot(e && e.date, e && e.location, '').exceptionCount++; });
+  (exceptions || []).forEach(function (e) { slot(exceptionWeek(e && e.date), e && e.location, '').exceptionCount++; });
 
   return Object.keys(groups).map(function (k) {
     var g = groups[k];
@@ -652,8 +686,9 @@ function labourCheckDrop_(groups, history) {
 }
 
 function labourJulyAlert_(today, lastAlertedYear) {
-  var year = Number(String(today).slice(0, 4));
-  var md = String(today).slice(5, 10);
+  var key = labourDayKey_(today, 'today');
+  var year = Number(key.slice(0, 4));
+  var md = key.slice(5, 10);
   if (md < '07-01' || lastAlertedYear >= year) return { alert: null, lastAlertedYear: lastAlertedYear };
   return {
     alert: labourAlert_('labour_reverify_multipliers', 'Labour: re-verify award multipliers (new financial year)',
@@ -668,15 +703,20 @@ function labourPayGuideCheck_(observations, cfg, payGuide) {
     var email = labourStr_(o.personEmail).toLowerCase();
     var p = cfg && cfg.people && Object.prototype.hasOwnProperty.call(cfg.people, email) ? cfg.people[email] : null;
     if (!p) return;
+    var date = labourDayKey_(o.date, 'observation date');
+    var type = labourStr_(p.employment_type).toLowerCase();
+    var basis = labourStr_(p.rate_basis).toLowerCase();
     var latest = {};
     (payGuide || []).forEach(function (r) {
-      if (r.employment_type !== p.employment_type || r.rate_basis !== p.rate_basis || r.effective_from > o.date) return;
+      if (labourStr_(r.employment_type).toLowerCase() !== type || labourStr_(r.rate_basis).toLowerCase() !== basis ||
+        labourDateKey_(r.effective_from) > date) return;
       var k = String(r.level);
-      if (!Object.prototype.hasOwnProperty.call(latest, k) || r.effective_from > latest[k].effective_from) latest[k] = r;
+      if (!Object.prototype.hasOwnProperty.call(latest, k) ||
+        labourDateKey_(r.effective_from) > labourDateKey_(latest[k].effective_from)) latest[k] = r;
     });
     var levels = Object.keys(latest);
     if (levels.length === 0) {
-      buckets.stale.push(email + ': no pay-guide row effective on or before ' + o.date);
+      buckets.stale.push(email + ': no pay-guide row effective on or before ' + date);
       return;
     }
     var fits = levels.filter(function (k) {
@@ -685,7 +725,7 @@ function labourPayGuideCheck_(observations, cfg, payGuide) {
     var pinned = String(p.level);
     if (fits.indexOf(pinned) !== -1) return;
     if (fits.length === 0) {
-      buckets.nomatch.push(email + ': rate ' + o.rate + ' on ' + o.date + ' fits no award level (pinned L' + pinned + ')');
+      buckets.nomatch.push(email + ': rate ' + o.rate + ' on ' + date + ' fits no award level (pinned L' + pinned + ')');
     } else if (fits.length === 1) {
       buckets.mismatch.push(email + ': pinned L' + pinned + ', rate fits L' + fits[0]);
     } else {
