@@ -1012,8 +1012,11 @@ def test_verified_empty_weeks_are_chunked_to_the_gas_cap(monkeypatch, n_empty, e
     assert sorted(sent_empty) == sorted(empty), "every empty week sent exactly once"
     sent_complete = [w for r in reqs for w in (r.get("weeks_complete") or [])]
     assert sorted(sent_complete) == weeks_complete, "every declared week sent exactly once"
-    sent_rows = [row["invoice_ref"] if "invoice_ref" in row else json.dumps(row, sort_keys=True)
-                 for r in reqs for row in r["rows"]]
+    sent_rows = [
+        row["invoice_ref"] if "invoice_ref" in row else json.dumps(row, sort_keys=True)
+        for r in reqs
+        for row in r["rows"]
+    ]
     assert len(sent_rows) == 3 and len(set(sent_rows)) == 3, "row data delivered exactly once"
     for r in reqs:
         assert set(r.get("weeks_verified_empty") or []) <= set(r.get("weeks_complete") or [])
