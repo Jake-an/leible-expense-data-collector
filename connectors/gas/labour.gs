@@ -444,3 +444,74 @@ function labourCostShift_(shift, cfg) {
     sgRate: sgRate, super: sup, total: gross + sup,
     employmentType: p.employment_type, level: p.level, rateBasis: p.rate_basis };
 }
+
+/* ------------------------------------------------------------------ *
+ * Step 3 — group costed shifts by ISO week x location (PRD-18). Pure.
+ * Money is accumulated at full precision and rounded to cents ONCE per row.
+ * ------------------------------------------------------------------ */
+
+function labourRound2_(x) { return Math.round(x * 100) / 100; }
+
+function labourIsoWeek_(date) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date));
+  if (!m) throw new Error('labour: bad date "' + date + '" (want yyyy-MM-dd)');
+  var DAY = 86400000;
+  var ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  var isoDay = new Date(ms).getUTCDay() || 7;           // Mon=1..Sun=7
+  var monday = ms - (isoDay - 1) * DAY;
+  var thursday = monday + 3 * DAY;
+  var isoYear = new Date(thursday).getUTCFullYear();
+  var week = Math.floor((thursday - Date.UTC(isoYear, 0, 1)) / DAY / 7) + 1;
+  function key(t) {
+    var d = new Date(t);
+    return d.getUTCFullYear() + '-' + labourPad2_(d.getUTCMonth() + 1) + '-' + labourPad2_(d.getUTCDate());
+  }
+  return { weekStart: key(monday), weekEnd: key(monday + 6 * DAY), isoWeek: isoYear + '-W' + labourPad2_(week) };
+}
+
+function labourGroup_(costed, exceptions) {
+  var groups = {};
+  function slot(date, location, code) {
+    var wk = /^\d{4}-\d{2}-\d{2}$/.test(String(date))
+      ? labourIsoWeek_(date)
+      : { weekStart: '', weekEnd: '', isoWeek: '(unknown)' };
+    var loc = labourStr_(location) === '' ? '(unknown)' : labourStr_(location);
+    var k = wk.weekStart + '|' + loc;
+    if (!Object.prototype.hasOwnProperty.call(groups, k)) {
+      groups[k] = { weekStart: wk.weekStart, weekEnd: wk.weekEnd, isoWeek: wk.isoWeek, location: loc,
+        locationCode: code || '', department: '', hours: 0, base: 0, uplift: 0, gross: 0, super: 0, total: 0,
+        shiftCount: 0, exceptionCount: 0 };
+    }
+    var g = groups[k];
+    if (!g.locationCode && code) g.locationCode = code;
+    return g;
+  }
+
+  (costed || []).forEach(function (c) {
+    if (!c || !c.cost || c.cost.ok !== true) throw new Error('labour: labourGroup_ got a cost that is not ok');
+    var s = c.shift;
+    var g = slot(s.date, s.location, s.locationCode);
+    if (g.department !== '' && g.department !== s.department) {
+      throw new Error('labour: department disagrees within ' + g.isoWeek + ' / ' + g.location +
+        ' ("' + g.department + '" vs "' + s.department + '")');
+    }
+    g.department = s.department;
+    g.hours += s.hours;
+    g.base += c.cost.base;
+    g.uplift += c.cost.uplift;
+    g.gross += c.cost.gross;
+    g.super += c.cost.super;
+    g.total += c.cost.gross + c.cost.super;
+    g.shiftCount++;
+  });
+  (exceptions || []).forEach(function (e) { slot(e && e.date, e && e.location, '').exceptionCount++; });
+
+  return Object.keys(groups).map(function (k) {
+    var g = groups[k];
+    g.hours = Math.round(g.hours * 10000) / 10000;
+    ['base', 'uplift', 'gross', 'super', 'total'].forEach(function (f) { g[f] = labourRound2_(g[f]); });
+    return g;
+  }).sort(function (a, b) {
+    return a.weekStart < b.weekStart ? -1 : a.weekStart > b.weekStart ? 1 : a.location < b.location ? -1 : a.location > b.location ? 1 : 0;
+  });
+}

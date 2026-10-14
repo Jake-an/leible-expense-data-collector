@@ -135,7 +135,7 @@
     {
       "step": 3,
       "name": "group-week-location",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -154,7 +154,8 @@
           "at": "2026-10-14T10:36:01+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "labour.gs: labourIsoWeek_ (UTC, matches isoWeekLabel_) + labourGroup_ (ISO week x location, round-once, exception-only rows, dept-disagree throws); 2952 pass, 0 fail."
     },
     {
       "step": 4,
