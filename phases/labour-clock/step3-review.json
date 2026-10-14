@@ -1,0 +1,26 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 476,
+      "summary": "slot() falls back to an '(unknown)' week for ANY unparseable date, including costed shifts. labourIsoWeek_ throws on a bad date, so the two paths disagree: a costed shift with a missing/malformed date is silently bucketed with weekStart '' instead of failing loudly, and its money lands in an '(unknown)' row.",
+      "suggestion": "Only apply the '(unknown)' fallback for exceptions (line 507). For costed shifts, call labourIsoWeek_(s.date) directly and let it throw, consistent with the department-disagreement rule. Add a test: a costed shift with date '' THROWS."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 455,
+      "summary": "labourIsoWeek_ accepts calendar-impossible dates such as '2026-02-30' and silently normalises them to 2026-03-02 via Date.UTC overflow; the regex only checks shape.",
+      "suggestion": "Round-trip check after Date.UTC (getUTCMonth()/getUTCDate() must equal the input parts) and throw on mismatch, matching the bad-format throw."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/labour.gs",
+      "line": 507,
+      "summary": "Exception-only rows always have department '' because exception objects carry no department, so step 4 cannot tell which department an exception-only location belongs to. Not wrong per the brief, but it is an unstated gap in the row shape.",
+      "suggestion": "Document in the labourGroup_ header comment that exception-only rows have department ''. Or let step 4 look the department up from the location config."
+    }
+  ]
+}

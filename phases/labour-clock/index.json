@@ -135,7 +135,7 @@
     {
       "step": 3,
       "name": "group-week-location",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -162,7 +162,22 @@
       },
       "tdd_state": "red_done",
       "summary": "labour.gs: labourIsoWeek_ (UTC, matches isoWeekLabel_) + labourGroup_ (ISO week x location, round-once, exception-only rows, dept-disagree throws); 2952 pass, 0 fail.",
-      "completed_at": "2026-10-14T10:36:50+0900"
+      "completed_at": "2026-10-14T10:36:50+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 3,
+        "fix_rounds": 0,
+        "result_file": "phases/labour-clock/step3-review.json",
+        "checked_at": "2026-10-14T10:38:01+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] slot() falls back to an '(unknown)' week for ANY unparseable date, including costed shifts. labourIsoWeek_ throws on a bad date, so the two paths disagree: a costed shift with a missing/malformed date is silently bucketed with weekStart '' instead of failing loudly, and its money lands in an '(unknown)' row.",
+        "[review] labourIsoWeek_ accepts calendar-impossible dates such as '2026-02-30' and silently normalises them to 2026-03-02 via Date.UTC overflow; the regex only checks shape.",
+        "[review] Exception-only rows always have department '' because exception objects carry no department, so step 4 cannot tell which department an exception-only location belongs to. Not wrong per the brief, but it is an unstated gap in the row shape."
+      ]
     },
     {
       "step": 4,
@@ -173,7 +188,8 @@
       "covers": [
         "PRD-19",
         "PRD-20"
-      ]
+      ],
+      "started_at": "2026-10-14T10:38:01+0900"
     }
   ],
   "created_at": "2026-10-14T00:00:00+0900"
