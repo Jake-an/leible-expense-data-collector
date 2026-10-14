@@ -139,13 +139,20 @@ function labourReadConfig_(tabs) {
     if (!isFinite(m) || m <= 0) {
       throw new Error('labour: CONFIG row ' + (n + 2) + ' has invalid multiplier ' + JSON.stringify(raw));
     }
-    cfg.multipliers[labourMultKey_(labourStr_(r[t.idx.employment_type]), labourStr_(r[t.idx.rate_basis]),
-      labourStr_(r[t.idx.level_band]), labourStr_(r[t.idx.day_type]))] = m;
+    var mk = labourMultKey_(labourStr_(r[t.idx.employment_type]), labourStr_(r[t.idx.rate_basis]),
+      labourStr_(r[t.idx.level_band]), labourStr_(r[t.idx.day_type]));
+    if (Object.prototype.hasOwnProperty.call(cfg.multipliers, mk)) {
+      throw new Error('labour: CONFIG row ' + (n + 2) + ' duplicates key ' + JSON.stringify(mk));
+    }
+    cfg.multipliers[mk] = m;
   });
 
   t = labourTabIndex_(tabs, 'HOLIDAYS');
-  t.rows.forEach(function (r) {
+  t.rows.forEach(function (r, n) {
     var d = labourDateKey_(r[t.idx.date]);
+    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      throw new Error('labour: HOLIDAYS row ' + (n + 2) + ' has malformed date ' + JSON.stringify(r[t.idx.date]));
+    }
     if (d) cfg.holidays[d] = labourStr_(r[t.idx.name]);
   });
 
@@ -166,8 +173,12 @@ function labourReadConfig_(tabs) {
     if (labourStr_(r[t.idx.rate]) === '' || !isFinite(rate)) {
       throw new Error('labour: RATES row ' + (n + 2) + ' has invalid rate ' + JSON.stringify(r[t.idx.rate]));
     }
+    var eff = labourDateKey_(r[t.idx.effective_from]);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eff)) {
+      throw new Error('labour: RATES row ' + (n + 2) + ' has malformed effective_from ' + JSON.stringify(r[t.idx.effective_from]));
+    }
     var email = labourStr_(r[t.idx.person_email]).toLowerCase();
-    (cfg.rates[email] = cfg.rates[email] || []).push({ rate: rate, effective_from: labourDateKey_(r[t.idx.effective_from]) });
+    (cfg.rates[email] = cfg.rates[email] || []).push({ rate: rate, effective_from: eff });
   });
 
   t = labourTabIndex_(tabs, 'PEOPLE');
