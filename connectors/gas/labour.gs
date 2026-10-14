@@ -86,8 +86,25 @@ var LABOUR_CLOCK_EXPECTED_HEADERS_ = {
   HOLIDAYS: ['date', 'name'],
   LOCATIONS: ['location', 'code', 'department', 'live'],
   RATES: ['person_email', 'rate', 'effective_from'],
-  PEOPLE: ['person_email', 'employment_type', 'level', 'rate_basis']
+  PEOPLE: ['person_email', 'employment_type', 'level', 'rate_basis'],
+  // Amendment A: optional rule tabs (a missing / empty tab = no rules of that kind).
+  PAY_TABLE: ['role', 'level', 'rate', 'effective_from'],
+  CASH_SHIFTS: ['person_email', 'location', 'days', 'rate'],
+  FIXED: ['person_email', 'location', 'role', 'hours_per_week', 'rate', 'effective_from']
 };
+
+var LABOUR_CLOCK_RULE_TABS_ = ['PAY_TABLE', 'CASH_SHIFTS', 'FIXED'];
+
+// Seed for PAY_TABLE (casual, loaded; Jake 2026-10-14). The Operations Manager has no award level.
+var LABOUR_CLOCK_PAY_TABLE_SEED_ = [
+  ['Barista', 1, 32.67, '2026-07-01'],
+  ['Senior Barista', 3, 34.97, '2026-07-01'],
+  ['Roasting Team', 4, 36.82, '2026-07-01'],
+  ['Head Barista', 5, 39.12, '2026-07-01'],
+  ['Operations Manager', '—', 47.13, '2026-07-01']
+];
+
+var LABOUR_CLOCK_WEEKDAYS_ = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function labourPad2_(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -138,10 +155,42 @@ function labourIsLive_(v) {
   return s === 'true' || s === 'y' || s === 'yes';
 }
 
+// An optional tab that is absent, empty, or has a blank row 1 counts as missing (no rules).
+// A present tab with a real header row is validated like any other (drift throws naming it).
+function labourOptionalTab_(tabs, name) {
+  var rows = tabs && tabs[name];
+  if (!Array.isArray(rows) || rows.length === 0 || !Array.isArray(rows[0]) ||
+    !rows[0].some(function (c) { return labourStr_(c) !== ''; })) return null;
+  return labourTabIndex_(tabs, name);
+}
+
+// PAY_TABLE -> [{role, level, rate, effective_from}]. A level of blank / dash is read as '' (R7):
+// it never fills a level and is never passed to labourLevelBand_.
+function labourParsePayTable_(tabs) {
+  var t = labourOptionalTab_(tabs, 'PAY_TABLE');
+  if (!t) return [];
+  return t.rows.map(function (r, n) {
+    var where = 'labour: PAY_TABLE row ' + (n + 2);
+    var rate = labourPositiveNumber_(r[t.idx.rate]);
+    if (rate === null) throw new Error(where + ' has invalid rate ' + JSON.stringify(r[t.idx.rate]));
+    var ls = labourStr_(r[t.idx.level]);
+    var level = '';
+    if (ls !== '' && ls !== '—' && ls !== '–' && ls !== '-') {
+      try { labourLevelBand_(ls); } catch (e) { throw new Error(where + ': ' + e.message); }
+      level = ls.toLowerCase() === 'intro' ? 'intro' : Number(ls);
+    }
+    var eff = labourDateKey_(r[t.idx.effective_from]);
+    if (eff !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(eff)) {
+      throw new Error(where + ' has malformed effective_from ' + JSON.stringify(r[t.idx.effective_from]));
+    }
+    return { role: labourStr_(r[t.idx.role]), level: level, rate: rate, effective_from: eff };
+  });
+}
+
 function labourMultKey_(type, basis, band, day) { return type + '|' + basis + '|' + band + '|' + day; }
 
 function labourReadConfig_(tabs) {
-  var cfg = { multipliers: {}, holidays: {}, locations: {}, rates: {}, people: {} };
+  var cfg = { multipliers: {}, holidays: {}, locations: {}, rates: {}, people: {}, payTable: [], cashShifts: [], fixed: [] };
   var t;
 
   t = labourTabIndex_(tabs, 'CONFIG');
@@ -225,6 +274,51 @@ function labourReadConfig_(tabs) {
       try { labourLevelBand_(r[t.idx.level]); } catch (e) { throw new Error(where + ': ' + e.message); }
     }
     cfg.people[email] = { employment_type: type, level: r[t.idx.level], rate_basis: basis };
+  });
+
+  cfg.payTable = labourParsePayTable_(tabs);
+
+  // CASH_SHIFTS / FIXED are cross-validated against LOCATIONS and PEOPLE here, so a typo fails at
+  // read time naming the tab and row (never the email). Optional: absent / empty = no rules.
+  function ruleRef(where, r, idx) {
+    if (!Object.prototype.hasOwnProperty.call(cfg.locations, labourStr_(r[idx.location]))) {
+      throw new Error(where + ' has a location that is not in LOCATIONS');
+    }
+    var email = labourStr_(r[idx.person_email]).toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(cfg.people, email)) {
+      throw new Error(where + ' has a person_email that is not in PEOPLE');
+    }
+    return email;
+  }
+  function ruleNumber(where, label, v) {
+    var n = labourPositiveNumber_(v);
+    if (n === null) throw new Error(where + ' has invalid ' + label + ' ' + JSON.stringify(v) + ' (want a positive number)');
+    return n;
+  }
+  t = labourOptionalTab_(tabs, 'CASH_SHIFTS');
+  if (t) t.rows.forEach(function (r, n) {
+    var where = 'labour: CASH_SHIFTS row ' + (n + 2);
+    var email = ruleRef(where, r, t.idx);
+    var days = labourStr_(r[t.idx.days]).toLowerCase().split(',').map(labourStr_).filter(function (d) { return d !== ''; });
+    if (days.length === 0) throw new Error(where + ' has no days (use mon,tue,wed,thu,fri,sat,sun)');
+    days.forEach(function (d) {
+      if (LABOUR_CLOCK_WEEKDAYS_.indexOf(d) === -1) {
+        throw new Error(where + ' has invalid days token ' + JSON.stringify(d) + ' (use mon,tue,wed,thu,fri,sat,sun)');
+      }
+    });
+    cfg.cashShifts.push({ email: email, location: labourStr_(r[t.idx.location]), days: days, rate: ruleNumber(where, 'rate', r[t.idx.rate]) });
+  });
+  t = labourOptionalTab_(tabs, 'FIXED');
+  if (t) t.rows.forEach(function (r, n) {
+    var where = 'labour: FIXED row ' + (n + 2);
+    var email = ruleRef(where, r, t.idx);
+    var eff = labourDateKey_(r[t.idx.effective_from]);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eff)) {
+      throw new Error(where + ' has malformed effective_from ' + JSON.stringify(r[t.idx.effective_from]));
+    }
+    cfg.fixed.push({ email: email, location: labourStr_(r[t.idx.location]), role: labourStr_(r[t.idx.role]),
+      hours: ruleNumber(where, 'hours_per_week', r[t.idx.hours_per_week]), rate: ruleNumber(where, 'rate', r[t.idx.rate]),
+      effective_from: eff });
   });
 
   return cfg;
@@ -456,6 +550,17 @@ function labourDayType_(date, cfg) {
   return 'weekday';
 }
 
+function labourCashRule_(cfg, shift) {
+  var key = labourDayKey_(shift.date, 'shift date').split('-');
+  var wd = LABOUR_CLOCK_WEEKDAYS_[new Date(Date.UTC(Number(key[0]), Number(key[1]) - 1, Number(key[2]))).getUTCDay()];
+  var rules = cfg.cashShifts || [];
+  for (var i = 0; i < rules.length; i++) {
+    var c = rules[i];
+    if (c.email === shift.personEmail && c.location === shift.location && c.days.indexOf(wd) !== -1) return c;
+  }
+  return null;
+}
+
 function labourCostShift_(shift, cfg) {
   function fail(reason, detail) {
     return { ok: false, exception: { reason: reason, recordId: shift.recordId, personEmail: shift.personEmail,
@@ -465,6 +570,15 @@ function labourCostShift_(shift, cfg) {
     return fail('person_not_in_people', shift.personEmail + ' is not in PEOPLE');
   }
   var p = cfg.people[shift.personEmail];
+  // Cash rule: after person_not_in_people, BEFORE person_incomplete (a blank level must not turn a
+  // cash shift into an exception). Matches on person + location + calendar weekday of the shift date.
+  var cash = labourCashRule_(cfg, shift);
+  if (cash) {
+    var cbase = shift.hours * cash.rate;
+    return { ok: true, cash: true, dayType: labourDayType_(shift.date, cfg), multiplier: 1, base: cbase, gross: cbase, uplift: 0,
+      sgRate: 0, super: 0, total: cbase,
+      employmentType: p.employment_type, level: p.level, rateBasis: p.rate_basis };
+  }
   if (labourStr_(p.employment_type) === '' || labourStr_(p.level) === '' || labourStr_(p.rate_basis) === '') {
     return fail('person_incomplete', 'PEOPLE row needs employment_type, level and rate_basis');
   }
@@ -502,8 +616,86 @@ function labourIsoWeek_(date) {
   return { weekStart: key(monday), weekEnd: key(monday + 6 * DAY), isoWeek: isoYear + '-W' + labourPad2_(week) };
 }
 
-function labourGroup_(costed, exceptions) {
+// Fixed weekly cost per location (Amendment A3). A location is FIXED for a week only when at
+// least one FIXED row has effective_from <= weekStart; the latest row per person+location wins.
+// Super uses SG(weekStart) (the Monday): 12% is the last rate in the table, so a week straddling
+// 1 July is a non-issue today. Returns { location: {hours, gross, super, total, department,
+// locationCode, weekStart, rows} } with money rounded to cents; {} when nothing applies.
+function labourFixedWeek_(cfg, weekStart) {
+  var ws = labourDayKey_(weekStart, 'weekStart');
+  var latest = {};
+  ((cfg && cfg.fixed) || []).forEach(function (f) {
+    if (f.effective_from > ws) return;
+    var k = f.email + '|' + f.location;
+    if (!Object.prototype.hasOwnProperty.call(latest, k) || f.effective_from >= latest[k].effective_from) latest[k] = f;
+  });
+  var acc = {};
+  Object.keys(latest).forEach(function (k) {
+    var f = latest[k];
+    var a = acc[f.location] = acc[f.location] || { hours: 0, gross: 0, rows: 0 };
+    a.hours += f.hours;
+    a.gross += f.hours * f.rate;
+    a.rows++;
+  });
+  var locs = Object.keys(acc);
+  var out = {};
+  if (locs.length === 0) return out;
+  var sg = labourSgRate_(ws);
+  locs.forEach(function (loc) {
+    var a = acc[loc];
+    var def = (cfg.locations && Object.prototype.hasOwnProperty.call(cfg.locations, loc)) ? cfg.locations[loc] : {};
+    var sup = a.gross * sg;
+    out[loc] = { hours: Math.round(a.hours * 10000) / 10000, gross: labourRound2_(a.gross), super: labourRound2_(sup),
+      total: labourRound2_(a.gross + sup), department: def.department || '', locationCode: def.code || '',
+      weekStart: ws, rows: a.rows };
+  });
+  return out;
+}
+
+// Splits clocked shifts / exceptions at locations that are FIXED this week into `fixedClocks`,
+// upstream of costing and of the 10% exception ratio (R9). Entries carry counts only.
+function labourSplitFixedClocks_(shifts, exceptions, fixedWeek) {
+  var fx = fixedWeek || {};
+  function isFixed(loc) { return Object.prototype.hasOwnProperty.call(fx, labourStr_(loc)); }
+  var out = { shifts: [], exceptions: [], fixedClocks: [] };
+  (shifts || []).forEach(function (s) {
+    if (isFixed(s.location)) out.fixedClocks.push({ kind: 'shift', location: labourStr_(s.location), date: s.date, hours: s.hours });
+    else out.shifts.push(s);
+  });
+  (exceptions || []).forEach(function (e) {
+    if (isFixed(e && e.location)) out.fixedClocks.push({ kind: 'exception', location: labourStr_(e.location), date: e.date, hours: null });
+    else out.exceptions.push(e);
+  });
+  return out;
+}
+
+// labour_fixed_zero: a location has FIXED rows but none apply this week (its clocks are costed
+// normally - never a silent $0). labour_fixed_location_clock: one line per ignored clock record.
+function labourFixedAlerts_(cfg, weekStart, fixedClocks) {
+  var alerts = [];
+  var fw = labourFixedWeek_(cfg, weekStart);
+  var all = {};
+  ((cfg && cfg.fixed) || []).forEach(function (f) { all[f.location] = true; });
+  var zero = Object.keys(all).filter(function (l) { return !Object.prototype.hasOwnProperty.call(fw, l); });
+  if (zero.length) {
+    alerts.push(labourAlert_('labour_fixed_zero', 'Labour: fixed-cost location has no FIXED row effective this week - clocks costed normally', zero));
+  }
+  var lines = (fixedClocks || []).map(function (c) {
+    return c.location + ' ' + c.date + ': clocked ' + (c.kind === 'exception' ? 'record' : 'shift of ' + c.hours + ' h') +
+      ' not costed (fixed cost applies)';
+  });
+  if (lines.length) {
+    alerts.push(labourAlert_('labour_fixed_location_clock', 'Labour: clock-ins at a fixed-cost location were ignored', lines));
+  }
+  return alerts;
+}
+
+// fixedWeek (optional) = labourFixedWeek_ result. Its rows are merged into the (week, location) slot
+// and marked fixed:true. One week per run: costed spanning weeks, or a costed week that differs from
+// the fixed week, throws (R11); a costed shift at a fixed location throws (split it upstream, R9).
+function labourGroup_(costed, exceptions, fixedWeek) {
   var groups = {};
+  var costedWeeks = {};
   // Costed shifts carry money, so a bad date throws; exceptions may legitimately lack one.
   function exceptionWeek(date) {
     try { return labourIsoWeek_(date); } catch (e) { return { weekStart: '', weekEnd: '', isoWeek: '(unknown)' }; }
@@ -524,7 +716,14 @@ function labourGroup_(costed, exceptions) {
   (costed || []).forEach(function (c) {
     if (!c || !c.cost || c.cost.ok !== true) throw new Error('labour: labourGroup_ got a cost that is not ok');
     var s = c.shift;
-    var g = slot(labourIsoWeek_(s.date), s.location, s.locationCode);
+    var wk = labourIsoWeek_(s.date);
+    if (fixedWeek) {
+      if (Object.prototype.hasOwnProperty.call(fixedWeek, labourStr_(s.location))) {
+        throw new Error('labour: costed shift at fixed location "' + labourStr_(s.location) + '" - split fixed-location clocks upstream');
+      }
+      costedWeeks[wk.weekStart] = true;
+    }
+    var g = slot(wk, s.location, s.locationCode);
     if (g.department !== '' && g.department !== s.department) {
       throw new Error('labour: department disagrees within ' + g.isoWeek + ' / ' + g.location +
         ' ("' + g.department + '" vs "' + s.department + '")');
@@ -539,6 +738,29 @@ function labourGroup_(costed, exceptions) {
     g.shiftCount++;
   });
   (exceptions || []).forEach(function (e) { slot(exceptionWeek(e && e.date), e && e.location, '').exceptionCount++; });
+
+  if (fixedWeek) {
+    var cw = Object.keys(costedWeeks);
+    if (cw.length > 1) throw new Error('labour: labourGroup_ got costed shifts spanning ' + cw.length + ' weeks with a fixedWeek (one week per run)');
+    Object.keys(fixedWeek).forEach(function (loc) {
+      var f = fixedWeek[loc];
+      if (cw.length === 1 && cw[0] !== labourIsoWeek_(f.weekStart).weekStart) {
+        throw new Error('labour: costed week ' + cw[0] + ' differs from the fixed week ' + f.weekStart);
+      }
+      var g = slot(labourIsoWeek_(f.weekStart), loc, f.locationCode);
+      if (g.department !== '' && g.department !== f.department) {
+        throw new Error('labour: department disagrees within ' + g.isoWeek + ' / ' + g.location +
+          ' ("' + g.department + '" vs "' + f.department + '")');
+      }
+      g.department = f.department;
+      g.hours += f.hours;
+      g.base += f.gross;
+      g.gross += f.gross;
+      g.super += f.super;
+      g.total += f.total;
+      g.fixed = true;
+    });
+  }
 
   return Object.keys(groups).map(function (k) {
     var g = groups[k];
@@ -667,6 +889,7 @@ function labourCheckDrop_(groups, history) {
   var drops = [];
   var unchecked = [];
   (groups || []).forEach(function (g) {
+    if (g.fixed === true) return;   // fixed cost is constant by design - nothing to drop-check
     var prior = (history && Object.prototype.hasOwnProperty.call(history, g.location)) ? history[g.location] : [];
     if (prior.length < LABOUR_DROP_MIN_HISTORY_) {
       unchecked.push(g.location + ': drop check UNCHECKED - only ' + prior.length +
@@ -744,14 +967,16 @@ function labourRunChecks_(ctx) {
   var alerts = [];
   var z = labourCheckZeroRows_(ctx.rowCount, ctx.week);
   alerts = alerts.concat(z.alerts);
+  // Fixed-location alerts only when the caller says which week this is (pre-amendment ctx has none).
+  var fixedAlerts = ctx.weekStart ? labourFixedAlerts_(ctx.cfg, ctx.weekStart, ctx.fixedClocks) : [];
   if (z.stop) {
-    return { stop: true, refuse: false, alerts: alerts.concat(labourHolidayAlerts_(ctx.cfg, ctx.today)),
+    return { stop: true, refuse: false, alerts: alerts.concat(fixedAlerts, labourHolidayAlerts_(ctx.cfg, ctx.today)),
       lastAlertedYear: ctx.lastAlertedYear };
   }
   var exc = ctx.exceptions || [];
   var ex = labourCheckExceptions_(ctx.shiftsTotal, exc.length);
   var july = labourJulyAlert_(ctx.today, ctx.lastAlertedYear);
-  alerts = alerts.concat(ex.alerts, labourExceptionAlerts_(exc),
+  alerts = alerts.concat(ex.alerts, labourExceptionAlerts_(exc), fixedAlerts,
     labourCheckRateChange_(ctx.thisWeekShifts, ctx.prevWeekShifts),
     labourCheckDrop_(ctx.groups, ctx.history),
     july.alert ? [july.alert] : [],

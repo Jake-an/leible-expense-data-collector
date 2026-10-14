@@ -16717,5 +16717,297 @@ console.log('\nGroup M — ingest-validation hardening:');
   check('SR7 zero-arg editor wrapper labourSeedSourceReport exists', has('labourSeedSourceReport') && globalThis.labourSeedSourceReport.length === 0);
 })();
 
+// ---- labour-clock Amendment A: pay table, cash shifts, roastery fixed cost (dummy data only) ----
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function call(n) {
+    var a = Array.prototype.slice.call(arguments, 1);
+    try { return has(n) ? globalThis[n].apply(null, a) : null; } catch (e) { return { threw: String(e && e.message || e) }; }
+  }
+  function threw(fn) { try { fn(); return null; } catch (e) { return String(e && e.message || e); } }
+  function keys(alerts) { return (alerts || []).map(function (a) { return a.key; }); }
+
+  var PAYH = ['role', 'level', 'rate', 'effective_from'];
+  var CASHH = ['person_email', 'location', 'days', 'rate'];
+  var FIXH = ['person_email', 'location', 'role', 'hours_per_week', 'rate', 'effective_from'];
+  var FIXED_ROWS = [
+    ['dummy-j@example.test', 'Loc R', 'Operations Manager', 40, 47.13, '2026-07-01'],
+    ['dummy-y@example.test', 'Loc R', 'Roasting Team', 16, 36.82, '2026-07-01'],
+    ['dummy-u@example.test', 'Loc R', 'Roasting Team', 8, 36.82, '2026-07-01']
+  ];
+  var CASH_ROWS = [['dummy-b@example.test', 'Loc A', 'sat,sun', 33.66], ['dummy-c@example.test', 'Loc A', 'Sat, Sun', 33.66]];
+  var PAY_ROWS = [['Barista', 1, 32.67, '2026-07-01'], ['Senior Barista', 3, 34.97, '2026-07-01'],
+    ['Roasting Team', 4, 36.82, '2026-07-01'], ['Head Barista', 5, 39.12, '2026-07-01'], ['Operations Manager', '—', 47.13, '2026-07-01']];
+
+  function baseTabs(over) {
+    var t = {
+      CONFIG: (globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_ || []).map(function (r) { return r.slice(); }),
+      HOLIDAYS: [['date', 'name'], ['2026-04-25', 'Anzac Day'], ['2026-10-05', 'Labour Day'], ['2027-04-25', 'Anzac Day']],
+      LOCATIONS: [['location', 'code', 'department', 'live'], ['Loc A', 'LA', 'Cafe', 'TRUE'], ['Loc B', 'LB', 'Cafe', 'TRUE'], ['Loc R', 'LR', 'Roastery', 'TRUE']],
+      RATES: [['person_email', 'rate', 'effective_from'], ['dummy-a@example.test', 32.67, '2026-07-01']],
+      PEOPLE: [['person_email', 'employment_type', 'level', 'rate_basis'],
+        ['dummy-a@example.test', 'casual', 5, 'loaded'], ['dummy-b@example.test', 'casual', '', 'loaded'],
+        ['dummy-c@example.test', 'casual', 3, 'loaded'], ['dummy-j@example.test', 'casual', '5', 'loaded'],
+        ['dummy-y@example.test', 'casual', '', 'loaded'], ['dummy-u@example.test', 'casual', '', 'loaded']]
+    };
+    Object.keys(over || {}).forEach(function (k) { if (over[k] === null) delete t[k]; else t[k] = over[k]; });
+    return t;
+  }
+  function readTabs(over) { return call('labourReadConfig_', baseTabs(over)); }
+  function readThrows(over) { return threw(function () { globalThis.labourReadConfig_(baseTabs(over)); }); }
+  function full() { return readTabs({ PAY_TABLE: [PAYH].concat(PAY_ROWS), CASH_SHIFTS: [CASHH].concat(CASH_ROWS), FIXED: [FIXH].concat(FIXED_ROWS) }); }
+
+  // ---- A4: optional tabs at read ----
+  var c0 = readTabs({}) || {};
+  eq('AR1 missing optional tabs -> no rules, no throw', [c0.payTable, c0.cashShifts, c0.fixed], [[], [], []]);
+  var c0b = readTabs({ PAY_TABLE: [['']], CASH_SHIFTS: [], FIXED: [[''], ['', '']] }) || {};
+  eq('AR2 present-but-empty tabs ([[""]], [], blank row 1) count as missing (R5)', [c0b.payTable, c0b.cashShifts, c0b.fixed], [[], [], []]);
+  var eh1 = readThrows({ FIXED: [['person_email', 'location', 'role', 'hours', 'rate', 'effective_from'], FIXED_ROWS[0]] });
+  check('AR3 FIXED header drift throws naming tab + column (' + eh1 + ')', eh1 !== null && /FIXED/.test(eh1) && /hours_per_week/.test(eh1));
+  var eh2 = readThrows({ CASH_SHIFTS: [['person_email', 'location', 'day', 'rate']] });
+  check('AR3b CASH_SHIFTS header drift throws naming it (' + eh2 + ')', eh2 !== null && /CASH_SHIFTS/.test(eh2));
+  var eh3 = readThrows({ PAY_TABLE: [['role', 'lvl', 'rate', 'effective_from']] });
+  check('AR3c PAY_TABLE header drift throws naming it (' + eh3 + ')', eh3 !== null && /PAY_TABLE/.test(eh3));
+  var cf = full() || {};
+  eq('AR4 PAY_TABLE parsed; "—" level read as blank, numeric levels kept (R7)',
+    (cf.payTable || []).map(function (p) { return [p.role, p.level, p.rate]; }),
+    [['Barista', 1, 32.67], ['Senior Barista', 3, 34.97], ['Roasting Team', 4, 36.82], ['Head Barista', 5, 39.12], ['Operations Manager', '', 47.13]]);
+  var cb = readTabs({ PAY_TABLE: [PAYH, ['X', '', 40, '']] }) || {};
+  eq('AR4b blank PAY_TABLE level read as blank', cb.payTable && cb.payTable[0].level, '');
+  eq('AR4c CASH_SHIFTS parsed (days lowercased, trimmed, split)', (cf.cashShifts || []).map(function (c) { return [c.email, c.location, c.days, c.rate]; }),
+    [['dummy-b@example.test', 'Loc A', ['sat', 'sun'], 33.66], ['dummy-c@example.test', 'Loc A', ['sat', 'sun'], 33.66]]);
+  eq('AR4d FIXED parsed', (cf.fixed || []).map(function (c) { return [c.email, c.location, c.role, c.hours, c.rate, c.effective_from]; }),
+    FIXED_ROWS.map(function (r) { return [r[0], r[1], r[2], r[3], r[4], r[5]]; }));
+  var ed = readThrows({ CASH_SHIFTS: [CASHH, ['dummy-b@example.test', 'Loc A', 'sat,sunday', 33.66]] });
+  check('AR5 days "sat,sunday" throws naming CASH_SHIFTS row 2 + token (' + ed + ')', ed !== null && /CASH_SHIFTS row 2/.test(ed) && /sunday/.test(ed));
+  var ed2 = readThrows({ CASH_SHIFTS: [CASHH, ['dummy-b@example.test', 'Loc A', '', 33.66]] });
+  check('AR5b empty days throws (' + ed2 + ')', ed2 !== null && /CASH_SHIFTS row 2/.test(ed2));
+  function xv(tab, hdr, row, re, label) {
+    var o = {}; o[tab] = [hdr, row];
+    var m = readThrows(o);
+    check('AR6 ' + label + ' throws naming ' + tab + ' row 2 (' + m + ')', m !== null && re.test(m) && /row 2/.test(m) && m.indexOf('@example.test') === -1);
+  }
+  xv('FIXED', FIXH, ['dummy-j@example.test', 'Nowhere', 'r', 40, 47.13, '2026-07-01'], /FIXED/, 'FIXED location not in LOCATIONS');
+  xv('FIXED', FIXH, ['ghost@example.test', 'Loc R', 'r', 40, 47.13, '2026-07-01'], /FIXED/, 'FIXED email not in PEOPLE');
+  xv('FIXED', FIXH, ['dummy-j@example.test', 'Loc R', 'r', 0, 47.13, '2026-07-01'], /FIXED/, 'FIXED zero hours');
+  xv('FIXED', FIXH, ['dummy-j@example.test', 'Loc R', 'r', 40, -1, '2026-07-01'], /FIXED/, 'FIXED negative rate');
+  xv('FIXED', FIXH, ['dummy-j@example.test', 'Loc R', 'r', 40, 'abc', '2026-07-01'], /FIXED/, 'FIXED non-numeric rate');
+  xv('FIXED', FIXH, ['dummy-j@example.test', 'Loc R', 'r', 40, 47.13, 'soon'], /FIXED/, 'FIXED bad effective_from');
+  xv('CASH_SHIFTS', CASHH, ['dummy-b@example.test', 'Nowhere', 'sat', 33.66], /CASH_SHIFTS/, 'CASH location not in LOCATIONS');
+  xv('CASH_SHIFTS', CASHH, ['ghost@example.test', 'Loc A', 'sat', 33.66], /CASH_SHIFTS/, 'CASH email not in PEOPLE');
+  xv('CASH_SHIFTS', CASHH, ['dummy-b@example.test', 'Loc A', 'sat', 0], /CASH_SHIFTS/, 'CASH zero rate');
+  xv('PAY_TABLE', PAYH, ['Barista', 1, 'x', ''], /PAY_TABLE/, 'PAY_TABLE bad rate');
+  xv('PAY_TABLE', PAYH, ['Barista', 'lvl9', 30, ''], /PAY_TABLE/, 'PAY_TABLE unrecognised level');
+
+  // ---- A2/R3: cash shifts ----
+  var cfgC = full();
+  function sh(email, date, loc, hours, rate) {
+    return { personEmail: email, date: date, location: loc, locationCode: 'L', department: 'Cafe', hours: hours, rate: rate === undefined ? 30 : rate, recordId: 'r1' };
+  }
+  function r2(x) { return typeof x === 'number' ? Math.round(x * 100) / 100 : x; }
+  function cost(s) { var r = call('labourCostShift_', s, cfgC); if (r && r.ok) { r.gross = r2(r.gross); r.total = r2(r.total); } return r; }
+  var k1 = cost(sh('dummy-c@example.test', '2026-10-10', 'Loc A', 6, 99)) || {};
+  eq('CS1 Saturday at matching shop -> flat hours x rule rate (shift rate ignored), super 0, mult 1, cash',
+    [k1.ok, k1.gross, k1.super, k1.total, k1.multiplier, k1.cash], [true, 201.96, 0, 201.96, 1, true]);
+  var k2 = cost(sh('dummy-c@example.test', '2026-10-11', 'Loc A', 6)) || {};
+  eq('CS2 Sunday at matching shop -> flat', [k2.ok, k2.gross, k2.super, k2.cash], [true, 201.96, 0, true]);
+  var k3 = cost(sh('dummy-c@example.test', '2026-04-25', 'Loc A', 6)) || {};
+  var k3b = cost(sh('dummy-c@example.test', '2027-04-25', 'Loc A', 6)) || {};
+  eq('CS3 weekend public holiday (Sat + Sun) still matches the calendar weekday -> flat, super 0',
+    [k3.gross, k3.super, k3.cash, k3b.gross, k3b.super, k3b.cash], [201.96, 0, true, 201.96, 0, true]);
+  var k4 = cost(sh('dummy-c@example.test', '2026-10-07', 'Loc A', 6)) || {};
+  check('CS4 weekday shift of a cash person -> normal costing (not cash, super > 0)', k4.ok === true && !k4.cash && k4.super > 0 && k4.gross === 180);
+  var k5 = cost(sh('dummy-c@example.test', '2026-10-10', 'Loc B', 6)) || {};
+  check('CS5 Saturday at another shop -> normal costing (Sat 1.2)', k5.ok === true && !k5.cash && k5.multiplier === 1.2);
+  var k6 = cost(sh('dummy-b@example.test', '2026-10-10', 'Loc A', 6)) || {};
+  eq('CS6 cash shift with a BLANK PEOPLE level -> costed flat, not person_incomplete (R3 order)', [k6.ok, k6.gross, k6.cash], [true, 201.96, true]);
+  var k6b = cost(sh('dummy-b@example.test', '2026-10-07', 'Loc A', 6)) || {};
+  check('CS6b same person, weekday, blank level -> person_incomplete', k6b.ok === false && k6b.exception && k6b.exception.reason === 'person_incomplete');
+  var cfgG = full(); cfgG.cashShifts.push({ email: 'ghost@example.test', location: 'Loc A', days: ['sat'], rate: 33.66 });
+  var k7 = call('labourCostShift_', sh('ghost@example.test', '2026-10-10', 'Loc A', 6), cfgG) || {};
+  check('CS7 cash rule does not rescue a person absent from PEOPLE -> person_not_in_people', k7.ok === false && k7.exception && k7.exception.reason === 'person_not_in_people');
+
+  // ---- A3: fixed week ----
+  var fw = call('labourFixedWeek_', cfgC, '2026-10-12') || {};
+  var fr = fw['Loc R'] || {};
+  eq('FW1 three rows: hours 64, gross 2768.88, super 332.27, total 3101.15 (SG 12%)', [fr.hours, fr.gross, fr.super, fr.total], [64, 2768.88, 332.27, 3101.15]);
+  eq('FW1b rows 3, department from LOCATIONS, only fixed locations keyed', [fr.rows, fr.department, Object.keys(fw)], [3, 'Roastery', ['Loc R']]);
+  var cfgE = full(); cfgE.fixed[1].effective_from = '2026-10-19';
+  var fe = (call('labourFixedWeek_', cfgE, '2026-10-12') || {})['Loc R'] || {};
+  eq('FW2 effective_from after the week excludes that row (40h + 8h)', [fe.hours, fe.rows, fe.gross], [48, 2, 2179.76]);
+  var cfgL = full(); cfgL.fixed.push({ email: 'dummy-j@example.test', location: 'Loc R', role: 'Operations Manager', hours: 30, rate: 50, effective_from: '2026-09-01' });
+  cfgL.fixed.push({ email: 'dummy-j@example.test', location: 'Loc R', role: 'Operations Manager', hours: 99, rate: 99, effective_from: '2026-06-01' });
+  var fl = (call('labourFixedWeek_', cfgL, '2026-10-12') || {})['Loc R'] || {};
+  eq('FW3 latest row per person+location wins (2026-09-01 beats 2026-07-01 and 2026-06-01: 30+16+8 h)', [fl.hours, fl.rows], [54, 3]);
+  var cfgA = full(); cfgA.fixed.forEach(function (f) { f.effective_from = '2026-11-01'; });
+  eq('FW4 every FIXED row after the week -> location not fixed that week', call('labourFixedWeek_', cfgA, '2026-10-12'), {});
+  var cfgS = full(); cfgS.fixed.forEach(function (f) { f.effective_from = '2025-01-01'; });
+  var fs115 = (call('labourFixedWeek_', cfgS, '2025-06-23') || {})['Loc R'] || {};
+  eq('FW5 super uses SG(weekStart): 11.5% before 2025-07-01', [fs115.gross, fs115.super], [2768.88, 318.42]);
+  var frozen = JSON.stringify(cfgC); call('labourFixedWeek_', cfgC, '2026-10-12');
+  eq('FW6 pure: cfg unchanged', JSON.stringify(cfgC), frozen);
+  check('FW7 bad weekStart throws', (call('labourFixedWeek_', cfgC, '2026-13-40') || {}).threw !== undefined);
+  eq('FW8 cfg without FIXED -> {}', call('labourFixedWeek_', { locations: {} }, '2026-10-12'), {});
+
+  // ---- A3/R1/R2/R9: split + group ----
+  var locA = sh('dummy-a@example.test', '2026-10-14', 'Loc A', 8, 30);
+  var locR = sh('dummy-j@example.test', '2026-10-13', 'Loc R', 8, 30); locR.department = 'Roastery';
+  var excR = { reason: 'unpaired', location: 'Loc R', date: '2026-10-13', personEmail: 'dummy-j@example.test' };
+  var excA = { reason: 'unpaired', location: 'Loc A', date: '2026-10-14', personEmail: 'dummy-a@example.test' };
+  var sp = call('labourSplitFixedClocks_', [locA, locR], [excR, excA], fw) || {};
+  eq('GR1 split: fixed-location shift + exception leave shifts/exceptions', [(sp.shifts || []).length, (sp.exceptions || []).length, (sp.fixedClocks || []).length], [1, 1, 2]);
+  eq('GR1b split keeps the non-fixed ones', [sp.shifts && sp.shifts[0].location, sp.exceptions && sp.exceptions[0].location], ['Loc A', 'Loc A']);
+  var spZ = call('labourSplitFixedClocks_', [locA, locR], [excR], call('labourFixedWeek_', cfgA, '2026-10-12')) || {};
+  eq('R1 every FIXED row after the week -> clocks stay (shifts 2, exceptions 1, fixedClocks 0)', [(spZ.shifts || []).length, (spZ.exceptions || []).length, (spZ.fixedClocks || []).length], [2, 1, 0]);
+  function item(s) { return { shift: s, cost: call('labourCostShift_', s, cfgC) }; }
+  var rows = call('labourGroup_', [item(locA)], sp.exceptions || [], fw) || [];
+  eq('GR2 one row per (week, location): Loc A clocked + Loc R fixed', rows.map(function (r) { return [r.location, r.fixed === true]; }), [['Loc A', false], ['Loc R', true]]);
+  var rr = rows[1] || {};
+  eq('GR2b fixed row figures + department + code + week', [rr.hours, rr.gross, rr.super, rr.total, rr.base, rr.uplift, rr.department, rr.locationCode, rr.weekStart, rr.isoWeek, rr.shiftCount, rr.exceptionCount],
+    [64, 2768.88, 332.27, 3101.15, 2768.88, 0, 'Roastery', 'LR', '2026-10-12', '2026-W42', 0, 0]);
+  check('GR2c clocked rows do not carry a fixed flag', rows[0] && rows[0].fixed === undefined);
+  var rM = call('labourGroup_', [], [excR], fw) || [];
+  eq('GR3 existing exception slot at the fixed location is MERGED into (still one row)', [rM.length, rM[0] && rM[0].fixed, rM[0] && rM[0].exceptionCount, rM[0] && rM[0].total], [1, true, 1, 3101.15]);
+  eq('GR6 fixed-only week (no clocks) still yields the fixed row (R10)', (call('labourGroup_', [], [], fw) || []).length, 1);
+  var locA2 = sh('dummy-a@example.test', '2026-10-21', 'Loc A', 8, 30);
+  var m11 = (call('labourGroup_', [item(locA), item(locA2)], [], fw) || {}).threw;
+  check('GR4 costed spanning two weeks while fixedWeek given -> throws (R11) (' + m11 + ')', typeof m11 === 'string' && /week/.test(m11));
+  check('GR4b two weeks WITHOUT fixedWeek still groups (unchanged)', (call('labourGroup_', [item(locA), item(locA2)], []) || []).length === 2);
+  var m12 = (call('labourGroup_', [item(locA2)], [], fw) || {}).threw;
+  check('GR4c costed week different from the fixed week -> throws (' + m12 + ')', typeof m12 === 'string');
+  var m13 = (call('labourGroup_', [item(locR)], [], fw) || {}).threw;
+  check('GR5 costed shift at a fixed location reaching labourGroup_ -> throws (split belongs upstream) (' + m13 + ')', typeof m13 === 'string' && /fixed/.test(m13));
+  check('GR7 2-arg call unchanged', (call('labourGroup_', [item(locA)], []) || []).length === 1);
+
+  // ---- drop check skips fixed ----
+  var hist = { 'Loc R': [10000, 10000, 10000, 10000], 'Loc A': [] };
+  var dfix = call('labourCheckDrop_', [{ location: 'Loc R', total: 1, fixed: true }, { location: 'Loc A', total: 1, fixed: true }], hist);
+  eq('DC1 fixed groups skip the drop check (no drop, no UNCHECKED)', dfix, []);
+  var dnon = call('labourCheckDrop_', [{ location: 'Loc R', total: 1 }], hist) || [];
+  eq('DC1b the same group NOT fixed does drop', keys(dnon), ['labour_drop']);
+
+  // ---- alerts ----
+  var fcs = (sp.fixedClocks || []);
+  var al = call('labourFixedAlerts_', cfgC, '2026-10-12', fcs) || [];
+  eq('FA1 labour_fixed_location_clock: one line per clocked item, counts only', [keys(al), al[0] && al[0].lines.length], [['labour_fixed_location_clock'], 2]);
+  check('FA1b alert lines carry no email', JSON.stringify(al).indexOf('@example.test') === -1);
+  var alz = call('labourFixedAlerts_', cfgA, '2026-10-12', []) || [];
+  eq('FA2 FIXED rows exist but none apply that week -> labour_fixed_zero (location named)', [keys(alz), alz[0] && alz[0].lines], [['labour_fixed_zero'], ['Loc R']]);
+  eq('FA3 no rules at all / normal fixed week with no fixed clocks -> no alerts', [call('labourFixedAlerts_', { locations: {} }, '2026-10-12', []), call('labourFixedAlerts_', cfgC, '2026-10-12', [])], [[], []]);
+
+  // ---- runChecks ----
+  function ctx(over) {
+    var c = { week: '2026-W42', weekStart: '2026-10-12', rowCount: 12, groups: [{ location: 'Loc A', total: 10000 }, { location: 'Loc R', total: 1, fixed: true }],
+      shiftsTotal: 10, exceptions: [{ reason: 'unpaired', location: 'Loc A' }, { reason: 'unpaired', location: 'Loc A' }], fixedClocks: [],
+      thisWeekShifts: [], prevWeekShifts: [], history: { 'Loc A': [10000, 10000, 10000, 10000], 'Loc R': [10000, 10000, 10000, 10000] },
+      today: '2026-10-14', lastAlertedYear: 2026, payGuide: [], observations: [], cfg: cfgC };
+    Object.keys(over || {}).forEach(function (k) { c[k] = over[k]; });
+    return c;
+  }
+  var rc0 = call('labourRunChecks_', ctx()) || {};
+  var rc1 = call('labourRunChecks_', ctx({ fixedClocks: fcs })) || {};
+  eq('RC1 10% refusal identical with or without fixed-location clocks', [rc0.refuse, rc1.refuse], [true, true]);
+  var rc2 = call('labourRunChecks_', ctx({ exceptions: [excA], fixedClocks: fcs })) || {};
+  eq('RC2 fixed-location clocks do not push a passing week over 10% (1 of 11 exceptions)', [rc2.refuse, keys(rc2.alerts).indexOf('labour_fixed_location_clock') !== -1, keys(rc2.alerts).indexOf('labour_drop')], [false, true, -1]);
+  var rc3 = call('labourRunChecks_', ctx({ rowCount: 0, fixedClocks: [], cfg: cfgA })) || {};
+  eq('RC3 zero clock rows still stops the clock path (R10) and carries labour_fixed_zero', [rc3.stop, keys(rc3.alerts).indexOf('labour_fixed_zero') !== -1], [true, true]);
+  var rcOld = call('labourRunChecks_', ctx({ weekStart: undefined, groups: [{ location: 'Loc A', total: 10000 }], exceptions: [], cfg: { multipliers: {}, holidays: { '2026-12-25': 'x', '2027-12-25': 'y' }, locations: {}, rates: {}, people: {} } })) || {};
+  eq('RC4 ctx without weekStart (pre-amendment shape) -> no fixed alerts, no throw', [rcOld.stop, rcOld.alerts], [false, []]);
+
+  // ---- A1/R6/R7: labourFillLevels_ ----
+  function fakeProps(init) {
+    var p = Object.assign({}, init);
+    return { getProperty: function (k) { return k in p ? p[k] : null; } };
+  }
+  function fakeApp(tabs) {
+    var log = { writes: [], setValuesCalls: [], inserted: [], frozen: {}, opened: [] };
+    function mk(name) {
+      return {
+        getDataRange: function () { return { getValues: function () { return tabs[name].map(function (r) { return r.slice(); }); } }; },
+        getRange: function (r, c, nr, nc) {
+          return {
+            setValue: function (v) { log.writes.push({ sheet: name, row: r, col: c, val: v }); tabs[name][r - 1][c - 1] = v; },
+            setValues: function (v) {
+              if (nr !== v.length || nc !== v[0].length) throw new Error('bad geometry');
+              log.setValuesCalls.push({ sheet: name, r: r, c: c, v: v }); tabs[name] = v.map(function (x) { return x.slice(); });
+            }
+          };
+        },
+        setFrozenRows: function (n) { log.frozen[name] = n; }
+      };
+    }
+    var ss = {
+      getSheetByName: function (n) { return Object.prototype.hasOwnProperty.call(tabs, n) ? mk(n) : null; },
+      insertSheet: function (n) { if (Object.prototype.hasOwnProperty.call(tabs, n)) throw new Error('exists'); tabs[n] = []; log.inserted.push(n); return mk(n); }
+    };
+    return { _log: log, _tabs: tabs, openById: function (id) { log.opened.push(id); return ss; } };
+  }
+  var PH = ['person_email', 'employment_type', 'level', 'rate_basis'];
+  function mkP(e, lvl) { return [e, 'casual', lvl, 'loaded']; }
+  function flTabs() {
+    return {
+      PEOPLE: [PH, mkP('dummy-a@example.test', ''), mkP('dummy-b@example.test', 2), mkP('dummy-c@example.test', ''), mkP('dummy-d@example.test', ''),
+        mkP('dummy-e@example.test', ''), mkP('dummy-f@example.test', ''), mkP('dummy-g@example.test', ''), mkP('dummy-h@example.test', ''),
+        mkP('dummy-i@example.test', ''), mkP('dummy-j@example.test', ''), mkP('dummy-k@example.test', '')],
+      RATES: [['person_email', 'rate', 'effective_from'], ['dummy-a@example.test', 32.67, '2026-07-01'], ['dummy-b@example.test', 32.67, '2026-07-01'],
+        ['Dummy-C@example.test', 34.97, '2026-07-01'], ['dummy-d@example.test', 33.05, '2026-07-01'], ['dummy-f@example.test', 47.13, '2026-07-01'],
+        ['dummy-g@example.test', 32.68, '2026-07-01'], ['dummy-h@example.test', 32.69, '2026-07-01'], ['dummy-i@example.test', 32.66, '2026-07-01'],
+        ['dummy-j@example.test', 32.67, '2026-01-01'], ['dummy-j@example.test', 33.05, '2026-07-01'],
+        ['dummy-k@example.test', 33.05, '2026-01-01'], ['dummy-k@example.test', 32.67, '2026-07-01']],
+      PAY_TABLE: [PAYH].concat(PAY_ROWS)
+    };
+  }
+  function fill(props, app) { return call('labourFillLevels_', props, app) || {}; }
+  var pUnset = fakeProps({}); var aU = fakeApp(flTabs());
+  var rU = fill(pUnset, aU);
+  eq('FL1 LABOUR_CLOCK_SHEET_ID unset -> refused clock_sheet_unset, nothing opened', [rU.refused, aU._log.opened.length], ['clock_sheet_unset', 0]);
+  var t2 = flTabs(); delete t2.PAY_TABLE; var a2 = fakeApp(t2);
+  var r2 = fill(fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), a2);
+  eq('FL2 no PAY_TABLE tab -> refused pay_table_missing, nothing written', [r2.refused, a2._log.writes.length], ['pay_table_missing', 0]);
+  var t2b = flTabs(); t2b.PAY_TABLE = [PAYH]; var a2b = fakeApp(t2b);
+  var t2c = flTabs(); t2c.PAY_TABLE = [PAYH, ['Operations Manager', '—', 47.13, '']]; var a2c = fakeApp(t2c);
+  eq('FL2b header-only PAY_TABLE, and one with no levelled row -> pay_table_missing',
+    [fill(fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), a2b).refused, fill(fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), a2c).refused], ['pay_table_missing', 'pay_table_missing']);
+  var aF = fakeApp(flTabs());
+  var rF = fill(fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aF);
+  eq('FL3 fills blank levels on a match (+-1c both ways), latest RATES rate used', [rF.ok, rF.filledRows, rF.unmatchedRows], [true, [2, 4, 8, 10, 12], [5, 6, 7, 9, 11]]);
+  eq('FL3b counts', [rF.filled, rF.unmatched], [5, 5]);
+  eq('FL3c values written are the PAY_TABLE levels', aF._log.writes.map(function (w) { return w.val; }), [1, 3, 1, 1, 1]);
+  check('FL4 a level already set is never overwritten (row 3 untouched, no write to it)', aF._tabs.PEOPLE[2][2] === 2 && aF._log.writes.every(function (w) { return w.row !== 3; }));
+  check('FL5 per-cell writes only: every write is the level column (col 3) and no setValues on PEOPLE',
+    aF._log.writes.length === 5 && aF._log.writes.every(function (w) { return w.sheet === 'PEOPLE' && w.col === 3; }) && aF._log.setValuesCalls.length === 0);
+  check('FL5b Operations Manager $47.13 (blank level) never fills; unmatched rows stay blank', aF._tabs.PEOPLE[6][2] === '');
+  check('FL6 report carries row numbers only (no email / name)', JSON.stringify(rF).indexOf('@example.test') === -1 && JSON.stringify(rF).indexOf('dummy') === -1);
+  var rF2 = fill(fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aF);
+  eq('FL7 second run fills nothing new (levels now set)', [rF2.filled, rF2.filledRows], [0, []]);
+  var tAm = { PEOPLE: [PH, mkP('dummy-a@example.test', '')], RATES: [['person_email', 'rate', 'effective_from'], ['dummy-a@example.test', 40, '2026-07-01']],
+    PAY_TABLE: [PAYH, ['X', 2, 40, ''], ['Y', 3, 40.005, '']] };
+  var aAm = fakeApp(tAm); var rAm = fill(fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aAm);
+  eq('FL9 a rate matching two different PAY_TABLE levels is ambiguous -> left blank, reported', [rAm.filledRows, rAm.unmatchedRows, aAm._log.writes.length], [[], [2], 0]);
+  check('FL8 zero-arg editor wrapper labourFillLevels exists', has('labourFillLevels') && globalThis.labourFillLevels.length === 0);
+
+  // ---- A4: labourAddRuleTabs_ ----
+  var tA = { PEOPLE: [PH] }; var aT = fakeApp(tA);
+  var rT0 = call('labourAddRuleTabs_', fakeProps({}), aT) || {};
+  eq('AT1 unset -> refused clock_sheet_unset, nothing opened', [rT0.refused, aT._log.opened.length], ['clock_sheet_unset', 0]);
+  var rT = call('labourAddRuleTabs_', fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aT) || {};
+  eq('AT2 creates all three missing tabs', [rT.ok, rT.created, aT._log.inserted], [true, ['PAY_TABLE', 'CASH_SHIFTS', 'FIXED'], ['PAY_TABLE', 'CASH_SHIFTS', 'FIXED']]);
+  eq('AT2b headers written in the same call, PAY_TABLE seeded from the table',
+    [aT._tabs.CASH_SHIFTS, aT._tabs.FIXED, aT._tabs.PAY_TABLE.slice(0, 1), aT._tabs.PAY_TABLE.slice(1).map(function (r) { return [r[0], r[1], r[2]]; })],
+    [[CASHH], [FIXH], [PAYH], [['Barista', 1, 32.67], ['Senior Barista', 3, 34.97], ['Roasting Team', 4, 36.82], ['Head Barista', 5, 39.12], ['Operations Manager', '—', 47.13]]]);
+  check('AT2c header row frozen on each new tab', ['PAY_TABLE', 'CASH_SHIFTS', 'FIXED'].every(function (n) { return aT._log.frozen[n] === 1; }));
+  check('AT2d the seeded tabs read back through labourReadConfig_', (function () {
+    var c = readTabs({ PAY_TABLE: aT._tabs.PAY_TABLE, CASH_SHIFTS: aT._tabs.CASH_SHIFTS, FIXED: aT._tabs.FIXED });
+    return !!c && c.payTable.length === 5 && c.payTable[4].level === '' && c.fixed.length === 0;
+  })());
+  var before = JSON.stringify(aT._tabs); var nWrites = aT._log.setValuesCalls.length;
+  var rT2 = call('labourAddRuleTabs_', fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aT) || {};
+  eq('AT3 second run is a no-op (idempotent): nothing created, nothing written', [rT2.created, JSON.stringify(aT._tabs) === before, aT._log.setValuesCalls.length], [[], true, nWrites]);
+  var tB = { PEOPLE: [PH], FIXED: [['custom', 'header']] }; var aB = fakeApp(tB);
+  var rB = call('labourAddRuleTabs_', fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aB) || {};
+  eq('AT4 only the missing tabs are created; an existing tab is untouched', [rB.created, rB.skipped, aB._tabs.FIXED], [['PAY_TABLE', 'CASH_SHIFTS'], ['FIXED'], [['custom', 'header']]]);
+  check('AT5 zero-arg editor wrapper labourAddRuleTabs exists', has('labourAddRuleTabs') && globalThis.labourAddRuleTabs.length === 0);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
