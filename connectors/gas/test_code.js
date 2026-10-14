@@ -15737,5 +15737,260 @@ console.log('\nGroup M — ingest-validation hardening:');
   eq('L10 alerts: healthy mid-year -> none', keys(alerts(c, '2026-10-14')), []);
 })();
 
+/* ------------------------------------------------------------------ *
+ * labour-clock step 1: rows -> shifts (PRD-15). Null-safe: a missing
+ * symbol must fail assertions, not crash the file before the summary.
+ * Dummy people only (example.test).
+ * ------------------------------------------------------------------ */
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function thrown(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
+  var DEFAULT_COLS = { person_email: 'person_email', person_name: 'person_name', clock_in: 'clock_in', clock_out: 'clock_out',
+    hours: 'hours', break_minutes: 'break_minutes', location: 'location', rate: 'rate', record_id: 'record_id' };
+  var COLS = typeof globalThis.LABOUR_CLOCK_COLS === 'undefined' ? DEFAULT_COLS : globalThis.LABOUR_CLOCK_COLS;
+  var ORDER = ['record_id', 'person_email', 'person_name', 'clock_in', 'clock_out', 'hours', 'break_minutes', 'location', 'rate'];
+  check('S1 LABOUR_CLOCK_COLS is a defined map with all 9 logical names',
+    typeof globalThis.LABOUR_CLOCK_COLS === 'object' && Object.keys(DEFAULT_COLS).every(function (k) { return typeof COLS[k] === 'string'; }));
+
+  var CFG = {
+    multipliers: {}, holidays: {}, people: {},
+    locations: { 'Loc A': { code: 'LA', department: 'Cafe', live: true }, 'Loc B': { code: 'LB', department: 'Roastery', live: true } },
+    rates: { 'alice@example.test': [{ rate: 30, effective_from: '2026-07-01' }, { rate: 20, effective_from: '2026-01-01' }] }
+  };
+  var RANGE = { start: '2026-06-22', end: '2026-06-28' };
+
+  // o: logical name -> cell value
+  function mk(o) {
+    var d = { record_id: 'r1', person_email: 'carol@example.test', person_name: 'Carol Test', clock_in: '', clock_out: '',
+      hours: '', break_minutes: '', location: 'Loc A', rate: 22 };
+    Object.keys(o || {}).forEach(function (k) { d[k] = o[k]; });
+    return ORDER.map(function (k) { return d[k]; });
+  }
+  function hdr(skip) { return ORDER.filter(function (k) { return k !== skip; }).map(function (k) { return COLS[k]; }); }
+  function conv(rowObjs, range, cfg) {
+    if (!has('labourRowsToShifts_')) return null;
+    return globalThis.labourRowsToShifts_([hdr()].concat(rowObjs.map(mk)), range || RANGE, cfg || CFG);
+  }
+  function one(o, range, cfg) { return conv([o], range, cfg); }
+  function sh(r, i) { return r && r.shifts && r.shifts[i || 0]; }
+  function nS(r) { return r ? r.shifts.length : 'undefined-fn'; }
+  function nE(r) { return r ? r.exceptions.length : 'undefined-fn'; }
+  function reasons(r) { return r ? r.exceptions.map(function (e) { return e.reason; }) : 'undefined-fn'; }
+  function g(x, k) { return x ? x[k] : 'undefined'; }
+
+  // ---- labourSydneyParts_ ----
+  function sp(v) { return has('labourSydneyParts_') ? globalThis.labourSydneyParts_(v) : 'undefined-fn'; }
+  eq('S2 parts: ISO +10:00 evening keeps its Sydney date', g(sp('2026-06-25T23:30:00+10:00'), 'date'), '2026-06-25');
+  eq('S2 parts: ISO +10:00 morning', g(sp('2026-06-26T08:00:00+10:00'), 'date'), '2026-06-26');
+  eq('S2 parts: 00:30 +10:00 is 07-01 not 06-30', g(sp('2026-07-01T00:30:00+10:00'), 'date'), '2026-07-01');
+  eq('S2 parts: AEDT 00:15 +11:00 lands on 11-10', g(sp('2026-11-10T00:15:00+11:00'), 'date'), '2026-11-10');
+  eq('S2 parts: ms is the epoch of the instant', g(sp('2026-06-25T10:32:24+10:00'), 'ms'), Date.UTC(2026, 5, 25, 0, 32, 24));
+  eq('S2 parts: Z-expressed winter instant maps to the Sydney date (23:30Z = next day 09:30)',
+    g(sp('2026-06-25T23:30:00Z'), 'date'), '2026-06-26');
+  eq('S2 parts: Z-expressed AEDT instant (13:30Z = 00:30 +11 next day)', g(sp('2026-11-09T13:30:00Z'), 'date'), '2026-11-10');
+  eq('S2 parts: zone-less string is Sydney local (winter 09:00 = 23:00Z prev day)',
+    g(sp('2026-06-25 09:00'), 'ms'), Date.UTC(2026, 5, 24, 23, 0, 0));
+  eq('S2 parts: zone-less string with seconds in AEDT', g(sp('2026-11-10 00:15:30'), 'ms'), Date.UTC(2026, 10, 9, 13, 15, 30));
+  eq('S2 parts: zone-less string date', g(sp('2026-11-10 00:15'), 'date'), '2026-11-10');
+  eq('S2 parts: Date object same instant == string', g(sp(new Date('2026-06-25T09:00:00+10:00')), 'ms'), g(sp('2026-06-25 09:00'), 'ms'));
+  // DST: AEDT starts 2026-10-04 02:00 std (= 2026-10-03T16:00Z); ends 2026-04-05 03:00 daylight (= 2026-04-04T16:00Z)
+  eq('S2 parts: 13:59Z on 10-03 -> 23:59 10-03 (AEST)', g(sp(new Date(Date.UTC(2026, 9, 3, 13, 59))), 'date'), '2026-10-03');
+  eq('S2 parts: 14:00Z on 10-03 -> 00:00 10-04 (AEST)', g(sp(new Date(Date.UTC(2026, 9, 3, 14, 0))), 'date'), '2026-10-04');
+  eq('S2 parts: 13:00Z on 10-04 (AEDT, after start) -> 00:00 10-05', g(sp(new Date(Date.UTC(2026, 9, 4, 13, 0))), 'date'), '2026-10-05');
+  eq('S2 parts: 12:59Z on 10-04 (AEDT) -> 23:59 10-04', g(sp(new Date(Date.UTC(2026, 9, 4, 12, 59))), 'date'), '2026-10-04');
+  eq('S2 parts: DST end: 13:30Z on 04-04 (AEDT) -> 00:30 04-05', g(sp(new Date(Date.UTC(2026, 3, 4, 13, 30))), 'date'), '2026-04-05');
+  eq('S2 parts: DST end: 15:59Z on 04-04 still AEDT -> 02:59 04-05', g(sp(new Date(Date.UTC(2026, 3, 4, 15, 59))), 'date'), '2026-04-05');
+  eq('S2 parts: 13:30Z on 04-05 (AEST) -> 23:30 04-05', g(sp(new Date(Date.UTC(2026, 3, 5, 13, 30))), 'date'), '2026-04-05');
+  eq('S2 parts: 14:30Z on 04-05 (AEST) -> 00:30 04-06', g(sp(new Date(Date.UTC(2026, 3, 5, 14, 30))), 'date'), '2026-04-06');
+  eq('S2 parts: unparseable string -> null', sp('not a date'), null);
+  eq('S2 parts: blank -> null', sp(''), null);
+  eq('S2 parts: invalid Date -> null', sp(new Date('x')), null);
+
+  // ---- plain shift / hours ----
+  var r = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: '2026-06-25T17:00:00+10:00' });
+  eq('S3 plain: one shift, no exceptions', [nS(r), nE(r)], [1, 0]);
+  eq('S3 plain: hours 8', g(sh(r), 'hours'), 8);
+  eq('S3 plain: Sydney date', g(sh(r), 'date'), '2026-06-25');
+  eq('S3 plain: department from LOCATIONS', g(sh(r), 'department'), 'Cafe');
+  eq('S3 plain: locationCode + location', [g(sh(r), 'locationCode'), g(sh(r), 'location')], ['LA', 'Loc A']);
+  eq('S3 plain: row rate + source', [g(sh(r), 'rate'), g(sh(r), 'rateSource')], [22, 'row']);
+  eq('S3 plain: recordId/email/name carried', [g(sh(r), 'recordId'), g(sh(r), 'personEmail'), g(sh(r), 'personName')],
+    ['r1', 'carol@example.test', 'Carol Test']);
+  eq('S3 plain: clockInMs/clockOutMs epoch', [g(sh(r), 'clockInMs'), g(sh(r), 'clockOutMs')],
+    [Date.UTC(2026, 5, 24, 23, 0), Date.UTC(2026, 5, 25, 7, 0)]);
+
+  r = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: '2026-06-25T17:30:00+10:00', break_minutes: 30 });
+  eq('S4 break: 09:00-17:30 less 30min = 8.0h', g(sh(r), 'hours'), 8);
+
+  r = one({ clock_in: '', clock_out: '', hours: 7.5 });
+  eq('S5 no clock_in at all (no date possible) -> unpaired even with an hours cell', [nS(r), reasons(r)], [0, ['unpaired']]);
+  r = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: 'garbage', hours: 6.5 });
+  eq('S5 hours cell used when clock_out is not parseable', [nS(r), g(sh(r), 'hours')], [1, 6.5]);
+  r = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: '', hours: 6.5 });
+  eq('S5 hours cell used when clock_out is blank', [nS(r), g(sh(r), 'hours')], [1, 6.5]);
+  r = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: '2026-06-25T17:00:00+10:00', hours: 7 });
+  eq('S5 out-in-break wins when hours cell disagrees by > 0.05h', g(sh(r), 'hours'), 8);
+  r = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: '2026-06-25T17:00:00+10:00', hours: 8.03 });
+  eq('S5 computed hours used when cell agrees within 0.05h', g(sh(r), 'hours'), 8);
+
+  // ---- midnight / Sydney vs UTC ----
+  r = one({ clock_in: '2026-06-26T22:00:00+10:00', clock_out: '2026-06-27T02:00:00+10:00' });
+  eq('S6 crossing midnight: 4h', g(sh(r), 'hours'), 4);
+  eq('S6 crossing midnight: DATE is clock-in Friday', g(sh(r), 'date'), '2026-06-26');
+  var WIDE = { start: '2026-06-01', end: '2026-12-31' };
+  r = one({ clock_in: '2026-06-25T23:30:00+10:00', clock_out: '2026-06-26T01:30:00+10:00' }, WIDE);
+  eq('S6 23:30 +10 stays on 06-25', g(sh(r), 'date'), '2026-06-25');
+  r = one({ clock_in: '2026-06-26T08:00:00+10:00', clock_out: '2026-06-26T12:00:00+10:00' }, WIDE);
+  eq('S6 08:00 +10 on 06-26', g(sh(r), 'date'), '2026-06-26');
+  r = one({ clock_in: '2026-07-01T00:30:00+10:00', clock_out: '2026-07-01T08:30:00+10:00' }, WIDE);
+  eq('S6 00:30 +10 is 07-01', g(sh(r), 'date'), '2026-07-01');
+  r = one({ clock_in: '2026-11-10T00:15:00+11:00', clock_out: '2026-11-10T08:15:00+11:00' }, WIDE);
+  eq('S6 AEDT 00:15 lands on 11-10', g(sh(r), 'date'), '2026-11-10');
+  r = one({ clock_in: '2026-06-25T20:00:00Z', clock_out: '2026-06-26T02:00:00Z' }, WIDE);
+  eq('S6 Z-expressed 20:00Z = 06:00 next Sydney day', g(sh(r), 'date'), '2026-06-26');
+
+  // ---- string vs Date cell ----
+  var rs = one({ clock_in: '2026-06-25T09:00:00+10:00', clock_out: '2026-06-25T17:00:00+10:00' });
+  var rd = one({ clock_in: new Date('2026-06-25T09:00:00+10:00'), clock_out: new Date('2026-06-25T17:00:00+10:00') });
+  eq('S7 string vs Date cell: same date', g(sh(rd), 'date'), g(sh(rs), 'date'));
+  eq('S7 string vs Date cell: same hours (and 8)', [g(sh(rd), 'hours'), g(sh(rs), 'hours')], [8, 8]);
+  var rz = one({ clock_in: '2026-06-25 09:00:00', clock_out: '2026-06-25 17:00' });
+  eq('S7 zone-less Sydney-local strings give the same instant', [g(sh(rz), 'clockInMs'), g(sh(rz), 'date')], [g(sh(rs), 'clockInMs'), '2026-06-25']);
+
+  // ---- range filter ----
+  var IN = '2026-06-22T09:00:00+10:00', OUT = '2026-06-22T17:00:00+10:00';
+  r = one({ clock_in: '2026-06-21T09:00:00+10:00', clock_out: '2026-06-21T17:00:00+10:00' });
+  eq('S8 day before range: dropped, no exception', [nS(r), nE(r)], [0, 0]);
+  r = one({ clock_in: '2026-06-29T09:00:00+10:00', clock_out: '2026-06-29T17:00:00+10:00' });
+  eq('S8 day after range: dropped, no exception', [nS(r), nE(r)], [0, 0]);
+  r = one({ clock_in: IN, clock_out: OUT });
+  eq('S8 start boundary day included', nS(r), 1);
+  r = one({ clock_in: '2026-06-28T09:00:00+10:00', clock_out: '2026-06-28T17:00:00+10:00' });
+  eq('S8 end boundary day included', nS(r), 1);
+  r = one({ clock_in: '2026-06-21T23:59:00+10:00', clock_out: '2026-06-22T08:00:00+10:00' });
+  eq('S8 range is on the clock-in date: Sun 23:59 in is outside a Mon-start range', nS(r), 0);
+  r = one({ clock_in: '2026-06-21T09:00:00+10:00', clock_out: '' });
+  eq('S8 out-of-range unpaired row dropped silently, not an exception', [nS(r), nE(r)], [0, 0]);
+
+  // ---- dedup ----
+  r = conv([
+    { record_id: 'd1', clock_in: IN, clock_out: '2026-06-22T16:00:00+10:00' },
+    { record_id: 'd1', clock_in: IN, clock_out: OUT }]);
+  eq('S9 dedup by record_id: one shift, no exception', [nS(r), nE(r)], [1, 0]);
+  eq('S9 later clock-out wins, hours reflect newer out', g(sh(r), 'hours'), 8);
+  r = conv([
+    { record_id: 'd1', clock_in: IN, clock_out: OUT },
+    { record_id: 'd1', clock_in: IN, clock_out: '2026-06-22T16:00:00+10:00' }]);
+  eq('S9 later clock-out wins even when it appears FIRST in sheet order', [nS(r), g(sh(r), 'hours')], [1, 8]);
+  r = conv([
+    { record_id: 'd1', clock_in: IN, clock_out: OUT, rate: 21 },
+    { record_id: 'd1', clock_in: IN, clock_out: OUT, rate: 23 }]);
+  eq('S9 tie on clock-out -> later row in sheet order', [nS(r), g(sh(r), 'rate')], [1, 23]);
+  r = conv([
+    { record_id: '', clock_in: IN, clock_out: '2026-06-22T16:00:00+10:00' },
+    { record_id: '', clock_in: IN, clock_out: '2026-06-22T17:30:00+10:00' }]);
+  eq('S9 dedup without id by person|clock-in; edited row costed', [nS(r), nE(r), g(sh(r), 'hours')], [1, 0, 8.5]);
+  r = conv([
+    { record_id: '', person_email: 'Carol@Example.test ', clock_in: IN, clock_out: '2026-06-22T16:00:00+10:00' },
+    { record_id: '', person_email: ' carol@example.test', clock_in: IN, clock_out: OUT }]);
+  eq('S9 email case/whitespace collapse to one person', [nS(r), g(sh(r), 'personEmail'), g(sh(r), 'hours')], [1, 'carol@example.test', 8]);
+  r = conv([
+    { record_id: '', person_email: 'carol@example.test', clock_in: IN, clock_out: OUT },
+    { record_id: '', person_email: 'dave@example.test', clock_in: IN, clock_out: OUT }]);
+  eq('S9 different people with the same clock-in are not deduped', nS(r), 2);
+  r = conv([
+    { record_id: 'a', clock_in: IN, clock_out: OUT },
+    { record_id: 'b', clock_in: IN, clock_out: OUT }]);
+  eq('S9 different record_ids are not deduped', nS(r), 2);
+  r = conv([
+    { record_id: 'd1', clock_in: IN, clock_out: '2026-06-22T16:00:00+10:00' },
+    { record_id: 'd1', clock_in: IN, clock_out: '2026-06-22T15:00:00+10:00', location: 'Nowhere' }]);
+  eq('S9 superseded duplicate is neither shift nor exception (even if it would be one)',
+    [nS(r), nE(r), g(sh(r), 'hours')], [1, 0, 7]);
+
+  // ---- exceptions: exactly one reason, never costed ----
+  r = one({ clock_in: IN, clock_out: '' });
+  eq('S10 blank clock_out -> unpaired', [nS(r), reasons(r)], [0, ['unpaired']]);
+  r = one({ clock_in: '', clock_out: OUT });
+  eq('S10 blank clock_in -> unpaired', [nS(r), reasons(r)], [0, ['unpaired']]);
+  r = one({ clock_in: '2026-06-22T17:00:00+10:00', clock_out: '2026-06-22T09:00:00+10:00' });
+  eq('S10 out before in -> negative', [nS(r), reasons(r)], [0, ['negative']]);
+  r = one({ clock_in: IN, clock_out: '2026-06-22T09:30:00+10:00', break_minutes: 30 });
+  eq('S10 break eats whole shift (hours <= 0) -> negative', [nS(r), reasons(r)], [0, ['negative']]);
+  r = one({ clock_in: IN, clock_out: '2026-06-23T02:00:00+10:00' });
+  eq('S10 17h -> over_16h', [nS(r), reasons(r)], [0, ['over_16h']]);
+  r = one({ clock_in: IN, clock_out: '2026-06-23T01:00:00+10:00' });
+  eq('S10 exactly 16h is NOT over_16h', [nS(r), nE(r)], [1, 0]);
+  r = one({ clock_in: IN, clock_out: OUT, location: 'Nowhere' });
+  eq('S10 location not in LOCATIONS -> unknown_location', [nS(r), reasons(r)], [0, ['unknown_location']]);
+  r = one({ clock_in: IN, clock_out: OUT, person_email: 'erin@example.test', rate: '' });
+  eq('S10 no row rate and no RATES row -> no_rate', [nS(r), reasons(r)], [0, ['no_rate']]);
+  r = one({ clock_in: IN, clock_out: OUT, person_email: 'erin@example.test', rate: 0 });
+  eq('S10 rate 0 is not a rate -> no_rate', [nS(r), reasons(r)], [0, ['no_rate']]);
+  // precedence
+  r = one({ clock_in: IN, clock_out: '', location: 'Nowhere', rate: '' });
+  eq('S11 unpaired beats unknown_location/no_rate (exactly one exception)', reasons(r), ['unpaired']);
+  r = one({ clock_in: '2026-06-22T17:00:00+10:00', clock_out: '2026-06-22T09:00:00+10:00', location: 'Nowhere', rate: '' });
+  eq('S11 negative beats unknown_location/no_rate', reasons(r), ['negative']);
+  r = one({ clock_in: IN, clock_out: '2026-06-23T02:00:00+10:00', location: 'Nowhere', rate: '' });
+  eq('S11 over_16h beats unknown_location/no_rate', reasons(r), ['over_16h']);
+  r = one({ clock_in: IN, clock_out: OUT, location: 'Nowhere', rate: '' });
+  eq('S11 unknown_location beats no_rate', reasons(r), ['unknown_location']);
+  // exception shape
+  r = one({ record_id: 'x9', person_email: 'Erin@Example.test', clock_in: IN, clock_out: '', location: 'Loc B' });
+  var ex = r && r.exceptions[0];
+  eq('S12 exception shape: recordId/personEmail/date/location',
+    [g(ex, 'recordId'), g(ex, 'personEmail'), g(ex, 'date'), g(ex, 'location')], ['x9', 'erin@example.test', '2026-06-22', 'Loc B']);
+  check('S12 exception carries a non-empty detail string', !!ex && typeof ex.detail === 'string' && ex.detail.length > 0);
+
+  // ---- RATES fallback ----
+  r = one({ person_email: 'alice@example.test', clock_in: IN, clock_out: OUT, rate: '' });
+  eq('S13 fallback: latest effective_from <= shift date (20, not the later 30 row)',
+    [nS(r), g(sh(r), 'rate'), g(sh(r), 'rateSource')], [1, 20, 'rates_fallback']);
+  var JUL = { start: '2026-06-29', end: '2026-07-05' };
+  r = one({ person_email: 'alice@example.test', clock_in: '2026-07-02T09:00:00+10:00', clock_out: '2026-07-02T17:00:00+10:00', rate: '' }, JUL);
+  eq('S13 fallback: newer RATES row once effective -> 30', [g(sh(r), 'rate'), g(sh(r), 'rateSource')], [30, 'rates_fallback']);
+  r = one({ person_email: 'alice@example.test', clock_in: '2026-07-01T09:00:00+10:00', clock_out: '2026-07-01T17:00:00+10:00', rate: '' }, JUL);
+  eq('S13 fallback: effective_from == shift date is included', g(sh(r), 'rate'), 30);
+  var cfgLate = { multipliers: {}, holidays: {}, people: {}, locations: CFG.locations,
+    rates: { 'alice@example.test': [{ rate: 30, effective_from: '2026-07-01' }] } };
+  r = one({ person_email: 'alice@example.test', clock_in: IN, clock_out: OUT, rate: '' }, RANGE, cfgLate);
+  eq('S13 RATES row effective AFTER the shift date is NOT used -> no_rate', [nS(r), reasons(r)], [0, ['no_rate']]);
+  r = one({ person_email: 'alice@example.test', clock_in: IN, clock_out: OUT, rate: 99 });
+  eq('S13 row rate beats RATES fallback', [g(sh(r), 'rate'), g(sh(r), 'rateSource')], [99, 'row']);
+  r = one({ person_email: ' ALICE@example.test', clock_in: IN, clock_out: OUT, rate: '' });
+  eq('S13 fallback lookup is case/space-insensitive on email', g(sh(r), 'rateSource'), 'rates_fallback');
+
+  // ---- department ----
+  r = one({ clock_in: IN, clock_out: OUT, location: 'Loc B' });
+  eq('S14 roastery location -> Roastery + code', [g(sh(r), 'department'), g(sh(r), 'locationCode')], ['Roastery', 'LB']);
+  r = one({ clock_in: IN, clock_out: OUT, location: 'Loc A' });
+  eq('S14 cafe location -> Cafe', g(sh(r), 'department'), 'Cafe');
+
+  // ---- header drift ----
+  var msg = has('labourRowsToShifts_')
+    ? thrown(function () { globalThis.labourRowsToShifts_([hdr('clock_out'), []], RANGE, CFG); })
+    : null;
+  check('S15 missing clock_out header THROWS naming the column', msg !== null && msg.indexOf(COLS.clock_out) !== -1);
+  msg = has('labourRowsToShifts_')
+    ? thrown(function () { globalThis.labourRowsToShifts_([hdr('record_id'), []], RANGE, CFG); })
+    : null;
+  check('S15 missing record_id header THROWS naming the column', msg !== null && msg.indexOf(COLS.record_id) !== -1);
+  if (has('labourRowsToShifts_')) {
+    var rev = ORDER.slice().reverse();
+    var full = mk({ clock_in: IN, clock_out: OUT });
+    var byName = {}; ORDER.forEach(function (k, i) { byName[k] = full[i]; });
+    var rr = globalThis.labourRowsToShifts_([rev.map(function (k) { return COLS[k]; }), rev.map(function (k) { return byName[k]; })], RANGE, CFG);
+    eq('S15 reversed column order still parses by header text', [nS(rr), g(sh(rr), 'hours')], [1, 8]);
+  } else {
+    check('S15 reversed column order still parses by header text', false);
+  }
+  var hOnly = has('labourRowsToShifts_') ? globalThis.labourRowsToShifts_([hdr()], RANGE, CFG) : null;
+  eq('S15 header-only input -> no shifts, no exceptions', [nS(hOnly), nE(hOnly)], [0, 0]);
+
+  r = conv([{ record_id: 'm1', clock_in: IN, clock_out: OUT }, { record_id: 'm2', clock_in: IN, clock_out: '' }]);
+  eq('S16 mixed batch: 1 shift + 1 exception, each row exactly once', [nS(r), nE(r)], [1, 1]);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

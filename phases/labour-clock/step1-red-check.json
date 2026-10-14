@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 88 failures fail for the right reason: the code under test is missing. Every assertion that fails reports got \"undefined\" or \"undefined-fn\", meaning the labour-clock functions and values the S7-S16 tests call are not defined yet, so they return undefined and the expectations fail. The S15 cases expect a throw naming the missing column, and nothing throws because the parser does not exist yet. No failure is a syntax error, import error, or broken fixture in the test file. Caveat: only the output tail was reviewed, so the 2792 passing tests were not inspected. Those could hide vacuous tests, but that does not change this verdict on the 88 failures."
+}
