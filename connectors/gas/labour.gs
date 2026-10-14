@@ -880,3 +880,34 @@ function labourBuildSeed_(src) {
   return { tabs: tabs, counts: { locations: locations.length - 1, rates: rateRows.length, people: people.length - 1,
     holidays: tabs.HOLIDAYS.length - 1, rateConflicts: rateConflicts, ratesSkipped: ratesSkipped, peopleWithoutLevel: peopleWithoutLevel } };
 }
+
+// Read-only diagnostic for the seed: counts and award-level LABELS only (labels
+// truncated to 40 chars) - never emails, names or rates - so it is safe to log.
+function labourSeedSourceReport_(src) {
+  function labels(rows, col) {
+    var counts = {};
+    rows.forEach(function (r) {
+      var l = labourStr_(r[col]).slice(0, 40) || '(blank)';
+      counts[l] = (counts[l] || 0) + 1;
+    });
+    return Object.keys(counts).sort().map(function (l) {
+      return { label: l, count: counts[l], parsed: l === '(blank)' ? '' : labourParseAwardLevel_(l) };
+    });
+  }
+  var prof = labourSourceIndex_(src, 'STAFF_PROFILE', ['email', 'currentAwardLevel'], true);
+  var subs = labourSourceIndex_(src, 'SUBMISSIONS', ['awardLevel'], true);
+  var rates = labourSourceIndex_(src, 'STAFF_RATES', ['email'], true);
+  var profEmails = {};
+  if (prof) prof.rows.forEach(function (r) { var e = labourStr_(r[prof.idx.email]).toLowerCase(); if (e) profEmails[e] = true; });
+  var rateEmails = {};
+  if (rates) rates.rows.forEach(function (r) { var e = labourStr_(r[rates.idx.email]).toLowerCase(); if (e) rateEmails[e] = true; });
+  return {
+    profileRows: prof ? prof.rows.length : 0,
+    profileRowsWithEmail: prof ? prof.rows.filter(function (r) { return labourStr_(r[prof.idx.email]) !== ''; }).length : 0,
+    profileLevels: prof ? labels(prof.rows, prof.idx.currentAwardLevel) : [],
+    submissionRows: subs ? subs.rows.length : 0,
+    submissionLevels: subs ? labels(subs.rows, subs.idx.awardLevel) : [],
+    rateEmails: Object.keys(rateEmails).length,
+    rateEmailsWithProfile: Object.keys(rateEmails).filter(function (e) { return profEmails[e]; }).length
+  };
+}

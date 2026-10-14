@@ -42,3 +42,18 @@ function labourSetupSheet_(props, app) {
   props.setProperty('LABOUR_CLOCK_SHEET_ID', ss.getId());
   return { ok: true, id: ss.getId(), url: ss.getUrl(), counts: seed.counts };
 }
+
+// Zero-arg, read-only: what the Onboarding source holds for award levels.
+function labourSeedSourceReport() {
+  var id = PropertiesService.getScriptProperties().getProperty('LABOUR_SHEET_ID');
+  if (!id) { Logger.log('labourSeedSourceReport: refused onboarding_sheet_unset'); return { refused: 'onboarding_sheet_unset' }; }
+  var srcSS = SpreadsheetApp.openById(id);
+  var src = {};
+  ['STAFF_PROFILE', 'SUBMISSIONS', 'STAFF_RATES'].forEach(function (n) {
+    var sh = srcSS.getSheetByName(n);
+    if (sh) src[n] = sh.getDataRange().getValues();
+  });
+  var res = labourSeedSourceReport_(src);
+  Logger.log('labourSeedSourceReport: ' + JSON.stringify(res));
+  return res;
+}

@@ -16692,5 +16692,30 @@ console.log('\nGroup M — ingest-validation hardening:');
   check('SU12 zero-arg editor wrapper labourSetupSheet exists', has('labourSetupSheet') && globalThis.labourSetupSheet.length === 0);
 })();
 
+// ---- labour-clock Phase 1: read-only seed source report (labels + counts, no PII) ----
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function call(n) {
+    var a = Array.prototype.slice.call(arguments, 1);
+    try { return has(n) ? globalThis[n].apply(null, a) : null; } catch (e) { return { threw: String(e && e.message || e) }; }
+  }
+  var src = {
+    STAFF_PROFILE: [['email', 'currentAwardLevel', 'legalName'], ['a@example.test', 'Level 1 - Barista', 'Zzsecret'],
+      ['b@example.test', 'Level 1 - Barista', 'Zzsecret'], ['c@example.test', '', 'Zzsecret'], ['', 'Level 3', 'Zzsecret']],
+    SUBMISSIONS: [['id', 'staffProfileId', 'awardLevel', 'hourlyRate'], ['s1', 'sp_1', 'Level 4', 35.15], ['s2', 'sp_2', 'Level 4', 35.15]],
+    STAFF_RATES: [['email', 'base_rate'], ['a@example.test', 31.19], ['x@example.test', 30]]
+  };
+  var r = call('labourSeedSourceReport_', src) || {};
+  eq('SR1 profile row counts (all rows, rows with email)', [r.profileRows, r.profileRowsWithEmail], [4, 3]);
+  eq('SR2 profile level labels counted, blank shown as (blank), parse result shown',
+    r.profileLevels, [{ label: '(blank)', count: 1, parsed: '' }, { label: 'Level 1 - Barista', count: 2, parsed: '' }, { label: 'Level 3', count: 1, parsed: 3 }]);
+  eq('SR3 submissions level labels', [r.submissionRows, r.submissionLevels], [2, [{ label: 'Level 4', count: 2, parsed: 4 }]]);
+  eq('SR4 rate emails that have a profile row', [r.rateEmails, r.rateEmailsWithProfile], [2, 1]);
+  check('SR5 report carries no email / name', r.profileRows === 4 && JSON.stringify(r).indexOf('@example.test') === -1 && JSON.stringify(r).indexOf('Zzsecret') === -1);
+  var r2 = call('labourSeedSourceReport_', { STAFF_RATES: src.STAFF_RATES }) || {};
+  eq('SR6 missing optional tabs -> zero counts, not a throw', [r2.profileRows, r2.submissionRows, r2.rateEmails], [0, 0, 2]);
+  check('SR7 zero-arg editor wrapper labourSeedSourceReport exists', has('labourSeedSourceReport') && globalThis.labourSeedSourceReport.length === 0);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
