@@ -15992,5 +15992,131 @@ console.log('\nGroup M — ingest-validation hardening:');
   eq('S16 mixed batch: 1 shift + 1 exception, each row exactly once', [nS(r), nE(r)], [1, 1]);
 })();
 
+/* ------------------------------------------------------------------ *
+ * labour-clock step 2: cost-shift (PRD-16, PRD-17). Null-safe: a missing
+ * symbol must fail assertions, not crash before the summary. Dummy people only.
+ * ------------------------------------------------------------------ */
+(function () {
+  function has(n) { return typeof globalThis[n] === 'function'; }
+  function thrown(fn) { try { fn(); return null; } catch (e) { return String((e && e.message) || e); } }
+  function r4(x) { return typeof x === 'number' ? Math.round(x * 10000) / 10000 : x; }
+  var seedRows = Array.isArray(globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_) ? globalThis.LABOUR_CLOCK_MULTIPLIER_SEED_.slice(1) : [];
+  var mults = {};
+  seedRows.forEach(function (r) { mults[r[0] + '|' + r[1] + '|' + r[2] + '|' + r[3]] = r[4]; });
+  function people() {
+    return {
+      'cu@example.test': { employment_type: 'casual', level: 3, rate_basis: 'unloaded' },
+      'cl2@example.test': { employment_type: 'casual', level: 2, rate_basis: 'loaded' },
+      'cl3@example.test': { employment_type: 'casual', level: 3, rate_basis: 'loaded' },
+      'ft@example.test': { employment_type: 'full_time', level: 3, rate_basis: 'any' },
+      'pt@example.test': { employment_type: 'part_time', level: 3, rate_basis: 'any' },
+      'junior@example.test': { employment_type: 'casual', level: 'Intro', rate_basis: 'loaded' },
+      'senior@example.test': { employment_type: 'casual', level: 6, rate_basis: 'loaded' },
+      'blank@example.test': { employment_type: 'casual', level: '', rate_basis: 'loaded' },
+      'nomult@example.test': { employment_type: 'contractor', level: 3, rate_basis: 'any' }
+    };
+  }
+  function cfg(hol) {
+    return { multipliers: mults, holidays: hol || { '2026-10-05': 'Labour Day', '2026-04-25': 'Anzac Day', '2027-04-25': 'Anzac Day' },
+      locations: {}, rates: {}, people: people() };
+  }
+  function sh(email, date, hours, rate) {
+    return { personEmail: email, date: date, hours: hours === undefined ? 8 : hours, rate: rate === undefined ? 30 : rate, recordId: 'x1', location: 'Loc A' };
+  }
+  function cost(email, date, hours, rate, hol) {
+    return has('labourCostShift_') ? globalThis.labourCostShift_(sh(email, date, hours, rate), cfg(hol)) : null;
+  }
+  function f(res, k) { return res && res.ok ? r4(res[k]) : 'no-result'; }
+  function sg(d) { return has('labourSgRate_') ? globalThis.labourSgRate_(d) : undefined; }
+  function dt(d) { return has('labourDayType_') ? globalThis.labourDayType_(d, cfg()) : undefined; }
+
+  // ---- multipliers by combination (Wed 2026-10-07 weekday, Sat 2026-10-10, Sun 2026-10-11) ----
+  var r = cost('cu@example.test', '2026-10-07');
+  eq('C1 weekday casual-unloaded 8h@30 -> mult/base/gross/uplift', [f(r, 'multiplier'), f(r, 'base'), f(r, 'gross'), f(r, 'uplift')], [1.25, 240, 300, 60]);
+  eq('C1 dayType is weekday', r && r.dayType, 'weekday');
+  check('C1 result carries type/level/basis pins', !!r && r.employmentType === 'casual' && r.level === 3 && r.rateBasis === 'unloaded');
+  eq('C2 weekday casual-loaded -> 1.00', f(cost('cl3@example.test', '2026-10-07'), 'multiplier'), 1);
+  eq('C2 full_time vs casual-loaded same row rate/date -> gross differs',
+    [f(cost('ft@example.test', '2026-10-10'), 'gross'), f(cost('cl3@example.test', '2026-10-10'), 'gross')], [300, 288]);
+  eq('C2 full_time vs casual-loaded multipliers differ', [f(cost('ft@example.test', '2026-10-10'), 'multiplier'), f(cost('cl3@example.test', '2026-10-10'), 'multiplier')], [1.25, 1.2]);
+  eq('C3 Saturday casual-loaded L2 -> 1.20', f(cost('cl2@example.test', '2026-10-10'), 'multiplier'), 1.2);
+  eq('C3 Sunday casual-loaded L2 -> 1.20 vs L3 -> 1.40',
+    [f(cost('cl2@example.test', '2026-10-11'), 'multiplier'), f(cost('cl3@example.test', '2026-10-11'), 'multiplier')], [1.2, 1.4]);
+  eq('C4 Sunday full_time -> 1.50', f(cost('ft@example.test', '2026-10-11'), 'multiplier'), 1.5);
+  eq('C4 Saturday part_time -> 1.25', f(cost('pt@example.test', '2026-10-10'), 'multiplier'), 1.25);
+
+  // ---- public holidays ----
+  r = cost('cl3@example.test', '2026-10-05');
+  eq('C5 PH on weekday (Mon 2026-10-05) -> public_holiday, 2.0', [r && r.dayType, f(r, 'multiplier')], ['public_holiday', 2]);
+  r = cost('cl3@example.test', '2026-04-25');
+  eq('C6 PH falling on Saturday -> public_holiday NOT saturday, PH rate 2.0', [r && r.dayType, f(r, 'multiplier')], ['public_holiday', 2]);
+  eq('C6 labourDayType_ Sat PH', dt('2026-04-25'), 'public_holiday');
+  r = cost('cl3@example.test', '2027-04-25');
+  eq('C7 PH falling on Sunday -> public_holiday not sunday', [r && r.dayType, f(r, 'multiplier')], ['public_holiday', 2]);
+  r = cost('cl3@example.test', '2026-04-25', 8, 30, {});
+  eq('C8 holiday removed from cfg -> same Saturday costs at Saturday rate (data-driven)', [r && r.dayType, f(r, 'multiplier')], ['saturday', 1.2]);
+
+  // ---- missing multiplier propagates ----
+  var msg = has('labourCostShift_') ? thrown(function () { globalThis.labourCostShift_(sh('nomult@example.test', '2026-10-07'), cfg()); }) : null;
+  check('C9 missing multiplier THROWS (propagated, not caught)', msg !== null && /no multiplier/.test(msg));
+
+  // ---- super guarantee ----
+  eq('G1 SG 2025-06-30 -> 0.115', sg('2025-06-30'), 0.115);
+  eq('G1 SG 2025-07-01 -> 0.12', sg('2025-07-01'), 0.12);
+  eq('G1 SG 2024-07-01 -> 0.115', sg('2024-07-01'), 0.115);
+  eq('G1 SG far future uses latest row (0.12)', sg('2031-01-01'), 0.12);
+  msg = has('labourSgRate_') ? thrown(function () { globalThis.labourSgRate_('2024-06-30'); }) : null;
+  check('G2 SG 2024-06-30 (before table) THROWS, never 0', msg !== null);
+  check('G2 LABOUR_SG_RATES_ is the ascending dated table',
+    Array.isArray(globalThis.LABOUR_SG_RATES_) && globalThis.LABOUR_SG_RATES_.length === 2 &&
+    globalThis.LABOUR_SG_RATES_[0].from === '2024-07-01' && globalThis.LABOUR_SG_RATES_[1].from === '2025-07-01');
+  r = cost('cu@example.test', '2025-07-01');
+  eq('G3 worked example gross 300 on 2025-07-01 -> sgRate/super/total', [f(r, 'gross'), f(r, 'sgRate'), f(r, 'super'), f(r, 'total')], [300, 0.12, 36, 336]);
+  r = cost('cu@example.test', '2025-06-30');
+  eq('G3 2025-06-30 shift super is 11.5% of gross', [f(r, 'sgRate'), f(r, 'super')], [0.115, 34.5]);
+  msg = has('labourCostShift_') ? thrown(function () { globalThis.labourCostShift_(sh('cu@example.test', '2024-06-30'), cfg()); }) : null;
+  check('G4 shift before SG table THROWS from labourCostShift_', msg !== null);
+  r = has('labourCostShift_') ? globalThis.labourCostShift_(sh('cu@example.test', '2026-10-07', 0.3333, 31.37), cfg()) : null;
+  eq('G5 no per-shift rounding: gross is hours x rate x mult unrounded', r && r.gross, 0.3333 * 31.37 * 1.25);
+
+  // ---- exceptions ----
+  r = cost('ghost@example.test', '2026-10-07');
+  check('E1 person absent -> person_not_in_people exception, no cost fields',
+    !!r && r.ok === false && r.exception.reason === 'person_not_in_people' && r.gross === undefined && r.total === undefined);
+  check('E1 exception carries recordId/personEmail/date/location/detail',
+    !!r && !!r.exception && r.exception.recordId === 'x1' && r.exception.personEmail === 'ghost@example.test' &&
+    r.exception.date === '2026-10-07' && r.exception.location === 'Loc A' && typeof r.exception.detail === 'string');
+  r = cost('blank@example.test', '2026-10-07');
+  check('E2 blank level -> person_incomplete', !!r && r.ok === false && r.exception.reason === 'person_incomplete');
+  var inc = cfg(); inc.people['bt@example.test'] = { employment_type: '', level: 3, rate_basis: 'any' };
+  inc.people['bb@example.test'] = { employment_type: 'casual', level: 3, rate_basis: '' };
+  check('E2 blank employment_type / rate_basis -> person_incomplete',
+    has('labourCostShift_') && globalThis.labourCostShift_(sh('bt@example.test', '2026-10-07'), inc).exception.reason === 'person_incomplete' &&
+    globalThis.labourCostShift_(sh('bb@example.test', '2026-10-07'), inc).exception.reason === 'person_incomplete');
+
+  // ---- pins are never re-derived from the rate ----
+  r = cost('junior@example.test', '2026-10-07', 8, 14);
+  eq('P1 pinned junior (Intro, low rate) costs from pins', [r && r.ok, f(r, 'gross')], [true, 8 * 14 * 1]);
+  r = cost('senior@example.test', '2026-10-10', 8, 80);
+  eq('P2 above-award rate costs from pins (L6 Saturday 1.2)', [r && r.ok, f(r, 'gross')], [true, r4(8 * 80 * 1.2)]);
+  r = cost('cl2@example.test', '2026-10-07', 8, 33.5);
+  eq('P3 rate that would fit another level post-1-July still costs from pinned level', [r && r.ok, r && r.level, f(r, 'gross')], [true, 2, 268]);
+
+  // ---- day type: leap day, year boundary, TZ independence ----
+  eq('D1 2028-02-29 (Tue) leap day -> weekday', dt('2028-02-29'), 'weekday');
+  eq('D1 2026-12-31 (Thu) -> weekday', dt('2026-12-31'), 'weekday');
+  eq('D1 2027-01-01 (Fri) -> weekday', dt('2027-01-01'), 'weekday');
+  eq('D1 2028-03-04 (Sat) -> saturday', dt('2028-03-04'), 'saturday');
+  eq('D1 2028-03-05 (Sun) -> sunday', dt('2028-03-05'), 'sunday');
+  eq('D1 2026-10-05 PH Mon -> public_holiday', dt('2026-10-05'), 'public_holiday');
+  var savedTZ = process.env.TZ;
+  var tzOut = ['UTC', 'Australia/Sydney', 'Pacific/Kiritimati', 'America/Los_Angeles'].map(function (tz) {
+    process.env.TZ = tz;
+    return [dt('2028-02-29'), dt('2026-12-31'), dt('2026-10-10'), dt('2026-10-11')].join(',');
+  });
+  if (savedTZ === undefined) delete process.env.TZ; else process.env.TZ = savedTZ;
+  eq('D2 labourDayType_ identical under every TZ', tzOut.every(function (x) { return x === 'weekday,weekday,saturday,sunday'; }), true);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 40 failures are implementation-side: assertion mismatches returning \"no-result\", null, or undefined from the labour costing path (C1-C9 multipliers/day types, G1-G5 SG super rates, E1-E2 exception paths, P1-P3 pinned levels, D1-D2 labourDayType_). Several 'THROWS' assertions fail because the required throw is not implemented (C9, G2, G4, E1, E2). The suite loads and runs to completion (2880 passed, 40 failed), so there is no import, syntax, or harness error in the test file. The 2880 passing assertions are pre-existing and unaffected. Verdict is from the output tail only; the head of the run was not inspected."
+}
