@@ -1,0 +1,33 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/gas/labour.gs",
+      "line": 156,
+      "summary": "A HOLIDAYS row with a name but a blank date cell is silently dropped. The round-1 malformed-date fix only throws for non-blank bad dates, because `if (d)` skips the empty key. Probe: HOLIDAYS row ['', 'Mystery Day'] returns no error and no holiday entry, so a public holiday silently loses its PH rate. This is the same silent-drop failure the round-1 finding flagged.",
+      "suggestion": "When the date key is empty but the name is non-blank, throw 'labour: HOLIDAYS row N has a name but no date'. Skip only fully blank rows, which the tab filter already removes. Add a test: a named HOLIDAYS row with a blank date throws naming HOLIDAYS."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/shopspend/test_ingest.py",
+      "line": 1015,
+      "summary": "Unrelated Python reformat in the labour-clock step-0 commit range. Rebuttal accepted as non-blocking: it does not touch the labour tests and does not need a history rewrite.",
+      "suggestion": "Move it to its own style commit if it is unwanted. Not blocking."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 15640,
+      "summary": "The 'people keyed by lower-cased trimmed email' check only asserts that the key exists, not the entry values. Rebuttal accepted as non-blocking: the step file does not mandate value assertions here.",
+      "suggestion": "Assert the employment_type and rate_basis values with eq() in a later cleanup. Do not modify RED-committed tests in this step."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/labour-clock/index.json",
+      "line": 1,
+      "summary": "Commit hygiene: duplicate step-0 commit subjects and roughly 6,000 lines of step0-red.log and step0-green.log committed with the code. Rebuttal accepted as non-blocking.",
+      "suggestion": "Gitignore the run logs in a follow-up. Rewriting history is out of scope."
+    }
+  ]
+}
