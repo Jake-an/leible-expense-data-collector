@@ -515,3 +515,207 @@ function labourGroup_(costed, exceptions) {
     return a.weekStart < b.weekStart ? -1 : a.weekStart > b.weekStart ? 1 : a.location < b.location ? -1 : a.location > b.location ? 1 : 0;
   });
 }
+
+/* ------------------------------------------------------------------ *
+ * Step 4 — data-quality checks and alerts (PRD-19, PRD-20). Pure: every
+ * clock-dependent check takes `today` as a parameter; nothing is persisted
+ * or raised here. An alert is {key, title, lines[]}, ONE line per item.
+ * ------------------------------------------------------------------ */
+
+var LABOUR_DROP_MIN_HISTORY_ = 4;
+var LABOUR_DROP_FLOOR_PCT_ = 70;
+var LABOUR_PAYGUIDE_TOLERANCE_ = 0.01;
+
+// Seed from docs/labour-award-research.md. THIRD-PARTY (rosterelf), UNVERIFIED against the
+// official pay guide - a smoke alarm only, never a source of truth for classification.
+// 'loaded' = casual rate incl. 25% loading; 'unloaded' = ordinary (FT/PT) rate.
+var LABOUR_PAYGUIDE_SEED_ = [
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 'intro', rate: 32.18 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 1, rate: 33.05 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 2, rate: 33.85 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 3, rate: 34.96 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 4, rate: 36.81 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 5, rate: 39.13 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'loaded', level: 6, rate: 40.16 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 'intro', rate: 25.74 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 1, rate: 26.44 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 2, rate: 27.08 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 3, rate: 27.97 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 4, rate: 29.45 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 5, rate: 31.30 },
+  { effective_from: '2026-07-01', employment_type: 'casual', rate_basis: 'unloaded', level: 6, rate: 32.13 }
+];
+
+function labourAlert_(key, title, lines) { return { key: key, title: title, lines: lines }; }
+
+function labourCheckZeroRows_(rowCount, week) {
+  if (rowCount === 0) {
+    return { stop: true, alerts: [labourAlert_('labour_zero_rows',
+      'Labour: no clock rows for ' + week + ' - nothing written',
+      ['CLOCK_RAW has 0 rows in the ' + week + ' date range.'])] };
+  }
+  return { stop: false, alerts: [] };
+}
+
+function labourCheckExceptions_(shiftsTotal, exceptionsTotal) {
+  var total = shiftsTotal + exceptionsTotal;
+  var rate = total === 0 ? 0 : exceptionsTotal / total;
+  var pct = Math.round(rate * 1000) / 10;
+  var line = exceptionsTotal + ' of ' + total + ' clock records (' + pct + '%) are exceptions.';
+  if (total > 0 && exceptionsTotal * 10 > total) {
+    return { refuse: true, rate: rate, alerts: [labourAlert_('labour_exceptions_refused',
+      'Labour: exceptions above 10% - week NOT written', [line])] };
+  }
+  if (exceptionsTotal > 0) {
+    return { refuse: false, rate: rate, alerts: [labourAlert_('labour_exceptions',
+      'Labour: some clock records could not be costed', [line])] };
+  }
+  return { refuse: false, rate: rate, alerts: [] };
+}
+
+function labourExceptionAlerts_(exceptions) {
+  var seen = {};
+  var lines = [];
+  (exceptions || []).forEach(function (e) {
+    if (!e || e.reason !== 'person_not_in_people') return;
+    var email = labourStr_(e.personEmail);
+    if (Object.prototype.hasOwnProperty.call(seen, email)) return;
+    seen[email] = true;
+    lines.push(email);
+  });
+  return lines.length === 0 ? [] : [labourAlert_('labour_person_missing',
+    'Labour: staff clocked on but missing from PEOPLE - their hours cost nothing', lines)];
+}
+
+// Modal rate (to the cent) per person; ties go to the first rate seen.
+function labourModalRates_(shifts) {
+  var counts = {};
+  var order = {};
+  (shifts || []).forEach(function (s) {
+    var email = labourStr_(s.personEmail);
+    var c = Math.round(s.rate * 100);
+    counts[email] = counts[email] || {};
+    if (!Object.prototype.hasOwnProperty.call(counts[email], c)) {
+      counts[email][c] = 0;
+      order[email] = order[email] || [];
+      order[email].push(c);
+    }
+    counts[email][c]++;
+  });
+  var out = {};
+  Object.keys(counts).forEach(function (email) {
+    var best = null;
+    order[email].forEach(function (c) { if (best === null || counts[email][c] > counts[email][best]) best = c; });
+    out[email] = best;
+  });
+  return out;
+}
+
+function labourCheckRateChange_(thisWeekShifts, prevWeekShifts) {
+  var now = labourModalRates_(thisWeekShifts);
+  var prev = labourModalRates_(prevWeekShifts);
+  var lines = [];
+  Object.keys(now).sort().forEach(function (email) {
+    if (!Object.prototype.hasOwnProperty.call(prev, email) || prev[email] === now[email]) return;
+    lines.push(email + ': ' + prev[email] / 100 + ' -> ' + now[email] / 100);
+  });
+  return lines.length === 0 ? [] : [labourAlert_('labour_rate_change',
+    'Labour: hourly rate changed since last week', lines)];
+}
+
+function labourMedian_(nums) {
+  var s = nums.slice().sort(function (a, b) { return a - b; });
+  var m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+function labourCheckDrop_(groups, history) {
+  var drops = [];
+  var unchecked = [];
+  (groups || []).forEach(function (g) {
+    var prior = (history && Object.prototype.hasOwnProperty.call(history, g.location)) ? history[g.location] : [];
+    if (prior.length < LABOUR_DROP_MIN_HISTORY_) {
+      unchecked.push(g.location + ': drop check UNCHECKED - only ' + prior.length +
+        ' prior week(s) of history, need ' + LABOUR_DROP_MIN_HISTORY_);
+      return;
+    }
+    var med = labourMedian_(prior.slice(0, LABOUR_DROP_MIN_HISTORY_));
+    if (g.total * 100 < med * LABOUR_DROP_FLOOR_PCT_) {
+      drops.push(g.location + ': total ' + g.total + ' is below ' + LABOUR_DROP_FLOOR_PCT_ +
+        '% of the 4-week median ' + med);
+    }
+  });
+  var alerts = [];
+  if (drops.length) alerts.push(labourAlert_('labour_drop', 'Labour: weekly cost dropped sharply vs recent weeks', drops));
+  if (unchecked.length) alerts.push(labourAlert_('labour_drop_unchecked', 'Labour: drop check UNCHECKED for some locations', unchecked));
+  return alerts;
+}
+
+function labourJulyAlert_(today, lastAlertedYear) {
+  var year = Number(String(today).slice(0, 4));
+  var md = String(today).slice(5, 10);
+  if (md < '07-01' || lastAlertedYear >= year) return { alert: null, lastAlertedYear: lastAlertedYear };
+  return {
+    alert: labourAlert_('labour_reverify_multipliers', 'Labour: re-verify award multipliers (new financial year)',
+      ['Award rates change 1 July; re-check CONFIG multipliers against docs/labour-award-research.md.']),
+    lastAlertedYear: year
+  };
+}
+
+function labourPayGuideCheck_(observations, cfg, payGuide) {
+  var buckets = { mismatch: [], ambiguous: [], nomatch: [], stale: [] };
+  (observations || []).forEach(function (o) {
+    var email = labourStr_(o.personEmail).toLowerCase();
+    var p = cfg && cfg.people && Object.prototype.hasOwnProperty.call(cfg.people, email) ? cfg.people[email] : null;
+    if (!p) return;
+    var latest = {};
+    (payGuide || []).forEach(function (r) {
+      if (r.employment_type !== p.employment_type || r.rate_basis !== p.rate_basis || r.effective_from > o.date) return;
+      var k = String(r.level);
+      if (!Object.prototype.hasOwnProperty.call(latest, k) || r.effective_from > latest[k].effective_from) latest[k] = r;
+    });
+    var levels = Object.keys(latest);
+    if (levels.length === 0) {
+      buckets.stale.push(email + ': no pay-guide row effective on or before ' + o.date);
+      return;
+    }
+    var fits = levels.filter(function (k) {
+      return Math.abs(o.rate - latest[k].rate) <= latest[k].rate * LABOUR_PAYGUIDE_TOLERANCE_ + 1e-9;
+    });
+    var pinned = String(p.level);
+    if (fits.indexOf(pinned) !== -1) return;
+    if (fits.length === 0) {
+      buckets.nomatch.push(email + ': rate ' + o.rate + ' on ' + o.date + ' fits no award level (pinned L' + pinned + ')');
+    } else if (fits.length === 1) {
+      buckets.mismatch.push(email + ': pinned L' + pinned + ', rate fits L' + fits[0]);
+    } else {
+      buckets.ambiguous.push(email + ': pinned L' + pinned + ', rate fits ' + fits.map(function (k) { return 'L' + k; }).join(' and '));
+    }
+  });
+  var alerts = [];
+  if (buckets.mismatch.length) alerts.push(labourAlert_('labour_payguide_mismatch', 'Labour: pay rate matches a different award level than PEOPLE pins', buckets.mismatch));
+  if (buckets.ambiguous.length) alerts.push(labourAlert_('labour_payguide_ambiguous', 'Labour: pay rate fits more than one award level - not classified', buckets.ambiguous));
+  if (buckets.nomatch.length) alerts.push(labourAlert_('labour_payguide_nomatch', 'Labour: pay rate is above/below every award level (informational)', buckets.nomatch));
+  if (buckets.stale.length) alerts.push(labourAlert_('labour_payguide_stale', 'Labour: pay guide has no row for this date - refresh it', buckets.stale));
+  return alerts;
+}
+
+function labourRunChecks_(ctx) {
+  var alerts = [];
+  var z = labourCheckZeroRows_(ctx.rowCount, ctx.week);
+  alerts = alerts.concat(z.alerts);
+  if (z.stop) {
+    return { stop: true, refuse: false, alerts: alerts.concat(labourHolidayAlerts_(ctx.cfg, ctx.today)),
+      lastAlertedYear: ctx.lastAlertedYear };
+  }
+  var exc = ctx.exceptions || [];
+  var ex = labourCheckExceptions_(ctx.shiftsTotal, exc.length);
+  var july = labourJulyAlert_(ctx.today, ctx.lastAlertedYear);
+  alerts = alerts.concat(ex.alerts, labourExceptionAlerts_(exc),
+    labourCheckRateChange_(ctx.thisWeekShifts, ctx.prevWeekShifts),
+    labourCheckDrop_(ctx.groups, ctx.history),
+    july.alert ? [july.alert] : [],
+    labourPayGuideCheck_(ctx.observations, ctx.cfg, ctx.payGuide),
+    labourHolidayAlerts_(ctx.cfg, ctx.today));
+  return { stop: false, refuse: ex.refuse, alerts: alerts, lastAlertedYear: july.lastAlertedYear };
+}

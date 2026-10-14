@@ -182,7 +182,8 @@
     {
       "step": 4,
       "name": "checks-and-alerts",
-      "status": "pending",
+      "status": "completed",
+      "summary": "labour.gs: zero-row/exception/rate-change/drop/1-July/pay-guide checks + labourRunChecks_ aggregator, LABOUR_PAYGUIDE_SEED_; 3012 pass, 0 fail under TZ=UTC and Australia/Sydney.",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -190,8 +191,6 @@
         "PRD-20"
       ],
       "started_at": "2026-10-14T10:38:01+0900",
-      "blocked_at": "2026-10-14T10:40:36+0900",
-      "blocked_reason": "RED classifier produced no readable verdict after 2 attempts",
       "tdd_evidence": {
         "red": {
           "command": "node connectors/gas/test_code.js",
