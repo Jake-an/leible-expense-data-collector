@@ -382,6 +382,10 @@ def main(argv=None) -> int:
     ap.add_argument("--init-token", action="store_true", help="create .roster-token.txt if absent")
     ap.add_argument("--regen-token", action="store_true", help="replace .roster-token.txt (after a mismatch)")
     args = ap.parse_args(argv)
+    if sys.platform == "win32":
+        # Legacy conhost prints ANSI colour codes as raw "←[92m" until VT mode is on;
+        # an empty shell call flips it on for this console.
+        subprocess.run("", shell=True)
 
     if args.init_token or args.regen_token:
         if args.init_token and not args.regen_token and ROSTER_TOKEN_FILE.exists():
