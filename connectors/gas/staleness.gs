@@ -52,7 +52,13 @@ var STALENESS_THRESHOLD_OVERRIDES = {
   shopify_orderapp: 168,
   greenbean: 168,
   recurring: 744,
-  coffee_order_app: 168
+  coffee_order_app: 168,
+  // Weekly roster upload (Amendment B): Jake posts the current week's roster CSV
+  // every Monday. 192h = 8 days, so a normal Mon->Mon gap (168h) plus a day of
+  // slack stays silent, while a skipped Monday raises the alert by the following
+  // Tuesday's 11:00 check. Armed in STALENESS_SOURCES below; the first live post
+  // is made on deploy day so a never-seen source cannot alert before its first stamp.
+  brighthr_roster: 192
 };
 // Every source that stamps a heartbeat is watched — at the 96h default or a
 // per-source override above. Deliberately excluded:
@@ -79,7 +85,7 @@ var STALENESS_THRESHOLD_OVERRIDES = {
 //   guard requires each RE-ADD line above to appear here VERBATIM — so arming
 //   either feed without re-adding it to this array reds the suite.
 var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers',
-  'shopify_orderapp', 'greenbean', 'coffee_order_app'];
+  'shopify_orderapp', 'greenbean', 'coffee_order_app', 'brighthr_roster'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *

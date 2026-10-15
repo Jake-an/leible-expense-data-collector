@@ -440,6 +440,7 @@ load('summary_audit.gs');
 load('summary_drift_repair.gs');  // TEMPORARY — deleted with the file after the repair verifies
 load('labour.gs');  // pure labour-cost calc (phase labour-clock)
 load('labour_setup.gs');  // Labour Sheet one-off setup (Phase 1)
+load('labour_roster.gs');  // doPost roster kind -> Labour Sheet CLOCK_RAW (Amendment B1)
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -3534,7 +3535,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   console.log('\nstaleness — every heartbeat source is watched:');
 
   var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean',
-    'coffee_order_app'];
+    'coffee_order_app', 'brighthr_roster'];
   var EXEMPT = {
     shopspend: 'has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls'
   };
@@ -17007,6 +17008,274 @@ console.log('\nGroup M — ingest-validation hardening:');
   var rB = call('labourAddRuleTabs_', fakeProps({ LABOUR_CLOCK_SHEET_ID: 'X' }), aB) || {};
   eq('AT4 only the missing tabs are created; an existing tab is untouched', [rB.created, rB.skipped, aB._tabs.FIXED], [['PAY_TABLE', 'CASH_SHIFTS'], ['FIXED'], [['custom', 'header']]]);
   check('AT5 zero-arg editor wrapper labourAddRuleTabs exists', has('labourAddRuleTabs') && globalThis.labourAddRuleTabs.length === 0);
+})();
+
+/* ------------------------------------------------------------------ *
+ * Amendment B1 — doPost `roster` kind (labour_roster.gs)
+ * ------------------------------------------------------------------ */
+console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
+(function testLabourRosterKind() {
+  var HDR = Object.keys(LABOUR_CLOCK_COLS).map(function (k) { return LABOUR_CLOCK_COLS[k]; });
+  var IXI = HDR.indexOf('clock_in'), IXO = HDR.indexOf('clock_out'), IXR = HDR.indexOf('record_id');
+  var TEXTRE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
+
+  // Strict CLOCK_RAW fake. Models the two Sheets behaviours the replace must survive:
+  // a plain-text string that LOOKS like a datetime is auto-converted to a Date on write
+  // unless the column was first set to '@', and a range write has exact geometry.
+  function mkApp(seedRows) {
+    var rows = [HDR.slice()].concat((seedRows || []).map(function (r) { return r.slice(); }));
+    var log = { opened: [], active: 0, ops: [], formats: {} };
+    var sheet = {
+      getDataRange: function () { return { getValues: function () { return rows.map(function (r) { return r.slice(); }); } }; },
+      getLastRow: function () { return rows.length; },
+      getRange: function (r, c, nr, nc) {
+        if (nr < 1 || nc < 1) throw new Error('bad geometry');
+        return {
+          setNumberFormat: function (f) { for (var k = 0; k < nc; k++) log.formats[c - 1 + k] = f; log.ops.push('format:' + (c - 1) + ':' + f); return this; },
+          setValues: function (v) {
+            if (v.length !== nr || v[0].length !== nc) throw new Error('bad geometry');
+            log.ops.push('setValues:' + r + ':' + nr);
+            v.forEach(function (rv, i) {
+              while (rows.length <= r - 1 + i) rows.push([]);
+              rv.forEach(function (cell, j) {
+                var out = cell;
+                if (typeof cell === 'string' && TEXTRE.test(cell) && log.formats[c - 1 + j] !== '@') {
+                  out = new Date(labourSydneyParts_(cell).ms);   // Sheets auto-conversion
+                }
+                rows[r - 1 + i][c - 1 + j] = out;
+              });
+            });
+            return this;
+          },
+          clearContent: function () {
+            log.ops.push('clear:' + r + ':' + nr);
+            for (var i = 0; i < nr; i++) for (var j = 0; j < nc; j++) if (rows[r - 1 + i]) rows[r - 1 + i][c - 1 + j] = '';
+            return this;
+          }
+        };
+      }
+    };
+    var ss = { getSheetByName: function (n) { return n === 'CLOCK_RAW' ? sheet : null; } };
+    return { rows: rows, log: log, ss: ss };
+  }
+  function data(app) { return app.rows.slice(1).filter(function (r) { return r.some(function (c) { return c !== '' && c !== undefined; }); }); }
+  function rRow(o) {
+    return Object.assign({ email: 'dummy-a@example.test', name: 'Dummy A', date: '2026-10-12', start: '09:00', end: '17:30', hours: 8, location: 'Loc A' }, o || {});
+  }
+  function fakeSA(app) {
+    return {
+      openById: function (id) { app.log.opened.push(id); return app.ss; },
+      getActiveSpreadsheet: function () { app.log.active++; return currentSS; }
+    };
+  }
+  function post(app, rows, extra, props) {
+    var savedApp = global.SpreadsheetApp, savedProps = scriptProps;
+    scriptProps = Object.assign({ LABOUR_CLOCK_SHEET_ID: 'CLOCKSHEET' }, props || {});
+    global.SpreadsheetApp = fakeSA(app);
+    try {
+      return doPostJson(Object.assign({ source: 'brighthr_roster', kind: 'roster', rows: rows }, extra || {}));
+    } finally { global.SpreadsheetApp = savedApp; scriptProps = savedProps; }
+  }
+  function mkRaw(o) {
+    return HDR.map(function (h) { return o[h] === undefined ? '' : o[h]; });
+  }
+  var CFG = { locations: { 'Loc A': { code: 'A', department: 'Cafe' } }, rates: { 'dummy-a@example.test': [{ effective_from: '2026-01-01', rate: 30 }] },
+    multipliers: {}, holidays: {}, people: {} };
+  var RANGE = { start: '2026-01-01', end: '2026-12-31' };
+  function shifts(app, cfg) { return labourRowsToShifts_(app.rows, RANGE, cfg || CFG); }
+  freshSheets();
+
+  // ---- allowlist wiring (RB2) ----
+  eq('RO0 token property', INGEST_SOURCES_.brighthr_roster, 'INGEST_TOKEN_BRIGHTHR_ROSTER');
+  eq('RO0 kind binding is exactly [roster] (RB2)', INGEST_SOURCE_KINDS_.brighthr_roster, ['roster']);
+  check('RO0 department binding is null (own key)', Object.prototype.hasOwnProperty.call(INGEST_SOURCE_DEPARTMENTS_, 'brighthr_roster') && INGEST_SOURCE_DEPARTMENTS_.brighthr_roster === null);
+
+  // ---- valid post: lands in the Labour Sheet only ----
+  var a = mkApp();
+  var r = post(a, [rRow(), rRow({ email: 'dummy-b@example.test', start: '10:00', end: '14:00', hours: 4 })]);
+  eq('RO1 valid roster post ok, 2 rows added', [r.result, r.rowsAdded], ['ok', 2]);
+  eq('RO1 only the Labour Sheet id was opened; hub never touched', [a.log.opened, a.log.active], [['CLOCKSHEET'], 0]);
+  eq('RO1 CLOCK_RAW holds 2 data rows', data(a).length, 2);
+  check('RO1 hub Suppliers/Sales untouched', currentSS.getSheetByName('Suppliers').getDataRange().getValues().length === 1);
+  eq('RO1 clock_in/out written as text', [data(a)[0][IXI], data(a)[0][IXO]], ['2026-10-12 09:00', '2026-10-12 17:30']);
+
+  // ---- auth: specific refusal, nothing opened ----
+  a = mkApp();
+  r = post(a, [rRow()], { token: 'dummy-wrong-token' }, { INGEST_TOKEN_BRIGHTHR_ROSTER: 'dummy-real-token' });
+  eq('RO2 wrong token -> UNAUTHORIZED, nothing opened', [r.code, a.log.opened.length, a.log.active, data(a).length], ['UNAUTHORIZED', 0, 0, 0]);
+  a = mkApp();
+  var savedP = scriptProps, savedSA = global.SpreadsheetApp;
+  scriptProps = { INGEST_TOKEN_BRIGHTHR_ROSTER: 'dummy-real-token', LABOUR_CLOCK_SHEET_ID: 'CLOCKSHEET' };
+  global.SpreadsheetApp = fakeSA(a);
+  var rawNo;
+  try { rawNo = doPost({ postData: { contents: JSON.stringify({ source: 'brighthr_roster', kind: 'roster', rows: [rRow()] }) } }); }
+  finally { scriptProps = savedP; global.SpreadsheetApp = savedSA; }
+  eq('RO2 missing token -> UNAUTHORIZED, nothing opened', [JSON.parse(rawNo.getContent()).code, a.log.opened.length, a.log.active], ['UNAUTHORIZED', 0, 0]);
+
+  // ---- clock sheet unset ----
+  a = mkApp();
+  r = post(a, [rRow()], {}, { LABOUR_CLOCK_SHEET_ID: undefined });
+  eq('RO3 LABOUR_CLOCK_SHEET_ID unset -> clock_sheet_unset, nothing opened', [r.result, r.code, a.log.opened.length, a.log.active], ['error', 'clock_sheet_unset', 0, 0]);
+
+  // ---- empty / oversize ----
+  a = mkApp();
+  post(a, [rRow()]);
+  var before = JSON.stringify(a.rows);
+  r = post(a, []);
+  check('RO4 empty rows refused as roster_empty (' + r.message + ')', r.result === 'error' && String(r.message).indexOf('roster_empty') !== -1);
+  eq('RO4 CLOCK_RAW unchanged by the empty post', JSON.stringify(a.rows), before);
+  var big = []; for (var bi = 0; bi < 1001; bi++) big.push(rRow());
+  r = post(mkApp(), big);
+  check('RO4 1001 rows refused as roster_too_large (' + r.message + ')', String(r.message).indexOf('roster_too_large') !== -1);
+
+  // ---- per-field rejects: bound to the specific reason ----
+  var REJ = [
+    ['bad start time', { start: '9:00' }, 'invalid start'],
+    ['bad end time', { end: '25:00' }, 'invalid end'],
+    ['end equals start', { start: '09:00', end: '09:00' }, 'end must differ from start'],
+    ['hours 0', { hours: 0 }, 'invalid hours'],
+    ['hours negative', { hours: -1 }, 'invalid hours'],
+    ['hours > 16', { hours: 16.5 }, 'invalid hours'],
+    ['hours numeric string', { hours: '8' }, 'invalid hours'],
+    ['hours null', { hours: null }, 'invalid hours'],
+    ['department present', { department: 'Cafe' }, 'writes no department column'],
+    ['department empty-string key', { department: '' }, 'must not carry a department'],
+    ['department null key', { department: null }, 'must not carry a department'],
+    ['uppercase email', { email: 'Dummy@example.test' }, 'invalid email'],
+    ['email without @', { email: 'dummy-a' }, 'invalid email'],
+    ['blank location', { location: '  ' }, 'invalid location'],
+    ['bad date', { date: '2026-13-40' }, 'invalid date']
+  ];
+  REJ.forEach(function (c) {
+    var ap = mkApp();
+    var rr = post(ap, [rRow(), rRow(c[1])]);
+    check('RO5 ' + c[0] + ' -> refused with "' + c[2] + '" on row 1 (' + rr.message + ')',
+      rr.result === 'error' && String(rr.message).indexOf(c[2]) !== -1 && String(rr.message).indexOf('row 1') !== -1);
+    eq('RO5 ' + c[0] + ': nothing opened, nothing written', [ap.log.opened.length, data(ap).length], [0, 0]);
+  });
+
+  // ---- RB2: token is limited to the roster kind ----
+  freshSheets();
+  a = mkApp();
+  r = post(a, [{ date: '2026-07-01', total: 45, invoice_ref: 'RB2-1' }], { kind: 'suppliers' });
+  check('RO6a roster token posting kind=suppliers refused (' + r.message + ')', r.result === 'error' && String(r.message).indexOf('kind suppliers is not permitted for source brighthr_roster') !== -1);
+  eq('RO6a Suppliers untouched, Labour Sheet never opened', [currentSS.getSheetByName('Suppliers').getDataRange().getValues().length, a.log.opened.length], [1, 0]);
+  a = mkApp();
+  savedSA = global.SpreadsheetApp; global.SpreadsheetApp = fakeSA(a);
+  scriptProps = { LABOUR_CLOCK_SHEET_ID: 'CLOCKSHEET' };
+  try { r = doPostJson({ source: 'kent_paper', kind: 'roster', rows: [rRow()] }); } finally { global.SpreadsheetApp = savedSA; scriptProps = {}; }
+  check('RO6b kent_paper token posting kind=roster refused (' + r.message + ')', r.result === 'error' && String(r.message).indexOf('kind roster is not permitted for source kent_paper') !== -1);
+  eq('RO6b Labour Sheet never opened, CLOCK_RAW empty', [a.log.opened.length, a.log.active, data(a).length], [0, 0, 0]);
+
+  // ---- conversion ----
+  var conv = labourRosterToClockRows_([rRow()])[0];
+  eq('RO7 09:00-17:30 / 8h -> in, out, break 30, blank rate, record_id',
+    [conv.clock_in, conv.clock_out, conv.break_minutes, conv.hours, conv.rate, conv.record_id, conv.person_email, conv.location],
+    ['2026-10-12 09:00', '2026-10-12 17:30', 30, 8, '', 'roster:dummy-a@example.test|2026-10-12|09:00', 'dummy-a@example.test', 'Loc A']);
+  a = mkApp(); post(a, [rRow()]);
+  eq('RO7 labourRowsToShifts_ yields 8.0h from the converted row', shifts(a).shifts.map(function (s) { return s.hours; }), [8]);
+  var mid = labourRosterToClockRows_([rRow({ start: '22:00', end: '02:00', hours: 4 })])[0];
+  eq('RO7 22:00-02:00 crosses midnight: out is next day, break 0', [mid.clock_in, mid.clock_out, mid.break_minutes], ['2026-10-12 22:00', '2026-10-13 02:00', 0]);
+  eq('RO7 month-end rollover', labourRosterToClockRows_([rRow({ date: '2026-10-31', start: '23:00', end: '01:00', hours: 2 })])[0].clock_out, '2026-11-01 01:00');
+  a = mkApp(); post(a, [rRow({ start: '22:00', end: '02:00', hours: 4 })]);
+  eq('RO7 midnight shift costs as 4.0h', shifts(a).shifts.map(function (s) { return s.hours; }), [4]);
+
+  // ---- date-level replace ----
+  a = mkApp();
+  var P1 = [rRow(), rRow({ date: '2026-10-13' })];
+  post(a, P1); var snap = JSON.stringify(data(a));
+  r = post(a, P1);
+  eq('RO8 re-post same payload: idempotent (rows + content)', [data(a).length, JSON.stringify(data(a))], [2, snap]);
+  eq('RO8 re-post reports rowsReplaced per date', [r.rowsReplaced, r.rowsReplacedByDate], [2, { '2026-10-12': 1, '2026-10-13': 1 }]);
+  post(a, [rRow({ start: '10:00', end: '18:30' })]);
+  eq('RO8 edited start: old row gone, new present, other date kept',
+    data(a).map(function (x) { return x[IXR]; }).sort(),
+    ['roster:dummy-a@example.test|2026-10-12|10:00', 'roster:dummy-a@example.test|2026-10-13|09:00']);
+  a = mkApp();
+  post(a, [rRow({ date: '2026-10-12' }), rRow({ date: '2026-10-13' })]);
+  post(a, [rRow({ date: '2026-10-14' }), rRow({ date: '2026-10-18' })]);
+  eq('RO8 Wed-Sun payload leaves Mon-Tue rows intact', data(a).map(function (x) { return x[IXI].slice(0, 10); }).sort(), ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-18']);
+  var zapRow = mkRaw({ person_email: 'dummy-z@example.test', person_name: 'Z', clock_in: '2026-10-12 08:00', clock_out: '2026-10-12 12:00', hours: 4, break_minutes: 0, location: 'Loc A', record_id: 'zap-123' });
+  a = mkApp([zapRow]);
+  post(a, [rRow()]); post(a, [rRow({ start: '11:00' })]);
+  eq('RO8 non-roster row on the same date survives untouched', [data(a).length, data(a).some(function (x) { return x[IXR] === 'zap-123'; })], [2, true]);
+
+  // ---- RB3: Date-object cells + text format ----
+  var dateRow = mkRaw({ person_email: 'dummy-a@example.test', person_name: 'Dummy A',
+    clock_in: new Date(labourSydneyParts_('2026-10-12 09:00').ms), clock_out: new Date(labourSydneyParts_('2026-10-12 17:30').ms),
+    hours: 8, break_minutes: 30, location: 'Loc A', record_id: 'roster:dummy-a@example.test|2026-10-12|09:00' });
+  a = mkApp([dateRow]);
+  post(a, [rRow()]);
+  eq('RB3 Date-object roster row is replaced by a re-post (1 row, not 2)', data(a).length, 1);
+  a = mkApp([dateRow]);
+  post(a, [rRow({ start: '10:00', end: '18:30' })]);
+  eq('RB3 edited start over a Date-object row leaves exactly one row, costed once', [data(a).length, shifts(a).shifts.length, shifts(a).exceptions.length], [1, 1, 0]);
+  a = mkApp(); post(a, [rRow(), rRow({ date: '2026-10-13' })]);
+  check('RB3 every written clock_in/out is plain text, not a Date', data(a).every(function (x) { return typeof x[IXI] === 'string' && typeof x[IXO] === 'string' && TEXTRE.test(x[IXI]); }));
+  check('RB3 clock_in/out columns set to text BEFORE setValues', (function () {
+    var o = a.log.ops, fi = o.indexOf('format:' + IXI + ':@'), fo = o.indexOf('format:' + IXO + ':@'), sv = o.findIndex(function (s) { return s.indexOf('setValues') === 0; });
+    return fi !== -1 && fo !== -1 && fi < sv && fo < sv;
+  })());
+
+  // ---- RB9: kept rows re-normalised ----
+  var keptDate = mkRaw({ person_email: 'dummy-k@example.test', person_name: 'K',
+    clock_in: new Date(labourSydneyParts_('2026-10-05 07:00').ms), clock_out: new Date(labourSydneyParts_('2026-10-05 15:00').ms),
+    hours: 8, break_minutes: 0, location: 'Loc A', rate: 30, record_id: 'zap-kept' });
+  a = mkApp([keptDate]);
+  post(a, [rRow()]);
+  var kept = data(a).filter(function (x) { return x[IXR] === 'zap-kept'; })[0];
+  eq('RB9 kept Date-object row rewritten as YYYY-MM-DD HH:MM text', [kept[IXI], kept[IXO]], ['2026-10-05 07:00', '2026-10-05 15:00']);
+  var sk = shifts(a);
+  eq('RB9 kept row still parses (no unpaired) and costs 8h',
+    [sk.exceptions.map(function (e) { return e.reason; }), sk.shifts.filter(function (s) { return s.recordId === 'zap-kept'; }).map(function (s) { return s.hours; })], [[], [8]]);
+
+  // ---- RB4: write order + tail ----
+  a = mkApp();
+  post(a, [rRow(), rRow({ email: 'dummy-b@example.test' }), rRow({ email: 'dummy-c@example.test' })]);
+  a.log.ops.length = 0;
+  r = post(a, [rRow()]);
+  eq('RB4 re-post with fewer rows: one row remains, no stale tail', [data(a).length, a.rows.length], [1, 4]);
+  check('RB4 stale tail rows are blank', a.rows.slice(2).every(function (x) { return x.every(function (c) { return c === ''; }); }));
+  var oi = a.log.ops, isv = oi.findIndex(function (s) { return s.indexOf('setValues') === 0; }), icl = oi.findIndex(function (s) { return s.indexOf('clear') === 0; });
+  check('RB4 setValues happens BEFORE the tail clear (never clear-then-write)', isv !== -1 && icl !== -1 && isv < icl);
+  eq('RB4 response reports rowsReplaced', r.rowsReplaced, 3);
+
+  // ---- unknown location accepted, then exception at costing; RATES fallback ----
+  a = mkApp();
+  r = post(a, [rRow({ location: 'Typo Loc' }), rRow({ email: 'dummy-b@example.test' })]);
+  eq('RO9 unknown location is accepted', [r.result, r.rowsAdded], ['ok', 2]);
+  var sc = shifts(a, Object.assign({}, CFG, { rates: { 'dummy-a@example.test': [{ effective_from: '2026-01-01', rate: 30 }], 'dummy-b@example.test': [{ effective_from: '2026-01-01', rate: 31 }] } }));
+  eq('RO9 costing raises unknown_location for the typo row only', sc.exceptions.map(function (e) { return [e.reason, e.location]; }), [['unknown_location', 'Typo Loc']]);
+  a = mkApp(); post(a, [rRow()]);
+  eq('RO9 blank rate takes the RATES fallback', shifts(a).shifts.map(function (s) { return [s.rateSource, s.rate]; }), [['rates_fallback', 30]]);
+
+  // ---- heartbeat + LOCKED + staleness (RB1) ----
+  a = mkApp();
+  var savedP2 = scriptProps, savedApp2 = global.SpreadsheetApp;
+  scriptProps = { LABOUR_CLOCK_SHEET_ID: 'CLOCKSHEET' };
+  global.SpreadsheetApp = fakeSA(a);
+  try {
+    doPostJson({ source: 'brighthr_roster', kind: 'roster', rows: [rRow()] });
+    check('RO10 heartbeat stamped for brighthr_roster on success', typeof scriptProps.LAST_INGEST_brighthr_roster === 'string');
+    delete scriptProps.LAST_INGEST_brighthr_roster;
+    doPostJson({ source: 'brighthr_roster', kind: 'roster', rows: [rRow({ hours: 0 })] });
+    check('RO10 no heartbeat on a refused post', scriptProps.LAST_INGEST_brighthr_roster === undefined);
+    global.__forceLockTimeout = true;
+    var lk;
+    try { lk = doPostJson({ source: 'brighthr_roster', kind: 'roster', rows: [rRow()] }); } finally { global.__forceLockTimeout = false; }
+    eq('RO10 lock timeout -> LOCKED retryable, no heartbeat', [lk.code, lk.retryable, scriptProps.LAST_INGEST_brighthr_roster], ['LOCKED', true, undefined]);
+  } finally { global.SpreadsheetApp = savedApp2; scriptProps = savedP2; }
+  check('RB1 brighthr_roster is in the real STALENESS_SOURCES', STALENESS_SOURCES.indexOf('brighthr_roster') !== -1);
+  eq('RB1 override is 192h (8 days)', STALENESS_THRESHOLD_OVERRIDES.brighthr_roster, 192);
+  var NOWR = Date.UTC(2026, 9, 20, 1, 0, 0), HR = 3600000;
+  function evalRoster(ageH) {
+    var lastSeen = {}; if (ageH !== null) lastSeen.brighthr_roster = NOWR - ageH * HR;
+    return stalenessEvaluate_(lastSeen, STALENESS_SOURCES, NOWR, STALENESS_THRESHOLD_HOURS, STALENESS_THRESHOLD_OVERRIDES)
+      .filter(function (e) { return e.source === 'brighthr_roster'; })[0];
+  }
+  eq('RB1 stale at 193h', evalRoster(193) && evalRoster(193).stale, true);
+  eq('RB1 fresh at 191h', evalRoster(191) && evalRoster(191).stale, false);
+  eq('RB1 never-seen is stale (so the first post must precede the deploy-day check)', evalRoster(null) && evalRoster(null).stale, true);
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

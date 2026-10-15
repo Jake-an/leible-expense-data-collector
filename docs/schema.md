@@ -184,6 +184,14 @@ GAS resolves `supplier` from the `source` field via a `SUPPLIER_NAMES` map in `c
 
 Labour cost (date × location: gross + super + weekend/PH penalties, **no tax**) is owned by the **LEIBLE_Payroll** project. This collector links to Payroll's output sheet rather than recomputing it. See `docs/ADR.md` ADR-007.
 
+## Roster payload (`kind: 'roster'` — writes the Labour Sheet, not this hub)
+
+`doPost` accepts `{source:'brighthr_roster', kind:'roster', token, rows:[{email, name, date:'YYYY-MM-DD', start:'HH:MM', end:'HH:MM', hours, location}]}` (ADR-010). It never touches `Suppliers`/`Sales`/`Revenue`; it opens only `LABOUR_CLOCK_SHEET_ID` and writes its `CLOCK_RAW` tab in the existing `LABOUR_CLOCK_COLS` shape (`clock_in = date start`, `clock_out` next day if `end < start`, `break_minutes = max(0, span − hours×60)`, blank `rate`, `record_id = roster:<email>|<date>|<start>`).
+
+- Rules: 1–1000 rows (`roster_empty` / `roster_too_large`); `email` lowercase with `@`; `start`/`end` `HH:MM` (24h, not equal); `0 < hours ≤ 16` (a JSON number); `location` non-empty; **no `department` key** (it comes from LOCATIONS at costing). An unknown `location` is accepted and becomes the `unknown_location` exception at costing.
+- Date-level replace: the dates in the payload replace existing `roster:` rows on those dates; other dates and non-`roster:` rows are untouched. Limitation: a day emptied by a roster edit keeps its stale rows.
+- Response: `{result:'ok', rowsAdded, rowsReplaced, rowsReplacedByDate:{date:n}, dates:[...]}`; refusals carry `code` (`UNAUTHORIZED`, `clock_sheet_unset`, `clock_raw_missing`, `LOCKED`). `CLOCK_RAW` therefore holds roster rows, not Blip clock-outs.
+
 ## shopSpend tabs (separate silo — outside the two-tab ingest contract)
 
 Three tabs consume an **external** internal Apps Script JSON API (`shopSpend`) that

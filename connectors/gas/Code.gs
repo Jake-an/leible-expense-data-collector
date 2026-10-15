@@ -245,7 +245,11 @@ var INGEST_SOURCES_ = {
   ordermentum: 'INGEST_TOKEN_ORDERMENTUM',
   shopspend: 'INGEST_TOKEN_SHOPSPEND',
   'shopspend-backfill': 'INGEST_TOKEN_SHOPSPEND',
-  coffee_order_app: 'INGEST_TOKEN_COFFEE_ORDER_APP'
+  coffee_order_app: 'INGEST_TOKEN_COFFEE_ORDER_APP',
+  // Amendment B (ADR-008): the weekly BrightHR roster CSV, posted by
+  // tools/roster/. Its ONLY kind is 'roster', which writes the Labour Sheet
+  // (CLOCK_RAW), never the hub — see INGEST_SOURCE_KINDS_ and labour_roster.gs.
+  brighthr_roster: 'INGEST_TOKEN_BRIGHTHR_ROSTER'
 };
 
 /**
@@ -295,7 +299,10 @@ var INGEST_SOURCE_DEPARTMENTS_ = {
   ordermentum: 'Cafe',
   shopspend: null,
   'shopspend-backfill': null,
-  coffee_order_app: 'Roastery'
+  coffee_order_app: 'Roastery',
+  // null: roster rows carry NO department (it comes from LOCATIONS at costing
+  // time), so any `department` key on a roster row is rejected.
+  brighthr_roster: null
 };
 
 /**
@@ -323,7 +330,11 @@ var INGEST_SOURCE_KINDS_ = {
   ordermentum: ['suppliers'],
   shopspend: ['shopspend'],
   'shopspend-backfill': ['shopspend'],
-  coffee_order_app: ['revenue']
+  coffee_order_app: ['revenue'],
+  // RB2: the roster token may write the roster kind and nothing else, so a
+  // leaked roster token cannot touch Suppliers/Revenue/ShopSpend; and no other
+  // source's token may post kind='roster' into the Labour Sheet.
+  brighthr_roster: ['roster']
 };
 
 /**
@@ -498,6 +509,12 @@ function doPost(e) {
     var check = validateIngest_(body);
     if (!check.ok) return jsonOut_({ result: 'error', message: check.message });
 
+    // Amendment B / ADR-008: the roster kind writes the LABOUR Sheet, not the
+    // hub. It branches here, BEFORE the server-stamp and department blocks
+    // (roster rows carry neither) and before getHubSpreadsheet_(), so the hub
+    // is never opened for it.
+    if ((body.kind || 'suppliers') === 'roster') return labourRosterDoPost_(body);
+
     // Server stamps EVERY timestamp a caller sends, replacing it outright —
     // see ingestServerStamp_. Applied after validateIngest_ (payload shape
     // already known good) and before dispatch, so every ingest path
@@ -647,7 +664,7 @@ function validateIngest_(body) {
   // absent, or hostile — is accepted and ignored (M-stamp).
 
   var kind = body.kind || 'suppliers';
-  if (kind !== 'suppliers' && kind !== 'revenue' && kind !== 'shopspend') {
+  if (kind !== 'suppliers' && kind !== 'revenue' && kind !== 'shopspend' && kind !== 'roster') {
     return { ok: false, message: 'unknown kind: ' + kind };
   }
 
@@ -692,6 +709,16 @@ function validateIngest_(body) {
       message: 'kind ' + kind + ' is not permitted for source ' + body.source +
         ' (allowed: ' + INGEST_SOURCE_KINDS_[body.source].join(', ') + ')'
     };
+  }
+
+  // roster: empty is refused outright so a stray empty post can never wipe days.
+  if (kind === 'roster') {
+    if (body.rows.length === 0) {
+      return { ok: false, message: 'roster_empty: a roster post needs at least one row' };
+    }
+    if (body.rows.length > MAX_ROSTER_ROWS_) {
+      return { ok: false, message: 'roster_too_large: ' + body.rows.length + ' rows (at most ' + MAX_ROSTER_ROWS_ + ' per post)' };
+    }
   }
 
   if (body.weeks_complete !== undefined && !isValidWeekLabelArray_(body.weeks_complete)) {
@@ -761,7 +788,10 @@ function validateIngest_(body) {
       }
     }
 
-    if (kind === 'shopspend') {
+    if (kind === 'roster') {
+      var rosterRefusal = labourRosterRowRefusal_(r);
+      if (rosterRefusal) return { ok: false, message: 'row ' + i + ' ' + rosterRefusal };
+    } else if (kind === 'shopspend') {
       if (!r.shop_id) return { ok: false, message: 'row ' + i + ' missing shop_id' };
       if (!r.week_label || !isValidWeekLabel_(String(r.week_label))) {
         return { ok: false, message: 'row ' + i + ' invalid week_label' };

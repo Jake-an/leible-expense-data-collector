@@ -68,6 +68,7 @@ Script Properties → Add. Names and values are in
 | `INGEST_TOKEN_KENT_PAPER` | `kent_paper` |
 | `INGEST_TOKEN_ORDERMENTUM` | `ordermentum` |
 | `INGEST_TOKEN_SHOPSPEND` | `shopspend` **and** `shopspend-backfill` |
+| `INGEST_TOKEN_BRIGHTHR_ROSTER` | `brighthr_roster` — `kind:'roster'` ONLY (weekly roster CSV from `tools/roster/` → Labour Sheet `CLOCK_RAW`, ADR-010). Not part of the original cutover: set it on the day the roster runner first posts. Its token cannot write any other kind, and no other token can post `kind:'roster'`. |
 
 Leave `API_READ_TOKEN` **exactly as it is** — it is still the `doGet` read
 secret and is used by `connectors/shopspend/client.py`. Do not create
