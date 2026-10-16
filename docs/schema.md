@@ -180,9 +180,13 @@ serves a live snapshot), so a changed gross updates the row in place.
 
 GAS resolves `supplier` from the `source` field via a `SUPPLIER_NAMES` map in `connectors/gas/Code.gs`. Ordermentum carries the canonical name per-account in the POST payload (Tuga vs Butterboy share `source: "ordermentum"`).
 
-## Labour (not a tab built here)
+## Labour (`Labour` tab + `Summary` supplier `Labour`)
 
-Labour cost (date × location: gross + super + weekend/PH penalties, **no tax**) is owned by the **LEIBLE_Payroll** project. This collector links to Payroll's output sheet rather than recomputing it. See `docs/ADR.md` ADR-007.
+`Labour` columns: `week_start, week_end, location, total, iso_week, pulled_at, department`, upserted on `week_start||location` (a changed total or department is rewritten). Two producers, routed per location by `labourWeeklyRoute_` (ADR-011):
+- **Legacy** (default; `LABOUR_SOURCE` unset): the Onboarding app's `LABOUR_COST` via `LABOUR_SHEET_ID` (ADR-007), department `Cafe`.
+- **Clock** (`LABOUR_SOURCE=clock`, weeks ≥ `CLOCK_START_WEEK`, LOCATIONS rows with `live` = yes/true): computed in GAS from the Labour Sheet (`LABOUR_CLOCK_SHEET_ID`: CLOCK_RAW + rule tabs), also upserted into the Labour Sheet's `LABOUR_COST` (`iso_week … total, shift_count, exception_count, computed_at`); department from LOCATIONS (`Roastery` for the fixed-cost roastery).
+
+`_labour_snapshot` (hub): `Summary` columns + `snapshot_at` — rows removed by `labourRunRoasteryCleanup()`, consumed by `labourRunRollback()`.
 
 ## Roster payload (`kind: 'roster'` — writes the Labour Sheet, not this hub)
 

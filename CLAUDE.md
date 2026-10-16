@@ -19,7 +19,7 @@ Central hub that pulls expense + sales data from multiple suppliers into one Goo
 | Tuga Pastry | Ordermentum app | Playwright |
 | Butterboy | Ordermentum app | Playwright |
 
-Labour/payroll is **not** computed here — the engine lives in `LEIBLE_New_Staff_Onboarding_App`; this collector reads its `LABOUR_COST` sheet via `LABOUR_SHEET_ID` script property (see `docs/ADR.md` ADR-007).
+Labour: by default this collector reads the Onboarding app's `LABOUR_COST` via `LABOUR_SHEET_ID` (ADR-007). Behind `LABOUR_SOURCE=clock` (+ `CLOCK_START_WEEK`), `live` locations are costed here from the Labour Sheet instead (`labour_weekly.gs`, ADR-011).
 
 ## Architecture Rules
 - CRITICAL: **Two runtimes, one boundary.** GAS owns every Sheet write, Square API pull, Mayers PDF parse, and normalization. Playwright connectors ONLY log in, download raw data, and POST to the GAS `doPost` ingest endpoint — a connector never writes to the Sheet directly.

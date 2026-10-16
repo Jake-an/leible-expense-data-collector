@@ -1398,9 +1398,11 @@ function getLabourSpreadsheet_() {
  * @param {Spreadsheet}              ss     Hub spreadsheet
  * @param {Sheet}                    summSheet  Already-open Summary sheet
  * @param {string}                   pulledAt   ISO timestamp string
- * @returns {{labourAdded:number, summaryAdded:number, summaryUpdated:number}}
+ * @param {function(string,string):boolean} [skip]  (week_start, location) -> true when the
+ *   clock path owns that pair (labour_weekly.gs routing); null/omitted = take every row.
+ * @returns {{labourAdded:number, labourUpdated:number, summaryAdded:number, summaryUpdated:number}}
  */
-function labourWeeklyPull_(weeks, ss, summSheet, pulledAt) {
+function labourWeeklyPull_(weeks, ss, summSheet, pulledAt, skip) {
   var labourSheet = ensureSheet(ss, LABOUR_TAB, LABOUR_HEADERS);
 
   var srcSS = getLabourSpreadsheet_();
@@ -1426,16 +1428,7 @@ function labourWeeklyPull_(weeks, ss, summSheet, pulledAt) {
   var weekStartSet = {};
   for (var w = 0; w < weeks.length; w++) weekStartSet[weeks[w].start] = true;
 
-  // Labour tab dedup set. week_start reads back from a Sheet as a Date —
-  // coerceDateStr_ before comparing or the key never matches its 'yyyy-MM-dd'
-  // counterpart and the dedup silently passes everything through.
-  var labourKeys = {};
-  var labourData = labourSheet.getDataRange().getValues();
-  for (var r = 1; r < labourData.length; r++) {
-    labourKeys[coerceDateStr_(labourData[r][0]) + '||' + String(labourData[r][2])] = true;
-  }
-
-  var labourAdded = 0;
+  var labourRows = [];
   var summaryNormalizedRows = [];
 
   for (var i = 1; i < srcData.length; i++) {
@@ -1444,19 +1437,15 @@ function labourWeeklyPull_(weeks, ss, summSheet, pulledAt) {
     if (!weekStartSet[ws]) continue;
 
     var location = String(row[col['location']] || '');
+    if (skip && skip(ws, location)) continue;
     var total    = Math.round(Number(row[col['total']] || 0) * 100) / 100;
     var isoWeek  = String(row[col['iso_week']] || '');
     var we       = coerceDateStr_(row[col['week_end']]);
 
-    // Write to Labour tab. Labour is parked (no behaviour change), but it
-    // still gets DEFAULT_DEPARTMENT so it isn't silently dropped by a
-    // department-filtered read.
-    var lKey = ws + '||' + location;
-    if (!labourKeys[lKey]) {
-      labourSheet.appendRow(sheetSafeRow_([ws, we, location, total, isoWeek, pulledAt, DEFAULT_DEPARTMENT]));
-      labourKeys[lKey] = true;
-      labourAdded++;
-    }
+    // Labour tab row (DEFAULT_DEPARTMENT so a department-filtered read never
+    // drops it). Upserted on week_start||location by labourHubUpsert_: a
+    // corrected total is rewritten, not frozen by an append-only dedup.
+    labourRows.push([ws, we, location, total, isoWeek, pulledAt, DEFAULT_DEPARTMENT]);
 
     // Queue the Summary row, routed through the SAME upsertRows_ key
     // weeklySummarize uses (week_start||department||kind||supplier||location)
@@ -1465,12 +1454,14 @@ function labourWeeklyPull_(weeks, ss, summSheet, pulledAt) {
     summaryNormalizedRows.push([ws, we, 'Labour', location, total, pulledAt, DEFAULT_DEPARTMENT, 'spend']);
   }
 
+  var labourResult = labourHubUpsert_(labourSheet, labourRows);
   var summaryResult = upsertRows_(summSheet, summaryNormalizedRows, SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
 
   Logger.log('labourWeeklyPull_: weeks=' + weeks.map(function (w) { return w.start; }).join(',') +
-    ' labourAdded=' + labourAdded +
+    ' labourAdded=' + labourResult.added + ' labourUpdated=' + labourResult.updated +
     ' summaryAdded=' + summaryResult.rowsAdded + ' summaryUpdated=' + summaryResult.rowsUpdated);
-  return { labourAdded: labourAdded, summaryAdded: summaryResult.rowsAdded, summaryUpdated: summaryResult.rowsUpdated };
+  return { labourAdded: labourResult.added, labourUpdated: labourResult.updated,
+    summaryAdded: summaryResult.rowsAdded, summaryUpdated: summaryResult.rowsUpdated };
 }
 
 /* ------------------------------------------------------------------ *
@@ -3320,7 +3311,11 @@ function weeklySummarize_impl_(weekStartOverride) {
   });
   var labourResult = { labourAdded: 0, summaryAdded: 0, summaryUpdated: 0 };
   if (labourWeeks.length > 0) {
-    labourResult = labourWeeklyPull_(labourWeeks, ss, summSheet, extractedAt);
+    // labour_weekly.gs: LABOUR_SOURCE=clock routes live locations to the
+    // Labour Sheet costing; off (default) = the legacy pull, unchanged.
+    labourResult = labourWeeklyRoute_(labourWeeks, ss, summSheet, extractedAt,
+      PropertiesService.getScriptProperties(), SpreadsheetApp);
+    labourRaiseClockAlerts_(labourResult, healRes.calendarEventsCache);
     if (labourResult.summaryUpdated > 0) {
       // Calendar alerts dedup on the EXACT title, so a title must be bounded
       // and stable. This one was built from the JOINED healed-week list: it
