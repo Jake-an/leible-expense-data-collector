@@ -1405,8 +1405,11 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 - [labour-clock] Stray EMPTY duplicate "LEIBLE Labour" Sheet `1ar32sMdVtN3yo-PwDqvyErvEWScgFemI8xqxoFuB3HY` (1 KB, created 2026-10-14 01:01) beside the real one — bin it, needs Jake yes (Drive).
 - [labour-clock] Read-only probe `Probe_Clockings.gs` left in DEV_Onboarding GAS project (`1isSX0Y…`) — Amendment B (roster) no longer needs it: delete it (scratch copy pushes via clasp; never touches the collector).
 - ~~[labour-clock] named levels + CASH_SHIFTS + FIXED rows unentered~~ ✅ DONE 2026-10-16 in the Labour Sheet: Jack→5, Tomoka→3, Justin(Bao) already 5; FIXED Jack/Justin/Dani(salary)/Yae; CASH_SHIFTS Dani. **Open:** Jake to confirm PEOPLE row 7 is Jun (already L5).
-- [labour-clock] **Phase 3** — wire `labourWeeklyCompute_` into `weeklySummarize` per parent plan `~/.claude/plans/hey-darling-could-we-robust-sphinx.md` Phase 3 (`connectors/gas/Code.gs:1373`, `labour.gs`, `test_code.js`); roster rows now land in CLOCK_RAW (Amendment B, v58).
-- [labour-clock] Parent plan Phase 3 says "write ADR-008" but ADR-008/009 are taken and Amendment B used ADR-010 (`docs/ADR.md`) — use the next free number for the Phase 3 supersede-ADR-007 note.
+- ~~[labour-clock] **Phase 3** — wire the clock costing into `weeklySummarize`~~ ✅ DONE 2026-10-19: `connectors/gas/labour_weekly.gs` behind `LABOUR_SOURCE=clock` (still OFF), ADR-011, deployed v60 (2836b4f, fix 9b04c51 — hub keys on LOCATIONS `code`).
+- ~~[labour-clock] Phase 3 ADR number~~ ✅ DONE — ADR-011.
+- [labour-clock] **Phase 4 payroll check** — each Monday run `labourClockPreview()` (Labour Sheet + hub, read-only) after the roster upload; compare roster-costed vs the pay run, 2 weeks. First comparable week = 2026-10-12 (summarized 2026-10-19). `connectors/gas/labour_weekly.gs`.
+- [labour-clock] **Go-live prep (needs Jake yes)** — set Script Properties `CLOCK_START_WEEK` + `LABOUR_SOURCE=clock`, flip LOCATIONS `live` per shop (Labour Sheet), tell the GM cost monitor the Roastery department split is coming, then `labourRunRoasteryCleanup()` once Roasting is live.
+- [labour] Weeks 2026-09-21, 09-28, 10-05 have NO Labour rows in Summary (Onboarding has no BrightHR pull trigger). Jake 2026-10-19: "don't worry about the data … as long as it present correct figure for moving forward" — accepted gap, no backfill.
 <!-- Work spotted but not done. Append DURING the session, one line each, always naming
      the file/area it touches. Source for the Next batches block at "lets stop here"
      (~/.claude/docs/todo-hygiene.md). -->
