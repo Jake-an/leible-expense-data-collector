@@ -17303,13 +17303,13 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     var live = o.live || { york: 'yes', pitt: 'yes', Roasting: '' };
     return {
       CLOCK_RAW: [CLOCK_HDR.slice(),
-        ['dummy-a@example.test', 'A', '2026-10-13 09:00', '2026-10-13 17:00', 8, 0, 'york', o.yorkRate || 30, 'r1'],
-        ['dummy-b@example.test', 'B', '2026-10-13 09:00', '2026-10-13 13:00', 4, 0, 'pitt', 30, 'r2']],
+        ['dummy-a@example.test', 'A', '2026-10-13 09:00', '2026-10-13 17:00', 8, 0, '89 YORK', o.yorkRate || 30, 'r1'],
+        ['dummy-b@example.test', 'B', '2026-10-13 09:00', '2026-10-13 13:00', 4, 0, '130 PITT', 30, 'r2']],
       CONFIG: [['employment_type', 'rate_basis', 'level_band', 'day_type', 'multiplier', 'source_url', 'as_of'],
         ['casual', 'loaded', 'all', 'weekday', 1, 'u', '2026-10-01']],
       HOLIDAYS: [['date', 'name']],
       LOCATIONS: [['location', 'code', 'department', 'live'],
-        ['york', 'Y', 'Cafe', live.york], ['pitt', 'P', 'Cafe', live.pitt], ['Roasting', 'R', 'Roastery', live.Roasting]],
+        ['89 YORK', 'york', 'Cafe', live.york], ['130 PITT', 'pitt', 'Cafe', live.pitt], ['Roasting', 'roastery', 'Roastery', live.Roasting]],
       RATES: [['person_email', 'rate', 'effective_from']],
       PEOPLE: [['person_email', 'employment_type', 'level', 'rate_basis'],
         ['dummy-a@example.test', 'casual', 3, 'loaded'], ['dummy-b@example.test', 'casual', 3, 'loaded'],
@@ -17319,6 +17319,7 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
       LABOUR_COST: [LABOUR_CLOCK_COST_HEADERS_.slice()]
     };
   }
+  // LOCATIONS uses roster names ('89 YORK'); the hub (old pull, Summary, Labour tab) uses the CODE ('york').
   // york 8h x 30 = 240 + 12% = 268.80; pitt 4h x 30 = 134.40; Roasting fixed 10h x 40 = 448.00
   function clockApp(tabs) {
     var log = { opened: [] };
@@ -17357,7 +17358,7 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     scriptProps = { LABOUR_SHEET_ID: 'labour-sheet-id' };
     var src = currentSS.insertSheet('LABOUR_COST');
     src.appendRow(['week_start', 'week_end', 'location', 'total', 'iso_week', 'pulled_at']);
-    (oldRows || [[WS, WE, 'york', 999, '2026-W42', 'x'], [WS, WE, 'pitt', 555, '2026-W42', 'x'], [WS, WE, 'Roasting', 777, '2026-W42', 'x']])
+    (oldRows || [[WS, WE, 'york', 999, '2026-W42', 'x'], [WS, WE, 'pitt', 555, '2026-W42', 'x'], [WS, WE, 'roastery', 777, '2026-W42', 'x']])
       .forEach(function (r) { src.appendRow(r); });
     var summ = ensureSheet(currentSS, SUMMARY_TAB, SUMMARY_HEADERS);
     return { ss: currentSS, summ: summ, src: src };
@@ -17380,12 +17381,12 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   h = hub(); ap = clockApp(clockTabs());
   r = call('labourWeeklyRoute_', WEEK, h.ss, h.summ, 'T2', props(Object.assign({ CLOCK_START_WEEK: WS }, BASE)), ap) || {};
   eq('P3-2 flag off -> Summary holds the OLD figures only', labourRows(h.summ),
-    [[WS, 'Roasting', 777, 'Cafe'], [WS, 'pitt', 555, 'Cafe'], [WS, 'york', 999, 'Cafe']]);
+    [[WS, 'pitt', 555, 'Cafe'], [WS, 'roastery', 777, 'Cafe'], [WS, 'york', 999, 'Cafe']]);
   eq('P3-2 flag off -> the Labour Sheet is never opened by the weekly run', ap._log.opened, []);
   var pv = call('labourClockPreview_', props(Object.assign({ LABOUR_PREVIEW_WEEK: WS }, BASE)), ap, h.ss, { today: '2026-10-20' }) || {};
   var pvBy = {}; (pv.rows || []).forEach(function (x) { pvBy[x.location] = x; });
   eq('P3-2 preview (flag off) shows clock totals beside current figures',
-    [pv.week, pvBy.york && [pvBy.york.clock, pvBy.york.current], pvBy.pitt && [pvBy.pitt.clock, pvBy.pitt.current], pvBy.Roasting && [pvBy.Roasting.clock, pvBy.Roasting.current]],
+    [pv.week, pvBy.york && [pvBy.york.clock, pvBy.york.current], pvBy.pitt && [pvBy.pitt.clock, pvBy.pitt.current], pvBy.roastery && [pvBy.roastery.clock, pvBy.roastery.current]],
     [WS, [268.8, 999], [134.4, 555], [448, 777]]);
   eq('P3-2 preview writes nothing (Summary + Labour Sheet LABOUR_COST unchanged)',
     [labourRows(h.summ).length, ap._tabs.LABOUR_COST.length], [3, 1]);
@@ -17396,7 +17397,7 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('P3-3 compute with CLOCK_START_WEEK unset -> refused clock_start_unset, nothing opened', [r.refused, ap._log.opened], ['clock_start_unset', []]);
   r = call('labourWeeklyRoute_', WEEK, h.ss, h.summ, 'T3', props(Object.assign({ LABOUR_SOURCE: 'clock' }, BASE)), ap) || {};
   eq('P3-3 route: clockRefused reported and the old path still writes every location',
-    [r.clockRefused, labourRows(h.summ).map(function (x) { return x[2]; })], ['clock_start_unset', [777, 555, 999]]);
+    [r.clockRefused, labourRows(h.summ).map(function (x) { return x[2]; })], ['clock_start_unset', [555, 777, 999]]);
 
   // ---- P3-4 preview with LABOUR_CLOCK_SHEET_ID unset -> clock_sheet_unset ----
   pv = call('labourClockPreview_', props({ LABOUR_SHEET_ID: 'labour-sheet-id' }), ap, h.ss, { today: '2026-10-20' }) || {};
@@ -17411,18 +17412,18 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('P3-5 compute writes the live Cafe locations to Summary with their real department',
     labourRows(h.summ), [[WS, 'pitt', 134.4, 'Cafe'], [WS, 'york', 268.8, 'Cafe']]);
   eq('P3-5 compute upserts LABOUR_COST in the Labour Sheet (week||location)',
-    ap._tabs.LABOUR_COST.slice(1).map(function (x) { return [labourDateKey_(x[1]), x[3], x[11]]; }).sort(),
+    ap._tabs.LABOUR_COST.slice(1).map(function (x) { return [labourDateKey_(x[1]), x[4], x[11]]; }).sort(),
     [[WS, 'pitt', 134.4], [WS, 'york', 268.8]]);
 
   // ---- P3-6 routing: live vs not-live, never both, blank/unrecognised = not live ----
   h = hub(); ap = clockApp(clockTabs({ live: { york: 'yes', pitt: '', Roasting: 'maybe' } }));
   r = call('labourWeeklyRoute_', WEEK, h.ss, h.summ, 'T6', props(Object.assign({ LABOUR_SOURCE: 'clock', CLOCK_START_WEEK: WS }, BASE)), ap) || {};
   eq('P3-6 york (live) from clock; pitt (blank) + Roasting ("maybe") stay on the old pull; one row each',
-    labourRows(h.summ), [[WS, 'Roasting', 777, 'Cafe'], [WS, 'pitt', 555, 'Cafe'], [WS, 'york', 268.8, 'Cafe']]);
+    labourRows(h.summ), [[WS, 'pitt', 555, 'Cafe'], [WS, 'roastery', 777, 'Cafe'], [WS, 'york', 268.8, 'Cafe']]);
   h = hub(); ap = clockApp(clockTabs({ live: { york: 'yes', pitt: 'yes', Roasting: 'yes' } }));
   r = call('labourWeeklyRoute_', WEEK, h.ss, h.summ, 'T6b', props(Object.assign({ LABOUR_SOURCE: 'clock', CLOCK_START_WEEK: WS }, BASE)), ap) || {};
   eq('P3-6 Roasting live -> fixed cost written as Roastery; old pull skips every live location',
-    labourRows(h.summ), [[WS, 'Roasting', 448, 'Roastery'], [WS, 'pitt', 134.4, 'Cafe'], [WS, 'york', 268.8, 'Cafe']]);
+    labourRows(h.summ), [[WS, 'pitt', 134.4, 'Cafe'], [WS, 'roastery', 448, 'Roastery'], [WS, 'york', 268.8, 'Cafe']]);
   h = hub(); ap = clockApp(clockTabs());
   r = call('labourWeeklyRoute_', [{ start: '2026-10-05', end: '2026-10-11' }], h.ss, h.summ, 'T6c',
     props(Object.assign({ LABOUR_SOURCE: 'clock', CLOCK_START_WEEK: WS }, BASE)), ap) || {};
@@ -17439,19 +17440,19 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('P3-7 corrected york total is REWRITTEN on the hub Labour tab (one row, 277.76)', yorkLab.map(function (x) { return Number(x[3]); }), [277.76]);
   eq('P3-7 ... and in Summary and LABOUR_COST (no duplicate rows)',
     [labourRows(h.summ).filter(function (x) { return x[1] === 'york'; }).map(function (x) { return x[2]; }),
-      tabs7.LABOUR_COST.slice(1).filter(function (x) { return x[3] === 'york'; }).map(function (x) { return x[11]; })],
+      tabs7.LABOUR_COST.slice(1).filter(function (x) { return x[4] === 'york'; }).map(function (x) { return x[11]; })],
     [[277.76], [277.76]]);
   eq('P3-7 route reports the rewrite', r.labourUpdated >= 1, true);
 
   // ---- P3-8 scoped roastery cleanup ----
   function seedCleanup() {
     var hh = hub();
-    hh.summ.appendRow(['2026-10-05', '2026-10-11', 'Labour', 'Roasting', 700, 'x', 'Cafe', 'spend']);   // before start: keep
-    hh.summ.appendRow([WS, WE, 'Labour', 'Roasting', 777, 'x', 'Cafe', 'spend']);                      // the stale duplicate
+    hh.summ.appendRow(['2026-10-05', '2026-10-11', 'Labour', 'roastery', 700, 'x', 'Cafe', 'spend']);   // before start: keep
+    hh.summ.appendRow([WS, WE, 'Labour', 'roastery', 777, 'x', 'Cafe', 'spend']);                      // the stale duplicate
     hh.summ.appendRow([WS, WE, 'Labour', 'york', 999, 'x', 'Cafe', 'spend']);                          // not roastery: keep
-    hh.summ.appendRow([WS, WE, 'Labour', 'Roasting', 448, 'x', 'Roastery', 'spend']);                  // new-path row
-    hh.summ.appendRow(['2026-10-19', '2026-10-25', 'Labour', 'Roasting', 790, 'x', 'Cafe', 'spend']);  // no Roastery row that week: keep
-    hh.summ.appendRow([WS, WE, 'Mayers', 'Roasting', 50, 'x', 'Cafe', 'spend']);                       // not Labour: keep
+    hh.summ.appendRow([WS, WE, 'Labour', 'roastery', 448, 'x', 'Roastery', 'spend']);                  // new-path row
+    hh.summ.appendRow(['2026-10-19', '2026-10-25', 'Labour', 'roastery', 790, 'x', 'Cafe', 'spend']);  // no Roastery row that week: keep
+    hh.summ.appendRow([WS, WE, 'Mayers', 'roastery', 50, 'x', 'Cafe', 'spend']);                       // not Labour: keep
     return hh;
   }
   h = seedCleanup();
@@ -17465,9 +17466,9 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   r = call('labourRunRoasteryCleanup_', pc, clockApp(clockTabs(liveR)), h.ss) || {};
   eq('P3-8 cleanup deletes ONLY the Cafe Roasting Labour row of a live week that has a Roastery row',
     [r.deleted, h.summ._rows.length, labourRows(h.summ)],
-    [1, before8 - 1, [['2026-10-05', 'Roasting', 700, 'Cafe'], [WS, 'Roasting', 448, 'Roastery'], [WS, 'york', 999, 'Cafe'], ['2026-10-19', 'Roasting', 790, 'Cafe']]]);
+    [1, before8 - 1, [['2026-10-05', 'roastery', 700, 'Cafe'], [WS, 'roastery', 448, 'Roastery'], [WS, 'york', 999, 'Cafe'], ['2026-10-19', 'roastery', 790, 'Cafe']]]);
   var snap = h.ss.getSheetByName(globalThis.LABOUR_SNAPSHOT_TAB_ || '_labour_snapshot');
-  eq('P3-8 cleanup snapshots the deleted row BEFORE deleting', snap && snap._rows.slice(1).map(function (x) { return [cellDate(x[0]), x[3], Number(x[4]), x[6]]; }), [[WS, 'Roasting', 777, 'Cafe']]);
+  eq('P3-8 cleanup snapshots the deleted row BEFORE deleting', snap && snap._rows.slice(1).map(function (x) { return [cellDate(x[0]), x[3], Number(x[4]), x[6]]; }), [[WS, 'roastery', 777, 'Cafe']]);
   r = call('labourRunRoasteryCleanup_', pc, clockApp(clockTabs(liveR)), h.ss) || {};
   eq('P3-8 cleanup re-run is a no-op (nothing left in scope, snapshot not duplicated)', [r.deleted, snap && snap._rows.length], [0, 2]);
 
@@ -17483,23 +17484,23 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('P3-9 rollback unsets LABOUR_SOURCE and clears every live cell',
     [r.ok, pc._p.LABOUR_SOURCE, tabs9.LOCATIONS.slice(1).map(function (x) { return x[3]; })], [true, undefined, ['', '', '']]);
   eq('P3-9 rollback deletes the live-week Roastery row and restores the snapshot row ONCE',
-    labourRows(h.summ), [['2026-10-05', 'Roasting', 700, 'Cafe'], [WS, 'Roasting', 777, 'Cafe'], [WS, 'york', 999, 'Cafe'], ['2026-10-19', 'Roasting', 790, 'Cafe']]);
+    labourRows(h.summ), [['2026-10-05', 'roastery', 700, 'Cafe'], [WS, 'roastery', 777, 'Cafe'], [WS, 'york', 999, 'Cafe'], ['2026-10-19', 'roastery', 790, 'Cafe']]);
   eq('P3-9 snapshot is consumed (header only)', snap ? snap._rows.length : null, 1);
   r = call('labourRunRollback_', pc, ap9, h.ss) || {};
   eq('P3-9 second rollback refused (switch already off), still one Roasting row for the week',
-    [r.refused, labourRows(h.summ).filter(function (x) { return x[0] === WS && x[1] === 'Roasting'; }).length], ['source_not_clock', 1]);
+    [r.refused, labourRows(h.summ).filter(function (x) { return x[0] === WS && x[1] === 'roastery'; }).length], ['source_not_clock', 1]);
   // Old pull after rollback upserts the same key -> still no double count.
   call('labourWeeklyRoute_', WEEK, h.ss, h.summ, 'T9', props(BASE), ap9);
   eq('P3-9 old pull after rollback: exactly one Labour row per (week, location)',
-    labourRows(h.summ).filter(function (x) { return x[0] === WS; }), [[WS, 'Roasting', 777, 'Cafe'], [WS, 'pitt', 555, 'Cafe'], [WS, 'york', 999, 'Cafe']]);
+    labourRows(h.summ).filter(function (x) { return x[0] === WS; }), [[WS, 'pitt', 555, 'Cafe'], [WS, 'roastery', 777, 'Cafe'], [WS, 'york', 999, 'Cafe']]);
   // A snapshot row whose key is already back in Summary is skipped, never appended twice.
   h = seedCleanup(); pc = props(Object.assign({ LABOUR_SOURCE: 'clock', CLOCK_START_WEEK: WS }, BASE));
   call('labourRunRoasteryCleanup_', pc, clockApp(clockTabs(liveR)), h.ss);
-  h.summ.appendRow([WS, WE, 'Labour', 'Roasting', 780, 'x', 'Cafe', 'spend']);
+  h.summ.appendRow([WS, WE, 'Labour', 'roastery', 780, 'x', 'Cafe', 'spend']);
   r = call('labourRunRollback_', pc, clockApp(clockTabs(liveR)), h.ss) || {};
   eq('P3-9 rollback skips a snapshot row whose key already exists (no double count)',
-    [r.restored, r.restoreSkipped, labourRows(h.summ).filter(function (x) { return x[0] === WS && x[1] === 'Roasting'; })],
-    [0, 1, [[WS, 'Roasting', 780, 'Cafe']]]);
+    [r.restored, r.restoreSkipped, labourRows(h.summ).filter(function (x) { return x[0] === WS && x[1] === 'roastery'; })],
+    [0, 1, [[WS, 'roastery', 780, 'Cafe']]]);
 
   // ---- P3-10 weeklySummarize calls the router (not the bare legacy pull) ----
   var codeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');

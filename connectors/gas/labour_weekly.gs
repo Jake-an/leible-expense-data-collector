@@ -24,6 +24,14 @@ function labourSourceIsClock_(props) {
   return labourStr_(props.getProperty('LABOUR_SOURCE')).toLowerCase() === LABOUR_SOURCE_CLOCK_;
 }
 
+// The hub (Summary, Labour tab, legacy LABOUR_COST) names a shop by its LOCATIONS `code`
+// ('york'); the Labour Sheet and roster use the `location` name ('89 YORK'). Every hub-side
+// key, write and comparison goes through this. A blank code falls back to the name.
+function labourHubLoc_(cfg, name) {
+  var d = (cfg.locations && Object.prototype.hasOwnProperty.call(cfg.locations, name)) ? cfg.locations[name] : null;
+  return (d && d.code) ? d.code : name;
+}
+
 // CLOCK_START_WEEK as a Monday 'yyyy-MM-dd', '' when unset. A non-Monday is snapped, never trusted.
 function labourClockStart_(props) {
   var v = labourStr_(props.getProperty('CLOCK_START_WEEK'));
@@ -156,7 +164,7 @@ function labourWeeklyCompute_(weeks, ss, summSheet, pulledAt, props, app, opts) 
   if (clk.refused) return clk;
 
   var live = {};
-  Object.keys(clk.cfg.locations).forEach(function (l) { if (clk.cfg.locations[l].live) live[l] = true; });
+  Object.keys(clk.cfg.locations).forEach(function (l) { if (clk.cfg.locations[l].live) live[labourHubLoc_(clk.cfg, l)] = true; });
   var today = opts.today || todayStr_();
   var julyYear = Number(props.getProperty('LABOUR_JULY_ALERTED_YEAR')) || 0;
   var startYear = julyYear;
@@ -177,19 +185,19 @@ function labourWeeklyCompute_(weeks, ss, summSheet, pulledAt, props, app, opts) 
     }
     julyYear = res.lastAlertedYear;
     res.alerts.forEach(function (a) { out.alerts.push({ week: ws, alert: a }); });
-    var mine = res.groups.filter(function (g) { return live[g.location] === true; });
+    var mine = res.groups.filter(function (g) { return live[labourHubLoc_(clk.cfg, g.location)] === true; });
     out.weeks.push({ week: ws, action: res.refuse ? 'refused_exceptions' : res.stop ? 'zero_rows' : 'write',
-      written: mine.map(function (g) { return g.location; }) });
+      written: mine.map(function (g) { return labourHubLoc_(clk.cfg, g.location); }) });
     groups = groups.concat(mine);
   });
 
   if (groups.length > 0) {
     labourCostUpsert_(clk.ss, groups, pulledAt);
     var hubRes = labourHubUpsert_(ensureSheet(ss, LABOUR_TAB, LABOUR_HEADERS), groups.map(function (g) {
-      return [g.weekStart, g.weekEnd, g.location, g.total, g.isoWeek, pulledAt, g.department];
+      return [g.weekStart, g.weekEnd, labourHubLoc_(clk.cfg, g.location), g.total, g.isoWeek, pulledAt, g.department];
     }));
     var sumRes = upsertRows_(summSheet, groups.map(function (g) {
-      return [g.weekStart, g.weekEnd, 'Labour', g.location, g.total, pulledAt, g.department, 'spend'];
+      return [g.weekStart, g.weekEnd, 'Labour', labourHubLoc_(clk.cfg, g.location), g.total, pulledAt, g.department, 'spend'];
     }), SUMMARY_KEY_COLS, SUMMARY_TOTAL_COL, SUMMARY_STAMP_COL);
     out.labourAdded = hubRes.added;
     out.labourUpdated = hubRes.updated;
@@ -244,7 +252,7 @@ function labourClockPreview() {
   Logger.log('labourClockPreview: week ' + res.week + ' clockTotal=' + res.clockTotal + ' currentTotal=' + res.currentTotal +
     (res.refuse ? ' (clock week would be REFUSED: exceptions >10%)' : '') + (res.stop ? ' (no clock rows)' : ''));
   res.rows.forEach(function (r) {
-    Logger.log('labourClockPreview: ' + r.location + ' [' + r.department + (r.live ? ', live' : '') + (r.fixed ? ', fixed' : '') +
+    Logger.log('labourClockPreview: ' + r.location + (r.name && r.name !== r.location ? ' (' + r.name + ')' : '') + ' [' + r.department + (r.live ? ', live' : '') + (r.fixed ? ', fixed' : '') +
       '] clock=' + r.clock + ' current=' + r.current + ' diff=' + r.diff);
   });
   res.alerts.forEach(function (a) { Logger.log('labourClockPreview: alert ' + a); });
@@ -275,15 +283,17 @@ function labourClockPreview_(props, app, hub, opts) {
     current[l] = labourRound2_((current[l] || 0) + Number(data[r][4] || 0));
   }
   var byLoc = {};
-  wk.groups.forEach(function (g) { byLoc[g.location] = g; });
+  var defByHub = {};
+  wk.groups.forEach(function (g) { byLoc[labourHubLoc_(clk.cfg, g.location)] = g; });
+  Object.keys(clk.cfg.locations).forEach(function (n) { defByHub[labourHubLoc_(clk.cfg, n)] = { name: n, def: clk.cfg.locations[n] }; });
   var locs = {};
   Object.keys(byLoc).concat(Object.keys(current)).forEach(function (l) { locs[l] = true; });
   var rows = Object.keys(locs).sort().map(function (l) {
     var g = byLoc[l];
-    var def = clk.cfg.locations[l] || {};
+    var def = defByHub[l] ? defByHub[l].def : {};
     var clock = g ? g.total : null;
     var cur = Object.prototype.hasOwnProperty.call(current, l) ? current[l] : null;
-    return { location: l, department: def.department || (g && g.department) || '', live: def.live === true,
+    return { location: l, name: defByHub[l] ? defByHub[l].name : '', department: def.department || (g && g.department) || '', live: def.live === true,
       fixed: !!(g && g.fixed), hours: g ? g.hours : null, clock: clock, current: cur,
       diff: (clock !== null && cur !== null) ? labourRound2_(clock - cur) : null };
   });
@@ -312,7 +322,7 @@ function labourRunRoasteryCleanup_(props, app, hub) {
   var roast = {};
   Object.keys(clk.cfg.locations).forEach(function (l) {
     var d = clk.cfg.locations[l];
-    if (d.department === 'Roastery' && d.live) roast[l] = true;
+    if (d.department === 'Roastery' && d.live) roast[labourHubLoc_(clk.cfg, l)] = true;
   });
   if (Object.keys(roast).length === 0) return { refused: 'roastery_not_live' };
 
