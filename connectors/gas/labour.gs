@@ -104,6 +104,24 @@ var LABOUR_CLOCK_PAY_TABLE_SEED_ = [
   ['Operations Manager', '—', 47.13, '2026-07-01']
 ];
 
+// Staff the roster names before RATES / PEOPLE know them (usually a new barista) are costed as a
+// base Barista (Jake 2026-10-19): the PAY_TABLE 'Barista' row effective on the shift date, else this
+// rate, as casual / loaded. They are listed in the labour_default_barista alert, never dropped.
+var LABOUR_DEFAULT_ROLE_ = 'barista';
+var LABOUR_DEFAULT_RATE_ = 32.67;
+var LABOUR_DEFAULT_LEVEL_ = 1;
+
+function labourDefaultBarista_(cfg, date) {
+  var best = null;
+  (cfg.payTable || []).forEach(function (p) {
+    if (labourStr_(p.role).toLowerCase() !== LABOUR_DEFAULT_ROLE_) return;
+    if (p.effective_from !== '' && p.effective_from > date) return;
+    if (best === null || p.effective_from > best.effective_from) best = p;
+  });
+  return { rate: best ? best.rate : LABOUR_DEFAULT_RATE_,
+    level: best && best.level !== '' ? best.level : LABOUR_DEFAULT_LEVEL_ };
+}
+
 var LABOUR_CLOCK_WEEKDAYS_ = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function labourPad2_(n) { return (n < 10 ? '0' : '') + n; }
@@ -509,14 +527,18 @@ function labourRowsToShifts_(rows, range, cfg) {
         rate = labourRateFallback_(cfg, rec.email, date);
         rateSource = 'rates_fallback';
       }
-      if (rate === null) return raise('no_rate', 'no row rate and no RATES entry effective on ' + date);
+      if (rate === null) {
+        rate = labourDefaultBarista_(cfg, date).rate;
+        rateSource = 'default_barista';
+      }
 
       var loc = cfg.locations[location];
       shifts.push({
         recordId: rec.id, personEmail: rec.email, personName: labourStr_(r[ix.person_name]), date: date,
         clockInMs: rec.cin.ms, clockOutMs: rec.cout ? rec.cout.ms : null, hours: hours,
         location: location, locationCode: loc.code, department: loc.department,
-        rate: rate, rateSource: rateSource
+        rate: rate, rateSource: rateSource,
+        defaultPerson: !(cfg.people && Object.prototype.hasOwnProperty.call(cfg.people, rec.email))
       });
     });
 
@@ -566,11 +588,11 @@ function labourCostShift_(shift, cfg) {
     return { ok: false, exception: { reason: reason, recordId: shift.recordId, personEmail: shift.personEmail,
       date: shift.date, location: shift.location, detail: detail } };
   }
-  if (!cfg.people || !Object.prototype.hasOwnProperty.call(cfg.people, shift.personEmail)) {
-    return fail('person_not_in_people', shift.personEmail + ' is not in PEOPLE');
-  }
-  var p = cfg.people[shift.personEmail];
-  // Cash rule: after person_not_in_people, BEFORE person_incomplete (a blank level must not turn a
+  var p = (cfg.people && Object.prototype.hasOwnProperty.call(cfg.people, shift.personEmail))
+    ? cfg.people[shift.personEmail]
+    : { employment_type: LABOUR_SEED_EMPLOYMENT_TYPE_, level: labourDefaultBarista_(cfg, shift.date).level,
+      rate_basis: LABOUR_SEED_RATE_BASIS_ };
+  // Cash rule: after the PEOPLE lookup, BEFORE person_incomplete (a blank level must not turn a
   // cash shift into an exception). Matches on person + location + calendar weekday of the shift date.
   var cash = labourCashRule_(cfg, shift);
   if (cash) {
@@ -843,6 +865,22 @@ function labourExceptionAlerts_(exceptions) {
     'Labour: staff clocked on but missing from PEOPLE - their hours cost nothing', lines)];
 }
 
+// Staff costed on the base-Barista default (no RATES row and/or no PEOPLE row): one line per person.
+function labourDefaultBaristaAlerts_(shifts) {
+  var seen = {};
+  var lines = [];
+  (shifts || []).forEach(function (s) {
+    if (!s || (s.rateSource !== 'default_barista' && s.defaultPerson !== true)) return;
+    var email = labourStr_(s.personEmail);
+    if (Object.prototype.hasOwnProperty.call(seen, email)) return;
+    seen[email] = true;
+    lines.push(email + ': costed at ' + s.rate + (s.rateSource === 'default_barista' ? ' (no RATES row)' : '') +
+      (s.defaultPerson === true ? ' (no PEOPLE row)' : '') + ' - add their rows if they are not a base Barista');
+  });
+  return lines.length === 0 ? [] : [labourAlert_('labour_default_barista',
+    'Labour: staff costed as a base Barista (no rate on file)', lines)];
+}
+
 // Modal rate (to the cent) per person; ties go to the first rate seen.
 function labourModalRates_(shifts) {
   var counts = {};
@@ -976,7 +1014,7 @@ function labourRunChecks_(ctx) {
   var exc = ctx.exceptions || [];
   var ex = labourCheckExceptions_(ctx.shiftsTotal, exc.length);
   var july = labourJulyAlert_(ctx.today, ctx.lastAlertedYear);
-  alerts = alerts.concat(ex.alerts, labourExceptionAlerts_(exc), fixedAlerts,
+  alerts = alerts.concat(ex.alerts, labourExceptionAlerts_(exc), labourDefaultBaristaAlerts_(ctx.thisWeekShifts), fixedAlerts,
     labourCheckRateChange_(ctx.thisWeekShifts, ctx.prevWeekShifts),
     labourCheckDrop_(ctx.groups, ctx.history),
     july.alert ? [july.alert] : [],

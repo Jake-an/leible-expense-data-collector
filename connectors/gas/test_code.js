@@ -15934,9 +15934,16 @@ console.log('\nGroup M — ingest-validation hardening:');
   r = one({ clock_in: IN, clock_out: OUT, location: 'Nowhere' });
   eq('S10 location not in LOCATIONS -> unknown_location', [nS(r), reasons(r)], [0, ['unknown_location']]);
   r = one({ clock_in: IN, clock_out: OUT, person_email: 'erin@example.test', rate: '' });
-  eq('S10 no row rate and no RATES row -> no_rate', [nS(r), reasons(r)], [0, ['no_rate']]);
+  eq('S10 no row rate and no RATES row -> costed at the base-Barista default 32.67, no exception',
+    [nS(r), nE(r), g(sh(r), 'rate'), g(sh(r), 'rateSource')], [1, 0, 32.67, 'default_barista']);
   r = one({ clock_in: IN, clock_out: OUT, person_email: 'erin@example.test', rate: 0 });
-  eq('S10 rate 0 is not a rate -> no_rate', [nS(r), reasons(r)], [0, ['no_rate']]);
+  eq('S10 rate 0 is not a rate -> base-Barista default', [nS(r), g(sh(r), 'rateSource')], [1, 'default_barista']);
+  var cfgPT = { multipliers: {}, holidays: {}, people: {}, locations: CFG.locations, rates: {},
+    payTable: [{ role: 'Barista', level: 1, rate: 31, effective_from: '2026-01-01' }, { role: 'Barista', level: 1, rate: 40, effective_from: '2026-07-01' },
+      { role: 'Head Barista', level: 5, rate: 50, effective_from: '' }] };
+  r = one({ clock_in: IN, clock_out: OUT, person_email: 'erin@example.test', rate: '' }, RANGE, cfgPT);
+  eq('S10 default reads PAY_TABLE Barista row effective on the shift date (31, not the later 40)', g(sh(r), 'rate'), 31);
+  check('S10 a person missing from PEOPLE is flagged defaultPerson', !!sh(r) && sh(r).defaultPerson === true);
   // precedence
   r = one({ clock_in: IN, clock_out: '', location: 'Nowhere', rate: '' });
   eq('S11 unpaired beats unknown_location/no_rate (exactly one exception)', reasons(r), ['unpaired']);
@@ -15965,7 +15972,7 @@ console.log('\nGroup M — ingest-validation hardening:');
   var cfgLate = { multipliers: {}, holidays: {}, people: {}, locations: CFG.locations,
     rates: { 'alice@example.test': [{ rate: 30, effective_from: '2026-07-01' }] } };
   r = one({ person_email: 'alice@example.test', clock_in: IN, clock_out: OUT, rate: '' }, RANGE, cfgLate);
-  eq('S13 RATES row effective AFTER the shift date is NOT used -> no_rate', [nS(r), reasons(r)], [0, ['no_rate']]);
+  eq('S13 RATES row effective AFTER the shift date is NOT used -> base-Barista default', [nS(r), g(sh(r), 'rateSource')], [1, 'default_barista']);
   r = one({ person_email: 'alice@example.test', clock_in: IN, clock_out: OUT, rate: 99 });
   eq('S13 row rate beats RATES fallback', [g(sh(r), 'rate'), g(sh(r), 'rateSource')], [99, 'row']);
   r = one({ person_email: ' ALICE@example.test', clock_in: IN, clock_out: OUT, rate: '' });
@@ -16091,11 +16098,9 @@ console.log('\nGroup M — ingest-validation hardening:');
 
   // ---- exceptions ----
   r = cost('ghost@example.test', '2026-10-07');
-  check('E1 person absent -> person_not_in_people exception, no cost fields',
-    !!r && r.ok === false && r.exception.reason === 'person_not_in_people' && r.gross === undefined && r.total === undefined);
-  check('E1 exception carries recordId/personEmail/date/location/detail',
-    !!r && !!r.exception && r.exception.recordId === 'x1' && r.exception.personEmail === 'ghost@example.test' &&
-    r.exception.date === '2026-10-07' && r.exception.location === 'Loc A' && typeof r.exception.detail === 'string');
+  eq('E1 person absent from PEOPLE -> costed as casual / loaded / level 1 (base Barista)',
+    r && [r.ok, r.employmentType, r.level, r.rateBasis], [true, 'casual', 1, 'loaded']);
+  eq('E1 same money as a casual loaded L2 (same L0-2 band)', f(r, 'total'), f(cost('cl2@example.test', '2026-10-07'), 'total'));
   r = cost('blank@example.test', '2026-10-07');
   check('E2 blank level -> person_incomplete', !!r && r.ok === false && r.exception.reason === 'person_incomplete');
   var inc = cfg(); inc.people['bt@example.test'] = { employment_type: '', level: 3, rate_basis: 'any' };
@@ -16323,6 +16328,16 @@ console.log('\nGroup M — ingest-validation hardening:');
   eq('P1 one labour_person_missing alert', pm && keys(pm), ['labour_person_missing']);
   eq('P1 one line per distinct person, email only', lines(pm, 'labour_person_missing'), ['newbie@example.test', 'other@example.test']);
   eq('P2 no person_not_in_people -> no alerts', call('labourExceptionAlerts_', [{ reason: 'unpaired', personEmail: 'x@example.test' }]), []);
+  var db = call('labourDefaultBaristaAlerts_', [
+    { personEmail: 'new1@example.test', rate: 32.67, rateSource: 'default_barista', defaultPerson: true },
+    { personEmail: 'new1@example.test', rate: 32.67, rateSource: 'default_barista', defaultPerson: true },
+    { personEmail: 'new2@example.test', rate: 30, rateSource: 'rates_fallback', defaultPerson: true },
+    { personEmail: 'known@example.test', rate: 30, rateSource: 'rates_fallback', defaultPerson: false }]);
+  eq('P3 one labour_default_barista alert', db && keys(db), ['labour_default_barista']);
+  eq('P3 one line per defaulted person, saying what is missing', lines(db, 'labour_default_barista'), [
+    'new1@example.test: costed at 32.67 (no RATES row) (no PEOPLE row) - add their rows if they are not a base Barista',
+    'new2@example.test: costed at 30 (no PEOPLE row) - add their rows if they are not a base Barista']);
+  eq('P4 nobody defaulted -> no alerts', call('labourDefaultBaristaAlerts_', [{ personEmail: 'k@example.test', rateSource: 'row', defaultPerson: false }]), []);
 
   // ---- rate change ----
   function sh(email, rate) { return { personEmail: email, rate: rate }; }
@@ -16832,7 +16847,7 @@ console.log('\nGroup M — ingest-validation hardening:');
   check('CS6b same person, weekday, blank level -> person_incomplete', k6b.ok === false && k6b.exception && k6b.exception.reason === 'person_incomplete');
   var cfgG = full(); cfgG.cashShifts.push({ email: 'ghost@example.test', location: 'Loc A', days: ['sat'], rate: 33.66 });
   var k7 = call('labourCostShift_', sh('ghost@example.test', '2026-10-10', 'Loc A', 6), cfgG) || {};
-  check('CS7 cash rule does not rescue a person absent from PEOPLE -> person_not_in_people', k7.ok === false && k7.exception && k7.exception.reason === 'person_not_in_people');
+  check('CS7 cash rule applies to a person absent from PEOPLE (default profile)', k7.ok === true && k7.cash === true);
 
   // ---- A3: fixed week ----
   var fw = call('labourFixedWeek_', cfgC, '2026-10-12') || {};
