@@ -3,7 +3,5 @@
     "checkIngestToken_",
     "checkReadToken_"
   ],
-  "exempt": [
-    "examples/__test.gas.js:doGet"
-  ]
+  "exempt": []
 }
