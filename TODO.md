@@ -1409,7 +1409,7 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 - ~~[labour-clock] **Phase 4 payroll check**~~ ✅ WAIVED 2026-10-19 — Jake: "don't worry about it" (no pay-run comparison). Preview W 10-12 ran clean after bbc5e35 (unrated staff → base Barista 32.67 + `labour_default_barista` alert): roster $29,165.67 vs Summary $24,422.95 (pitt +1%, north +9%, york +42%, crowsnest +35%, roastery fixed +$1,559). Gap unexplained — both come from the same roster; likely Onboarding's 75 compute exceptions and/or super.
 - ~~[labour-clock] **Go-live — 4 cafes**~~ ✅ LIVE 2026-10-19 (Jake "All 4 cafes"): Script Properties `CLOCK_START_WEEK=2026-10-19` + `LABOUR_SOURCE=clock`; LOCATIONS `live=yes` for 89 YORK / 130 PITT / 4 Burlington / 5 blue. Preview 10:36 tags all 4 `[Cafe, live]`. First clock-written week = W 10-19, on the Mon 2026-10-26 run.
 - [labour-clock] **Verify first live Monday (2026-10-26)** — Summary Labour rows for W 10-19 should be the clock figures for ALL 5 locations (york/pitt/crowsnest/north_sydney `Cafe`, roastery `Roastery`), exactly one row per location — no leftover `Cafe` roastery row. Expect york/crowsnest ~35–42% above the old run-rate. Rollback = `labourRunRollback()` (clears every live cell); Roasting-only rollback = blank LOCATIONS D4.
-- [labour-clock] **Roasting go-live** — Jake yes 2026-10-19; LOCATIONS Roasting `live=yes` set by Jake 2026-10-19. GM cost monitor checked: never reads `department` (keys roastery by location), so no consumer change. Verified from the terminal 2026-10-19: real `labourIsLive_` parses all 5 LOCATIONS rows live (cleanup roast set = [roastery]); live doGet shows NO Summary Labour rows for weeks >= 2026-10-19 (latest is W 10-12, legacy `Cafe`, which is pre-start and correctly left alone), so `labourRunRoasteryCleanup()` would delete 0 today — skipped. Only run it if the 10-26 check finds a `Cafe` roastery row for W 10-19.
+- ~~[labour-clock] **Roasting go-live**~~ ✅ LIVE 2026-10-19 — Jake yes 2026-10-19; LOCATIONS Roasting `live=yes` set by Jake 2026-10-19. GM cost monitor checked: never reads `department` (keys roastery by location), so no consumer change. Verified from the terminal 2026-10-19: real `labourIsLive_` parses all 5 LOCATIONS rows live (cleanup roast set = [roastery]); live doGet shows NO Summary Labour rows for weeks >= 2026-10-19 (latest is W 10-12, legacy `Cafe`, which is pre-start and correctly left alone), so `labourRunRoasteryCleanup()` would delete 0 today — skipped. Only run it if the 10-26 check finds a `Cafe` roastery row for W 10-19.
 - [labour] Weeks 2026-09-21, 09-28, 10-05 have NO Labour rows in Summary (Onboarding has no BrightHR pull trigger). Jake 2026-10-19: "don't worry about the data … as long as it present correct figure for moving forward" — accepted gap, no backfill.
 <!-- Work spotted but not done. Append DURING the session, one line each, always naming
      the file/area it touches. Source for the Next batches block at "lets stop here"
@@ -1466,11 +1466,7 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
   acknowledged-not-fixed. The root-only probe used to fall through to the root
   `pyproject.toml` and print a FALSE GREEN ("✓ Python, 18 files") without ever opening
   the ANONYMOUS `doPost` that is this repo's whole attack surface.
-- [ ] **Run `/security-audit` on this repo** — now unblocked by the above and never yet
-  attempted end to end. Expect the 6 gates to be runnable; the two known shapes to watch
-  are `check-security-baseline.cjs` (we have a register) and whether `check-auth-coverage`
-  picks HEADLESS mode here (we serve no HtmlService page, so it should — and that is the
-  mode that CHECKS `doPost` instead of exempting it).
+- [x] ~~**Run `/security-audit` on this repo**~~ ✅ 2026-10-19 — audits #4 + #5 (scoped), both APPROVE, 6/6 gates exit 0, 0 High. #5 is at 8d202ea (deployed @62). Mediums 1,2,5,6 accepted by Jake (90 days); roster formula guard fixed in 8d202ea; legacy git-backup.ps1 Medium left untriaged (no rubric clause).
 
 ### Other open work
 - ~~Verify the `checkIngestStaleness` daily 11:00 trigger exists~~ ✅ **INSTALLED
