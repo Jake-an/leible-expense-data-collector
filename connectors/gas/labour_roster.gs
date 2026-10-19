@@ -30,8 +30,11 @@ function labourRosterRowRefusal_(r) {
   if (Object.prototype.hasOwnProperty.call(r, 'department')) {
     return 'must not carry a department (roster rows carry none; department comes from LOCATIONS)';
   }
-  if (typeof r.email !== 'string' || r.email !== r.email.toLowerCase() || r.email.indexOf('@') === -1) {
-    return 'invalid email (needs a lowercase address containing @)';
+  // A formula-trigger first character is never a real address; refuse it outright
+  // (the write is guarded too, but an email is a join key, so it must not be altered).
+  if (typeof r.email !== 'string' || r.email !== r.email.toLowerCase() || r.email.indexOf('@') === -1 ||
+      SHEET_FORMULA_TRIGGERS_.indexOf(r.email.charAt(0)) !== -1) {
+    return 'invalid email (needs a lowercase address containing @, not starting with = + - @)';
   }
   if (typeof r.start !== 'string' || !LABOUR_ROSTER_TIME_RE_.test(r.start)) {
     return 'invalid start (needs HH:MM, 24h)';
@@ -166,7 +169,9 @@ function labourRosterIngest_(rows, ss) {
     sheet.getRange(2, ix.clock_in + 1, fmtRows, 1).setNumberFormat('@');
     sheet.getRange(2, ix.clock_out + 1, fmtRows, 1).setNumberFormat('@');
   }
-  if (table.length > 0) sheet.getRange(2, 1, table.length, width).setValues(table);
+  // sheetSafeBlock_ (Code.gs) like every other hub write: a roster name/location
+  // beginning = + - @ is stored as text, never a live formula. Idempotent on kept rows.
+  if (table.length > 0) sheet.getRange(2, 1, table.length, width).setValues(sheetSafeBlock_(table));
   if (oldDataRows > table.length) {
     sheet.getRange(2 + table.length, 1, oldDataRows - table.length, width).clearContent();
   }

@@ -1411,7 +1411,6 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 - [labour-clock] **Verify first live Monday (2026-10-26)** — Summary Labour rows for W 10-19 should be the clock figures for york/pitt/crowsnest/north_sydney and the legacy pull for roastery only (one row per location). Expect york/crowsnest ~35–42% above the old run-rate. Rollback = `labourRunRollback()`.
 - [labour-clock] **Roasting go-live (needs Jake yes)** — tell the GM cost monitor the Roastery department split is coming, set LOCATIONS Roasting `live=yes`, then `labourRunRoasteryCleanup()`.
 - [labour] Weeks 2026-09-21, 09-28, 10-05 have NO Labour rows in Summary (Onboarding has no BrightHR pull trigger). Jake 2026-10-19: "don't worry about the data … as long as it present correct figure for moving forward" — accepted gap, no backfill.
-- [security Medium M1] connectors/gas/labour_roster.gs:169 — labourRosterIngest_ writes roster email/name/location into Labour Sheet CLOCK_RAW via setValues with no sheetSafeBlock_ formula guard (every other hub write has one); also reject leading =+-@ in labourRosterRowRefusal_. Filed twice (injection + ssrf lenses), one fix. (audit 2026-10-19, Jake: fix)
 <!-- Work spotted but not done. Append DURING the session, one line each, always naming
      the file/area it touches. Source for the Next batches block at "lets stop here"
      (~/.claude/docs/todo-hygiene.md). -->
