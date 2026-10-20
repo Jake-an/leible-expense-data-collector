@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "project": "leible-expense-data-collector",
+  "phase": "shop-coffee-kg",
+  "created_at": "2026-10-20T00:00:00+1100",
+  "steps": [
+    {
+      "step": 0,
+      "name": "prod-contract-probe",
+      "status": "pending",
+      "tdd": false,
+      "tdd_reason": "operational/discovery step - no code logic to test-drive",
+      "covers": [],
+      "covers_reason": "Read-only PROD contract probe of the Order-app shopCoffeeLines endpoint; discovery only, no feature code. De-risks PRD-21 but implements nothing."
+    },
+    {
+      "step": 1,
+      "name": "classifier",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-21"
+      ]
+    },
+    {
+      "step": 2,
+      "name": "fetch-gate-paging",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-21"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "aggregate",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-21"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "pull-orchestrator",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-21"
+      ]
+    },
+    {
+      "step": 5,
+      "name": "doget-fn",
+      "status": "pending",
+      "tdd": true,
+      "test_cmd": "node connectors/gas/test_code.js",
+      "covers": [
+        "PRD-22"
+      ]
+    },
+    {
+      "step": 6,
+      "name": "deploy-live",
+      "status": "pending",
+      "tdd": false,
+      "tdd_reason": "operational/discovery step - no code logic to test-drive",
+      "covers": [],
+      "covers_reason": "Operational deploy + live verification of PRD-21/PRD-22; no new feature code."
+    }
+  ]
+}

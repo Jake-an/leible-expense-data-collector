@@ -52,6 +52,10 @@
       "status": "completed",
       "blocked_at": "2026-10-14T10:42:11+0900",
       "completed_at": "2026-10-14T10:50:46+0900"
+    },
+    {
+      "dir": "shop-coffee-kg",
+      "status": "pending"
     }
   ]
 }
