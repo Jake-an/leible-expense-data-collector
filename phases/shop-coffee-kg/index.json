@@ -221,7 +221,7 @@
     {
       "step": 5,
       "name": "doget-fn",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -240,7 +240,8 @@
           "at": "2026-10-22T07:43:11+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "shopCoffeeRead_ in shopcoffee.gs + one doGet dispatch line (fn=shopCoffee); docs/api.md + docs/schema.md updated; suite 3500 pass/0 fail."
     },
     {
       "step": 6,

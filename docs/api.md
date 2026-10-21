@@ -287,3 +287,33 @@ function fetchWeeklySummary() {
   return data.rows;
 }
 ```
+
+## `fn=shopCoffee` — coffee kg per shop per week
+
+Reads the `ShopCoffee` tab (see `docs/schema.md`). Served by `shopCoffeeRead_` in
+`connectors/gas/shopcoffee.gs`, dispatched from `doGet` **after** the shared
+`API_READ_TOKEN` check — no token / wrong token returns the usual
+`{"result":"error"}` body with no row data.
+
+| Param | Required | Default | Notes |
+|---|---|---|---|
+| `from`, `to` | both or neither | last completed week | Inclusive `yyyy-MM-dd` bounds on `week_start`. Only one supplied, malformed, non-calendar (`2026-02-31`) or `from > to` -> error body, never the whole tab. |
+
+```
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?token=<TOKEN>&fn=shopCoffee&from=2026-10-12&to=2026-10-19
+```
+
+```json
+{
+  "ok": true, "fn": "shopCoffee", "from": "2026-10-12", "to": "2026-10-19",
+  "rows": [
+    {"week_start": "2026-10-19", "week_end": "2026-10-25", "iso_week": "2026-W43",
+     "shop": "York", "bar_kg": 2, "retail_kg": 0.4, "unclassified_kg": 0,
+     "excluded_lines": 1, "line_count": 3, "pulled_at": "2026-10-26T00:00:00.000Z"}
+  ]
+}
+```
+
+kg and count fields are numbers; date cells are `yyyy-MM-dd`. A missing tab
+returns `ok:true, rows:[]` plus a `note`. Invalid input returns
+`{"ok":false,"result":"error","message":"..."}`.

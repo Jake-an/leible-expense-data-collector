@@ -303,3 +303,24 @@ from `week_label` — **never lexicographically on the label string** (lexicogra
 sort breaks across a year boundary, e.g. `2026-W5` vs `2026-W31` vs `2027-W1`).
 `week_start`/`week_end` values shown are passed through from `ShopSpend` as
 pulled from the API — this report never recomputes week boundaries.
+
+## Tab `ShopCoffee` (coffee kg per shop per week — kg only, no dollars)
+
+Written by `shopCoffeePull` (`connectors/gas/shopcoffee.gs`) from the Order app's
+`shopCoffeeLines` endpoint; read via `doGet fn=shopCoffee` (`docs/api.md`).
+Outside the two-tab ingest contract. Upsert key: `week_start||shop`, whole-row
+rewrite on every pull so a repull self-heals.
+
+Columns: `week_start`, `week_end`, `iso_week`, `shop`, `bar_kg`, `retail_kg`,
+`unclassified_kg`, `excluded_lines`, `line_count`, `pulled_at`.
+
+Shops reported: York, Pitt, Crowsnest, North (Leible Taiwan and external shops are not reported).
+
+Bar rule (widened 2026-10-22): **bar** = Single Origin 1kg (`-1K`) + House Blend
+tins (`-8K`) + House Blend partial tins (`-PT`, qty already kg) + Decaf 1kg +
+Cold Brew 1kg. **retail** = every other coffee-bean line (House Blend 1K/200g,
+Single Origin 200g, Decaf/Cold Brew 200g, Reserve Single Origin any parseable
+size, SO 8K). Categories Drip Bag, Tea, Packaging, Misc are **excluded** (kg 0,
+counted in `excluded_lines`). **unclassified_kg** = a coffee line whose size
+suffix is unparseable (incl. Reserve SO SKUs ending -02..-05), or whose category
+is null/unknown — surfaced rather than guessed into bar or retail.

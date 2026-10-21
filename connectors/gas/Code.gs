@@ -2253,6 +2253,7 @@ function doGet(e) {
     var fn = params.fn || 'summary';
     if (fn === 'summary') return doGetSummary_(params);
     if (fn === 'shopspendCoverage') return doGetShopSpendCoverage_();
+    if (fn === 'shopCoffee') return jsonOut_(shopCoffeeRead_(params.from, params.to));
     return jsonOut_({ result: 'error', message: 'unknown fn: ' + fn });
   } catch (err) {
     return jsonOut_({ result: 'error', message: String((err && err.message) || err) });

@@ -370,3 +370,54 @@ function shopCoffeePullDry() {
   Logger.log('shopCoffeePullDry: ' + JSON.stringify(res));
   return res;
 }
+
+/* ---- read API (doGet fn=shopCoffee) — called only from Code.gs doGet, after the token check ---- */
+
+function shopCoffeeValidDate_(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  var d = new Date(s + 'T00:00:00Z');
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+function shopCoffeeReadError_(message) {
+  return { ok: false, result: 'error', message: message };
+}
+
+/**
+ * ShopCoffee rows with week_start in [from, to] (inclusive). Neither param ->
+ * the last completed week. Invalid/inverted/half-supplied bounds -> error body.
+ * @returns {Object} plain response body (caller wraps with jsonOut_)
+ */
+function shopCoffeeRead_(from, to) {
+  if (!from && !to) {
+    var lw = getLastCompletedWeek_(todayStr_());
+    from = lw.start;
+    to = lw.start;
+  }
+  if (!shopCoffeeValidDate_(from) || !shopCoffeeValidDate_(to)) {
+    return shopCoffeeReadError_('from and to must both be valid yyyy-MM-dd dates');
+  }
+  if (from > to) return shopCoffeeReadError_('from must not be after to');
+
+  var out = { ok: true, fn: 'shopCoffee', from: from, to: to, rows: [] };
+  var sheet = getHubSpreadsheet_().getSheetByName(SHOP_COFFEE_TAB);
+  if (!sheet) {
+    out.note = 'ShopCoffee tab not found; no rows yet';
+    return out;
+  }
+  var data = sheet.getDataRange().getValues();
+  var numCols = ['bar_kg', 'retail_kg', 'unclassified_kg', 'excluded_lines', 'line_count'];
+  for (var r = 1; r < data.length; r++) {
+    var ws = coerceDateStr_(data[r][0]);
+    if (ws < from || ws > to) continue;
+    var obj = {};
+    SHOP_COFFEE_HEADERS.forEach(function (h, c) {
+      var v = data[r][c];
+      if (h === 'week_start' || h === 'week_end') obj[h] = coerceDateStr_(v);
+      else if (numCols.indexOf(h) !== -1) obj[h] = Number(v);
+      else obj[h] = v instanceof Date ? v.toISOString() : String(v);
+    });
+    out.rows.push(obj);
+  }
+  return out;
+}
