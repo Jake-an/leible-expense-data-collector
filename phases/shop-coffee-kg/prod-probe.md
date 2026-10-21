@@ -50,4 +50,21 @@ B. Bar rule (widened): bar = Single Origin 1kg (`-1K`) + House Blend tins (`-8K`
 
 ## Verification
 
-(step 0 appends: the 2 weeks re-probed, drift vs the above, Date-vs-WeekLabel disagreement rate, Crows Nest non-zero confirmation, `node connectors/gas/test_code.js` baseline pass count.)
+Step 0 re-probe, 2026-10-22 (Thu, ISO W43 in progress), the 2 most recent completed ISO weeks: **2026-W41** and **2026-W42**. PROD Order app, `shopCoffeeLines`, limit 1000, paged until `truncated` false (1 page each).
+
+| week | ok | lines | rowsOk | linesOk | Leible Crows Nest lines |
+|---|---|---|---|---|---|
+| 2026-W41 | true | 90 | true | true | 10 |
+| 2026-W42 | true | 94 | true | true | 13 |
+
+- **Crows Nest non-zero: confirmed** (10 and 13 lines), so the `No Invoice` status filter works.
+- **Date-vs-WeekLabel disagreement rate: 0.0% (0 of 184 lines; W41 0/90, W42 0/94).** `date` is a plain `YYYY-MM-DD` string (already the Sydney calendar day), ISO week computed from it matched `weekLabel` on every line.
+- **Drift vs recorded facts: none.**
+  - Leible shopIds seen: Leible Blue, Leible Crows Nest, Leible Pitt, Leible York in both weeks; Leible Taiwan in W42 (5 lines). Same exact strings as recorded. External shops seen (Comission Coffee, 63 Do, ADCO, ADCO CARSS PARK, KiKi Dessert, Second Storey Cafe) are all in the recorded external set.
+  - Categories seen: House Blend, Single Origin, Cold Brew, Decaf, Reserve Single Origin, Packaging, Drip Bag, Tea, Misc. All within the recorded set (no null category appeared in these two weeks).
+  - Coffee SKU suffixes seen: only `-1K`, `-200`, `-8K` (`-8K` on House Blend only). No `-PT` lines yet, and no Reserve SO `-02..-05` in these weeks.
+- Not measured here: `counts` was absent from the paged responses I read (the recorded W42 `counts` figures were not re-checked); only `diagnostics` was verified.
+
+## Phase baseline
+
+`node connectors/gas/test_code.js` before any step 1-6 change: **3292 passed, 0 failed** (2026-10-22).
