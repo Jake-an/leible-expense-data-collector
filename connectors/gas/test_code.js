@@ -17608,5 +17608,232 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('SC1 classify(null) -> unclassified', cl(null, null, null), { bucket: 'unclassified', kg: 0 });
 })();
 
+/* ------------------------------------------------------------------ *
+ * shop-coffee-kg step 2 — shopCoffeeFetchWeekLines_ fetch + strict gate
+ * (PRD-21). No Sheet access; every Order-app call goes via orderAppFetch_.
+ * ------------------------------------------------------------------ */
+(function testShopCoffeeFetchWeekLines() {
+  console.log('\nshopcoffee: shopCoffeeFetchWeekLines_ fetch + gate:');
+  const fetchFn = globalThis.shopCoffeeFetchWeekLines_;
+  check('SC2 shopCoffeeFetchWeekLines_ is defined', typeof fetchFn === 'function');
+  if (typeof fetchFn !== 'function') return;
+
+  const WEEK = '2026-W42';
+  const savedFetch = globalThis.orderAppFetch_;
+  const savedUrlFetch = global.UrlFetchApp;
+  const savedProps = scriptProps;
+
+  function mkLines(prefix, n, shop) {
+    const a = [];
+    for (let i = 0; i < n; i++) {
+      a.push({ orderId: prefix + i, shopId: shop || 'Dummy Shop', shopType: 'INTERNAL', date: '2026-10-14',
+        weekLabel: WEEK, sku: 'DUM-' + prefix + i, name: 'Dummy', category: 'House Blend', qty: 2 });
+    }
+    return a;
+  }
+  function mkBody(o) {
+    const lines = o.lines !== undefined ? o.lines : [];
+    const matched = o.matched !== undefined ? o.matched : lines.length;
+    return {
+      ok: true,
+      lines: lines,
+      diagnostics: Object.assign({ rowsOk: true, linesOk: true }, o.diagnostics || {}),
+      meta: { week: WEEK, paging: { matched: matched, offset: o.offset || 0, limit: 500,
+        truncated: o.truncated === true } }
+    };
+  }
+  // Serve `byOffset` bodies keyed by requested offset.
+  function serve(byOffset, log) {
+    globalThis.orderAppFetch_ = function (params) {
+      if (log) log.push(params);
+      const b = byOffset[params.offset];
+      return b ? { ok: true, body: b } : { ok: false, reason: 'no-page' };
+    };
+  }
+  function run() {
+    let r, threw = false;
+    try { r = fetchFn(WEEK); } catch (e) { threw = true; r = { ok: false, reason: 'THREW ' + e.message }; }
+    return { r: r, threw: threw };
+  }
+
+  try {
+    clearLoggedMessages();
+
+    // happy single page
+    const l1 = mkLines('A', 3);
+    const calls1 = [];
+    serve({ 0: mkBody({ lines: l1 }) }, calls1);
+    let o = run();
+    check('SC2 single page: ok:true', o.r.ok === true);
+    eq('SC2 single page: lines returned', o.r.lines, l1);
+    eq('SC2 single page: matched', o.r.matched, 3);
+    eq('SC2 single page: one fetch', calls1.length, 1);
+    eq('SC2 request params api/week/offset', [calls1[0].api, calls1[0].week, calls1[0].offset], ['shopCoffeeLines', WEEK, 0]);
+    check('SC2 request carries a numeric limit', typeof calls1[0].limit === 'number' && calls1[0].limit > 0);
+    check('SC2 diagnostics + meta passed through', !!o.r.diagnostics && o.r.diagnostics.rowsOk === true && !!o.r.meta);
+
+    // multi page in order
+    const pa = mkLines('P0-', 2), pb = mkLines('P1-', 2), pc = mkLines('P2-', 1);
+    const calls2 = [];
+    serve({
+      0: mkBody({ lines: pa, matched: 5, offset: 0, truncated: true }),
+      2: mkBody({ lines: pb, matched: 5, offset: 2, truncated: true }),
+      4: mkBody({ lines: pc, matched: 5, offset: 4, truncated: false })
+    }, calls2);
+    o = run();
+    check('SC2 multi page: ok:true', o.r.ok === true);
+    eq('SC2 multi page: pages assembled in order', o.r.lines, pa.concat(pb, pc));
+    eq('SC2 multi page: offsets 0,2,4', calls2.map(c => c.offset), [0, 2, 4]);
+
+    // short page: collected !== matched
+    serve({ 0: mkBody({ lines: mkLines('S', 2), matched: 5, truncated: false }) });
+    o = run();
+    check('SC2 collected!==matched: ok:false', o.r.ok === false);
+    check('SC2 ...reason names the mismatch', /matched/.test(o.r.reason || '') && /2/.test(o.r.reason) && /5/.test(o.r.reason));
+    check('SC2 ...no lines treated as complete', !o.r.lines || o.r.lines.length === 0);
+
+    // empty page with matched>collected mid-scan
+    serve({ 0: mkBody({ lines: [], matched: 4, truncated: true }) });
+    o = run();
+    check('SC2 empty page with matched>0: ok:false (terminates)', o.r.ok === false && !o.threw);
+
+    // matched shifted mid-scan
+    serve({
+      0: mkBody({ lines: mkLines('X', 2), matched: 4, offset: 0, truncated: true }),
+      2: mkBody({ lines: mkLines('Y', 2), matched: 5, offset: 2, truncated: false })
+    });
+    o = run();
+    check('SC2 matched shifted mid-scan: ok:false', o.r.ok === false);
+
+    // diagnostics
+    serve({ 0: mkBody({ lines: mkLines('D', 1), diagnostics: { rowsOk: false } }) });
+    check('SC2 rowsOk=false: ok:false', run().r.ok === false);
+    serve({ 0: mkBody({ lines: mkLines('D', 1), diagnostics: { linesOk: false } }) });
+    check('SC2 linesOk=false: ok:false', run().r.ok === false);
+    const noDiag = mkBody({ lines: mkLines('D', 1) }); delete noDiag.diagnostics;
+    serve({ 0: noDiag });
+    check('SC2 diagnostics absent: ok:false', run().r.ok === false);
+    serve({
+      0: mkBody({ lines: mkLines('E', 1), matched: 2, offset: 0, truncated: true }),
+      1: mkBody({ lines: mkLines('F', 1), matched: 2, offset: 1, diagnostics: { linesOk: false } })
+    });
+    check('SC2 later page failing diagnostics: ok:false', run().r.ok === false);
+
+    // body ok:false / fetch failures: no throw
+    globalThis.orderAppFetch_ = function () { return { ok: false, reason: 'api:UNAUTHORIZED' }; };
+    o = run();
+    check('SC2 UNAUTHORIZED: ok:false, no throw', o.r.ok === false && !o.threw);
+    check('SC2 ...reason carries UNAUTHORIZED', /UNAUTHORIZED/.test(o.r.reason || ''));
+    globalThis.orderAppFetch_ = function () { return { ok: false, reason: 'http-500' }; };
+    o = run(); check('SC2 HTTP error: ok:false, no throw', o.r.ok === false && !o.threw);
+    globalThis.orderAppFetch_ = function () { return { ok: false, reason: 'parse' }; };
+    o = run(); check('SC2 non-JSON (parse): ok:false, no throw', o.r.ok === false && !o.threw);
+    const badOk = mkBody({ lines: mkLines('B', 1) }); badOk.ok = false;
+    serve({ 0: badOk });
+    o = run(); check('SC2 body ok:false: ok:false, no throw', o.r.ok === false && !o.threw);
+
+    // lines not an array
+    const notArr = mkBody({ lines: mkLines('N', 1) }); notArr.lines = { 0: 'x' };
+    serve({ 0: notArr });
+    check('SC2 lines not an array: ok:false', run().r.ok === false);
+    const noLines = mkBody({ lines: mkLines('N', 1) }); delete noLines.lines;
+    serve({ 0: noLines });
+    check('SC2 lines missing: ok:false', run().r.ok === false);
+
+    // stuck producer: same page forever, truncated forever
+    let stuck = 0;
+    globalThis.orderAppFetch_ = function () {
+      stuck++;
+      return { ok: true, body: mkBody({ lines: mkLines('K', 1), matched: 9999, truncated: true }) };
+    };
+    o = run();
+    check('SC2 stuck producer: ok:false, no throw', o.r.ok === false && !o.threw);
+    check('SC2 ...bounded fetch count (page cap)', stuck > 0 && stuck <= 50);
+    let stuck2 = 0;
+    globalThis.orderAppFetch_ = function () {
+      stuck2++;
+      return { ok: true, body: mkBody({ lines: [], matched: 0, truncated: true }) };
+    };
+    o = run();
+    check('SC2 truncated forever on empty pages: terminates', stuck2 <= 50 && !o.threw);
+    check('SC2 ...and is not a success', o.r.ok === false);
+
+    // duplicates across pages
+    const d0 = mkLines('U', 2);
+    const dupOfFirst = Object.assign({}, d0[0]);
+    const extra = mkLines('V', 1);
+    serve({
+      0: mkBody({ lines: d0, matched: 3, offset: 0, truncated: true }),
+      2: mkBody({ lines: [dupOfFirst].concat(extra), matched: 3, offset: 2, truncated: false })
+    });
+    o = run();
+    check('SC2 duplicate orderId|sku same qty: dropped, ok:true', o.r.ok === true);
+    eq('SC2 ...3 unique lines', (o.r.lines || []).length, 3);
+    check('SC2 ...duplicate counted', o.r.duplicates === 1 || (o.r.meta && o.r.meta.duplicatesDropped === 1) ||
+      (o.r.diagnostics && o.r.diagnostics.duplicatesDropped === 1));
+    const dq = Object.assign({}, d0[0], { qty: 7 });
+    serve({
+      0: mkBody({ lines: d0, matched: 3, offset: 0, truncated: true }),
+      2: mkBody({ lines: [dq].concat(extra), matched: 3, offset: 2, truncated: false })
+    });
+    o = run();
+    check('SC2 duplicate key with different qty: ok:false', o.r.ok === false);
+
+    // malformed lines
+    const bad = {
+      'qty 0': { qty: 0 }, 'qty negative': { qty: -1 }, 'qty NaN': { qty: NaN }, 'qty string': { qty: '2' },
+      'qty Infinity': { qty: Infinity }, 'sku missing': { sku: undefined }, 'sku number': { sku: 5 },
+      'orderId missing': { orderId: undefined }, 'orderId number': { orderId: 12 },
+      'shopId missing': { shopId: undefined }, 'shopId null': { shopId: null }
+    };
+    Object.keys(bad).forEach(function (name) {
+      const ln = Object.assign(mkLines('M', 1)[0], bad[name]);
+      serve({ 0: mkBody({ lines: [ln] }) });
+      const rr = run();
+      check('SC2 malformed line (' + name + '): ok:false, no throw', rr.r.ok === false && !rr.threw);
+    });
+    serve({ 0: mkBody({ lines: [null] }) });
+    o = run(); check('SC2 null line: ok:false, no throw', o.r.ok === false && !o.threw);
+
+    // zero-activity week
+    serve({ 0: mkBody({ lines: [], matched: 0 }) });
+    o = run();
+    check('SC2 zero-line week with matched 0: ok:true, lines []', o.r.ok === true && Array.isArray(o.r.lines) && o.r.lines.length === 0);
+
+    // missing token -> skip result, not exception, zero network calls
+    globalThis.orderAppFetch_ = savedFetch;
+    let urlCalls = 0;
+    global.UrlFetchApp = { fetch: () => { urlCalls++; throw new Error('should not fetch'); } };
+    scriptProps = {};
+    clearLoggedMessages();
+    o = run();
+    check('SC2 missing token: ok:false, no throw', o.r.ok === false && !o.threw);
+    check('SC2 ...reason names no-token', /no-token/.test(o.r.reason || ''));
+    eq('SC2 ...zero network fetches', urlCalls, 0);
+
+    // token never appears in reason or logs (real orderAppFetch_ path)
+    const TOK = 'dummy-sc2-token-xyz';
+    scriptProps = { ORDER_APP_COST_TOKEN: TOK };
+    clearLoggedMessages();
+    global.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ ok: false, error: 'UNAUTHORIZED' }) }) };
+    o = run();
+    check('SC2 real path UNAUTHORIZED: ok:false', o.r.ok === false);
+    check('SC2 token absent from reason', (o.r.reason || '').indexOf(TOK) === -1);
+    check('SC2 token absent from logs', lastLoggedMessages().join('\n').indexOf(TOK) === -1);
+    let sawUrl = null;
+    global.UrlFetchApp = { fetch: (url) => { sawUrl = url; return { getResponseCode: () => 200,
+      getContentText: () => JSON.stringify(mkBody({ lines: mkLines('T', 1) })) }; } };
+    o = run();
+    check('SC2 real path happy: ok:true', o.r.ok === true);
+    check('SC2 ...request URL targets shopCoffeeLines + week', /api=shopCoffeeLines/.test(sawUrl || '') && /week=2026-W42/.test(sawUrl || ''));
+    check('SC2 token absent from returned result', JSON.stringify(o.r).indexOf(TOK) === -1);
+  } finally {
+    globalThis.orderAppFetch_ = savedFetch;
+    global.UrlFetchApp = savedUrlFetch;
+    scriptProps = savedProps;
+  }
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

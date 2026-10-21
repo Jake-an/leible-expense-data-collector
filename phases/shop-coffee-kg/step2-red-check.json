@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "The single failure is 'FAIL- SC2 shopCoffeeFetchWeekLines_ is defined', a missing-symbol failure in the module under test: the function shopCoffeeFetchWeekLines_ has not been implemented yet. This is the implementation-missing RED reason, not a test-code defect. The test file loaded without import or syntax errors, and the other 3340 tests ran and passed (3340 passed, 1 failed), so the harness and fixtures are functioning. The step 1 classifier SC1 tests pass, so this failure is isolated to the step 2 fetch function."
+}
