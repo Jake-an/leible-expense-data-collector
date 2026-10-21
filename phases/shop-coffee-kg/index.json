@@ -13,7 +13,7 @@
       "covers": [],
       "covers_reason": "Read-only PROD contract probe of the Order-app shopCoffeeLines endpoint; discovery only, no feature code. De-risks PRD-21 but implements nothing.",
       "started_at": "2026-10-22T07:13:13+0900",
-      "completed_at": "2026-10-22T12:00:00+1100",
+      "completed_at": "2026-10-22T07:14:22+0900",
       "summary": "Re-probed PROD W41+W42: no drift, Crows Nest 10/13 lines, Date-vs-WeekLabel disagreement 0/184, baseline 3292 passed; see prod-probe.md Verification."
     },
     {
