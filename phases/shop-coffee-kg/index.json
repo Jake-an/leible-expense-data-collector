@@ -11,7 +11,8 @@
       "tdd": false,
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "covers": [],
-      "covers_reason": "Read-only PROD contract probe of the Order-app shopCoffeeLines endpoint; discovery only, no feature code. De-risks PRD-21 but implements nothing."
+      "covers_reason": "Read-only PROD contract probe of the Order-app shopCoffeeLines endpoint; discovery only, no feature code. De-risks PRD-21 but implements nothing.",
+      "started_at": "2026-10-22T07:13:13+0900"
     },
     {
       "step": 1,
