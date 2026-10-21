@@ -57,7 +57,9 @@ ONBOARDING_EXEC_URL = (
 # The legacy token is READ from the old hours-runner folder (not copied), falling back to a
 # copy placed beside this script. Both are gitignored by `*token*.txt`.
 ONBOARDING_TOKEN_FILES = (
-    Path(r"C:\Users\mioja\.claude\projects\LEIBLE_New Staff Onboarding App\tools\hours-runner\.hours-token.txt"),
+    Path(
+        r"C:\Users\mioja\.claude\projects\LEIBLE_New Staff Onboarding App\tools\hours-runner\.hours-token.txt"
+    ),
     HERE / ".hours-token.txt",
 )
 
@@ -74,7 +76,15 @@ COL_END_TIME = "End time"
 COL_PAID_HOURS = "Total hours excluding breaks (decimal)"
 COL_PAID_HOURS_ALT = "Total hours (decimal)"
 
-REQUIRED_COLS = (COL_FIRST, COL_LAST, COL_EMAIL, COL_ROSTER, COL_START_DATE, COL_START_TIME, COL_END_TIME)
+REQUIRED_COLS = (
+    COL_FIRST,
+    COL_LAST,
+    COL_EMAIL,
+    COL_ROSTER,
+    COL_START_DATE,
+    COL_START_TIME,
+    COL_END_TIME,
+)
 
 
 class RosterError(Exception):
@@ -97,6 +107,7 @@ def _green(s: str) -> str:
 
 # --------------------------------------------------------------------------- parsing
 
+
 def _find_table(path):
     with open(path, newline="", encoding="utf-8-sig") as fh:
         reader = csv.reader(fh)
@@ -105,7 +116,7 @@ def _find_table(path):
             rows.append((reader.line_num, row))
     for idx, (_, row) in enumerate(rows):
         if row and row[0].strip() == COL_FIRST:
-            return row, rows[idx + 1:]
+            return row, rows[idx + 1 :]
     raise RosterError(
         f"Could not find the details header (a row starting with '{COL_FIRST}') in {path}. "
         "Is this a BrightHR 'Roster details' export?"
@@ -145,7 +156,11 @@ def parse_csv(path):
     strings the legacy Onboarding post needs (first_name/last_name/raw_start/raw_end)."""
     header, data_rows = _find_table(path)
     missing = [c for c in REQUIRED_COLS if c not in header]
-    hours_col = COL_PAID_HOURS if COL_PAID_HOURS in header else (COL_PAID_HOURS_ALT if COL_PAID_HOURS_ALT in header else None)
+    hours_col = (
+        COL_PAID_HOURS
+        if COL_PAID_HOURS in header
+        else (COL_PAID_HOURS_ALT if COL_PAID_HOURS_ALT in header else None)
+    )
     if hours_col is None:
         missing.append("paid hours (" + COL_PAID_HOURS + ")")
     if missing:
@@ -181,20 +196,22 @@ def parse_csv(path):
 
         first = row[col[COL_FIRST]].strip()
         last = row[col[COL_LAST]].strip()
-        shifts.append({
-            "email": email,
-            "name": f"{first} {last}".strip(),
-            "date": iso,
-            "start": start_n,
-            "end": end_n,
-            "hours": round(hours, 4),
-            "location": row[col[COL_ROSTER]].strip(),
-            # legacy-only (stripped from the collector payload)
-            "first_name": first,
-            "last_name": last,
-            "raw_start": start_time,
-            "raw_end": end_time,
-        })
+        shifts.append(
+            {
+                "email": email,
+                "name": f"{first} {last}".strip(),
+                "date": iso,
+                "start": start_n,
+                "end": end_n,
+                "hours": round(hours, 4),
+                "location": row[col[COL_ROSTER]].strip(),
+                # legacy-only (stripped from the collector payload)
+                "first_name": first,
+                "last_name": last,
+                "raw_start": start_time,
+                "raw_end": end_time,
+            }
+        )
     if errors:
         raise RosterError("Bad date/time value(s):\n  " + "\n  ".join(errors))
     return shifts, skipped
@@ -207,14 +224,23 @@ def collector_rows(shifts):
 
 def onboarding_shifts(shifts):
     """Shape the old script posted: raw time strings, first/last name."""
-    return [{
-        "email": s["email"], "first_name": s["first_name"], "last_name": s["last_name"],
-        "date": s["date"], "start": s["raw_start"], "end": s["raw_end"],
-        "hours": s["hours"], "location": s["location"],
-    } for s in shifts]
+    return [
+        {
+            "email": s["email"],
+            "first_name": s["first_name"],
+            "last_name": s["last_name"],
+            "date": s["date"],
+            "start": s["raw_start"],
+            "end": s["raw_end"],
+            "hours": s["hours"],
+            "location": s["location"],
+        }
+        for s in shifts
+    ]
 
 
 # --------------------------------------------------------------------------- config / token
+
 
 def read_exec_url(path=DEPLOYMENT_JSON) -> str:
     try:
@@ -256,15 +282,18 @@ def clear_clipboard() -> None:
     subprocess.run(["clip"], input=b"", check=True)  # empty stdin empties the clipboard
 
 
-def init_token(path=ROSTER_TOKEN_FILE, copy=copy_to_clipboard, clear=clear_clipboard,
-               confirm=input, out=print) -> str:
+def init_token(
+    path=ROSTER_TOKEN_FILE, copy=copy_to_clipboard, clear=clear_clipboard, confirm=input, out=print
+) -> str:
     """Generate + save a token, clipboard it, print only a fingerprint, and clear the
     clipboard once the operator confirms the paste (RB8, RB11). Returns the fingerprint."""
     token = generate_token()
     Path(path).write_text(token, encoding="ascii")
     fp = fingerprint(token)
     copy(token)
-    out(f"New roster token saved to {Path(path).name} (fingerprint {fp}) and copied to the clipboard.")
+    out(
+        f"New roster token saved to {Path(path).name} (fingerprint {fp}) and copied to the clipboard."
+    )
     out("Paste it into the collector's INGEST_TOKEN_BRIGHTHR_ROSTER Script Property now.")
     try:
         confirm("Press Enter once it is pasted (the clipboard will then be cleared): ")
@@ -275,6 +304,7 @@ def init_token(path=ROSTER_TOKEN_FILE, copy=copy_to_clipboard, clear=clear_clipb
 
 
 # --------------------------------------------------------------------------- HTTP
+
 
 def _redact(msg: str, secret: str) -> str:
     out = msg
@@ -341,20 +371,36 @@ def read_onboarding_token(paths=ONBOARDING_TOKEN_FILES) -> str:
             tok = p.read_text(encoding="ascii").strip()
             if tok:
                 return tok
-    raise RosterError("legacy .hours-token.txt not found (old hours-runner folder or tools/roster/)")
+    raise RosterError(
+        "legacy .hours-token.txt not found (old hours-runner folder or tools/roster/)"
+    )
 
 
-def run_post(shifts, exec_url, token, also_onboarding=None, onboarding_token_paths=ONBOARDING_TOKEN_FILES,
-             http_post=requests.post, sleep=time.sleep, out=print) -> int:
+def run_post(
+    shifts,
+    exec_url,
+    token,
+    also_onboarding=None,
+    onboarding_token_paths=ONBOARDING_TOKEN_FILES,
+    http_post=requests.post,
+    sleep=time.sleep,
+    out=print,
+) -> int:
     """Attempt BOTH posts independently (RB7). Returns 0 only if every attempted post succeeded."""
     if also_onboarding is None:
         also_onboarding = ALSO_POST_ONBOARDING
     failures = 0
 
     try:
-        body = post_collector(collector_rows(shifts), exec_url, token, http_post=http_post, sleep=sleep)
-        out(_green(f"Collector: OK - rowsAdded={body.get('rowsAdded')} "
-                   f"rowsReplaced={body.get('rowsReplaced')} dates={body.get('dates')}"))
+        body = post_collector(
+            collector_rows(shifts), exec_url, token, http_post=http_post, sleep=sleep
+        )
+        out(
+            _green(
+                f"Collector: OK - rowsAdded={body.get('rowsAdded')} "
+                f"rowsReplaced={body.get('rowsReplaced')} dates={body.get('dates')}"
+            )
+        )
     except Exception as err:
         failures += 1
         out(_red(f"Collector: FAILED - {err}"))
@@ -364,7 +410,9 @@ def run_post(shifts, exec_url, token, also_onboarding=None, onboarding_token_pat
     if also_onboarding:
         try:
             otoken = read_onboarding_token(onboarding_token_paths)
-            result = post_onboarding(onboarding_shifts(shifts), ONBOARDING_EXEC_URL, otoken, http_post=http_post)
+            result = post_onboarding(
+                onboarding_shifts(shifts), ONBOARDING_EXEC_URL, otoken, http_post=http_post
+            )
             out(_green(f"Onboarding: OK - {result}"))
         except Exception as err:
             failures += 1
@@ -375,12 +423,17 @@ def run_post(shifts, exec_url, token, also_onboarding=None, onboarding_token_pat
 
 # --------------------------------------------------------------------------- CLI
 
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="POST a BrightHR 'Roster details' CSV to the LEIBLE collector")
+    ap = argparse.ArgumentParser(
+        description="POST a BrightHR 'Roster details' CSV to the LEIBLE collector"
+    )
     ap.add_argument("csv_path", nargs="?", help="path to the BrightHR 'Roster details' CSV export")
     ap.add_argument("--dry-run", action="store_true", help="parse and summarise only; do not POST")
     ap.add_argument("--init-token", action="store_true", help="create .roster-token.txt if absent")
-    ap.add_argument("--regen-token", action="store_true", help="replace .roster-token.txt (after a mismatch)")
+    ap.add_argument(
+        "--regen-token", action="store_true", help="replace .roster-token.txt (after a mismatch)"
+    )
     args = ap.parse_args(argv)
     if sys.platform == "win32":
         # Legacy conhost prints ANSI colour codes as raw "←[92m" until VT mode is on;
@@ -406,7 +459,9 @@ def main(argv=None) -> int:
     locations = sorted({s["location"] for s in shifts})
     total_hours = round(sum(s["hours"] for s in shifts), 2)
     dates = sorted({s["date"] for s in shifts})
-    print(f"Parsed {len(shifts)} shifts, {total_hours} paid hours ({skipped} rows skipped - no times/hours).")
+    print(
+        f"Parsed {len(shifts)} shifts, {total_hours} paid hours ({skipped} rows skipped - no times/hours)."
+    )
     print(f"Dates: {', '.join(dates) or '(none)'}")
     print(f"Roster names seen: {', '.join(locations) or '(none)'}")
     print("  -> each must map to a shop in the collector, or the shift costs as unknown_location.")

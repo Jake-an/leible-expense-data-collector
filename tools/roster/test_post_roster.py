@@ -14,8 +14,16 @@ HEADER = (
 )
 
 
-def _line(first="Test", last="Person", email="test.person@example.invalid", roster="Dummy Cafe",
-          date="16-Jun-2026", start="09:00", end="17:30", hours="8"):
+def _line(
+    first="Test",
+    last="Person",
+    email="test.person@example.invalid",
+    roster="Dummy Cafe",
+    date="16-Jun-2026",
+    start="09:00",
+    end="17:30",
+    hours="8",
+):
     cols = [""] * 31
     cols[0], cols[1], cols[2] = first, last, email
     cols[15], cols[17], cols[19], cols[20], cols[25] = roster, date, start, end, hours
@@ -72,9 +80,14 @@ def _shifts(tmp_path):
 def _run(shifts, http, tmp_path, also=True, tok_paths=None, sleeps=None):
     out = []
     code = pr.run_post(
-        shifts, URL, "dummy-roster-token", also_onboarding=also,
+        shifts,
+        URL,
+        "dummy-roster-token",
+        also_onboarding=also,
         onboarding_token_paths=tok_paths if tok_paths is not None else [tmp_path / "hours.txt"],
-        http_post=http, sleep=(sleeps.append if sleeps is not None else (lambda s: None)), out=out.append,
+        http_post=http,
+        sleep=(sleeps.append if sleeps is not None else (lambda s: None)),
+        out=out.append,
     )
     return code, "\n".join(out)
 
@@ -87,6 +100,7 @@ def hours_token(tmp_path):
 
 
 # ---- parsing
+
 
 def test_header_detected_after_preamble(tmp_path):
     shifts, skipped = pr.parse_csv(_csv(tmp_path, _line()))
@@ -114,15 +128,26 @@ def test_date_parse():
 
 
 def test_leave_and_placeholder_rows_skipped(tmp_path):
-    p = _csv(tmp_path, _line(), _line(start="", end="", hours="0"), _line(hours="0"), _line(email=""))
+    p = _csv(
+        tmp_path, _line(), _line(start="", end="", hours="0"), _line(hours="0"), _line(email="")
+    )
     shifts, skipped = pr.parse_csv(p)
     assert len(shifts) == 1 and skipped == 3
 
 
-@pytest.mark.parametrize("raw,want", [
-    ("9:00", "09:00"), ("09:00:00", "09:00"), ("9:00 AM", "09:00"), ("9:00 pm", "21:00"),
-    ("12:00 AM", "00:00"), ("12:30 PM", "12:30"), ("17:30", "17:30"), ("0:05", "00:05"),
-])
+@pytest.mark.parametrize(
+    "raw,want",
+    [
+        ("9:00", "09:00"),
+        ("09:00:00", "09:00"),
+        ("9:00 AM", "09:00"),
+        ("9:00 pm", "21:00"),
+        ("12:00 AM", "00:00"),
+        ("12:30 PM", "12:30"),
+        ("17:30", "17:30"),
+        ("0:05", "00:05"),
+    ],
+)
 def test_time_normalisation(raw, want):
     assert pr.normalise_time(raw) == want
 
@@ -148,18 +173,28 @@ def test_parsed_times_are_normalised(tmp_path):
 
 # ---- payload shape
 
+
 def test_collector_rows_shape_has_no_department_or_legacy_keys(tmp_path):
     rows = pr.collector_rows(_shifts(tmp_path))
-    assert rows == [{
-        "email": "test.person@example.invalid", "name": "Test Person", "date": "2026-06-16",
-        "start": "09:00", "end": "17:30", "hours": 8.0, "location": "Dummy Cafe",
-    }]
+    assert rows == [
+        {
+            "email": "test.person@example.invalid",
+            "name": "Test Person",
+            "date": "2026-06-16",
+            "start": "09:00",
+            "end": "17:30",
+            "hours": 8.0,
+            "location": "Dummy Cafe",
+        }
+    ]
     assert "department" not in rows[0]
 
 
 def test_collector_payload_body(tmp_path):
     http = FakeHttp(collector=[FakeResp(OK)])
-    pr.post_collector(pr.collector_rows(_shifts(tmp_path)), URL, "dummy-roster-token", http_post=http)
+    pr.post_collector(
+        pr.collector_rows(_shifts(tmp_path)), URL, "dummy-roster-token", http_post=http
+    )
     url, body = http.calls[0]
     assert url == URL
     assert set(body) == {"source", "kind", "token", "rows"}
@@ -169,11 +204,21 @@ def test_collector_payload_body(tmp_path):
 
 def test_onboarding_shape_matches_legacy(tmp_path):
     o = pr.onboarding_shifts(pr.parse_csv(_csv(tmp_path, _line(start="9:00 AM")))[0])[0]
-    assert set(o) == {"email", "first_name", "last_name", "date", "start", "end", "hours", "location"}
+    assert set(o) == {
+        "email",
+        "first_name",
+        "last_name",
+        "date",
+        "start",
+        "end",
+        "hours",
+        "location",
+    }
     assert o["start"] == "9:00 AM"  # raw string preserved, as the old script posted it
 
 
 # ---- config / token
+
 
 def test_exec_url_from_deployment_json(tmp_path):
     p = tmp_path / "d.json"
@@ -197,8 +242,11 @@ def test_init_token_generates_32_chars_copies_prints_fingerprint_only_and_clears
     p = tmp_path / ".roster-token.txt"
     events, out = [], []
     fp = pr.init_token(
-        p, copy=lambda t: events.append(("copy", t)), clear=lambda: events.append(("clear",)),
-        confirm=lambda prompt: events.append(("confirm",)), out=out.append,
+        p,
+        copy=lambda t: events.append(("copy", t)),
+        clear=lambda: events.append(("clear",)),
+        confirm=lambda prompt: events.append(("confirm",)),
+        out=out.append,
     )
     token = p.read_text(encoding="ascii")
     assert len(token) == 32 and token.isalnum()
@@ -214,8 +262,13 @@ def test_init_token_clears_clipboard_even_if_confirm_aborted(tmp_path):
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        pr.init_token(tmp_path / "t.txt", copy=lambda t: None, clear=lambda: events.append("clear"),
-                      confirm=boom, out=lambda s: None)
+        pr.init_token(
+            tmp_path / "t.txt",
+            copy=lambda t: None,
+            clear=lambda: events.append("clear"),
+            confirm=boom,
+            out=lambda s: None,
+        )
     assert events == ["clear"]
 
 
@@ -226,6 +279,7 @@ def test_regenerated_tokens_differ(tmp_path):
 
 # ---- LOCKED retry (RB6)
 
+
 def test_locked_then_ok_retries_once_after_60s(tmp_path):
     http, sleeps = FakeHttp(collector=[FakeResp(LOCKED), FakeResp(OK)]), []
     body = pr.post_collector([{}], URL, "dummy", http_post=http, sleep=sleeps.append)
@@ -233,7 +287,12 @@ def test_locked_then_ok_retries_once_after_60s(tmp_path):
 
 
 def test_locked_twice_fails_with_rerun_message(tmp_path, hours_token):
-    http, sleeps = FakeHttp(collector=[FakeResp(LOCKED), FakeResp(LOCKED)], onboarding=[FakeResp({"result": "ok"})]), []
+    http, sleeps = (
+        FakeHttp(
+            collector=[FakeResp(LOCKED), FakeResp(LOCKED)], onboarding=[FakeResp({"result": "ok"})]
+        ),
+        [],
+    )
     code, out = _run(_shifts(tmp_path), http, tmp_path, sleeps=sleeps)
     assert code == 1 and sleeps == [60]
     assert "Re-run the shortcut" in out and "\033[91m" in out
@@ -248,6 +307,7 @@ def test_unauthorized_not_retried():
 
 # ---- dual post (RB7)
 
+
 def test_both_posts_succeed(tmp_path, hours_token):
     http = FakeHttp(collector=[FakeResp(OK)], onboarding=[FakeResp({"result": "ok"})])
     code, out = _run(_shifts(tmp_path), http, tmp_path)
@@ -259,8 +319,10 @@ def test_both_posts_succeed(tmp_path, hours_token):
 
 
 def test_collector_failure_does_not_skip_onboarding(tmp_path, hours_token):
-    http = FakeHttp(collector=[FakeResp({"result": "error", "code": "UNAUTHORIZED"})],
-                    onboarding=[FakeResp({"result": "ok"})])
+    http = FakeHttp(
+        collector=[FakeResp({"result": "error", "code": "UNAUTHORIZED"})],
+        onboarding=[FakeResp({"result": "ok"})],
+    )
     code, out = _run(_shifts(tmp_path), http, tmp_path)
     assert code == 1 and len(http.calls) == 2
     assert "Collector: FAILED" in out and "Onboarding: OK" in out
@@ -273,7 +335,10 @@ def test_onboarding_failure_still_reports_collector_ok(tmp_path, hours_token):
 
 
 def test_collector_network_error_does_not_skip_onboarding_and_redacts_token(tmp_path, hours_token):
-    http = FakeHttp(collector=[ConnectionError(f"boom {URL} dummy-roster-token")], onboarding=[FakeResp({"result": "ok"})])
+    http = FakeHttp(
+        collector=[ConnectionError(f"boom {URL} dummy-roster-token")],
+        onboarding=[FakeResp({"result": "ok"})],
+    )
     code, out = _run(_shifts(tmp_path), http, tmp_path)
     assert code == 1 and "Onboarding: OK" in out
     assert "dummy-roster-token" not in out and "***" in out
@@ -282,7 +347,12 @@ def test_collector_network_error_does_not_skip_onboarding_and_redacts_token(tmp_
 def test_missing_legacy_token_is_reported_red_but_collector_ran(tmp_path):
     http = FakeHttp(collector=[FakeResp(OK)])
     code, out = _run(_shifts(tmp_path), http, tmp_path)  # hours.txt absent
-    assert code == 1 and "Collector: OK" in out and "Onboarding: FAILED" in out and len(http.calls) == 1
+    assert (
+        code == 1
+        and "Collector: OK" in out
+        and "Onboarding: FAILED" in out
+        and len(http.calls) == 1
+    )
 
 
 def test_flag_false_skips_onboarding(tmp_path):
@@ -301,7 +371,11 @@ def test_flag_default_is_true_and_read_at_call_time(tmp_path, hours_token, monke
 
 
 def test_onboarding_http_error_redacts_url_token(tmp_path):
-    http = FakeHttp(onboarding=[RuntimeError("fail https://x/exec?endpoint=ingest-hours&token=dummy-hours-token")])
+    http = FakeHttp(
+        onboarding=[
+            RuntimeError("fail https://x/exec?endpoint=ingest-hours&token=dummy-hours-token")
+        ]
+    )
     with pytest.raises(pr.PostFailed) as ei:
         pr.post_onboarding([], URL, "dummy-hours-token", http_post=http)
     assert "dummy-hours-token" not in str(ei.value)
