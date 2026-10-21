@@ -7,14 +7,29 @@
     {
       "step": 0,
       "name": "prod-contract-probe",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": false,
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "covers": [],
       "covers_reason": "Read-only PROD contract probe of the Order-app shopCoffeeLines endpoint; discovery only, no feature code. De-risks PRD-21 but implements nothing.",
       "started_at": "2026-10-22T07:13:13+0900",
       "completed_at": "2026-10-22T07:14:22+0900",
-      "summary": "Re-probed PROD W41+W42: no drift, Crows Nest 10/13 lines, Date-vs-WeekLabel disagreement 0/184, baseline 3292 passed; see prod-probe.md Verification."
+      "summary": "Re-probed PROD W41+W42: no drift, Crows Nest 10/13 lines, Date-vs-WeekLabel disagreement 0/184, baseline 3292 passed; see prod-probe.md Verification.",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 3,
+        "fix_rounds": 0,
+        "result_file": "phases/shop-coffee-kg/step0-review.json",
+        "checked_at": "2026-10-22T07:15:42+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] The step brief's 'counts' check was not performed; the Verification section discloses this, so the Crows Nest and categories figures are backed only by diagnostics and the lines array.",
+        "[review] The file lost its trailing newline ('\\ No newline at end of file') in the step-0 status update. Cosmetic only.",
+        "[review] The diff range 0072a9d..HEAD includes two roster commits (013aa2d, 387a798) that are outside step 0. Their messages say formatting only. tools/roster/post_roster.py is AST-identical to its base. test_post_roster.py is NOT AST-identical, which is more than wrapping (import reordering is the likely cause; not confirmed in depth)."
+      ]
     },
     {
       "step": 1,
@@ -24,7 +39,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-21"
-      ]
+      ],
+      "started_at": "2026-10-22T07:15:42+0900"
     },
     {
       "step": 2,

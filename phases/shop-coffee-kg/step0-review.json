@@ -1,0 +1,26 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "phases/shop-coffee-kg/prod-probe.md",
+      "line": 56,
+      "summary": "The step brief's 'counts' check was not performed; the Verification section discloses this, so the Crows Nest and categories figures are backed only by diagnostics and the lines array.",
+      "suggestion": "Optional: re-probe one week and record the counts block, or leave the disclosure as is."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/shop-coffee-kg/index.json",
+      "line": 79,
+      "summary": "The file lost its trailing newline ('\\ No newline at end of file') in the step-0 status update. Cosmetic only.",
+      "suggestion": "Re-add the trailing newline on the next edit to this file."
+    },
+    {
+      "severity": "minor",
+      "file": "tools/roster/test_post_roster.py",
+      "line": 1,
+      "summary": "The diff range 0072a9d..HEAD includes two roster commits (013aa2d, 387a798) that are outside step 0. Their messages say formatting only. tools/roster/post_roster.py is AST-identical to its base. test_post_roster.py is NOT AST-identical, which is more than wrapping (import reordering is the likely cause; not confirmed in depth).",
+      "suggestion": "Not a step-0 defect. Confirm the import reorder is the only semantic-looking change, or split those commits out of the phase review range."
+    }
+  ]
+}
