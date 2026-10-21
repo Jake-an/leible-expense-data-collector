@@ -147,6 +147,10 @@ function shopCoffeeFetchWeekLines_(weekLabel) {
     }
   }
 
+  // Deliberate (per step spec): the gate compares the POST-dedup count to the
+  // producer's matched. Dropped same-qty duplicates are reported in `duplicates`
+  // for the caller to log. Ceiling: PAGE_LIMIT x MAX_PAGES = 4000 lines/week; a
+  // bigger week fails loudly here, it is not a producer fault.
   if (collected.length !== matched) {
     return { ok: false, reason: 'collected ' + collected.length + ' !== matched ' + matched };
   }

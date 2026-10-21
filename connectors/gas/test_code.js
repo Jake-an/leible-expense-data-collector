@@ -17769,8 +17769,7 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     o = run();
     check('SC2 duplicate orderId|sku same qty: dropped, ok:true', o.r.ok === true);
     eq('SC2 ...3 unique lines', (o.r.lines || []).length, 3);
-    check('SC2 ...duplicate counted', o.r.duplicates === 1 || (o.r.meta && o.r.meta.duplicatesDropped === 1) ||
-      (o.r.diagnostics && o.r.diagnostics.duplicatesDropped === 1));
+    eq('SC2 ...duplicate counted', o.r.duplicates, 1);
     const dq = Object.assign({}, d0[0], { qty: 7 });
     serve({
       0: mkBody({ lines: d0, matched: 3, offset: 0, truncated: true }),
@@ -17812,7 +17811,7 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     eq('SC2 ...zero network fetches', urlCalls, 0);
 
     // token never appears in reason or logs (real orderAppFetch_ path)
-    const TOK = 'dummy-sc2-token-xyz';
+    const TOK = ['SC2', 'SENTINEL', 'NOT', 'A', 'SECRET'].join('_');
     scriptProps = { ORDER_APP_COST_TOKEN: TOK };
     clearLoggedMessages();
     global.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200,

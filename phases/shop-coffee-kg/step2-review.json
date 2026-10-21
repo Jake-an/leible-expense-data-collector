@@ -1,0 +1,33 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "critical",
+      "file": "connectors/gas/test_code.js",
+      "line": 17815,
+      "summary": "Token-named constant assigned a string literal in the new SC2 test: `const TOK = 'dummy-sc2-token-xyz';` (also used as ORDER_APP_COST_TOKEN in scriptProps). Matches the hardcoded-credential anchor even though the value is a dummy fixture, not a real secret.",
+      "suggestion": "Replace the literal with a clearly non-secret sentinel built at runtime (e.g. a constant derived from the test name, or a marker like 'SC2_SENTINEL_NOT_A_SECRET'), keeping the assertions that the sentinel never appears in reason/logs/result. Note for the caller: the same `dummy-...-token` literal convention already exists at test_code.js:14505 and :14689, so if the anchor is waived for dummy fixtures this is a false positive; the revise is driven by the anchor, not by a real credential."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 129,
+      "summary": "Dropped cross-page duplicates are counted but not surfaced in the result or any log, and the post-dedup count gate can pass when the producer emitted more lines than it reported in matched (a duplicate absorbs the discrepancy).",
+      "suggestion": "Consider failing (or at least reporting duplicates in the ok result for the caller to log) when duplicates > 0, since matched is documented as counting unique order x SKU lines. If the spec's post-dedup comparison is kept deliberately, add a comment saying so."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 17772,
+      "summary": "The 'duplicate counted' assertion is an OR-chain of three possible field locations, so it passes if any one matches and does not pin where the count is reported.",
+      "suggestion": "Assert the single real field (`o.r.duplicates === 1`) so the test fails if the count is ever lost."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 62,
+      "summary": "SHOP_COFFEE_MAX_PAGES x SHOP_COFFEE_PAGE_LIMIT caps a week at 4000 lines; a larger week fails loudly with ok:false rather than paging further.",
+      "suggestion": "No change needed now (current weekly volume is far below the cap); note the ceiling in the phase docs so a future volume increase is not mistaken for a producer fault."
+    }
+  ]
+}
