@@ -18099,5 +18099,122 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   eq('SC4 shopcoffee override = 168h', STALENESS_THRESHOLD_OVERRIDES.shopcoffee, 168);
 })();
 
+(function testShopCoffeeDoGet() {
+  console.log('\nshopcoffee: doGet fn=shopCoffee read API (step 5):');
+  check('SC5 shopCoffeeRead_ is defined', typeof globalThis.shopCoffeeRead_ === 'function');
+
+  const PINNED = '2026-10-26T00:00:00Z'; // a Monday -> last completed week 2026-10-19..25
+  const TOKEN = 'dummy-read-token-sc5';
+  const savedProps = scriptProps;
+  const SHOPS = ['York', 'Pitt', 'Crowsnest', 'North'];
+  function get(params) {
+    return withMockNow(PINNED, function () {
+      return JSON.parse(doGet({ parameter: params }).getContent());
+    });
+  }
+  function seed(weeks) {
+    freshSheets();
+    scriptProps = { API_READ_TOKEN: TOKEN };
+    const sh = ensureSheet(currentSS, 'ShopCoffee', globalThis.SHOP_COFFEE_HEADERS);
+    const rows = [];
+    weeks.forEach(function (w, wi) {
+      SHOPS.forEach(function (s, si) {
+        rows.push([w[0], w[1], w[2], s, 2 + si, 0.2 * (wi + 1), 0, 1, 3, 't' + wi]);
+      });
+    });
+    globalThis.shopCoffeeUpsert_(sh, rows);
+    return sh;
+  }
+  const W42 = ['2026-10-12', '2026-10-18', '2026-W42'];
+  const W43 = ['2026-10-19', '2026-10-25', '2026-W43'];
+  const W44 = ['2026-10-26', '2026-11-01', '2026-W44'];
+
+  try {
+    // --- range filter + shape + types + Date coercion ---
+    seed([W42, W43, W44]);
+    let r = get({ token: TOKEN, fn: 'shopCoffee', from: '2026-10-12', to: '2026-10-19' });
+    check('SC5 ok:true and fn echoed', r.ok === true && r.fn === 'shopCoffee');
+    eq('SC5 from/to echoed', [r.from, r.to], ['2026-10-12', '2026-10-19']);
+    eq('SC5 range returns only weeks inside it (W42+W43 = 8 rows)', (r.rows || []).length, 8);
+    check('SC5 no W44 row leaked', (r.rows || []).every(function (x) { return x.week_start !== '2026-10-26'; }));
+    eq('SC5 row keys are exactly SHOP_COFFEE_HEADERS', Object.keys((r.rows || [{}])[0]), globalThis.SHOP_COFFEE_HEADERS);
+    const york43 = (r.rows || []).filter(function (x) { return x.shop === 'York' && x.week_start === '2026-10-19'; })[0] || {};
+    eq('SC5 Date cells come back as yyyy-MM-dd (no off-by-one)', [york43.week_start, york43.week_end], ['2026-10-19', '2026-10-25']);
+    eq('SC5 iso_week and shop pass through', [york43.iso_week, york43.shop], ['2026-W43', 'York']);
+    check('SC5 kg fields are numbers',
+      ['bar_kg', 'retail_kg', 'unclassified_kg', 'excluded_lines', 'line_count'].every(function (k) { return typeof york43[k] === 'number'; }));
+    eq('SC5 bar_kg value', york43.bar_kg, 2);
+
+    // --- numeric strings in cells are coerced to numbers ---
+    const sh = seed([W43]);
+    const vals = sh.getDataRange().getValues();
+    const rowIdx = 1;
+    sh.getRange(rowIdx + 1, 5, 1, 1).setValue('3.5');
+    r = get({ token: TOKEN, fn: 'shopCoffee' });
+    check('SC5 string kg cell is returned as a number', (r.rows || []).some(function (x) { return x.bar_kg === 3.5; }));
+
+    // --- default = last completed week only ---
+    seed([W42, W43, W44]);
+    r = get({ token: TOKEN, fn: 'shopCoffee' });
+    eq('SC5 default: exactly 4 shop rows', (r.rows || []).length, 4);
+    check('SC5 default: all rows are the last completed week',
+      (r.rows || []).length > 0 && r.rows.every(function (x) { return x.week_start === '2026-10-19'; }));
+    eq('SC5 default: all four shops present', (r.rows || []).map(function (x) { return x.shop; }).sort(), SHOPS.slice().sort());
+
+    // --- auth: no token / wrong token ---
+    [{ fn: 'shopCoffee' }, { fn: 'shopCoffee', token: 'wrong' }, { fn: 'shopCoffee', token: '' }].forEach(function (p, i) {
+      const u = get(p);
+      check('SC5 auth case ' + i + ': error, ok not true', u.ok !== true && u.result === 'error');
+      check('SC5 auth case ' + i + ': no row data in body', u.rows === undefined && JSON.stringify(u).indexOf('York') === -1);
+    });
+
+    // --- invalid params fail closed (error body, never the whole tab) ---
+    [
+      { from: '2026-10-20', to: '2026-10-12' },
+      { from: 'garbage', to: '2026-10-19' },
+      { from: '2026-10-12', to: 'nope' },
+      { from: '2026-02-31', to: '2026-03-02' },
+      { from: '2026-10-12' }
+    ].forEach(function (p, i) {
+      const q = Object.assign({ token: TOKEN, fn: 'shopCoffee' }, p);
+      let threw = false, e;
+      try { e = get(q); } catch (x) { threw = true; }
+      check('SC5 invalid params case ' + i + ': no throw, error body, no rows',
+        !threw && e && e.ok === false && e.result === 'error' && !!e.message && e.rows === undefined);
+    });
+
+    // --- missing tab ---
+    freshSheets(); scriptProps = { API_READ_TOKEN: TOKEN };
+    r = get({ token: TOKEN, fn: 'shopCoffee', from: '2026-10-12', to: '2026-10-19' });
+    check('SC5 missing tab: ok:true, empty rows, note', r.ok === true && Array.isArray(r.rows) && r.rows.length === 0 && typeof r.note === 'string' && r.note.length > 0);
+
+    // --- header-only tab: ok, empty ---
+    freshSheets(); scriptProps = { API_READ_TOKEN: TOKEN };
+    ensureSheet(currentSS, 'ShopCoffee', globalThis.SHOP_COFFEE_HEADERS);
+    r = get({ token: TOKEN, fn: 'shopCoffee' });
+    check('SC5 header-only tab: ok:true, empty rows', r.ok === true && Array.isArray(r.rows) && r.rows.length === 0);
+
+    // --- existing fns unaffected ---
+    seed([W43]);
+    const unk = get({ token: TOKEN, fn: 'nope' });
+    check('SC5 unknown fn still errors', unk.result === 'error' && /unknown fn/.test(unk.message));
+    const summ = get({ token: TOKEN });
+    check('SC5 default fn (summary) still routes to summary handler', summ.ok === undefined);
+
+    // --- reachable only through doGet ---
+    const fs = require('fs'), path = require('path');
+    const gasDir = path.join(__dirname);
+    const callers = fs.readdirSync(gasDir).filter(function (f) { return /\.gs$/.test(f); }).filter(function (f) {
+      return /shopCoffeeRead_\(/.test(fs.readFileSync(path.join(gasDir, f), 'utf8').replace(/function shopCoffeeRead_\(/g, ''));
+    });
+    eq('SC5 shopCoffeeRead_ is called only from Code.gs (doGet dispatch)', callers, ['Code.gs']);
+    check('SC5 doGet dispatch wires fn=shopCoffee',
+      /fn === 'shopCoffee'\)\s*return[^;]*shopCoffeeRead_/.test(fs.readFileSync(path.join(gasDir, 'Code.gs'), 'utf8')));
+  } finally {
+    scriptProps = savedProps;
+    freshSheets();
+  }
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
