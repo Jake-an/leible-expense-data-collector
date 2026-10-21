@@ -1,0 +1,19 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 186,
+      "summary": "shopCoffeeAggregate_ does not guard against a line with a missing or null shopId; it lands in unmappedShopIds under the key 'undefined' or 'null'.",
+      "suggestion": "Unreachable from production today because shopCoffeeLineProblem_ rejects such lines before aggregation. Optionally treat a non-string shopId as its own unmapped bucket with a clear label, or document the precondition in the JSDoc."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 225,
+      "summary": "The reconciled check compares sums that both come from the same shopCoffeeClassify_ output, so it can only flip to false through the out-of-fixed-set mapped-name path. It does not catch a classification error.",
+      "suggestion": "Acceptable as specified. Consider noting this in the JSDoc so later readers do not treat reconciled as a classifier check. The test at test_code.js:17895 corrupts the shop map rather than the input lines, which matches the code path but not the brief's wording 'corrupted input'; a line-level corruption case would make that test match the brief more closely."
+    }
+  ]
+}

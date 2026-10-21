@@ -130,7 +130,7 @@
     {
       "step": 3,
       "name": "aggregate",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -157,7 +157,21 @@
       },
       "tdd_state": "red_done",
       "summary": "Added pure shopCoffeeAggregate_ + SHOP_COFFEE_SHOPS_DEFAULT/SHOP_COFFEE_SHOP_ORDER/SHOP_COFFEE_HEADERS in shopcoffee.gs; suite 3418 passed, 0 failed.",
-      "completed_at": "2026-10-22T07:33:27+0900"
+      "completed_at": "2026-10-22T07:33:27+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 2,
+        "fix_rounds": 0,
+        "result_file": "phases/shop-coffee-kg/step3-review.json",
+        "checked_at": "2026-10-22T07:34:44+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] shopCoffeeAggregate_ does not guard against a line with a missing or null shopId; it lands in unmappedShopIds under the key 'undefined' or 'null'.",
+        "[review] The reconciled check compares sums that both come from the same shopCoffeeClassify_ output, so it can only flip to false through the out-of-fixed-set mapped-name path. It does not catch a classification error."
+      ]
     },
     {
       "step": 4,
@@ -167,7 +181,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-21"
-      ]
+      ],
+      "started_at": "2026-10-22T07:34:44+0900"
     },
     {
       "step": 5,
