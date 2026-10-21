@@ -442,6 +442,7 @@ load('labour.gs');  // pure labour-cost calc (phase labour-clock)
 load('labour_setup.gs');  // Labour Sheet one-off setup (Phase 1)
 load('labour_roster.gs');  // doPost roster kind -> Labour Sheet CLOCK_RAW (Amendment B1)
 load('labour_weekly.gs');  // Phase 3: weeklySummarize wiring behind LABOUR_SOURCE
+load('shopcoffee.gs');  // shop-coffee-kg step 1: pure SKU->kg classifier
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -17540,6 +17541,67 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   // ---- P3-10 weeklySummarize calls the router (not the bare legacy pull) ----
   var codeSrc = fs.readFileSync(path.join(GAS_DIR, 'Code.gs'), 'utf8');
   check('P3-10 weeklySummarize_impl_ routes labour through labourWeeklyRoute_', /labourResult = labourWeeklyRoute_\(/.test(codeSrc));
+})();
+
+// ===================== shop-coffee-kg step 1: classifier =====================
+(function () {
+  function sz(s) { return typeof globalThis.shopCoffeeSizeKg_ === 'function' ? globalThis.shopCoffeeSizeKg_(s) : 'UNDEFINED'; }
+  function cl(sku, cat, qty) {
+    return typeof globalThis.shopCoffeeClassify_ === 'function'
+      ? globalThis.shopCoffeeClassify_({ sku: sku, category: cat, qty: qty }) : 'UNDEFINED';
+  }
+  function bk(sku, cat, qty, bucket, kg, name) {
+    eq('SC1 ' + name, cl(sku, cat, qty), { bucket: bucket, kg: kg });
+  }
+
+  bk('SO-DUM-1K', 'Single Origin', 3, 'bar', 3, 'SO 1K x3 -> bar 3kg');
+  bk('HB-DUM-8K', 'House Blend', 1, 'bar', 8, 'HB 8K tin -> bar 8');
+  bk('HB-ABS-PT', 'House Blend', 4.3, 'bar', 4.3, 'HB partial tin qty 4.3 -> bar 4.3');
+  bk('SO-DUM-PT', 'Single Origin', 2, 'unclassified', 0, 'non-HB -PT -> unclassified');
+  bk('DC-DUM-1K', 'Decaf', 1, 'bar', 1, 'Decaf 1K -> bar');
+  bk('CB-DUM-1K', 'Cold Brew', 1, 'bar', 1, 'Cold Brew 1K -> bar');
+  bk('SO-DUM-200', 'Single Origin', 1, 'retail', 0.2, 'SO 200 -> retail 0.2');
+  bk('DC-DUM-200', 'Decaf', 1, 'retail', 0.2, 'Decaf 200 -> retail 0.2');
+  bk('CB-DUM-200', 'Cold Brew', 1, 'retail', 0.2, 'Cold Brew 200 -> retail');
+  bk('RSO-DUM-200', 'Reserve Single Origin', 1, 'retail', 0.2, 'Reserve SO 200 -> retail');
+  bk('HB-DUM-1K', 'House Blend', 1, 'retail', 1, 'HB 1K bag -> retail');
+  bk('HB-DUM-200', 'House Blend', 1, 'retail', 0.2, 'HB 200 -> retail');
+  bk('SO-DUM-8K', 'Single Origin', 1, 'retail', 8, 'SO 8K literal -> retail');
+  bk('RSO-DUM-03', 'Reserve Single Origin', 1, 'unclassified', 0, 'Reserve SO -03 -> unclassified');
+  bk('SO-DUM-XL', 'Single Origin', 1, 'unclassified', 0, 'unknown suffix -> unclassified');
+  bk('SO-DUM-1K', null, 1, 'unclassified', 0, 'null category -> unclassified');
+  bk('SO-DUM-1K', 'Mystery', 1, 'unclassified', 0, 'unknown category -> unclassified');
+  bk('???', 'Single Origin', 1, 'unclassified', 0, 'unparseable SKU -> unclassified');
+  ['Drip Bag', 'Tea', 'Packaging', 'Misc'].forEach(function (c) {
+    bk('XX-DUM-1K', c, 5, 'excluded', 0, c + ' -> excluded kg 0');
+  });
+  eq('SC1 lowercase sku', cl('so-dum-1k', 'Single Origin', 1), { bucket: 'bar', kg: 1 });
+  eq('SC1 padded sku', cl(' SO-DUM-1K ', 'Single Origin', 1), { bucket: 'bar', kg: 1 });
+  eq('SC1 lowercase+padded size', sz(' so-1k '), 1);
+  eq('SC1 qty x 0.2 x3 = 0.6 exact', cl('SO-DUM-200', 'Single Origin', 3), { bucket: 'retail', kg: 0.6 });
+  eq('SC1 3dp rounding', cl('SO-DUM-200', 'Single Origin', 7), { bucket: 'retail', kg: 1.4 });
+  eq('SC1 3dp rounding of fractional qty', cl('HB-ABS-PT', 'House Blend', 1.23456), { bucket: 'bar', kg: 1.235 });
+
+  // producer-drift pin: real suffixes from prod-probe.md
+  [['SO-DUM-1K', 1], ['HB-DUM-8K', 8], ['CB-DUM-200', 0.2], ['HB-ABS-PT', 1], ['HB-BUO-PT', 1],
+   ['RSO-DUM-02', null], ['RSO-DUM-03', null], ['RSO-DUM-04', null], ['RSO-DUM-05', null],
+   ['SO-DUM-XL', null], ['', null]].forEach(function (r) {
+    eq('SC1 sizeKg ' + JSON.stringify(r[0]), sz(r[0]), r[1]);
+  });
+
+  // robustness
+  var threw = false;
+  try {
+    [null, undefined, 42, {}, [], true].forEach(function (v) {
+      globalThis.shopCoffeeSizeKg_(v);
+      globalThis.shopCoffeeClassify_(v);
+    });
+    globalThis.shopCoffeeClassify_({ sku: null, category: null, qty: null });
+    globalThis.shopCoffeeClassify_({ sku: 'SO-DUM-1K', category: 'Single Origin', qty: 'abc' });
+  } catch (e) { threw = true; }
+  check('SC1 functions never throw on junk input', !threw);
+  eq('SC1 sizeKg(null) -> null', sz(null), null);
+  eq('SC1 classify(null) -> unclassified', cl(null, null, null), { bucket: 'unclassified', kg: 0 });
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

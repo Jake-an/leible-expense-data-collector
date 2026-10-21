@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 42 failures are SC1 (shop-coffee-kg step 1 classifier) cases that report got \"UNDEFINED\". The test helpers in connectors/gas/test_code.js (sz/cl, ~lines 17531-17604) return that sentinel when globalThis.shopCoffeeSizeKg_ / shopCoffeeClassify_ are not functions. connectors/gas/shopcoffee.gs, which test_code.js loads at line 445, is a 5-line comment-only scaffold with no function definitions. So the failure is the missing implementation (a missing symbol in the module under test), not a broken test or a load/syntax error: the file loads cleanly and the test harness runs. The 3292 passing checks are pre-existing P3-8/P3-9/P3-10 and SC1 assertions are not reached as wrong-reason failures. Caveat: the 'functions never throw on junk input' and 'sizeKg(null)' checks also fail only because the symbols are undefined; they will need re-checking after GREEN."
+}
