@@ -34,7 +34,7 @@
     {
       "step": 1,
       "name": "classifier",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -61,7 +61,23 @@
       },
       "tdd_state": "red_done",
       "summary": "shopcoffee.gs: shopCoffeeSizeKg_/shopCoffeeClassify_ table-driven classifier; suite 3334 passed, 0 failed.",
-      "completed_at": "2026-10-22T07:18:52+0900"
+      "completed_at": "2026-10-22T07:18:52+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 3,
+        "fix_rounds": 1,
+        "result_file": "phases/shop-coffee-kg/step1-review.json",
+        "checked_at": "2026-10-22T07:22:26+0900",
+        "review_model": "haiku",
+        "rebuttal": "phases/shop-coffee-kg/step1-review-response-r1.md"
+      },
+      "concerns": [
+        "[review] shopCoffeeClassify_ does not guard qty <= 0; a negative qty on a bar line returns a negative kg (e.g. SO-DUM-1K x -2 -> bucket bar, kg -2). The producer drops qty <= 0 (Engine_ShopCoffeeApi.js:148-149), so this is not reachable from the live pipeline today.",
+        "[review] The RED-committed drift-pin table line `['SO-DUM-XL', null], ['', null]].forEach` was reflowed in fix commit 82dde61 (it was a textual edit to a RED-committed test, not a GREEN-stage edit). No existing row or expected value was removed or changed; the three new rows are additive, so this is not a weakened assertion.",
+        "[review] Harness run logs step1-red.log and step1-green.log (about 3585 lines each) are committed to git. This is hygiene noise, not a code defect. The rebuttal's claim that the runner commits them is consistent with git history (0289147, 3a8716d)."
+      ]
     },
     {
       "step": 2,
@@ -71,7 +87,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-21"
-      ]
+      ],
+      "started_at": "2026-10-22T07:22:26+0900"
     },
     {
       "step": 3,

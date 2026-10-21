@@ -1,0 +1,26 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 31,
+      "summary": "shopCoffeeSizeKg_ guesses sizes for any -<N>K and any -<3+ digit> suffix (e.g. SO-XX-5K -> 5 kg, SO-XX-500 -> 0.5 kg, SO-XX-1000 -> 1 kg). The producer's parseSkuSize_ (LEIBLE_Order_app/Engine_Utils.js:630-639) recognises only -8K, -1K and -200 and returns null for everything else, so the hub's parser is broader than the producer it is supposed to mirror.",
+      "suggestion": "Replace the two generic regexes with a table of exact suffixes {'-8K':8,'-1K':1,'-200':0.2} (keep the -PT branch), so any other suffix returns null -> unclassified. Add test cases SO-DUM-5K, SO-DUM-500 and SO-DUM-1000 expecting unclassified, and add them to the drift-pin table, since the current pin only covers SKUs that already exist in prod-probe.md and would not catch this."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 37,
+      "summary": "shopCoffeeClassify_ has no qty > 0 guard. The producer already drops qty <= 0 (Engine_ShopCoffeeApi.js:148-149), so this is not reachable from PROD today, but a negative qty would produce a negative kg with no error.",
+      "suggestion": "Optionally treat qty <= 0 as unclassified, or leave it and note that the producer is the guard."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/shop-coffee-kg/step1-red.log",
+      "line": 1,
+      "summary": "The RED and GREEN run logs (about 3,585 lines each) are committed to git in the step commits (0289147, 3a8716d). This is repo noise and may contain runner output that should not be versioned.",
+      "suggestion": "Consider .gitignore-ing phases/**/*.log in a later hygiene step, or confirm that committing these logs is the harness convention."
+    }
+  ]
+}
