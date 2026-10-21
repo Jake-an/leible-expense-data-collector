@@ -1,0 +1,40 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 409,
+      "summary": "Numeric kg/count cells are coerced with Number(v), so a blank cell becomes 0 and a garbage string becomes NaN (serialised as null in JSON). Missing data is therefore reported as a valid zero.",
+      "suggestion": "Return null for blank cells (v === '' -> null) and add a test with a blank kg cell so the behaviour is pinned. Current test only covers the '3.5' string case."
+    },
+    {
+      "severity": "minor",
+      "file": "phases/shop-coffee-kg/step5-red-check.json",
+      "line": 1,
+      "summary": "Verification Procedure step 3 (mutation check: bypass the token check and confirm the no-token test goes red) has no recorded evidence in any artifact in the step's commits.",
+      "suggestion": "Record the mutation run (mutated line, observed failing assertion names, revert confirmation) in step5-green.log or the step index entry. The no-token test does exercise doGet end-to-end, so it should catch the mutation, but that is currently unevidenced."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 18204,
+      "summary": "The 'reachable only through doGet' check is a source-grep (only Code.gs calls shopCoffeeRead_). The brief asked to run the repo's auth-coverage gate if one exists; docs/security-baseline.json and the security-gate skill suggest one does, and it was not run for this step.",
+      "suggestion": "Run the auth-coverage gate (narrowly, not the full suite) against Code.gs and record the result, or state explicitly in the step notes that it was not run and why."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/Code.gs",
+      "line": 2256,
+      "summary": "Error shapes differ across the same doGet: token failure and unknown fn return {result:'error', message} with no ok field, while shopCoffee errors return {ok:false, result:'error', message}. A consumer that branches on ok alone will treat token failures as success-shaped.",
+      "suggestion": "Acceptable because docs/api.md documents both shapes, but consider consumers checking result === 'error' as the single error test. No code change required for this step."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 18202,
+      "summary": "Weak and dead assertions in the SC5 block: 'SC5 default fn (summary) still routes to summary handler' only asserts summ.ok === undefined, and the 'const vals' (line 18150) and 'rowIdx' (line 18151) locals in the numeric-string test are unused or unclear.",
+      "suggestion": "Assert a concrete summary-handler field for the default route and remove the unused locals. Cosmetic; does not affect coverage."
+    }
+  ]
+}

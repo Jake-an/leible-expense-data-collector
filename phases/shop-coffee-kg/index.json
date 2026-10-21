@@ -221,7 +221,7 @@
     {
       "step": 5,
       "name": "doget-fn",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -248,7 +248,24 @@
       },
       "tdd_state": "red_done",
       "summary": "shopCoffeeRead_ in shopcoffee.gs + one doGet dispatch line (fn=shopCoffee); docs/api.md + docs/schema.md updated; suite 3500 pass/0 fail.",
-      "completed_at": "2026-10-22T07:44:16+0900"
+      "completed_at": "2026-10-22T07:44:16+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 5,
+        "fix_rounds": 0,
+        "result_file": "phases/shop-coffee-kg/step5-review.json",
+        "checked_at": "2026-10-22T07:45:39+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] Numeric kg/count cells are coerced with Number(v), so a blank cell becomes 0 and a garbage string becomes NaN (serialised as null in JSON). Missing data is therefore reported as a valid zero.",
+        "[review] Verification Procedure step 3 (mutation check: bypass the token check and confirm the no-token test goes red) has no recorded evidence in any artifact in the step's commits.",
+        "[review] The 'reachable only through doGet' check is a source-grep (only Code.gs calls shopCoffeeRead_). The brief asked to run the repo's auth-coverage gate if one exists; docs/security-baseline.json and the security-gate skill suggest one does, and it was not run for this step.",
+        "[review] Error shapes differ across the same doGet: token failure and unknown fn return {result:'error', message} with no ok field, while shopCoffee errors return {ok:false, result:'error', message}. A consumer that branches on ok alone will treat token failures as success-shaped.",
+        "[review] Weak and dead assertions in the SC5 block: 'SC5 default fn (summary) still routes to summary handler' only asserts summ.ok === undefined, and the 'const vals' (line 18150) and 'rowIdx' (line 18151) locals in the numeric-string test are unused or unclear."
+      ]
     },
     {
       "step": 6,
@@ -257,7 +274,8 @@
       "tdd": false,
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "covers": [],
-      "covers_reason": "Operational deploy + live verification of PRD-21/PRD-22; no new feature code."
+      "covers_reason": "Operational deploy + live verification of PRD-21/PRD-22; no new feature code.",
+      "started_at": "2026-10-22T07:45:39+0900"
     }
   ]
 }
