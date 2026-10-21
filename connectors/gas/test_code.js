@@ -17834,5 +17834,78 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   }
 })();
 
+/* ---- shop-coffee-kg step 3: shopCoffeeAggregate_ (pure) ---- */
+(function () {
+  const HDR = ['week_start', 'week_end', 'iso_week', 'shop', 'bar_kg', 'retail_kg', 'unclassified_kg', 'excluded_lines', 'line_count', 'pulled_at'];
+  const MAP = { 'dummy-york': 'York', 'dummy-pitt': 'Pitt', 'dummy-crows': 'Crowsnest', 'dummy-blue': 'North' };
+  const ORDER = ['York', 'Pitt', 'Crowsnest', 'North'];
+  const WS = '2026-10-12', WE = '2026-10-18', IW = '2026-W42', NOW = '2026-10-19T00:00:00.000Z';
+  const L = (shopId, sku, category, qty) => ({ shopId: shopId, sku: sku, category: category, qty: qty, orderId: 'o-' + sku + '-' + qty });
+  const agg = (lines, map) => shopCoffeeAggregate_(lines, WS, WE, IW, map || MAP, NOW);
+  const byShop = (r) => { const m = {}; r.rows.forEach(x => { m[x[3]] = x; }); return m; };
+
+  const mixed = [
+    L('dummy-york', 'SO-A-1K', 'Single Origin', 2),      // bar 2
+    L('dummy-york', 'HB-8K', 'House Blend', 1),          // bar 8
+    L('dummy-york', 'HB-200', 'House Blend', 5),         // retail 1
+    L('dummy-york', 'RSO-X-03', 'Reserve Single Origin', 1), // unclassified
+    L('dummy-york', 'TEA-1', 'Tea', 3),                  // excluded
+    L('dummy-pitt', 'DC-1K', 'Decaf', 1),                // bar 1
+    L('dummy-ext', 'SO-A-1K', 'Single Origin', 4),       // unmapped 4kg
+    L('dummy-ext', 'TEA-1', 'Tea', 1)                    // unmapped, 0kg
+  ];
+
+  let r = agg(mixed);
+  check('SC3 returns rows array, unmappedShopIds array, totals', Array.isArray(r.rows) && Array.isArray(r.unmappedShopIds) && !!r.totals);
+  const m = byShop(r);
+  eq('SC3 mixed: York bar/retail/unclassified', m.York && [m.York[4], m.York[5], m.York[6]], [10, 1, 0]);
+  eq('SC3 mixed: Pitt bar', m.Pitt && m.Pitt[4], 1);
+  eq('SC3 fixed column order: York row', m.York, [WS, WE, IW, 'York', 10, 1, 0, 1, 5, NOW]);
+  eq('SC3 header shape: 10 columns on every row', r.rows.map(x => x.length), [10, 10, 10, 10]);
+  eq('SC3 unmapped: dropped, with lines + kg', r.unmappedShopIds, [{ shopId: 'dummy-ext', lines: 2, kg: 4 }]);
+  eq('SC3 no row for unmapped shop', r.rows.map(x => x[3]), ORDER);
+
+  // exact header constant, if exposed
+  eq('SC3 header constant (exact shape)', typeof SHOP_COFFEE_HEADERS !== 'undefined' ? SHOP_COFFEE_HEADERS : null, HDR);
+
+  // unclassified kg: a parseable-size line with unknown category is unclassified w/ kg 0 per classifier; use zero-kg check
+  const exc = agg([L('dummy-york', 'TEA-1', 'Tea', 2), L('dummy-york', 'PK-1', 'Packaging', 1)]);
+  eq('SC3 excluded: counted in excluded_lines and line_count, 0 kg', [exc.rows[0][4], exc.rows[0][5], exc.rows[0][6], exc.rows[0][7], exc.rows[0][8]], [0, 0, 0, 2, 2]);
+
+  // zero rows
+  const zr = byShop(agg([L('dummy-york', 'SO-A-1K', 'Single Origin', 1)]));
+  eq('SC3 zero row for configured shop with no lines', zr.North, [WS, WE, IW, 'North', 0, 0, 0, 0, 0, NOW]);
+  const empty = agg([]);
+  eq('SC3 empty lines: four zero rows in order', empty.rows, ORDER.map(s => [WS, WE, IW, s, 0, 0, 0, 0, 0, NOW]));
+  eq('SC3 empty lines: no unmapped', empty.unmappedShopIds, []);
+  check('SC3 empty lines: reconciled', empty.totals.reconciled === true);
+
+  // 3dp rounding
+  const fl = agg([L('dummy-york', 'HB-200', 'House Blend', 1), Object.assign(L('dummy-york', 'HB-200', 'House Blend', 1), { orderId: 'o2' }), Object.assign(L('dummy-york', 'HB-200', 'House Blend', 1), { orderId: 'o3' })]);
+  check('SC3 3dp rounding: 3 x 0.2 = 0.6 exactly', fl.rows[0][5] === 0.6);
+
+  // stable order regardless of input order
+  const rev = agg(mixed.slice().reverse());
+  eq('SC3 shop order stable under reversed input', rev.rows.map(x => x[3]), ORDER);
+  eq('SC3 reversed input: same rows', rev.rows, r.rows);
+
+  // reconciliation
+  check('SC3 reconciled true on clean fixture', r.totals.reconciled === true);
+  const bad = agg(mixed, { 'dummy-york': 'Atlantis', 'dummy-pitt': 'Pitt' });
+  check('SC3 corrupted map (shop outside fixed set) flips reconciled to false', bad.totals.reconciled === false);
+
+  // no mutation
+  const before = JSON.parse(JSON.stringify(mixed));
+  const mapBefore = JSON.parse(JSON.stringify(MAP));
+  agg(mixed);
+  eq('SC3 input lines not mutated', mixed, before);
+  eq('SC3 shopMap not mutated', MAP, mapBefore);
+
+  // two shopIds, one name
+  const two = agg([L('a-1', 'SO-A-1K', 'Single Origin', 1), L('a-2', 'SO-A-1K', 'Single Origin', 2)], { 'a-1': 'York', 'a-2': 'York' });
+  const tm = byShop(two);
+  eq('SC3 same shop under two ids sums into one row', [two.rows.length, tm.York[4], tm.York[8]], [4, 3, 2]);
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
