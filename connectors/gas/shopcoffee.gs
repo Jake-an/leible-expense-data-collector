@@ -54,3 +54,101 @@ function shopCoffeeClassify_(line) {
   var bucket = rules.indexOf(suffix) !== -1 ? 'bar' : 'retail';
   return { bucket: bucket, kg: Math.round(size * qty * 1000) / 1000 };
 }
+
+/* ------------------------------------------------------------------ *
+ * Fetch + strict completeness gate (no Sheet access)
+ * ------------------------------------------------------------------ */
+
+var SHOP_COFFEE_PAGE_LIMIT = 200;
+var SHOP_COFFEE_MAX_PAGES = 20; // page-cap backstop, mirrors WHOLESALE_MAX_PAGES
+
+/** Pure. First problem with one raw line, or null if it is well-formed. */
+function shopCoffeeLineProblem_(line) {
+  if (!line || typeof line !== 'object') return 'not an object';
+  if (typeof line.qty !== 'number' || !isFinite(line.qty) || line.qty <= 0) return 'bad qty';
+  if (typeof line.sku !== 'string' || !line.sku) return 'bad sku';
+  if (typeof line.orderId !== 'string' || !line.orderId) return 'bad orderId';
+  if (typeof line.shopId !== 'string' || !line.shopId) return 'bad shopId';
+  return null;
+}
+
+/**
+ * Pages ?api=shopCoffeeLines for one week via orderAppFetch_ and returns the
+ * week ONLY if every gate holds; any failure is ok:false (never partial lines).
+ * @param {string} weekLabel e.g. '2026-W42'
+ * @returns {{ok:true, lines:Array, matched:number, diagnostics:Object, meta:Object, duplicates:number}|{ok:false, reason:string}}
+ */
+function shopCoffeeFetchWeekLines_(weekLabel) {
+  var offset = 0;
+  var collected = [];
+  var seen = {};
+  var duplicates = 0;
+  var pages = 0;
+  var matched = null;
+  var diagnostics = null;
+  var meta = null;
+
+  while (true) {
+    var res = orderAppFetch_({
+      api: 'shopCoffeeLines',
+      week: weekLabel,
+      limit: SHOP_COFFEE_PAGE_LIMIT,
+      offset: offset
+    });
+    if (!res.ok) return { ok: false, reason: 'fetch: ' + res.reason };
+
+    var body = res.body;
+    var tag = 'page ' + pages + ': ';
+    if (!body || body.ok !== true) return { ok: false, reason: tag + 'body ok !== true' };
+    if (!body.diagnostics || body.diagnostics.rowsOk !== true || body.diagnostics.linesOk !== true) {
+      return { ok: false, reason: tag + 'diagnostics rowsOk/linesOk not both true' };
+    }
+    if (!Array.isArray(body.lines)) return { ok: false, reason: tag + 'lines is not an array' };
+    var paging = body.meta && body.meta.paging;
+    var pageMatched = paging ? paging.matched : undefined;
+    if (typeof pageMatched !== 'number' || !isFinite(pageMatched) || pageMatched < 0) {
+      return { ok: false, reason: tag + 'meta.paging.matched missing or invalid' };
+    }
+
+    // The producer recomputes matched over the live sheet on every request.
+    if (pages === 0) {
+      matched = pageMatched;
+      diagnostics = body.diagnostics;
+      meta = body.meta;
+    } else if (pageMatched !== matched) {
+      return { ok: false, reason: tag + 'matched shifted mid-scan: ' + matched + ' -> ' + pageMatched };
+    }
+
+    var pageLines = body.lines;
+    for (var i = 0; i < pageLines.length; i++) {
+      var line = pageLines[i];
+      var problem = shopCoffeeLineProblem_(line);
+      if (problem) return { ok: false, reason: tag + 'malformed line ' + i + ' (' + problem + ')' };
+      var key = line.orderId + '|' + line.sku;
+      if (Object.prototype.hasOwnProperty.call(seen, key)) {
+        if (seen[key].qty !== line.qty) {
+          return { ok: false, reason: tag + 'duplicate line key with different qty' };
+        }
+        duplicates++;
+        continue;
+      }
+      seen[key] = line;
+      collected.push(line);
+    }
+
+    offset += pageLines.length;
+    pages++;
+    if (body.meta.paging.truncated !== true) break; // producer says done; mismatch caught below
+    if (pageLines.length === 0 || collected.length >= matched) {
+      return { ok: false, reason: 'truncated page ' + (pages - 1) + ' made no progress: ' + collected.length + ' of ' + matched + ' collected' };
+    }
+    if (pages >= SHOP_COFFEE_MAX_PAGES) {
+      return { ok: false, reason: 'exceeded ' + SHOP_COFFEE_MAX_PAGES + ' pages — aborting (suspect non-advancing paging)' };
+    }
+  }
+
+  if (collected.length !== matched) {
+    return { ok: false, reason: 'collected ' + collected.length + ' !== matched ' + matched };
+  }
+  return { ok: true, lines: collected, matched: matched, diagnostics: diagnostics, meta: meta, duplicates: duplicates };
+}

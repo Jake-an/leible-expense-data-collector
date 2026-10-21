@@ -82,7 +82,7 @@
     {
       "step": 2,
       "name": "fetch-gate-paging",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -101,7 +101,8 @@
           "at": "2026-10-22T07:25:03+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "Added shopCoffeeFetchWeekLines_ (paged via orderAppFetch_, strict gate, page cap 20, dedup orderId|sku); suite 3397 passed, 0 failed."
     },
     {
       "step": 3,
