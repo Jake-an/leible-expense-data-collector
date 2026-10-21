@@ -2,9 +2,8 @@
 
 import json
 
-import pytest
-
 import post_roster as pr
+import pytest
 
 HEADER = (
     "First name,Last name,Email address,Terminated,Termination date,Payroll number,Rate of pay,Rate,"
