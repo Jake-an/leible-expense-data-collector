@@ -130,7 +130,7 @@
     {
       "step": 3,
       "name": "aggregate",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -149,7 +149,8 @@
           "at": "2026-10-22T07:32:40+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "Added pure shopCoffeeAggregate_ + SHOP_COFFEE_SHOPS_DEFAULT/SHOP_COFFEE_SHOP_ORDER/SHOP_COFFEE_HEADERS in shopcoffee.gs; suite 3418 passed, 0 failed."
     },
     {
       "step": 4,

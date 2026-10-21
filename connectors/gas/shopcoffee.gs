@@ -156,3 +156,73 @@ function shopCoffeeFetchWeekLines_(weekLabel) {
   }
   return { ok: true, lines: collected, matched: matched, diagnostics: diagnostics, meta: meta, duplicates: duplicates };
 }
+
+/* ------------------------------------------------------------------ *
+ * Aggregate (pure: no Sheet, no clock — pulled_at is passed in)
+ * ------------------------------------------------------------------ */
+
+// Default shop map (Jake, 2026-10-22); a Script Property may override it (step 4).
+var SHOP_COFFEE_SHOPS_DEFAULT = { 'Leible York': 'York', 'Leible Pitt': 'Pitt', 'Leible Crows Nest': 'Crowsnest', 'Leible Blue': 'North' };
+// Fixed row order: the tab holds exactly these shops, zero rows included.
+var SHOP_COFFEE_SHOP_ORDER = ['York', 'Pitt', 'Crowsnest', 'North'];
+var SHOP_COFFEE_HEADERS = ['week_start', 'week_end', 'iso_week', 'shop', 'bar_kg', 'retail_kg', 'unclassified_kg', 'excluded_lines', 'line_count', 'pulled_at'];
+
+/**
+ * @returns {{rows:Array<Array>, unmappedShopIds:Array<{shopId:string,lines:number,kg:number}>,
+ *            totals:{bar:number,retail:number,unclassified:number,unmappedKg:number,reconciled:boolean}}}
+ */
+function shopCoffeeAggregate_(lines, weekStart, weekEnd, isoWeek, shopMap, nowIso) {
+  var acc = {};
+  SHOP_COFFEE_SHOP_ORDER.forEach(function (s) { acc[s] = { bar: 0, retail: 0, unclassified: 0, excluded: 0, count: 0 }; });
+  var unmapped = {};
+  var unmappedOrder = [];
+  var inputMg = 0;
+  var map = shopMap || {};
+
+  (lines || []).forEach(function (line) {
+    var c = shopCoffeeClassify_(line);
+    inputMg += Math.round(c.kg * 1000);
+    var id = line && line.shopId;
+    var shop = Object.prototype.hasOwnProperty.call(map, id) ? map[id] : null;
+    if (shop === null) {
+      if (!Object.prototype.hasOwnProperty.call(unmapped, id)) { unmapped[id] = { shopId: id, lines: 0, kg: 0 }; unmappedOrder.push(id); }
+      unmapped[id].lines++;
+      unmapped[id].kg += c.kg;
+      return;
+    }
+    // A mapped name outside the fixed set has no row: its kg goes missing and reconciliation flags it.
+    if (!Object.prototype.hasOwnProperty.call(acc, shop)) return;
+    var a = acc[shop];
+    a.count++;
+    if (c.bucket === 'excluded') a.excluded++;
+    else a[c.bucket] += c.kg;
+  });
+
+  var r3 = function (n) { return Math.round(n * 1000) / 1000; };
+  var rowsMg = 0;
+  var tot = { bar: 0, retail: 0, unclassified: 0 };
+  var rows = SHOP_COFFEE_SHOP_ORDER.map(function (s) {
+    var a = acc[s];
+    var bar = r3(a.bar), retail = r3(a.retail), unc = r3(a.unclassified);
+    rowsMg += Math.round(bar * 1000) + Math.round(retail * 1000) + Math.round(unc * 1000);
+    tot.bar += bar; tot.retail += retail; tot.unclassified += unc;
+    return [weekStart, weekEnd, isoWeek, s, bar, retail, unc, a.excluded, a.count, nowIso];
+  });
+  var unmappedKg = 0;
+  var unmappedList = unmappedOrder.map(function (id) {
+    var u = unmapped[id];
+    u.kg = r3(u.kg);
+    unmappedKg += Math.round(u.kg * 1000);
+    return u;
+  });
+
+  return {
+    rows: rows,
+    unmappedShopIds: unmappedList,
+    totals: {
+      bar: r3(tot.bar), retail: r3(tot.retail), unclassified: r3(tot.unclassified),
+      unmappedKg: unmappedKg / 1000,
+      reconciled: rowsMg + unmappedKg === inputMg
+    }
+  };
+}
