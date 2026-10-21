@@ -342,11 +342,12 @@ let scriptTriggers = [];
 global.ScriptApp = {
   getProjectTriggers: () => scriptTriggers.slice(),
   newTrigger: (handlerName) => {
-    const cfg = { handler: handlerName, weekDay: null, hour: null, everyDaysN: null, monthDay: null, timezone: null };
+    const cfg = { handler: handlerName, weekDay: null, hour: null, minute: null, everyDaysN: null, monthDay: null, timezone: null };
     const chain = {
       timeBased: () => chain,
       onWeekDay: (wd) => { cfg.weekDay = wd; return chain; },
       atHour: (h) => { cfg.hour = h; return chain; },
+      nearMinute: (m) => { cfg.minute = m; return chain; },
       everyDays: (n) => { cfg.everyDaysN = n; return chain; },
       onMonthDay: (md) => { cfg.monthDay = md; return chain; },
       inTimezone: (tz) => { cfg.timezone = tz; return chain; },
@@ -3542,7 +3543,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   console.log('\nstaleness — every heartbeat source is watched:');
 
   var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean',
-    'coffee_order_app', 'brighthr_roster'];
+    'coffee_order_app', 'brighthr_roster', 'shopcoffee'];
   var EXEMPT = {
     shopspend: 'has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls'
   };
@@ -7129,8 +7130,8 @@ withMockNow('2026-08-06T00:00:00Z', function testShopifyWeeklyPull() {
   eq('installing twice leaves exactly one trigger for wholesalePullRetry', wholesalePullRetryTriggers.length, 1);
   check('installer does not delete the unrelated shopSpendWatchdog trigger',
     watchdogTriggers.length === 1);
-  eq('installing twice leaves exactly 4 of the installer\'s own triggers, not 8',
-    ScriptApp.getProjectTriggers().length - watchdogTriggers.length, 4);
+  eq('installing twice leaves exactly 5 of the installer\'s own triggers, not 10',
+    ScriptApp.getProjectTriggers().length - watchdogTriggers.length, 5);
 
   if (shopifyTriggers.length === 1) {
     var shopifyCfg = shopifyTriggers[0]._cfg;
@@ -17905,6 +17906,197 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   const two = agg([L('a-1', 'SO-A-1K', 'Single Origin', 1), L('a-2', 'SO-A-1K', 'Single Origin', 2)], { 'a-1': 'York', 'a-2': 'York' });
   const tm = byShop(two);
   eq('SC3 same shop under two ids sums into one row', [two.rows.length, tm.York[4], tm.York[8]], [4, 3, 2]);
+})();
+
+/* ------------------------------------------------------------------ *
+ * shop-coffee-kg step 4 — shopCoffeePull orchestrator + upsert + trigger +
+ * staleness (PRD-21). Fetch is stubbed per week; Sheet/Properties are the
+ * in-memory mocks (getRange geometry preserved).
+ * ------------------------------------------------------------------ */
+(function testShopCoffeePull() {
+  console.log('\nshopcoffee: shopCoffeePull orchestrator + upsert (step 4):');
+  check('SC4 shopCoffeePull is defined', typeof globalThis.shopCoffeePull === 'function');
+  check('SC4 shopCoffeeUpsert_ is defined', typeof globalThis.shopCoffeeUpsert_ === 'function');
+  check('SC4 shopCoffeePullRun/Dry wrappers are defined',
+    typeof globalThis.shopCoffeePullRun === 'function' && typeof globalThis.shopCoffeePullDry === 'function');
+  if (typeof globalThis.shopCoffeePull !== 'function' || typeof globalThis.shopCoffeeUpsert_ !== 'function') return;
+
+  const PINNED = '2026-10-26T00:00:00Z'; // a Monday
+  const TOKEN = 'dummy-token-sc4-xyz';
+  const IDS = { 'Leible York': 'York', 'Leible Pitt': 'Pitt', 'Leible Crows Nest': 'Crowsnest', 'Leible Blue': 'North' };
+  const savedFetch = globalThis.shopCoffeeFetchWeekLines_;
+  const savedStamp = globalThis.stalenessStampHeartbeat_;
+  const savedProps = scriptProps;
+  let fetchCalls, stamps, extra, failWeeks, retailQty;
+
+  function mkLine(shopId, orderId, sku, cat, qty) {
+    return { orderId: orderId, shopId: shopId, shopType: 'INTERNAL', date: '2026-10-14', weekLabel: 'x', sku: sku, name: 'Dummy', category: cat, qty: qty };
+  }
+  function reset() {
+    scriptProps = { ORDER_APP_COST_TOKEN: TOKEN };
+    freshSheets();
+    clearLoggedMessages();
+    fetchCalls = []; stamps = []; extra = {}; failWeeks = {}; retailQty = 1;
+    global.__forceLockTimeout = false;
+    globalThis.stalenessStampHeartbeat_ = function (s) { stamps.push(s); return savedStamp.apply(this, arguments); };
+    globalThis.shopCoffeeFetchWeekLines_ = function (label) {
+      fetchCalls.push(label);
+      if (failWeeks[label]) return { ok: false, reason: 'fetch: dummy failure' };
+      const lines = [];
+      Object.keys(IDS).forEach(function (id) {
+        lines.push(mkLine(id, label + id + 'b', 'SO-DUM-1K', 'Single Origin', 2));
+        lines.push(mkLine(id, label + id + 'r', 'HB-DUM-200', 'House Blend', retailQty));
+      });
+      (extra[label] || extra['*'] || []).forEach(function (l) { lines.push(l); });
+      return { ok: true, lines: lines, matched: lines.length, diagnostics: { rowsOk: true, linesOk: true }, meta: {}, duplicates: 0 };
+    };
+  }
+  function pull(opts) { return withMockNow(PINNED, function () { return globalThis.shopCoffeePull(opts); }); }
+  function tabRows() { const s = currentSS.getSheetByName('ShopCoffee'); return s ? s.getDataRange().getValues() : []; }
+  function dataRows() { return tabRows().slice(1); }
+
+  try {
+    // --- backfill window ---
+    reset();
+    let r = pull();
+    eq('SC4 first run requests 12 weeks', fetchCalls.length, 12);
+    eq('SC4 first run result weeksRequested/Written/Skipped', [r.weeksRequested, r.weeksWritten, r.weeksSkipped], [12, 12, 0]);
+    eq('SC4 clean run writes 4 shops x 12 weeks', dataRows().length, 48);
+    eq('SC4 clean run rowsWritten', r.rowsWritten, 48);
+    eq('SC4 tab header is SHOP_COFFEE_HEADERS', tabRows()[0], globalThis.SHOP_COFFEE_HEADERS);
+    eq('SC4 heartbeat stamped exactly once, source shopcoffee', stamps, ['shopcoffee']);
+    check('SC4 backfill flag set after a clean backfill', !!scriptProps.SHOP_COFFEE_BACKFILLED);
+    check('SC4 dryRun false on a real run', r.dryRun === false);
+
+    fetchCalls = []; stamps = [];
+    r = pull();
+    eq('SC4 second run requests 8 weeks', fetchCalls.length, 8);
+    eq('SC4 repull unchanged -> row count stable (no duplicates)', dataRows().length, 48);
+    eq('SC4 second run stamps heartbeat once', stamps, ['shopcoffee']);
+
+    // --- whole-row self-heal: ONLY retail_kg changes ---
+    retailQty = 3; // HB 200g x3 = 0.6 kg retail (was 0.2); bar_kg unchanged
+    pull();
+    const after = dataRows();
+    eq('SC4 retail-only change: row count still stable', after.length, 48);
+    const yorkNewest = after.filter(function (x) { return x[3] === 'York'; }).pop();
+    eq('SC4 retail-only change: retail_kg rewritten to 0.6', yorkNewest[5], 0.6);
+    eq('SC4 retail-only change: bar_kg untouched', yorkNewest[4], 2);
+
+    // --- failing week ---
+    reset();
+    fetchCalls = []; pull({ dryRun: true });
+    const labels = fetchCalls.slice();
+    reset(); failWeeks[labels[3]] = true;
+    r = pull();
+    eq('SC4 failing week: skipped counted', [r.weeksWritten, r.weeksSkipped], [11, 1]);
+    eq('SC4 failing week: other weeks still written', dataRows().length, 44);
+    eq('SC4 failing week: NO heartbeat', stamps, []);
+    check('SC4 failing week: backfill flag NOT set', !scriptProps.SHOP_COFFEE_BACKFILLED);
+
+    // --- unmapped handling ---
+    reset();
+    extra['*'] = [mkLine('Leible Taiwan', 'tw1', 'SO-DUM-1K', 'Single Origin', 5), mkLine('Acme External Cafe', 'ex1', 'SO-DUM-1K', 'Single Origin', 5)];
+    r = pull();
+    eq('SC4 expected unmapped (Taiwan/external): heartbeat still stamped', stamps, ['shopcoffee']);
+    check('SC4 expected unmapped: volume reported in result', JSON.stringify(r.unmapped).indexOf('Leible Taiwan') !== -1);
+    check('SC4 expected unmapped: logged', loggedMessages.some(function (m) { return m.indexOf('Leible Taiwan') !== -1; }));
+
+    reset();
+    extra['*'] = [mkLine('Leible Mystery', 'my1', 'SO-DUM-1K', 'Single Origin', 5)];
+    r = pull();
+    eq('SC4 unexpected unmapped Leible *: NO heartbeat', stamps, []);
+    check('SC4 unexpected unmapped: rows still written', dataRows().length === 48);
+    check('SC4 unexpected unmapped: volume logged', loggedMessages.some(function (m) { return m.indexOf('Leible Mystery') !== -1; }));
+    check('SC4 unexpected unmapped: backfill flag NOT set', !scriptProps.SHOP_COFFEE_BACKFILLED);
+
+    // --- skip paths ---
+    reset(); delete scriptProps.ORDER_APP_COST_TOKEN;
+    let threw = false;
+    try { r = pull(); } catch (e) { threw = true; }
+    check('SC4 missing token: no throw, nothing fetched/written/stamped',
+      !threw && fetchCalls.length === 0 && dataRows().length === 0 && stamps.length === 0);
+    check('SC4 missing token: skip logged', loggedMessages.some(function (m) { return /skipped/i.test(m); }));
+
+    reset(); scriptProps.SHOP_COFFEE_SHOPS = '{not json';
+    threw = false;
+    try { r = pull(); } catch (e) { threw = true; }
+    check('SC4 unparseable SHOP_COFFEE_SHOPS: no throw, nothing fetched/written/stamped',
+      !threw && fetchCalls.length === 0 && dataRows().length === 0 && stamps.length === 0);
+    check('SC4 unparseable SHOP_COFFEE_SHOPS: skipped loudly', loggedMessages.some(function (m) { return m.indexOf('SHOP_COFFEE_SHOPS') !== -1; }));
+
+    // --- shop map: default vs override ---
+    reset(); // SHOP_COFFEE_SHOPS unset
+    pull();
+    check('SC4 SHOPS unset: default map used (run proceeds)', fetchCalls.length === 12 && dataRows().length === 48);
+
+    reset();
+    scriptProps.SHOP_COFFEE_SHOPS = JSON.stringify({ 'Leible York': 'North', 'Leible Pitt': 'Pitt', 'Leible Crows Nest': 'Crowsnest', 'Leible Blue': 'North' });
+    pull();
+    const yk = dataRows().filter(function (x) { return x[3] === 'York'; });
+    const nk = dataRows().filter(function (x) { return x[3] === 'North'; });
+    check('SC4 SHOPS override: York id now rolls up into North (York rows all zero)',
+      yk.length > 0 && yk.every(function (x) { return x[4] === 0 && x[5] === 0; }) && nk[0][4] === 4);
+
+    // --- dry run ---
+    reset();
+    r = pull({ dryRun: true });
+    check('SC4 dryRun: nothing written (no data rows)', dataRows().length === 0);
+    eq('SC4 dryRun: no heartbeat', stamps, []);
+    check('SC4 dryRun: no backfill flag', !scriptProps.SHOP_COFFEE_BACKFILLED);
+    check('SC4 dryRun: result flags dryRun and reports what it would write', r.dryRun === true && r.rowsWritten === 48);
+
+    // --- lock contention ---
+    reset(); global.__forceLockTimeout = true;
+    r = pull();
+    global.__forceLockTimeout = false;
+    check('SC4 lock contention: exits without fetching or writing', fetchCalls.length === 0 && dataRows().length === 0 && stamps.length === 0);
+
+    // --- token never logged ---
+    reset(); pull(); pull({ dryRun: true });
+    check('SC4 token never appears in log output', !loggedMessages.some(function (m) { return m.indexOf(TOKEN) !== -1; }));
+    check('SC4 one log line per week (not silent-success)',
+      loggedMessages.filter(function (m) { return /shopCoffeePull/.test(m) && /2026-W\d\d/.test(m); }).length >= 12);
+
+    // --- upsert unit: Date cell round trip, no off-by-one, unconditional rewrite ---
+    reset();
+    const sh = ensureSheet(currentSS, 'ShopCoffee', globalThis.SHOP_COFFEE_HEADERS);
+    const row = ['2026-10-19', '2026-10-25', '2026-W43', 'York', 2, 0.2, 0, 0, 2, 't1'];
+    let u = globalThis.shopCoffeeUpsert_(sh, [row]);
+    eq('SC4 upsert: first write appends', [u.added, u.updated], [1, 0]);
+    check('SC4 upsert: stored week_start is a local-midnight Date (mock coercion)', sh.getDataRange().getValues()[1][0] instanceof Date);
+    u = globalThis.shopCoffeeUpsert_(sh, [row.slice()]);
+    eq('SC4 upsert: identical repull matches existing Date key (no AEST off-by-one, no dup)',
+      [u.added, sh.getDataRange().getValues().length], [0, 2]);
+    const r2 = row.slice(); r2[5] = 9.9;
+    u = globalThis.shopCoffeeUpsert_(sh, [r2]);
+    eq('SC4 upsert: retail-only change rewrites the row', [u.updated, sh.getDataRange().getValues()[1][5]], [1, 9.9]);
+    let dupThrew = false;
+    try { globalThis.shopCoffeeUpsert_(sh, [row.slice(), row.slice()]); } catch (e) { dupThrew = true; }
+    check('SC4 upsert: within-batch duplicate key throws', dupThrew);
+  } finally {
+    globalThis.shopCoffeeFetchWeekLines_ = savedFetch;
+    globalThis.stalenessStampHeartbeat_ = savedStamp;
+    scriptProps = savedProps;
+    global.__forceLockTimeout = false;
+    freshSheets();
+  }
+})();
+
+(function testShopCoffeeTriggerAndStaleness() {
+  console.log('\nshopcoffee: trigger + staleness (step 4):');
+  scriptTriggers = [];
+  installOrderAppTriggers();
+  installOrderAppTriggers();
+  const t = ScriptApp.getProjectTriggers().filter(function (x) { return x.getHandlerFunction() === 'shopCoffeePull'; });
+  eq('SC4 shopCoffeePull trigger installed exactly once across two installs', t.length, 1);
+  if (t.length === 1) {
+    eq('SC4 trigger is MONDAY 06:30 Australia/Sydney', [t[0]._cfg.weekDay, t[0]._cfg.hour, t[0]._cfg.minute, t[0]._cfg.timezone],
+      [ScriptApp.WeekDay.MONDAY, 6, 30, 'Australia/Sydney']);
+  }
+  scriptTriggers = [];
+  check("SC4 'shopcoffee' in STALENESS_SOURCES", STALENESS_SOURCES.indexOf('shopcoffee') !== -1);
+  eq('SC4 shopcoffee override = 168h', STALENESS_THRESHOLD_OVERRIDES.shopcoffee, 168);
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 8 failures are SC4 assertions against step-4 symbols that do not exist yet: shopCoffeePull, shopCoffeeUpsert_, shopCoffeePullRun/Dry wrappers, the shopCoffeePull trigger (got 0 installs), 'shopcoffee' in STALENESS_SOURCES, and the shopcoffee 168h override (got undefined). These are missing-implementation failures, the right RED reason. The SC1-SC3 tests (3417 passed in total) all pass, so no import or syntax error in the test file is hiding the SC4 results. No test-code defect is visible in the output."
+}
