@@ -2040,7 +2040,7 @@ function wholesalePull_impl_(opts) {
  * — never sweeps unrelated triggers.
  */
 function installOrderAppTriggers() {
-  var handlers = ['shopifyWeeklyPull', 'greenBeanPull', 'wholesalePull', 'wholesalePullRetry'];
+  var handlers = ['shopifyWeeklyPull', 'greenBeanPull', 'wholesalePull', 'wholesalePullRetry', 'shopCoffeePull'];
   var triggers = ScriptApp.getProjectTriggers();
   for (var i = 0; i < triggers.length; i++) {
     if (handlers.indexOf(triggers[i].getHandlerFunction()) !== -1) {
@@ -2059,8 +2059,11 @@ function installOrderAppTriggers() {
   ScriptApp.newTrigger('wholesalePullRetry')
     .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(7)
     .inTimezone('Australia/Sydney').create();
+  ScriptApp.newTrigger('shopCoffeePull')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(6).nearMinute(30)
+    .inTimezone('Australia/Sydney').create();
   Logger.log('installOrderAppTriggers: shopifyWeeklyPull Monday 05:00 + greenBeanPull Tuesday 05:00 + ' +
-    'wholesalePull Monday 06:00 + wholesalePullRetry Monday 07:00 (Australia/Sydney) installed');
+    'wholesalePull Monday 06:00 + wholesalePullRetry Monday 07:00 + shopCoffeePull Monday 06:30 (Australia/Sydney) installed');
 }
 
 /**

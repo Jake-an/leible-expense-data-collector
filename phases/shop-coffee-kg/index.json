@@ -176,7 +176,7 @@
     {
       "step": 4,
       "name": "pull-orchestrator",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -195,7 +195,8 @@
           "at": "2026-10-22T07:37:56+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "shopcoffee.gs: shopCoffeeUpsert_ whole-row + shopCoffeePull/Run/Dry, Mon 06:30 trigger, staleness 168h; suite 3469 passed, 0 failed."
     },
     {
       "step": 5,
