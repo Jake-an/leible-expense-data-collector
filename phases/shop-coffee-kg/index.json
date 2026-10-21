@@ -34,7 +34,7 @@
     {
       "step": 1,
       "name": "classifier",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -53,7 +53,8 @@
           "at": "2026-10-22T07:18:08+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "shopcoffee.gs: shopCoffeeSizeKg_/shopCoffeeClassify_ table-driven classifier; suite 3334 passed, 0 failed."
     },
     {
       "step": 2,
