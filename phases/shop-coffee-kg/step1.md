@@ -30,7 +30,7 @@ in `needs_context_detail`, and stop.
 
 Create **`connectors/gas/shopcoffee.gs`** (pure functions only; no Sheet/Properties/UrlFetch access in this step). Header comment explains the strict bar rule and that the producer sends raw lines while the hub classifies. Add `load('shopcoffee.gs')` near `test_code.js:433`.
 
-- **`shopCoffeeSizeKg_(sku)`** -> kg (number) or `null`. Mirrors the producer's `parseSkuSize_` (`Engine_Utils.js:630`): suffix `-8K`->8, `-1K`->1, `-200`->0.2 (grams -> kg). Case- and whitespace-insensitive. Unknown suffix -> `null`, never guessed.
+- **`shopCoffeeSizeKg_(sku)`** -> kg (number) or `null`. Mirrors the producer's `parseSkuSize_` (`Engine_Utils.js:630`): suffix `-8K`->8, `-1K`->1, `-200`->0.2 (grams -> kg). Case- and whitespace-insensitive. Unknown suffix -> `null`, never guessed. **Partial tin** `-PT` (e.g. `HB-ABS-PT`, `HB-BUO-PT`, added by Order app 3290515, live PROD @216): qty is already in kg, so kg-per-unit = 1 (mirrors producer `stockKgPerUnit_`, `Engine_Utils.js:683`).
 - **`shopCoffeeClassify_(line)`** -> `{bucket:'bar'|'retail'|'unclassified'|'excluded', kg}` where kg = size_kg x qty (3dp); `kg` is 0 for `excluded`. Rules (STRICT):
   - category not a coffee-bean category (CHAI, packaging/PKG, drip bags, merch, tea, etc.) -> `excluded`.
   - coffee bean, Single Origin, size exactly 1kg -> `bar`.
@@ -45,6 +45,8 @@ Write these tests in `connectors/gas/test_code.js` BEFORE the implementation, AB
 
 - SO 1K -> `bar`, kg 1 (x qty 3 -> 3)
 - HB 8K tin -> `bar`, kg 8
+- HB-ABS-PT qty 4.3 (House Blend partial tin) -> `bar`, kg 4.3 (PT = part-used 8kg tin, qty in kg)
+- non-HB `-PT` (if any appears) -> `unclassified`, never guessed
 - SO 200 -> `retail`, kg 0.2
 - HB 1K (bag) -> `retail`, kg 1
 - SO 8K -> `retail` (literal rule, pinned)
