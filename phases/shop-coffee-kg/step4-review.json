@@ -1,0 +1,12 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/shopcoffee.gs",
+      "line": 283,
+      "summary": "shopCoffeeShopMap_ swallows the JSON.parse exception with an empty catch; the caller logs only a generic 'not a parseable JSON object' message, so the parser's position/detail is lost.",
+      "suggestion": "Log the parse error message (e.message) inside the catch before returning null, so an operator setting SHOP_COFFEE_SHOPS can see what was malformed. Behaviour (skip loudly, no writes) is already correct; this is diagnostics only."
+    }
+  ]
+}

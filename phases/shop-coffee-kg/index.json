@@ -176,7 +176,7 @@
     {
       "step": 4,
       "name": "pull-orchestrator",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -203,7 +203,20 @@
       },
       "tdd_state": "red_done",
       "summary": "shopcoffee.gs: shopCoffeeUpsert_ whole-row + shopCoffeePull/Run/Dry, Mon 06:30 trigger, staleness 168h; suite 3469 passed, 0 failed.",
-      "completed_at": "2026-10-22T07:40:05+0900"
+      "completed_at": "2026-10-22T07:40:05+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 1,
+        "fix_rounds": 0,
+        "result_file": "phases/shop-coffee-kg/step4-review.json",
+        "checked_at": "2026-10-22T07:41:16+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] shopCoffeeShopMap_ swallows the JSON.parse exception with an empty catch; the caller logs only a generic 'not a parseable JSON object' message, so the parser's position/detail is lost."
+      ]
     },
     {
       "step": 5,
@@ -213,7 +226,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-22"
-      ]
+      ],
+      "started_at": "2026-10-22T07:41:16+0900"
     },
     {
       "step": 6,
