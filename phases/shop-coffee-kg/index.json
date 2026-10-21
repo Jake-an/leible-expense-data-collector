@@ -82,7 +82,7 @@
     {
       "step": 2,
       "name": "fetch-gate-paging",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -109,7 +109,23 @@
       },
       "tdd_state": "red_done",
       "summary": "Added shopCoffeeFetchWeekLines_ (paged via orderAppFetch_, strict gate, page cap 20, dedup orderId|sku); suite 3397 passed, 0 failed.",
-      "completed_at": "2026-10-22T07:26:09+0900"
+      "completed_at": "2026-10-22T07:26:09+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 4,
+        "fix_rounds": 1,
+        "result_file": "phases/shop-coffee-kg/step2-review.json",
+        "checked_at": "2026-10-22T07:30:51+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] Review-round commit fa43499 edited two RED-committed SC2 assertions after GREEN: the duplicate-count OR-chain was replaced by `eq(..., o.r.duplicates, 1)`, and the token literal `'dummy-sc2-token-xyz'` was replaced by a runtime-built sentinel. The GREEN commit 97fff9c itself did not touch test_code.js, so the tdd anchor is not triggered strictly, but the post-GREEN edit to RED tests is worth recording.",
+        "[review] The 'reason names the mismatch' check is a loose regex conjunction (/matched/ plus /2/ and /5/), so it would also pass on unrelated reason text containing those digits.",
+        "[review] On a truncated page, `collected.length >= matched` fails with the reason 'made no progress' even when the producer is simply over-reporting truncation after all matched lines were already collected. The reason text misnames the failure mode, though the result is still fail-closed.",
+        "[review] SHOP_COFFEE_PAGE_LIMIT x SHOP_COFFEE_MAX_PAGES caps a week at 4000 lines. A larger week fails loudly with ok:false, which is correct, but a future volume increase could be mistaken for a producer fault."
+      ]
     },
     {
       "step": 3,
@@ -119,7 +135,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-21"
-      ]
+      ],
+      "started_at": "2026-10-22T07:30:51+0900"
     },
     {
       "step": 4,
