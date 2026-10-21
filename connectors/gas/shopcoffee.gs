@@ -21,17 +21,15 @@ var SHOP_COFFEE_BAR_RULES = {
   'Cold Brew': ['-1K']
 };
 
-// Mirrors the producer's parseSkuSize_ (-8K -> 8, -1K -> 1, -200 -> 0.2) plus
-// -PT (partial tin, qty already kg -> 1 kg per unit). Unknown suffix -> null.
+// Exact suffixes only, mirroring the producer's parseSkuSize_ (-8K -> 8, -1K -> 1,
+// -200 -> 0.2) plus -PT (partial tin, qty already kg -> 1 kg per unit). Anything
+// else (-5K, -500, -1000, ...) -> null, never guessed.
+var SHOP_COFFEE_SIZE_KG = { '-8K': 8, '-1K': 1, '-200': 0.2, '-PT': 1 };
+
 function shopCoffeeSizeKg_(sku) {
   if (typeof sku !== 'string') return null;
-  var s = sku.trim().toUpperCase();
-  if (/-PT$/.test(s)) return 1;
-  var m = /-(\d+)K$/.exec(s);
-  if (m) return Number(m[1]);
-  m = /-(\d{3,})$/.exec(s);
-  if (m) return Number(m[1]) / 1000;
-  return null;
+  var suffix = shopCoffeeSuffix_(sku);
+  return Object.prototype.hasOwnProperty.call(SHOP_COFFEE_SIZE_KG, suffix) ? SHOP_COFFEE_SIZE_KG[suffix] : null;
 }
 
 function shopCoffeeSuffix_(sku) {

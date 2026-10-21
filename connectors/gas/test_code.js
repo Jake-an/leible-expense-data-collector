@@ -17572,6 +17572,9 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   bk('SO-DUM-1K', null, 1, 'unclassified', 0, 'null category -> unclassified');
   bk('SO-DUM-1K', 'Mystery', 1, 'unclassified', 0, 'unknown category -> unclassified');
   bk('???', 'Single Origin', 1, 'unclassified', 0, 'unparseable SKU -> unclassified');
+  bk('SO-DUM-5K', 'Single Origin', 1, 'unclassified', 0, 'SO -5K (not in producer) -> unclassified');
+  bk('SO-DUM-500', 'Single Origin', 1, 'unclassified', 0, 'SO -500 (not in producer) -> unclassified');
+  bk('SO-DUM-1000', 'Single Origin', 1, 'unclassified', 0, 'SO -1000 (not in producer) -> unclassified');
   ['Drip Bag', 'Tea', 'Packaging', 'Misc'].forEach(function (c) {
     bk('XX-DUM-1K', c, 5, 'excluded', 0, c + ' -> excluded kg 0');
   });
@@ -17585,7 +17588,8 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   // producer-drift pin: real suffixes from prod-probe.md
   [['SO-DUM-1K', 1], ['HB-DUM-8K', 8], ['CB-DUM-200', 0.2], ['HB-ABS-PT', 1], ['HB-BUO-PT', 1],
    ['RSO-DUM-02', null], ['RSO-DUM-03', null], ['RSO-DUM-04', null], ['RSO-DUM-05', null],
-   ['SO-DUM-XL', null], ['', null]].forEach(function (r) {
+   ['SO-DUM-XL', null], ['', null],
+   ['SO-DUM-5K', null], ['SO-DUM-500', null], ['SO-DUM-1000', null]].forEach(function (r) {
     eq('SC1 sizeKg ' + JSON.stringify(r[0]), sz(r[0]), r[1]);
   });
 
