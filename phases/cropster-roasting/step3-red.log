@@ -1,0 +1,774 @@
+........................................................................ [ 49%]
+...........................FFFFFFFFFFFFFFFFFFFFFFF.FFFFFFFFFFFFFFFFFFFFF [ 98%]
+FF                                                                       [100%]
+================================== FAILURES ===================================
+_________________________ test_week_bounds_aedt_week __________________________
+
+    def test_week_bounds_aedt_week():
+        # Mon 2026-10-12 is AEDT (UTC+11): midnight = Sun 11 Oct 13:00Z.
+>       frm, to = cropster.sydney_week_bounds(date(2026, 10, 12))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'sydney_week_bounds'
+
+connectors\playwright\test_cropster.py:48: AttributeError
+_________________________ test_week_bounds_aest_week __________________________
+
+    def test_week_bounds_aest_week():
+        # Mon 2026-07-06 is AEST (UTC+10).
+>       frm, to = cropster.sydney_week_bounds(date(2026, 7, 6))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'sydney_week_bounds'
+
+connectors\playwright\test_cropster.py:56: AttributeError
+_____________ test_week_bounds_week_containing_october_dst_start ______________
+
+    def test_week_bounds_week_containing_october_dst_start():
+        # Mon 2026-09-28 (AEST) .. Sun 2026-10-04 (switch to AEDT at 02:00): 7d - 1h.
+>       frm, to = cropster.sydney_week_bounds(date(2026, 9, 28))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'sydney_week_bounds'
+
+connectors\playwright\test_cropster.py:63: AttributeError
+_______________ test_week_bounds_week_containing_april_dst_end ________________
+
+    def test_week_bounds_week_containing_april_dst_end():
+        # Mon 2026-03-30 (AEDT) .. Sun 2026-04-05 (back to AEST at 03:00): 7d + 1h.
+>       frm, to = cropster.sydney_week_bounds(date(2026, 3, 30))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'sydney_week_bounds'
+
+connectors\playwright\test_cropster.py:72: AttributeError
+__________ test_weeks_to_pull_monday_morning_newest_is_previous_week __________
+
+    def test_weeks_to_pull_monday_morning_newest_is_previous_week():
+        now = datetime(2026, 10, 19, 5, 30, tzinfo=SYD)  # Monday
+>       assert cropster.weeks_to_pull(now, 2) == [date(2026, 10, 5), date(2026, 10, 12)]
+               ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'weeks_to_pull'
+
+connectors\playwright\test_cropster.py:80: AttributeError
+____________ test_weeks_to_pull_sunday_night_excludes_current_week ____________
+
+    def test_weeks_to_pull_sunday_night_excludes_current_week():
+        now = datetime(2026, 10, 18, 23, 0, tzinfo=SYD)  # Sunday, week still running
+>       weeks = cropster.weeks_to_pull(now, 2)
+                ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'weeks_to_pull'
+
+connectors\playwright\test_cropster.py:85: AttributeError
+_____________________ test_weeks_to_pull_counts_and_order _____________________
+
+    def test_weeks_to_pull_counts_and_order():
+        now = datetime(2026, 10, 21, 9, 0, tzinfo=SYD)
+>       two = cropster.weeks_to_pull(now, 2)
+              ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'weeks_to_pull'
+
+connectors\playwright\test_cropster.py:92: AttributeError
+___________ test_summaries_url_has_encoded_bracket_params_and_group ___________
+
+    def test_summaries_url_has_encoded_bracket_params_and_group():
+>       url = cropster.summaries_url(1000, 2000, "MACHINE")
+              ^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'summaries_url'
+
+connectors\playwright\test_cropster.py:107: AttributeError
+______________________ test_parse_happy_path_exact_rows _______________________
+
+    def test_parse_happy_path_exact_rows():
+>       rows = _parse()
+               ^^^^^^^^
+
+connectors\playwright\test_cropster.py:176: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+profile = None, machine = None, names = None, url = None, frm = 1700000000000
+to = 1700000604799999
+
+    def _parse(profile=None, machine=None, names=None, url=None, frm=FROM_MS, to=TO_MS):
+>       return cropster.parse_and_reconcile(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            WEEK,
+            profile if profile is not None else _profile_json(),
+            machine if machine is not None else _machine_json(),
+            names if names is not None else NAMES,
+            frm,
+            to,
+            url if url is not None else _good_url(),
+        )
+E       AttributeError: module 'cropster' has no attribute 'parse_and_reconcile'
+
+connectors\playwright\test_cropster.py:164: AttributeError
+_________________ test_parse_loss_is_rounded_to_two_decimals __________________
+
+    def test_parse_loss_is_rounded_to_two_decimals():
+        prof = {"data": [_entry("profile", "pAAAA", 30, 25, 2)]}
+        mach = {"data": [_entry("machine", "mXXXX", 30, 25, 2)]}
+>       (row,) = _parse(profile=prof, machine=mach)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+connectors\playwright\test_cropster.py:205: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+profile = {'data': [{'id': 'id-pAAAA', 'type': 'productionSummaries', 'attributes': {'profile': 'pAAAA', 'startWeight': {'amount': 30, 'unit': 'KG', 'amountSI': 30}, 'endWeight': {'amount': 25, 'unit': 'KG', 'amountSI': 25}, 'batchCount': 2, ...}}]}
+machine = {'data': [{'id': 'id-mXXXX', 'type': 'productionSummaries', 'attributes': {'machine': 'mXXXX', 'startWeight': {'amount': 30, 'unit': 'KG', 'amountSI': 30}, 'endWeight': {'amount': 25, 'unit': 'KG', 'amountSI': 25}, 'batchCount': 2, ...}}]}
+names = None, url = None, frm = 1700000000000, to = 1700000604799999
+
+    def _parse(profile=None, machine=None, names=None, url=None, frm=FROM_MS, to=TO_MS):
+>       return cropster.parse_and_reconcile(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            WEEK,
+            profile if profile is not None else _profile_json(),
+            machine if machine is not None else _machine_json(),
+            names if names is not None else NAMES,
+            frm,
+            to,
+            url if url is not None else _good_url(),
+        )
+E       AttributeError: module 'cropster' has no attribute 'parse_and_reconcile'
+
+connectors\playwright\test_cropster.py:164: AttributeError
+________________ test_parse_zero_start_weight_gives_null_loss _________________
+
+    def test_parse_zero_start_weight_gives_null_loss():
+        prof = {"data": [_entry("profile", "pAAAA", 0, 5, 1)]}
+        mach = {"data": [_entry("machine", "mXXXX", 0, 5, 1)]}
+>       (row,) = _parse(profile=prof, machine=mach)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+connectors\playwright\test_cropster.py:212: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+profile = {'data': [{'id': 'id-pAAAA', 'type': 'productionSummaries', 'attributes': {'profile': 'pAAAA', 'startWeight': {'amount': 0, 'unit': 'KG', 'amountSI': 0}, 'endWeight': {'amount': 5, 'unit': 'KG', 'amountSI': 5}, 'batchCount': 1, ...}}]}
+machine = {'data': [{'id': 'id-mXXXX', 'type': 'productionSummaries', 'attributes': {'machine': 'mXXXX', 'startWeight': {'amount': 0, 'unit': 'KG', 'amountSI': 0}, 'endWeight': {'amount': 5, 'unit': 'KG', 'amountSI': 5}, 'batchCount': 1, ...}}]}
+names = None, url = None, frm = 1700000000000, to = 1700000604799999
+
+    def _parse(profile=None, machine=None, names=None, url=None, frm=FROM_MS, to=TO_MS):
+>       return cropster.parse_and_reconcile(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            WEEK,
+            profile if profile is not None else _profile_json(),
+            machine if machine is not None else _machine_json(),
+            names if names is not None else NAMES,
+            frm,
+            to,
+            url if url is not None else _good_url(),
+        )
+E       AttributeError: module 'cropster' has no attribute 'parse_and_reconcile'
+
+connectors\playwright\test_cropster.py:164: AttributeError
+___________ test_parse_skips_profile_with_no_batches_and_no_weight ____________
+
+    def test_parse_skips_profile_with_no_batches_and_no_weight():
+        prof = {
+            "data": [
+                _entry("profile", "pAAAA", 100, 85, 5),
+                _entry("profile", "pBBBB", 0, 0, 0),
+            ]
+        }
+        mach = {"data": [_entry("machine", "mXXXX", 100, 85, 5)]}
+>       rows = _parse(profile=prof, machine=mach)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+connectors\playwright\test_cropster.py:224: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+profile = {'data': [{'id': 'id-pAAAA', 'type': 'productionSummaries', 'attributes': {'profile': 'pAAAA', 'startWeight': {'amount...nt': 0, 'unit': 'KG', 'amountSI': 0}, 'endWeight': {'amount': 0, 'unit': 'KG', 'amountSI': 0}, 'batchCount': 0, ...}}]}
+machine = {'data': [{'id': 'id-mXXXX', 'type': 'productionSummaries', 'attributes': {'machine': 'mXXXX', 'startWeight': {'amount...00, 'unit': 'KG', 'amountSI': 100}, 'endWeight': {'amount': 85, 'unit': 'KG', 'amountSI': 85}, 'batchCount': 5, ...}}]}
+names = None, url = None, frm = 1700000000000, to = 1700000604799999
+
+    def _parse(profile=None, machine=None, names=None, url=None, frm=FROM_MS, to=TO_MS):
+>       return cropster.parse_and_reconcile(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            WEEK,
+            profile if profile is not None else _profile_json(),
+            machine if machine is not None else _machine_json(),
+            names if names is not None else NAMES,
+            frm,
+            to,
+            url if url is not None else _good_url(),
+        )
+E       AttributeError: module 'cropster' has no attribute 'parse_and_reconcile'
+
+connectors\playwright\test_cropster.py:164: AttributeError
+________ test_parse_empty_data_on_both_groupings_is_zero_rows_no_error ________
+
+    def test_parse_empty_data_on_both_groupings_is_zero_rows_no_error():
+>       assert _parse(profile={"data": []}, machine={"data": []}) == []
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+connectors\playwright\test_cropster.py:229: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+profile = {'data': []}, machine = {'data': []}, names = None, url = None
+frm = 1700000000000, to = 1700000604799999
+
+    def _parse(profile=None, machine=None, names=None, url=None, frm=FROM_MS, to=TO_MS):
+>       return cropster.parse_and_reconcile(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            WEEK,
+            profile if profile is not None else _profile_json(),
+            machine if machine is not None else _machine_json(),
+            names if names is not None else NAMES,
+            frm,
+            to,
+            url if url is not None else _good_url(),
+        )
+E       AttributeError: module 'cropster' has no attribute 'parse_and_reconcile'
+
+connectors\playwright\test_cropster.py:164: AttributeError
+____________________ test_parse_missing_end_weight_raises _____________________
+
+    def test_parse_missing_end_weight_raises():
+        prof = _profile_json()
+        del prof["data"][0]["attributes"]["endWeight"]
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:235: AttributeError
+____________________ test_parse_missing_batch_count_raises ____________________
+
+    def test_parse_missing_batch_count_raises():
+        prof = _profile_json()
+        del prof["data"][1]["attributes"]["batchCount"]
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:242: AttributeError
+________________________ test_parse_non_kg_unit_raises ________________________
+
+    def test_parse_non_kg_unit_raises():
+        prof = _profile_json()
+        prof["data"][0]["attributes"]["endWeight"]["unit"] = "LBS"
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:249: AttributeError
+________________ test_parse_amount_not_equal_amount_si_raises _________________
+
+    def test_parse_amount_not_equal_amount_si_raises():
+        prof = _profile_json()
+        prof["data"][0]["attributes"]["startWeight"]["amountSI"] = 99
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:256: AttributeError
+_________ test_parse_response_url_range_differs_from_requested_raises _________
+
+    def test_parse_response_url_range_differs_from_requested_raises():
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:261: AttributeError
+______________ test_parse_profile_vs_machine_kg_mismatch_raises _______________
+
+    def test_parse_profile_vs_machine_kg_mismatch_raises():
+        mach = {"data": [_entry("machine", "mXXXX", 150, 127.0, 8)]}  # 0.5 kg off
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:269: AttributeError
+_______________ test_parse_kg_difference_within_tolerance_is_ok _______________
+
+    def test_parse_kg_difference_within_tolerance_is_ok():
+        mach = {"data": [_entry("machine", "mXXXX", 150, 127.55, 8)]}  # 0.05 kg off
+>       assert len(_parse(machine=mach)) == 2
+                   ^^^^^^^^^^^^^^^^^^^^
+
+connectors\playwright\test_cropster.py:275: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+profile = None
+machine = {'data': [{'id': 'id-mXXXX', 'type': 'productionSummaries', 'attributes': {'machine': 'mXXXX', 'startWeight': {'amount...t': 'KG', 'amountSI': 150}, 'endWeight': {'amount': 127.55, 'unit': 'KG', 'amountSI': 127.55}, 'batchCount': 8, ...}}]}
+names = None, url = None, frm = 1700000000000, to = 1700000604799999
+
+    def _parse(profile=None, machine=None, names=None, url=None, frm=FROM_MS, to=TO_MS):
+>       return cropster.parse_and_reconcile(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            WEEK,
+            profile if profile is not None else _profile_json(),
+            machine if machine is not None else _machine_json(),
+            names if names is not None else NAMES,
+            frm,
+            to,
+            url if url is not None else _good_url(),
+        )
+E       AttributeError: module 'cropster' has no attribute 'parse_and_reconcile'
+
+connectors\playwright\test_cropster.py:164: AttributeError
+___________________ test_parse_batch_count_mismatch_raises ____________________
+
+    def test_parse_batch_count_mismatch_raises():
+        mach = {"data": [_entry("machine", "mXXXX", 150, 127.5, 9)]}
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:280: AttributeError
+___________________ test_parse_unresolved_profile_id_raises ___________________
+
+    def test_parse_unresolved_profile_id_raises():
+>       with pytest.raises(cropster.ReconcileError):
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:285: AttributeError
+_________________ test_default_connector_payload_is_unchanged _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C89F410>
+
+    def test_default_connector_payload_is_unchanged(monkeypatch):
+        sent = []
+        monkeypatch.setattr(
+            b.requests, "post", lambda url, **kw: sent.append(kw["json"]) or _Resp({"result": "ok"})
+        )
+        _PlainConnector(exec_url=EXEC_URL).post(
+            [{"date": "2026-07-01", "total": 1.0, "invoice_ref": "I"}]
+        )
+        (payload,) = sent
+        assert list(payload) == ["source", "rows", "extracted_at", "token"]
+        assert "kind" not in payload
+>       assert b.BaseConnector.KIND is None
+               ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: type object 'BaseConnector' has no attribute 'KIND'
+
+connectors\playwright\test_cropster.py:332: AttributeError
+________________ test_default_validate_rows_is_the_total_check ________________
+
+    def test_default_validate_rows_is_the_total_check():
+        with pytest.raises(b.IngestError):
+>           _PlainConnector.validate_rows([{"date": "2026-07-01"}])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: type object '_PlainConnector' has no attribute 'validate_rows'
+
+connectors\playwright\test_cropster.py:343: AttributeError
+_____________________ test_default_extra_payload_is_empty _____________________
+
+    def test_default_extra_payload_is_empty():
+>       assert _PlainConnector(exec_url=EXEC_URL).extra_payload() == {}
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: '_PlainConnector' object has no attribute 'extra_payload'
+
+connectors\playwright\test_cropster.py:348: AttributeError
+_____ test_kind_connector_payload_has_kind_and_uses_its_own_validate_rows _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C9C9EB0>
+
+    def test_kind_connector_payload_has_kind_and_uses_its_own_validate_rows(monkeypatch):
+        sent = []
+        monkeypatch.setattr(
+            b.requests, "post", lambda url, **kw: sent.append(kw["json"]) or _Resp({"result": "ok"})
+        )
+>       _KindConnector(exec_url=EXEC_URL).post([{"date": "2026-07-01", "x": 1}])
+
+connectors\playwright\test_cropster.py:356: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+connectors\playwright\base_connector.py:566: in post
+    self._check_totals(rows)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cls = <class 'test_cropster._KindConnector'>
+rows = [{'date': '2026-07-01', 'x': 1}]
+
+    @classmethod
+    def _check_totals(cls, rows: list[dict]) -> None:
+        """Every `total` must be a real, finite, in-range number BEFORE the
+        POST.
+    
+        validateIngest_ requires `typeof total === 'number' && isFinite(total)`
+        (security audit 2026-09-04); `!isNaN(Number(x))` used to let through
+        Infinity, '', [] and '45'. A connector that scrapes a total out of a
+        page or takes it verbatim from a supplier API can easily emit a
+        numeric STRING � the hub would then refuse the ENTIRE batch with a
+        message about one row, so it is caught here where the failure names
+        the row locally and costs no round trip.
+    
+        bool is excluded explicitly: it is a subclass of int in Python, so
+        `isinstance(True, (int, float))` is True and `True` would sail
+        through as 1.
+        """
+        for i, row in enumerate(rows):
+            total = row.get("total")
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+>               raise IngestError(
+                    f"row {i} has a non-numeric total ({total!r}). Connectors must emit "
+                    f"`total` as a real JSON number � parse it in the connector, because the "
+                    f"hub refuses the whole batch over one bad value. Nothing was posted."
+                )
+E               base_connector.IngestError: row 0 has a non-numeric total (None). Connectors must emit `total` as a real JSON number � parse it in the connector, because the hub refuses the whole batch over one bad value. Nothing was posted.
+
+connectors\playwright\base_connector.py:546: IngestError
+________________________ test_extra_payload_is_merged _________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C9C9B80>
+
+    def test_extra_payload_is_merged(monkeypatch):
+        sent = []
+        monkeypatch.setattr(
+            b.requests, "post", lambda url, **kw: sent.append(kw["json"]) or _Resp({"result": "ok"})
+        )
+    
+        class _Extra(_KindConnector):
+            def extra_payload(self):
+                return {"allow_shrink": True}
+    
+>       _Extra(exec_url=EXEC_URL).post([{"date": "2026-07-01"}])
+
+connectors\playwright\test_cropster.py:370: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+connectors\playwright\base_connector.py:566: in post
+    self._check_totals(rows)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cls = <class 'test_cropster.test_extra_payload_is_merged.<locals>._Extra'>
+rows = [{'date': '2026-07-01'}]
+
+    @classmethod
+    def _check_totals(cls, rows: list[dict]) -> None:
+        """Every `total` must be a real, finite, in-range number BEFORE the
+        POST.
+    
+        validateIngest_ requires `typeof total === 'number' && isFinite(total)`
+        (security audit 2026-09-04); `!isNaN(Number(x))` used to let through
+        Infinity, '', [] and '45'. A connector that scrapes a total out of a
+        page or takes it verbatim from a supplier API can easily emit a
+        numeric STRING � the hub would then refuse the ENTIRE batch with a
+        message about one row, so it is caught here where the failure names
+        the row locally and costs no round trip.
+    
+        bool is excluded explicitly: it is a subclass of int in Python, so
+        `isinstance(True, (int, float))` is True and `True` would sail
+        through as 1.
+        """
+        for i, row in enumerate(rows):
+            total = row.get("total")
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+>               raise IngestError(
+                    f"row {i} has a non-numeric total ({total!r}). Connectors must emit "
+                    f"`total` as a real JSON number � parse it in the connector, because the "
+                    f"hub refuses the whole batch over one bad value. Nothing was posted."
+                )
+E               base_connector.IngestError: row 0 has a non-numeric total (None). Connectors must emit `total` as a real JSON number � parse it in the connector, because the hub refuses the whole batch over one bad value. Nothing was posted.
+
+connectors\playwright\base_connector.py:546: IngestError
+_______________ test_locked_retries_exactly_once_after_sleeping _______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C84BFE0>
+isolated = []
+
+    def test_locked_retries_exactly_once_after_sleeping(monkeypatch, isolated):
+        responses = [_Resp({"result": "error", "code": "LOCKED"}), _Resp({"result": "ok", "n": 1})]
+        calls = []
+        monkeypatch.setattr(
+            b.requests, "post", lambda url, **kw: calls.append(1) or responses[len(calls) - 1]
+        )
+>       result = _KindConnector(exec_url=EXEC_URL).post([{"date": "2026-07-01"}])
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+connectors\playwright\test_cropster.py:381: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+connectors\playwright\base_connector.py:566: in post
+    self._check_totals(rows)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cls = <class 'test_cropster._KindConnector'>, rows = [{'date': '2026-07-01'}]
+
+    @classmethod
+    def _check_totals(cls, rows: list[dict]) -> None:
+        """Every `total` must be a real, finite, in-range number BEFORE the
+        POST.
+    
+        validateIngest_ requires `typeof total === 'number' && isFinite(total)`
+        (security audit 2026-09-04); `!isNaN(Number(x))` used to let through
+        Infinity, '', [] and '45'. A connector that scrapes a total out of a
+        page or takes it verbatim from a supplier API can easily emit a
+        numeric STRING � the hub would then refuse the ENTIRE batch with a
+        message about one row, so it is caught here where the failure names
+        the row locally and costs no round trip.
+    
+        bool is excluded explicitly: it is a subclass of int in Python, so
+        `isinstance(True, (int, float))` is True and `True` would sail
+        through as 1.
+        """
+        for i, row in enumerate(rows):
+            total = row.get("total")
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+>               raise IngestError(
+                    f"row {i} has a non-numeric total ({total!r}). Connectors must emit "
+                    f"`total` as a real JSON number � parse it in the connector, because the "
+                    f"hub refuses the whole batch over one bad value. Nothing was posted."
+                )
+E               base_connector.IngestError: row 0 has a non-numeric total (None). Connectors must emit `total` as a real JSON number � parse it in the connector, because the hub refuses the whole batch over one bad value. Nothing was posted.
+
+connectors\playwright\base_connector.py:546: IngestError
+____________ test_locked_twice_raises_ingest_error_after_one_retry ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C89F6B0>
+isolated = []
+
+    def test_locked_twice_raises_ingest_error_after_one_retry(monkeypatch, isolated):
+        calls = []
+        monkeypatch.setattr(
+            b.requests,
+            "post",
+            lambda url, **kw: calls.append(1) or _Resp({"result": "error", "code": "LOCKED"}),
+        )
+        with pytest.raises(b.IngestError):
+            _KindConnector(exec_url=EXEC_URL).post([{"date": "2026-07-01"}])
+>       assert len(calls) == 2
+E       assert 0 == 2
+E        +  where 0 = len([])
+
+connectors\playwright\test_cropster.py:396: AssertionError
+__________________________ test_connector_constants ___________________________
+
+    def test_connector_constants():
+>       c = cropster.CropsterConnector
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:420: AttributeError
+________ test_validate_rows_accepts_contract_rows_including_null_loss _________
+
+    def test_validate_rows_accepts_contract_rows_including_null_loss():
+>       cropster.CropsterConnector.validate_rows([_row(), _row(weight_loss_pct=None)])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:426: AttributeError
+______________________ test_validate_rows_rejects_total _______________________
+
+    def test_validate_rows_rejects_total():
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(total=1.0)])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:431: AttributeError
+____________ test_validate_rows_rejects_date_not_equal_week_start _____________
+
+    def test_validate_rows_rejects_date_not_equal_week_start():
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(date="2026-10-13")])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:436: AttributeError
+______________ test_validate_rows_rejects_unknown_fields[extra0] ______________
+
+extra = {'pulled_at': 'x'}
+
+    @pytest.mark.parametrize("extra", [{"pulled_at": "x"}, {"department": "Roastery"}])
+    def test_validate_rows_rejects_unknown_fields(extra):
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(**extra)])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:442: AttributeError
+______________ test_validate_rows_rejects_unknown_fields[extra1] ______________
+
+extra = {'department': 'Roastery'}
+
+    @pytest.mark.parametrize("extra", [{"pulled_at": "x"}, {"department": "Roastery"}])
+    def test_validate_rows_rejects_unknown_fields(extra):
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(**extra)])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:442: AttributeError
+_________ test_validate_rows_rejects_non_numeric_values[green_kg_in] __________
+
+field = 'green_kg_in'
+
+    @pytest.mark.parametrize("field", ["green_kg_in", "roasted_kg_out", "batch_count"])
+    def test_validate_rows_rejects_non_numeric_values(field):
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(**{field: "85"})])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:448: AttributeError
+________ test_validate_rows_rejects_non_numeric_values[roasted_kg_out] ________
+
+field = 'roasted_kg_out'
+
+    @pytest.mark.parametrize("field", ["green_kg_in", "roasted_kg_out", "batch_count"])
+    def test_validate_rows_rejects_non_numeric_values(field):
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(**{field: "85"})])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:448: AttributeError
+_________ test_validate_rows_rejects_non_numeric_values[batch_count] __________
+
+field = 'batch_count'
+
+    @pytest.mark.parametrize("field", ["green_kg_in", "roasted_kg_out", "batch_count"])
+    def test_validate_rows_rejects_non_numeric_values(field):
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([_row(**{field: "85"})])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:448: AttributeError
+___________________ test_validate_rows_rejects_missing_key ____________________
+
+    def test_validate_rows_rejects_missing_key():
+        r = _row()
+        del r["profile"]
+        with pytest.raises(b.IngestError):
+>           cropster.CropsterConnector.validate_rows([r])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:457: AttributeError
+________ test_post_sends_kind_roasting_and_allow_shrink_only_when_set _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C89F530>
+
+    def test_post_sends_kind_roasting_and_allow_shrink_only_when_set(monkeypatch):
+        sent = []
+        monkeypatch.setattr(
+            b.requests, "post", lambda url, **kw: sent.append(kw["json"]) or _Resp({"result": "ok"})
+        )
+>       cropster.CropsterConnector(exec_url=EXEC_URL).post([_row()])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:465: AttributeError
+_____________ test_allow_shrink_without_backfill_is_a_usage_error _____________
+
+capsys = <_pytest.capture.CaptureFixture object at 0x000001727C85E1B0>
+
+    def test_allow_shrink_without_backfill_is_a_usage_error(capsys):
+        with pytest.raises(SystemExit) as exc:
+>           cropster.main(["--allow-shrink"])
+            ^^^^^^^^^^^^^
+E           AttributeError: module 'cropster' has no attribute 'main'
+
+connectors\playwright\test_cropster.py:474: AttributeError
+______________ test_dry_run_never_posts_and_default_is_two_weeks ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C9C87A0>
+
+    def test_dry_run_never_posts_and_default_is_two_weeks(monkeypatch):
+        seen = {}
+    
+        def fake_collect(self, attended, weeks):
+            seen["n"] = len(weeks)
+            return [_row()]
+    
+>       monkeypatch.setattr(cropster.CropsterConnector, "collect", fake_collect)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:485: AttributeError
+______________________ test_backfill_pulls_twelve_weeks _______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001727C9C8C80>
+
+    def test_backfill_pulls_twelve_weeks(monkeypatch):
+        seen = {}
+    
+        def fake_collect(self, attended, weeks):
+            seen["n"] = len(weeks)
+            seen["allow_shrink"] = self.allow_shrink
+            return [_row()]
+    
+>       monkeypatch.setattr(cropster.CropsterConnector, "collect", fake_collect)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:504: AttributeError
+___ test_read_weeks_returns_reconciled_rows_and_forwards_safe_headers_only ____
+
+    def test_read_weeks_returns_reconciled_rows_and_forwards_safe_headers_only():
+        page = _FakePage()
+>       rows = cropster.CropsterConnector(exec_url=EXEC_URL).read_weeks(page, [date(2026, 10, 12)])
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:585: AttributeError
+_____________ test_read_weeks_never_logs_header_values_or_cookies _____________
+
+caplog = <_pytest.logging.LogCaptureFixture object at 0x000001727C9CA7B0>
+capsys = <_pytest.capture.CaptureFixture object at 0x000001727C9CAB40>
+
+    def test_read_weeks_never_logs_header_values_or_cookies(caplog, capsys):
+        caplog.set_level(logging.DEBUG)
+        page = _FakePage()
+>       cropster.CropsterConnector(exec_url=EXEC_URL).read_weeks(page, [date(2026, 10, 12)])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'CropsterConnector'
+
+connectors\playwright\test_cropster.py:598: AttributeError
+_____ test_read_weeks_aborts_on_reconcile_failure_without_leaking_secrets _____
+
+caplog = <_pytest.logging.LogCaptureFixture object at 0x000001727C948410>
+capsys = <_pytest.capture.CaptureFixture object at 0x000001727C9482F0>
+
+    def test_read_weeks_aborts_on_reconcile_failure_without_leaking_secrets(caplog, capsys):
+        caplog.set_level(logging.DEBUG)
+        page = _FakePage(machine_end=100.0)  # MACHINE disagrees with PROFILE
+>       with pytest.raises(cropster.ReconcileError) as exc:
+                           ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'cropster' has no attribute 'ReconcileError'
+
+connectors\playwright\test_cropster.py:608: AttributeError
+=========================== short test summary info ===========================
+FAILED connectors/playwright/test_cropster.py::test_week_bounds_aedt_week - A...
+FAILED connectors/playwright/test_cropster.py::test_week_bounds_aest_week - A...
+FAILED connectors/playwright/test_cropster.py::test_week_bounds_week_containing_october_dst_start
+FAILED connectors/playwright/test_cropster.py::test_week_bounds_week_containing_april_dst_end
+FAILED connectors/playwright/test_cropster.py::test_weeks_to_pull_monday_morning_newest_is_previous_week
+FAILED connectors/playwright/test_cropster.py::test_weeks_to_pull_sunday_night_excludes_current_week
+FAILED connectors/playwright/test_cropster.py::test_weeks_to_pull_counts_and_order
+FAILED connectors/playwright/test_cropster.py::test_summaries_url_has_encoded_bracket_params_and_group
+FAILED connectors/playwright/test_cropster.py::test_parse_happy_path_exact_rows
+FAILED connectors/playwright/test_cropster.py::test_parse_loss_is_rounded_to_two_decimals
+FAILED connectors/playwright/test_cropster.py::test_parse_zero_start_weight_gives_null_loss
+FAILED connectors/playwright/test_cropster.py::test_parse_skips_profile_with_no_batches_and_no_weight
+FAILED connectors/playwright/test_cropster.py::test_parse_empty_data_on_both_groupings_is_zero_rows_no_error
+FAILED connectors/playwright/test_cropster.py::test_parse_missing_end_weight_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_missing_batch_count_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_non_kg_unit_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_amount_not_equal_amount_si_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_response_url_range_differs_from_requested_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_profile_vs_machine_kg_mismatch_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_kg_difference_within_tolerance_is_ok
+FAILED connectors/playwright/test_cropster.py::test_parse_batch_count_mismatch_raises
+FAILED connectors/playwright/test_cropster.py::test_parse_unresolved_profile_id_raises
+FAILED connectors/playwright/test_cropster.py::test_default_connector_payload_is_unchanged
+FAILED connectors/playwright/test_cropster.py::test_default_validate_rows_is_the_total_check
+FAILED connectors/playwright/test_cropster.py::test_default_extra_payload_is_empty
+FAILED connectors/playwright/test_cropster.py::test_kind_connector_payload_has_kind_and_uses_its_own_validate_rows
+FAILED connectors/playwright/test_cropster.py::test_extra_payload_is_merged
+FAILED connectors/playwright/test_cropster.py::test_locked_retries_exactly_once_after_sleeping
+FAILED connectors/playwright/test_cropster.py::test_locked_twice_raises_ingest_error_after_one_retry
+FAILED connectors/playwright/test_cropster.py::test_connector_constants - Att...
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_accepts_contract_rows_including_null_loss
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_total
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_date_not_equal_week_start
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_unknown_fields[extra0]
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_unknown_fields[extra1]
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_non_numeric_values[green_kg_in]
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_non_numeric_values[roasted_kg_out]
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_non_numeric_values[batch_count]
+FAILED connectors/playwright/test_cropster.py::test_validate_rows_rejects_missing_key
+FAILED connectors/playwright/test_cropster.py::test_post_sends_kind_roasting_and_allow_shrink_only_when_set
+FAILED connectors/playwright/test_cropster.py::test_allow_shrink_without_backfill_is_a_usage_error
+FAILED connectors/playwright/test_cropster.py::test_dry_run_never_posts_and_default_is_two_weeks
+FAILED connectors/playwright/test_cropster.py::test_backfill_pulls_twelve_weeks
+FAILED connectors/playwright/test_cropster.py::test_read_weeks_returns_reconciled_rows_and_forwards_safe_headers_only
+FAILED connectors/playwright/test_cropster.py::test_read_weeks_never_logs_header_values_or_cookies
+FAILED connectors/playwright/test_cropster.py::test_read_weeks_aborts_on_reconcile_failure_without_leaking_secrets
+46 failed, 100 passed in 1.77s
