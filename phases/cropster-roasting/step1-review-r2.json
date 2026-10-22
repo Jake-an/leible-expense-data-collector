@@ -1,0 +1,33 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/gas/cropster.gs",
+      "line": 164,
+      "summary": "The trailing-blank trim is wrapped in `try { ... } catch (err) { /* blanks are skipped on read */ }`. The error is swallowed with no log, so a failing deleteRows is invisible in the GAS execution log.",
+      "suggestion": "Keep it best-effort (the post must still succeed), but record the failure: `catch (err) { Logger.log('roastingUpsert_: trailing-blank trim failed — ' + err); }`. This matches the Logger.log pattern in connectors/gas/shopcoffee.gs:302-312."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/cropster.gs",
+      "line": 120,
+      "summary": "oldKeys is built from the raw sheet value row[1]. Profiles starting with = + - @ are stored with the text guard prefix (sheetSafeCell_), so on re-post the key no longer matches the fresh key and those rows are counted as rowsAdded instead of rowsUpdated. The data is still correct because the whole week is replaced; only the counters in the response are wrong.",
+      "suggestion": "Key the read-back value through sheetUnguardCell_ (connectors/gas/Code.gs, the helper just above the key-normalizer comment), as the Code.gs comment requires for any key built from a sheet read. Add a sequential test: post `=HYPERLINK(\"x\")`, then re-post it, and assert rowsUpdated === 1."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/cropster.gs",
+      "line": 88,
+      "summary": "An empty roasting payload (rows: []) passes validation and returns result:'ok'. doPost then stamps the LAST_INGEST_cropster heartbeat (Code.gs, stalenessStampHeartbeat_ call after dispatch) without writing anything. Once the source is armed in step 5, a broken scrape that returns zero rows would look healthy. The roster kind refuses empty payloads for this reason (roster_empty).",
+      "suggestion": "Refuse rows.length === 0 in roastingPayloadRefusal_ with a specific message such as 'roasting_empty: a roasting post needs at least one row'. The step brief is silent on this, so decide it explicitly and note the choice."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/cropster.gs",
+      "line": 159,
+      "summary": "The grid-growth fix (commit bc2b036, insertRowsAfter before setValues) and its test were committed after the GREEN commit (d3ae011), so that test was not written RED-first. The mock support it needs (gridMaxRows) was already in the RED commit 25a7ab4. The behaviour is correct, but the TDD record shows the fix without a RED run.",
+      "suggestion": "No code change needed. Record in the step log that the grid-growth case was added post-GREEN as a review fix and was not confirmed RED first."
+    }
+  ]
+}

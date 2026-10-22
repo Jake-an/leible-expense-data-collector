@@ -19,7 +19,7 @@
     {
       "step": 1,
       "name": "gas-ingest",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -46,7 +46,22 @@
       },
       "tdd_state": "red_done",
       "completed_at": "2026-10-22T14:14:28+0900",
-      "summary": "cropster.gs + Code.gs wiring (3 tables, lock branch, validateIngest_ roasting rules); week-scoped atomic Roasting upsert with 50% shrink guard; cropster NOT_YET_ARMED; docs updated; test_code.js 3619 passed, 0 failed."
+      "summary": "cropster.gs + Code.gs wiring (3 tables, lock branch, validateIngest_ roasting rules); week-scoped atomic Roasting upsert with 50% shrink guard; cropster NOT_YET_ARMED; docs updated; test_code.js 3619 passed, 0 failed.",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 2,
+        "fix_rounds": 2,
+        "result_file": "phases/cropster-roasting/step1-review.json",
+        "checked_at": "2026-10-22T14:22:02+0900",
+        "review_model": "haiku",
+        "rebuttal": "phases/cropster-roasting/step1-review-response-r2.md"
+      },
+      "concerns": [
+        "[review] The grid-growth test (commit bc2b036) was added after GREEN and never run RED, so the TDD step's RED-before-implementation rule was not followed for this case. Rebuttal item 4 concedes this. The test is non-vacuous: against the pre-fix code, the 6-row setValues on a 3-row grid would throw.",
+        "[review] roastingUpsert_ silently drops any stored row whose week_start cell is blank, even when its profile and kg cells are populated. A human edit that clears a week_start would lose that row on the next post, with no refusal or log."
+      ]
     },
     {
       "step": 2,
@@ -56,7 +71,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-24"
-      ]
+      ],
+      "started_at": "2026-10-22T14:22:02+0900"
     },
     {
       "step": 3,
