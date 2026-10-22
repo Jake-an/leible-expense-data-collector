@@ -114,7 +114,7 @@
     {
       "step": 3,
       "name": "connector",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/playwright -q",
       "covers": [
@@ -133,7 +133,8 @@
           "at": "2026-10-22T14:30:46+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "Base hooks (KIND/validate_rows/extra_payload/LOCKED retry) + cropster.py connector; connectors/playwright 146 passed (baseline 99 + 47 new); MACHINE-reconcile mutation went red."
     },
     {
       "step": 4,

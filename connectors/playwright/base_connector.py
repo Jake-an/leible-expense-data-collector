@@ -30,6 +30,7 @@ import math
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -97,6 +98,14 @@ def load_env_file() -> dict[str, str]:
 # ingested three years of invoice history. Overriding via env is for probing;
 # the default must stay above 360s.
 POST_TIMEOUT_SECONDS = int(os.environ.get("GAS_POST_TIMEOUT_SECONDS", "600"))
+
+
+LOCKED_RETRY_SECONDS = 60
+
+
+def _sleep(seconds: float) -> None:
+    """Indirection so tests can stub the LOCKED back-off."""
+    time.sleep(seconds)
 
 
 def get_credential(name: str) -> str | None:
@@ -225,6 +234,9 @@ class BaseConnector:
     NAME: str = "base"  # session filename + log label
     SOURCE: str = "base"  # POST `source` field (and Suppliers dedup namespace)
     LOGIN_URL: str = ""  # portal login / landing URL
+    # When set, post() adds `"kind": KIND` to the payload (doPost kind dispatch).
+    # None keeps the default suppliers payload byte-identical.
+    KIND: str | None = None
 
     def __init__(self, exec_url: str | None = None):
         self.exec_url = exec_url or resolve_exec_url()
@@ -559,23 +571,46 @@ class BaseConnector:
                     f"connectors/gas/Code.gs and MAX_TOTAL here together. Nothing was posted."
                 )
 
+    @classmethod
+    def validate_rows(cls, rows: list[dict]) -> None:
+        """Local pre-POST row check. Default: every row needs a real `total`.
+        Connectors with a different row contract (no `total`) override this."""
+        cls._check_totals(rows)
+
+    def extra_payload(self) -> dict:
+        """Extra top-level payload fields merged into the POST body (e.g.
+        `allow_shrink`). Empty by default."""
+        return {}
+
     def post(self, rows: list[dict]) -> dict:
         if not rows:
             return {"result": "skipped", "reason": "no rows"}
         self._require_exec_url()
-        self._check_totals(rows)
+        self.validate_rows(rows)
         payload = {
             "source": self.SOURCE,
             "rows": rows,
             "extracted_at": datetime.now(SYD_TZ).isoformat(timespec="seconds"),
             "token": self._require_ingest_token(),
         }
-        resp = requests.post(self.exec_url, json=payload, timeout=POST_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        try:
-            body = resp.json()
-        except ValueError as err:
-            raise IngestError(f"GAS response not valid JSON: {resp.text[:200]}") from err
+        if self.KIND is not None:
+            payload["kind"] = self.KIND
+        payload.update(self.extra_payload())
+        # One LOCKED retry: another doPost holds the hub's write lock; it is
+        # transient by nature, so wait it out once and re-send.
+        for attempt in (0, 1):
+            resp = requests.post(self.exec_url, json=payload, timeout=POST_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            try:
+                body = resp.json()
+            except ValueError as err:
+                raise IngestError(f"GAS response not valid JSON: {resp.text[:200]}") from err
+            if body.get("code") == "LOCKED":
+                if attempt == 0:
+                    _sleep(LOCKED_RETRY_SECONDS)
+                    continue
+                raise IngestError("GAS stayed LOCKED after one retry. Nothing was written.")
+            break
         if body.get("result") != "ok":
             # A rejected token is not retryable and not degradable — say so
             # plainly rather than letting it read as an ingest data problem.
