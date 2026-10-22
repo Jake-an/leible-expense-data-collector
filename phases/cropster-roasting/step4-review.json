@@ -1,0 +1,19 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "scripts/register_cropster_task.ps1",
+      "line": 50,
+      "summary": "Registration does not resolve the python interpreter at registration time (scripts/register_shopspend_task.ps1 does, because Task Scheduler PATH can differ from the interactive session). The cropster runner calls bare python (scripts/run_cropster.cmd:20), so a PATH mismatch would fail every Monday with exit 9009 instead of exit 2.",
+      "suggestion": "Before step 5 registers the task, verify it runs under Task Scheduler (e.g. Start-ScheduledTask once, then check logs/cropster.log for an exit line other than 9009). Optionally mirror the shopspend pattern: resolve Get-Command python at registration and pass the full path in the action arguments."
+    },
+    {
+      "severity": "minor",
+      "file": "scripts/register_cropster_task.ps1",
+      "line": 36,
+      "summary": "The LogPath printed in the -WhatIf summary is a second hard-coded copy of the log path that run_cropster.cmd owns (LOG=logs\\cropster.log); the script never uses it for redirection.",
+      "suggestion": "Either drop the Log file line from the summary or add a comment that run_cropster.cmd is the source of truth, so the two literals cannot drift."
+    }
+  ]
+}

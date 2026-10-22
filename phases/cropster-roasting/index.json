@@ -161,7 +161,7 @@
     {
       "step": 4,
       "name": "schedule",
-      "status": "completed",
+      "status": "done_with_concerns",
       "summary": "Added run_cropster.cmd + register_cropster_task.ps1 (Mon 05:30, StartWhenAvailable, 30m limit; -WhatIf verified, nothing registered) and docs/rules.md section; GAS 3660, playwright 161, execute 288 pass.",
       "tdd": false,
       "tdd_reason": "ops wiring (cmd wrapper + Task Scheduler registration script), verified by -WhatIf",
@@ -170,7 +170,21 @@
         "PRD-25"
       ],
       "started_at": "2026-10-22T14:37:28+0900",
-      "completed_at": "2026-10-22T14:38:30+0900"
+      "completed_at": "2026-10-22T14:38:30+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 2,
+        "fix_rounds": 0,
+        "result_file": "phases/cropster-roasting/step4-review.json",
+        "checked_at": "2026-10-22T14:39:37+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] Registration does not resolve the python interpreter at registration time (scripts/register_shopspend_task.ps1 does, because Task Scheduler PATH can differ from the interactive session). The cropster runner calls bare python (scripts/run_cropster.cmd:20), so a PATH mismatch would fail every Monday with exit 9009 instead of exit 2.",
+        "[review] The LogPath printed in the -WhatIf summary is a second hard-coded copy of the log path that run_cropster.cmd owns (LOG=logs\\cropster.log); the script never uses it for redirection."
+      ]
     },
     {
       "step": 5,
@@ -180,7 +194,8 @@
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "test_cmd": null,
       "covers": [],
-      "covers_reason": "Operational deploy + live verification of PRD-23/24/25, staleness arming and task registration; no new feature code."
+      "covers_reason": "Operational deploy + live verification of PRD-23/24/25, staleness arming and task registration; no new feature code.",
+      "started_at": "2026-10-22T14:39:37+0900"
     }
   ]
 }
