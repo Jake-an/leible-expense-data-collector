@@ -66,7 +66,7 @@
     {
       "step": 2,
       "name": "gas-read",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -85,7 +85,8 @@
           "at": "2026-10-22T14:24:42+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "summary": "Added roastingRead_ (cropster.gs) + doGet fn=roasting dispatch + docs/api.md; test_code.js 3660 passed/0 failed; token-bypass mutation went red and was reverted."
     },
     {
       "step": 3,
