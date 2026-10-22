@@ -70,6 +70,16 @@ one attended pass is required:
    scripts/register_shopspend_task.ps1` (add `-WhatIf` first to preview what would be
    registered without applying it).
 
+## Cropster Weekly
+
+`scripts/run_cropster.cmd` runs `connectors/playwright/cropster.py` (cd to repo root, loads
+`.env`, appends to `logs\cropster.log`; exit 2 = BLOCKED, session expired/CAPTCHA, re-run with
+`--attended`). `scripts/register_cropster_task.ps1` registers the Task Scheduler task "LEIBLE
+Cropster Weekly" — Monday 05:30 local, `-StartWhenAvailable`, 30-minute limit, no secrets in the
+arguments. Preview with `-WhatIf`. Register only after the first attended login and a verified
+live pull (phase `cropster-roasting` step 5); the connector refetches a window, so a missed
+Monday self-heals.
+
 ## How to Apply
 - Is it secret or PII? → gitignore it.
 - Is it risky / irreversible / outward-facing? → confirm with Jake first.

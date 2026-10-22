@@ -161,7 +161,8 @@
     {
       "step": 4,
       "name": "schedule",
-      "status": "pending",
+      "status": "completed",
+      "summary": "Added run_cropster.cmd + register_cropster_task.ps1 (Mon 05:30, StartWhenAvailable, 30m limit; -WhatIf verified, nothing registered) and docs/rules.md section; GAS 3660, playwright 161, execute 288 pass.",
       "tdd": false,
       "tdd_reason": "ops wiring (cmd wrapper + Task Scheduler registration script), verified by -WhatIf",
       "test_cmd": null,
