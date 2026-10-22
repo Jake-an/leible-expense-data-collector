@@ -1,0 +1,12 @@
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "important",
+      "file": "connectors/gas/cropster.gs",
+      "line": 156,
+      "summary": "roastingUpsert_ writes with getRange(1,1,out.length,width) but never grows the sheet grid. The Roasting tab is created with the default ~1000 rows and rows are never purged, so once the kept+batch rows exceed the grid, every post throws 'exceeds grid limits' and ingest stops permanently (the write is atomic, so no corruption, but no data lands).",
+      "suggestion": "Before the setValues, if out.length > sheet.getMaxRows(), call sheet.insertRowsAfter(sheet.getMaxRows(), out.length - sheet.getMaxRows()) (or sheet.setRowCount(out.length)). Add a test that seeds the mock sheet near its max rows and asserts a post still lands. Alternatively document a retention cap in docs/schema.md."
+    }
+  ]
+}

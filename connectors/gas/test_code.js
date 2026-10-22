@@ -18309,6 +18309,7 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     refused('in-payload duplicate key', body([row(), row({ green_kg_in: 9 })]), 'duplicate');
     refused('allow_shrink non-boolean', body([row()], { allow_shrink: 'true' }), 'allow_shrink');
     check('allow_shrink boolean accepted', validate(body([row()], { allow_shrink: true })).ok === true);
+    refused('empty rows (review r2: no healthy heartbeat for a zero-row scrape)', body([]), 'roasting_empty');
   });
 
   section('auth / routing / parity', function () {
@@ -18356,6 +18357,15 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     eq('week absent from 2nd post untouched', s.filter((x) => x.week === W2).map((x) => x.profile + ':' + x.out), ['Alpha:70']);
     eq('untouched week keeps its original pulled_at', s.filter((x) => x.week === W2)[0].pulled, stampOf(NOW));
     eq('replaced week gets the new server pulled_at', s.filter((x) => x.week === W1)[0].pulled, stampOf(NOW2));
+    freshSheets();
+    const fx = '=HYPERLINK("x")';
+    const g1 = post(body([rowFor(W1, fx, 50)]), NOW);
+    const g2 = post(body([rowFor(W1, fx, 50)]), NOW2);
+    eq('guarded profile first post rowsAdded 1', g1.rowsAdded, 1);
+    eq('guarded profile re-post rowsUpdated 1 (key unguarded on read-back)', g2.rowsUpdated, 1);
+    eq('guarded profile re-post rowsAdded 0', g2.rowsAdded, 0);
+    freshSheets();
+    post(body([rowFor(W1, 'Alpha', 85)]), NOW);
     const forged = post(body([row({ pulled_at: '2099-01-01T00:00:00+10:00' })]), NOW2);
     check('client cannot set pulled_at (refused)', forged.result === 'error' && /pulled_at/.test(forged.message || ''));
     check('no 2099 pulled_at stored', stored().every((x) => String(x.pulled).indexOf('2099') === -1));

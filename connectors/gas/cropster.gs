@@ -26,6 +26,9 @@ function roastingIsKg_(v) {
 
 /** Payload-level checks that need no row walk. Returns a message or ''. */
 function roastingPayloadRefusal_(body) {
+  if (body.rows.length === 0) {
+    return 'roasting_empty: a roasting post needs at least one row';
+  }
   if (body.rows.length > ROASTING_MAX_ROWS_) {
     return 'roasting payload has ' + body.rows.length + ' rows; at most ' + ROASTING_MAX_ROWS_ + ' per payload (refused, not truncated)';
   }
@@ -117,7 +120,7 @@ function roastingUpsert_(sheet, rows, opts) {
     row[0] = coerceDateStr_(row[0]);
     if (batchWeeks[row[0]]) {
       oldSum[row[0]] += Number(row[3]) || 0;
-      oldKeys[row[0] + '||' + row[1]] = true;
+      oldKeys[row[0] + '||' + sheetUnguardCell_(row[1])] = true;
     } else {
       kept.push(row);
     }
@@ -161,7 +164,7 @@ function roastingUpsert_(sheet, rows, opts) {
 
   var firstBlank = body.length + 2;
   if (oldHeight >= firstBlank) {
-    try { sheet.deleteRows(firstBlank, oldHeight - firstBlank + 1); } catch (err) { /* blanks are skipped on read */ }
+    try { sheet.deleteRows(firstBlank, oldHeight - firstBlank + 1); } catch (err) { Logger.log('roastingUpsert_: trailing-blank trim failed — ' + err); }
   }
   return { rowsAdded: added, rowsUpdated: updated, weeks: weekList.sort() };
 }
