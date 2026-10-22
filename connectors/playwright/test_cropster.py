@@ -640,9 +640,15 @@ class _AuthExpect:
 
 
 class _AuthPage:
-    def __init__(self, status=None, goto_raises=False, expect_raises=False, captcha=False):
+    def __init__(self, status=None, goto_raises=False, expect_raises=False, captcha=False,
+                 stays_on_login=False):
         self.status, self.goto_raises = status, goto_raises
         self.expect_raises, self.captcha = expect_raises, captcha
+        self.stays_on_login = stays_on_login
+
+    def wait_for_url(self, *a, **kw):
+        if self.stays_on_login:
+            raise TimeoutError("still on /app/login")
 
     def expect_response(self, *a, **kw):
         if self.expect_raises:
@@ -691,6 +697,21 @@ def test_credentials_login_returns_is_logged_in_result(monkeypatch):
     monkeypatch.setattr(cropster, "_form_login", lambda *a, **kw: None)
     assert _connector().credentials_login(_AuthPage(status=200)) is True
     assert _connector().credentials_login(_AuthPage(status=401)) is False
+
+
+def test_credentials_login_false_when_signin_never_redirects(monkeypatch):
+    monkeypatch.setattr(cropster, "get_credential", lambda k: "dummy")
+    monkeypatch.setattr(cropster, "_form_login", lambda *a, **kw: None)
+    assert _connector().credentials_login(_AuthPage(status=200, stays_on_login=True)) is False
+
+
+def test_replay_headers_drops_pseudo_cookie_host_length():
+    got = cropster.replay_headers({
+        ":authority": "x", ":method": "GET", ":path": "/p", ":scheme": "https",
+        "cookie": "c=1", "Host": "h", "content-length": "0",
+        "cropster-authenticate": "dummy", "client-version": "v", "accept": "a",
+    })
+    assert got == {"cropster-authenticate": "dummy", "client-version": "v", "accept": "a"}
 
 
 @pytest.mark.parametrize("loss", [-0.01, 100.01])

@@ -46,6 +46,17 @@ DEFAULT_WEEKS = 2
 BACKFILL_WEEKS = 12
 # Headers the browser adds itself; everything else the page sent is replayed.
 _DROP_HEADERS = {"cookie", "host", "content-length"}
+def replay_headers(all_headers: dict) -> dict:
+    """Headers to replay on explicit API calls: drop cookies/host/length (the
+    request context supplies them) and HTTP/2 pseudo-headers (':authority',
+    ':method', ...), which Playwright refuses as header names."""
+    return {
+        k: v
+        for k, v in all_headers.items()
+        if not k.startswith(":") and k.lower() not in _DROP_HEADERS
+    }
+
+
 ROW_KEYS = (
     "date",
     "week_start",
@@ -252,12 +263,20 @@ class CropsterConnector(BaseConnector):
             self.LOGIN_URL,
             email or "",
             password or "",
-            'input[type="email"], input[name="username"], input[name="email"]',
-            'input[type="password"]',
-            'button[type="submit"]',
+            "#username",
+            "#password",
+            # The real submit is a visible type=button "Login"; the form's
+            # type=submit button is hidden (live login page, 2026-10-22).
+            'form button:has-text("Login"):visible',
         )
         if page.query_selector('iframe[src*="captcha"]'):
             self.mark_blocked("CAPTCHA presented — run --attended")
+        # The SPA signs in asynchronously (auth.cropster.com) then redirects to
+        # /apps/...; navigating before that redirect aborts the sign-in.
+        try:
+            page.wait_for_url("**/apps/**", timeout=30000)
+        except Exception:  # noqa: BLE001 - still on /app/login == rejected
+            return False
         return self.is_logged_in(page)
 
     # ---- browser flow ---------------------------------------------------- #
@@ -272,9 +291,7 @@ class CropsterConnector(BaseConnector):
                 f"{self.LOGIN_URL}?dateFrom={first.isoformat()}&dateTo={last_day.isoformat()}"
             )
         # In memory only. Never logged, printed or written to disk.
-        headers = {
-            k: v for k, v in info.value.all_headers().items() if k.lower() not in _DROP_HEADERS
-        }
+        headers = replay_headers(info.value.all_headers())
 
         rows: list[dict] = []
         for wk in weeks:
