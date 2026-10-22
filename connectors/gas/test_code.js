@@ -3570,8 +3570,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // to STALENESS_SOURCES now reds this test instead of passing silently.
   var NOT_YET_ARMED = {
     roastery: "RE-ADD 'roastery' when the roastery/invoices Gmail label exists, installRoasteryTrigger() has run, and a real vendor parser ships",
-    recurring: "RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run",
-    cropster: "cropster: arm (add to STALENESS_SOURCES + override 192h) only after the first clean live pull stamps LAST_INGEST_cropster — phases/cropster-roasting step 5"
+    recurring: "RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run"
   };
   var stalenessArmSrc = fs.readFileSync(path.join(GAS_DIR, 'staleness.gs'), 'utf8');
 
@@ -3625,8 +3624,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // --- NOT_YET_ARMED must be untouched by this step — exactly roastery and
   // recurring, both RE-ADD lines still verbatim in staleness.gs (asserted per-
   // source in the loop above; this is the "exactly these two" complement). ---
-  eq('NOT_YET_ARMED contains exactly cropster, recurring and roastery',
-    Object.keys(NOT_YET_ARMED).sort(), ['cropster', 'recurring', 'roastery']);
+  eq('NOT_YET_ARMED contains exactly recurring and roastery (cropster armed 2026-10-22)',
+    Object.keys(NOT_YET_ARMED).sort(), ['recurring', 'roastery']);
 })();
 
 (function testCoffeeOrderAppContract() {
@@ -18442,7 +18441,8 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     post(body([row()]));
     check('LAST_INGEST_cropster stamped after an ok post', !!scriptProps[STALENESS_HEARTBEAT_PREFIX + 'cropster']);
     delete scriptProps[STALENESS_HEARTBEAT_PREFIX + 'cropster'];
-    check('cropster NOT in STALENESS_SOURCES (not yet armed)', STALENESS_SOURCES.indexOf('cropster') === -1);
+    check('cropster armed in STALENESS_SOURCES', STALENESS_SOURCES.indexOf('cropster') !== -1);
+    eq('cropster staleness threshold 192h', STALENESS_THRESHOLD_OVERRIDES.cropster, 192);
   });
 })();
 
@@ -18567,6 +18567,15 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     scriptProps = savedProps;
     freshSheets();
   }
+})();
+
+// cropster-roasting step 5 — staleness alert names --backfill for cropster only
+(function () {
+  console.log('\ncropster staleness alert hint:');
+  const cro = stalenessEventBody_({ source: 'cropster', age: '9 days' }, 192).join('\n');
+  const oth = stalenessEventBody_({ source: 'fresh_and_chill', age: '5 days' }, 96).join('\n');
+  check('cropster alert names --backfill', /cropster\.py --backfill/.test(cro));
+  check('other sources do not get the cropster hint', !/--backfill/.test(oth));
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

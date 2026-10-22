@@ -59,7 +59,11 @@ var STALENESS_THRESHOLD_OVERRIDES = {
   // slack stays silent, while a skipped Monday raises the alert by the following
   // Tuesday's 11:00 check. Armed in STALENESS_SOURCES below; the first live post
   // is made on deploy day so a never-seen source cannot alert before its first stamp.
-  brighthr_roster: 192
+  brighthr_roster: 192,
+  // Cropster Playwright connector, Mon 05:30 (StartWhenAvailable). Same weekly
+  // arithmetic as brighthr_roster: one missed Monday alerts by the next Tuesday.
+  // Armed 2026-10-22 after the first clean live pull (phases/cropster-roasting step 5).
+  cropster: 192
 };
 // Every source that stamps a heartbeat is watched — at the 96h default or a
 // per-source override above. Deliberately excluded:
@@ -82,12 +86,12 @@ var STALENESS_THRESHOLD_OVERRIDES = {
 //   above is deliberately kept as pre-staged config (not dead config) so
 //   re-arming cannot trade "unwatched" for "cries wolf daily".
 //   RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run
-//   cropster: arm (add to STALENESS_SOURCES + override 192h) only after the first clean live pull stamps LAST_INGEST_cropster — phases/cropster-roasting step 5
 //   Both stay in STAMPS_HEARTBEAT (test_code.js) under NOT_YET_ARMED, whose
 //   guard requires each RE-ADD line above to appear here VERBATIM — so arming
 //   either feed without re-adding it to this array reds the suite.
 var STALENESS_SOURCES = ['food_dairy_co', 'fresh_and_chill', 'ordermentum', 'square', 'mayers',
-  'shopify_orderapp', 'greenbean', 'coffee_order_app', 'brighthr_roster', 'shopcoffee'];
+  'shopify_orderapp', 'greenbean', 'coffee_order_app', 'brighthr_roster', 'shopcoffee',
+  'cropster'];
 var STALENESS_HEARTBEAT_PREFIX = 'LAST_INGEST_';
 
 /* ------------------------------------------------------------------ *
@@ -304,7 +308,11 @@ function stalenessEventBody_(entry, thresholdHours) {
     '    check the time trigger still exists and is not disabled)',
     '',
     'If the portal session expired, re-auth with: --attended'
-  ];
+  ].concat(entry.source === 'cropster' ? [
+    // The scheduled run re-pulls only the 2 newest weeks: after 2+ missed
+    // Mondays the gap needs an explicit 12-week re-pull.
+    'cropster: after 2+ missed Mondays run: python connectors/playwright/cropster.py --backfill'
+  ] : []);
 }
 
 /* ------------------------------------------------------------------ *
