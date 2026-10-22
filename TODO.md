@@ -18,6 +18,9 @@
 
 ## Active
 
+- [ ] **Cropster roast kg (P4 + GM E2) — waiting on Cropster.** API is a paid add-on; request email is in Jake's Gmail drafts (id `r8402483921906550977`, to api@cropster.com) — Jake sends + decides on cost. When creds land: scaffold `cropster-roasting` phase (PRD-23/24 already in docs/PRD.md; design + endpoint notes in plan `~/.claude/plans/hey-i-want-to-unified-alpaca.md` P4), then GM monitor E2 replaces the 'roasted kg: not yet connected' line. Register `cropster` staleness only after the first clean pull.
+- [ ] **Shop coffee kg — first scheduled run Mon 06:30 + GM email Mon 08:00.** Check the ShopCoffee tab got the new week and the GM email shows the 'Shop coffee kg' table (York / Pitt / Crowsnest / North=Leible Blue). Crows Nest orders only some weeks (5/12) — zeros are real, not a bug.
+
 ### 🔧 Shopify online revenue — late-refund repair + pre-W28 gap
 
 - [x] **W29 (week 2026-07-13) froze $101 high — repair path built 2026-09-10.**
