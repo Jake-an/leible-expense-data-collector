@@ -189,20 +189,20 @@
     {
       "step": 5,
       "name": "deploy-live",
-      "status": "blocked",
-      "blocked_reason": "Credential gate (plan step 5 a): cannot confirm INGEST_TOKEN_CROPSTER is in GAS Script Properties and .env, nor CROPSTER_EMAIL/CROPSTER_PASSWORD (or a saved session from `python connectors/playwright/cropster.py --attended --dry-run`). Reading .env was permission-denied in this run and the Script Property cannot be probed before Deploy 1 (fn=roasting is not live yet). Jake: (1) set Script Property INGEST_TOKEN_CROPSTER in the GAS editor (Project Settings > Script Properties); (2) put the same value in .env as INGEST_TOKEN_CROPSTER, plus CROPSTER_EMAIL/CROPSTER_PASSWORD or run the attended login; (3) re-dispatch step 5. Nothing deployed, tagged, registered or posted.",
+      "status": "completed",
       "tdd": false,
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "test_cmd": null,
       "covers": [],
       "covers_reason": "Operational deploy + live verification of PRD-23/24/25, staleness arming and task registration; no new feature code.",
       "started_at": "2026-10-22T14:39:37+0900",
-      "blocked_at": "2026-10-22T14:40:19+0900",
       "last_failure": {
         "step_file_sha256": "c3d836960d0e597efcbbe4750e5b9d33bc7c6377c527b89479dcdba65c33ca11",
         "model": "sonnet",
         "at": "2026-10-22T14:40:19+0900"
-      }
+      },
+      "completed_at": "2026-10-22T17:05:00+1100",
+      "summary": "Executed inline by the orchestrator (headless executor could not read .env). Deploy 1 @64 (audit APPROVE seq 7, full) -> smoke OK -> token proven (no write) -> live --backfill rowsAdded 122 -> fn=roasting 12 weeks -> Chrome spot-check 12-18 Oct matches. Deploy 2 @65 (staleness armed 192h, audit APPROVE seq 8, scoped) -> smoke OK. Task LEIBLE Cropster Weekly registered Mon 05:30, test-fired: LastTaskResult 0, rowsUpdated 22, rowsAdded 0. Live fixes found by dry run: bae5f67, fc8d117."
     }
   ]
 }

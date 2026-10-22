@@ -18,6 +18,7 @@ Central hub that pulls expense + sales data from multiple suppliers into one Goo
 | Kent Paper | Portal login | Playwright |
 | Tuga Pastry | Ordermentum app | Playwright |
 | Butterboy | Ordermentum app | Playwright |
+| Cropster (roast kg, `Roasting` tab) | Production Report (internal JSON, saved session) | Playwright — Mon 05:30 task `LEIBLE Cropster Weekly` |
 
 Labour: by default this collector reads the Onboarding app's `LABOUR_COST` via `LABOUR_SHEET_ID` (ADR-007). Behind `LABOUR_SOURCE=clock` (+ `CLOCK_START_WEEK`), `live` locations are costed here from the Labour Sheet instead (`labour_weekly.gs`, ADR-011).
 

@@ -18,7 +18,8 @@
 
 ## Active
 
-- [ ] **Cropster roast kg (P4 + GM E2) — FREE Playwright route (decided 2026-10-22).** Jake rejected the paid API add-on (~€100/mo; LEIBLE is on legacy *Roast Foundation*, no API) as "very costy" and chose "go option 1": a weekly Playwright connector (`connectors/playwright/`, saved session, creds in `.env` typed by Jake) reads Cropster Reports > Production Report (`c-sar.cropster.com/apps/roast/production-report`, date range = last Mon–Sun, By-profile table + Export > Excel .xls) → doPost → `Roasting` tab → `fn=roasting` → GM E2 line. Next: `/grill` then plan (grill deferred to next session by Jake). Gmail draft `r8402483921906550977` left UNSENT (not needed). Anchor: W 16–22 Oct = 353.7 kg / 35 batches / 387 kg green / 6.27% loss. Register `cropster` staleness only after the first clean pull.
+- [x] **Cropster roast kg — LIVE 2026-10-22 (phase `cropster-roasting`, PRD-23/24/25 built).** Hub @65: Playwright `cropster.py` → doPost `roasting` → `Roasting` tab (12 weeks backfilled, 122 rows; 12–18 Oct verified vs Cropster UI) → `fn=roasting`. Task `LEIBLE Cropster Weekly` Mon 05:30 (StartWhenAvailable) re-pulls the 2 newest weeks; `--backfill` after 2+ missed Mondays. Staleness armed 192h. GM E2 line: see LEIBLE_GM_COST_MONITOR.
+- [ ] **Verify first scheduled Cropster run — Mon 2026-10-26 05:30.** `logs/cropster.log` shows weeks 10-12 + 10-19 posted (rowsAdded/Updated), Task Scheduler LastTaskResult 0, `fn=roasting` default week = 2026-10-19, GM 08:00 email shows the real 'LEIBLE roasted kg (total)'.
 - [ ] **Shop coffee kg — first scheduled run Mon 06:30 + GM email Mon 08:00.** Check the ShopCoffee tab got the new week and the GM email shows the 'Shop coffee kg' table (York / Pitt / Crowsnest / North=Leible Blue). Crows Nest orders only some weeks (5/12) — zeros are real, not a bug.
 
 ### 🔧 Shopify online revenue — late-refund repair + pre-W28 gap
