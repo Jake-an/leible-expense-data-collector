@@ -444,6 +444,7 @@ load('labour_setup.gs');  // Labour Sheet one-off setup (Phase 1)
 load('labour_roster.gs');  // doPost roster kind -> Labour Sheet CLOCK_RAW (Amendment B1)
 load('labour_weekly.gs');  // Phase 3: weeklySummarize wiring behind LABOUR_SOURCE
 load('shopcoffee.gs');  // shop-coffee-kg step 1: pure SKU->kg classifier
+load('cropster.gs');  // cropster-roasting step 1: doPost kind=roasting -> Roasting tab
 
 /* ------------------------------------------------------------------ *
  * Tiny test harness
@@ -3543,7 +3544,7 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   console.log('\nstaleness — every heartbeat source is watched:');
 
   var STAMPS_HEARTBEAT = ['square', 'mayers', 'roastery', 'recurring', 'shopspend', 'shopify_orderapp', 'greenbean',
-    'coffee_order_app', 'brighthr_roster', 'shopcoffee'];
+    'coffee_order_app', 'brighthr_roster', 'shopcoffee', 'cropster'];
   var EXEMPT = {
     shopspend: 'has its own dedicated weekly watchdog trigger (shopSpendWatchdog, Mon 14:00) reading ShopSpendPulls'
   };
@@ -3560,7 +3561,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // to STALENESS_SOURCES now reds this test instead of passing silently.
   var NOT_YET_ARMED = {
     roastery: "RE-ADD 'roastery' when the roastery/invoices Gmail label exists, installRoasteryTrigger() has run, and a real vendor parser ships",
-    recurring: "RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run"
+    recurring: "RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run",
+    cropster: "cropster: arm (add to STALENESS_SOURCES + override 192h) only after the first clean live pull stamps LAST_INGEST_cropster — phases/cropster-roasting step 5"
   };
   var stalenessArmSrc = fs.readFileSync(path.join(GAS_DIR, 'staleness.gs'), 'utf8');
 
@@ -3614,8 +3616,8 @@ const OLD_SUMMARY_HEADERS = ['week_start', 'week_end', 'supplier', 'location', '
   // --- NOT_YET_ARMED must be untouched by this step — exactly roastery and
   // recurring, both RE-ADD lines still verbatim in staleness.gs (asserted per-
   // source in the loop above; this is the "exactly these two" complement). ---
-  eq('NOT_YET_ARMED still contains exactly roastery and recurring',
-    Object.keys(NOT_YET_ARMED).sort(), ['recurring', 'roastery']);
+  eq('NOT_YET_ARMED contains exactly cropster, recurring and roastery',
+    Object.keys(NOT_YET_ARMED).sort(), ['cropster', 'recurring', 'roastery']);
 })();
 
 (function testCoffeeOrderAppContract() {
@@ -18214,6 +18216,204 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     scriptProps = savedProps;
     freshSheets();
   }
+})();
+
+/* ------------------------------------------------------------------ *
+ * cropster-roasting step 1 — doPost kind=roasting -> Roasting tab (PRD-23)
+ * ------------------------------------------------------------------ */
+(function testRoastingIngest() {
+  console.log('\ncropster roasting — doPost kind=roasting:');
+  const NOW = '2026-10-22T10:00:00+10:00';        // Thu; current Sydney Monday = 2026-10-19
+  const NOW2 = '2026-10-22T15:30:00+10:00';
+  const W0 = '2026-10-19', W1 = '2026-10-12', W2 = '2026-10-05';
+  const stampOf = (iso) => withMockNow(iso, () => ingestServerStamp_());
+
+  // A throw inside one section must register as ONE failure, not abort the suite.
+  function section(name, fn) {
+    try { fn(); } catch (err) { check(name + ' — section threw: ' + (err && err.message), false); }
+  }
+  const row = (over) => Object.assign({
+    date: W1, week_start: W1, profile: 'Alpha', green_kg_in: 100, roasted_kg_out: 85, weight_loss_pct: 15, batch_count: 4
+  }, over || {});
+  const rowFor = (week, profile, out) => ({
+    date: week, week_start: week, profile: profile, green_kg_in: out + 15, roasted_kg_out: out, weight_loss_pct: 15, batch_count: 3
+  });
+  const body = (rows, extra) => Object.assign({ source: 'cropster', kind: 'roasting', rows: rows }, extra || {});
+  const validate = (b) => withMockNow(NOW, () => validateIngest_(b));
+  const post = (b, now) => withMockNow(now || NOW, () => doPostJson(b));
+  function refused(name, b, frag) {
+    const r = validate(b);
+    check(name + ' → refused', r.ok === false);
+    check(name + " → message names '" + frag + "' (got " + JSON.stringify(r.message) + ')',
+      r.ok === false && String(r.message).toLowerCase().indexOf(frag.toLowerCase()) !== -1);
+  }
+  function stored() {
+    const sh = currentSS.getSheetByName('Roasting');
+    if (!sh) return null;
+    return sh._rows.slice(1)
+      .filter((r) => r[0] !== '' && r[0] !== undefined)
+      .map((r) => ({ week: cellDate(r[0]), profile: r[1], green: r[2], out: r[3], loss: r[4], n: r[5], pulled: r[6] }));
+  }
+  const sumOut = () => stored().reduce((a, r) => a + r.out, 0);
+
+  section('fields', function () {
+    check('valid payload accepted', validate(body([row()])).ok === true);
+    refused('week_start not a Monday', body([row({ date: '2026-10-13', week_start: '2026-10-13' })]), 'Monday');
+    refused('date != week_start', body([row({ date: W2 })]), 'date');
+    refused('unknown row field', body([row({ extra: 1 })]), 'unknown field');
+    refused('pulled_at in row', body([row({ pulled_at: '2026-10-22T00:00:00+10:00' })]), 'pulled_at');
+    refused('empty-string department in row', body([row({ department: '' })]), 'department');
+    refused('department Roastery in row', body([row({ department: 'Roastery' })]), 'writes no department column');
+    refused('empty profile', body([row({ profile: '' })]), 'profile');
+    refused('201-char profile', body([row({ profile: 'x'.repeat(201) })]), 'profile');
+    check('200-char profile accepted', validate(body([row({ profile: 'x'.repeat(200) })])).ok === true);
+    ['green_kg_in', 'roasted_kg_out'].forEach(function (f) {
+      [['"5"', '5'], ['NaN', NaN], ['Infinity', Infinity], ['-1', -1], ['100001', 100001]].forEach(function (c) {
+        const o = {}; o[f] = c[1];
+        refused(f + ' = ' + c[0], body([row(o)]), f);
+      });
+      const z = {}; z[f] = 0;
+      check(f + ' = 0 accepted', validate(body([row(z)])).ok === true);
+    });
+    refused('batch_count 1.5', body([row({ batch_count: 1.5 })]), 'batch_count');
+    refused('batch_count -1', body([row({ batch_count: -1 })]), 'batch_count');
+    refused('batch_count as string', body([row({ batch_count: '4' })]), 'batch_count');
+    refused('loss 101', body([row({ weight_loss_pct: 101 })]), 'weight_loss_pct');
+    refused('loss -0.1', body([row({ weight_loss_pct: -0.1 })]), 'weight_loss_pct');
+    check('loss null accepted', validate(body([row({ weight_loss_pct: null })])).ok === true);
+    refused('missing field (no batch_count)', body([(function () { const r = row(); delete r.batch_count; return r; })()]), 'batch_count');
+  });
+
+  section('window and size', function () {
+    refused('week after the current week', body([row({ date: '2026-10-26', week_start: '2026-10-26' })]), 'current week');
+    check('current week accepted', validate(body([row({ date: W0, week_start: W0 })])).ok === true);
+    refused('17 weeks back', body([row({ date: '2026-06-22', week_start: '2026-06-22' })]), '16 weeks');
+    check('exactly 16 weeks back accepted', validate(body([row({ date: '2026-06-29', week_start: '2026-06-29' })])).ok === true);
+    const weeks = [];
+    for (let i = 0; i < 14; i++) { weeks.push(new Date(Date.UTC(2026, 9, 19) - i * 7 * 86400000).toISOString().slice(0, 10)); }
+    refused('14 distinct weeks', body(weeks.map((w) => rowFor(w, 'P', 10))), 'distinct weeks');
+    check('13 distinct weeks accepted', validate(body(weeks.slice(0, 13).map((w) => rowFor(w, 'P', 10)))).ok === true);
+    const many = [];
+    for (let i = 0; i < 501; i++) many.push(rowFor(W1, 'P' + i, 1));
+    refused('501 rows (refused, not truncated)', body(many), '500');
+    check('500 rows accepted', validate(body(many.slice(0, 500))).ok === true);
+    refused('in-payload duplicate key', body([row(), row({ green_kg_in: 9 })]), 'duplicate');
+    refused('allow_shrink non-boolean', body([row()], { allow_shrink: 'true' }), 'allow_shrink');
+    check('allow_shrink boolean accepted', validate(body([row()], { allow_shrink: true })).ok === true);
+  });
+
+  section('auth / routing / parity', function () {
+    freshSheets();
+    const bad = post(body([row()], { token: 'wrong' }));
+    eq('wrong token → UNAUTHORIZED', bad.code, 'UNAUTHORIZED');
+    const asSuppliers = post({ source: 'cropster', kind: 'suppliers', rows: [{ date: W1, total: 5 }] });
+    check('cropster token posting kind=suppliers → refused', asSuppliers.result === 'error' && /not permitted for source cropster/.test(asSuppliers.message || ''));
+    const other = post({ source: 'food_dairy_co', kind: 'roasting', rows: [row()] });
+    check('another source posting kind=roasting → refused', other.result === 'error' && /not permitted for source food_dairy_co/.test(other.message || ''));
+    eq('cropster token property', INGEST_SOURCES_.cropster, 'INGEST_TOKEN_CROPSTER');
+    check('cropster department binding is own-key null', Object.prototype.hasOwnProperty.call(INGEST_SOURCE_DEPARTMENTS_, 'cropster') && INGEST_SOURCE_DEPARTMENTS_.cropster === null);
+    eq('cropster kind binding is exactly [roasting]', INGEST_SOURCE_KINDS_.cropster, ['roasting']);
+    eq('3 tables cover each other (departments)', Object.keys(INGEST_SOURCE_DEPARTMENTS_).sort(), Object.keys(INGEST_SOURCES_).sort());
+    eq('3 tables cover each other (kinds)', Object.keys(INGEST_SOURCE_KINDS_).sort(), Object.keys(INGEST_SOURCES_).sort());
+  });
+
+  section('end-to-end doPost', function () {
+    freshSheets();
+    const suppliersBefore = currentSS.getSheetByName('Suppliers')._rows.length;
+    const salesBefore = currentSS.getSheetByName('Sales')._rows.length;
+    const r = post(body([rowFor(W1, 'Alpha', 85), rowFor(W1, 'Beta', 40), rowFor(W2, 'Alpha', 70)]));
+    eq('doPost → result ok', r.result, 'ok');
+    eq('rowsAdded 3', r.rowsAdded, 3);
+    const sh = currentSS.getSheetByName('Roasting');
+    check('Roasting tab created', !!sh);
+    eq('Roasting headers', sh._rows[0], ['week_start', 'profile', 'green_kg_in', 'roasted_kg_out', 'weight_loss_pct', 'batch_count', 'pulled_at']);
+    eq('3 data rows landed', stored().length, 3);
+    check('no department column anywhere', sh._rows[0].indexOf('department') === -1 && sh._rows.every((rw) => rw.indexOf('Roastery') === -1 && rw.indexOf('Cafe') === -1));
+    eq('sorted by week_start then profile', stored().map((x) => x.week + '|' + x.profile), [W2 + '|Alpha', W1 + '|Alpha', W1 + '|Beta']);
+    eq('pulled_at is the server stamp', stored()[0].pulled, stampOf(NOW));
+    eq('Suppliers row count unchanged', currentSS.getSheetByName('Suppliers')._rows.length, suppliersBefore);
+    eq('Sales row count unchanged', currentSS.getSheetByName('Sales')._rows.length, salesBefore);
+  });
+
+  section('upsert (sequential posts)', function () {
+    freshSheets();
+    post(body([rowFor(W1, 'Alpha', 85), rowFor(W1, 'Beta', 40), rowFor(W2, 'Alpha', 70)]), NOW);
+    const r2 = post(body([rowFor(W1, 'Alpha', 90), rowFor(W1, 'Gamma', 45)]), NOW2);
+    eq('2nd post ok', r2.result, 'ok');
+    const s = stored();
+    eq('re-post updates in place, renamed profile leaves no orphan (W1 = Alpha, Gamma)',
+      s.filter((x) => x.week === W1).map((x) => x.profile + ':' + x.out), ['Alpha:90', 'Gamma:45']);
+    eq('no duplicate keys', new Set(s.map((x) => x.week + '||' + x.profile)).size, s.length);
+    eq('week absent from 2nd post untouched', s.filter((x) => x.week === W2).map((x) => x.profile + ':' + x.out), ['Alpha:70']);
+    eq('untouched week keeps its original pulled_at', s.filter((x) => x.week === W2)[0].pulled, stampOf(NOW));
+    eq('replaced week gets the new server pulled_at', s.filter((x) => x.week === W1)[0].pulled, stampOf(NOW2));
+    const forged = post(body([row({ pulled_at: '2099-01-01T00:00:00+10:00' })]), NOW2);
+    check('client cannot set pulled_at (refused)', forged.result === 'error' && /pulled_at/.test(forged.message || ''));
+    check('no 2099 pulled_at stored', stored().every((x) => String(x.pulled).indexOf('2099') === -1));
+  });
+
+  section('atomicity', function () {
+    freshSheets();
+    post(body([rowFor(W1, 'Alpha', 85), rowFor(W1, 'Beta', 40), rowFor(W1, 'Gamma', 45), rowFor(W2, 'Alpha', 70)]), NOW);
+    const sh = currentSS.getSheetByName('Roasting');
+    const snapshot = JSON.stringify(sh._rows);
+    const origGetRange = sh.getRange;
+    sh.getRange = function () {
+      const c = origGetRange.apply(sh, arguments);
+      return Object.assign({}, c, { setValues: function () { throw new Error('injected setValues failure'); } });
+    };
+    let failed1;
+    try { failed1 = post(body([rowFor(W1, 'Alpha', 90), rowFor(W1, 'Beta', 45)]), NOW2); } finally { sh.getRange = origGetRange; }
+    check('setValues throw → not ok', failed1.result === 'error');
+    eq('setValues throw → prior rows intact', JSON.stringify(sh._rows), snapshot);
+
+    // Trim failure: W1 shrinks 3 -> 2 profiles, so a blank tail row exists to trim.
+    const origDeleteRows = sh.deleteRows;
+    let trimAttempted = false;
+    sh.deleteRows = function () { trimAttempted = true; throw new Error('injected trim failure'); };
+    let r2;
+    try { r2 = post(body([rowFor(W1, 'Alpha', 90), rowFor(W1, 'Beta', 45)]), NOW2); } finally { sh.deleteRows = origDeleteRows; }
+    check('trim was attempted (non-vacuous)', trimAttempted === true);
+    eq('trim throw never fails the post', r2.result, 'ok');
+    const s = stored();
+    eq('no duplicate keys after trim failure', new Set(s.map((x) => x.week + '||' + x.profile)).size, s.length);
+    eq('Σ roasted over the tab = 90+45+70', sumOut(), 205);
+  });
+
+  section('shrink guard', function () {
+    freshSheets();
+    post(body([rowFor(W1, 'Alpha', 60), rowFor(W1, 'Beta', 40), rowFor(W2, 'Alpha', 70)]), NOW);
+    const before = JSON.stringify(currentSS.getSheetByName('Roasting')._rows);
+    const cut = post(body([rowFor(W1, 'Alpha', 40), rowFor(W0, 'Alpha', 33)]), NOW2);
+    check('Σ cut below 50% → refused', cut.result === 'error');
+    check('message names the shrunk week', String(cut.message).indexOf(W1) !== -1);
+    check('message is the shrink refusal', /shrink/i.test(String(cut.message)));
+    eq('nothing written (incl. the other week in the payload)', JSON.stringify(currentSS.getSheetByName('Roasting')._rows), before);
+    const allowed = post(body([rowFor(W1, 'Alpha', 40), rowFor(W0, 'Alpha', 33)], { allow_shrink: true }), NOW2);
+    eq('allow_shrink:true → accepted', allowed.result, 'ok');
+    eq('shrunk week written', stored().filter((x) => x.week === W1).map((x) => x.out), [40]);
+    const half = post(body([rowFor(W1, 'Alpha', 20)]), NOW2);
+    eq('exactly 50% of stored Σ (40 -> 20) accepted', half.result, 'ok');
+    const above = post(body([rowFor(W2, 'Alpha', 60)]), NOW2);
+    eq('>=50% case (70 -> 60) accepted', above.result, 'ok');
+  });
+
+  section('formula injection', function () {
+    freshSheets();
+    const r = post(body([row({ profile: '=HYPERLINK("x")' })]));
+    eq('formula-looking profile accepted', r.result, 'ok');
+    const p = stored()[0].profile;
+    check('stored inert (text-guard prefix)', p.charAt(0) === SHEET_TEXT_GUARD_ && p.slice(1) === '=HYPERLINK("x")');
+  });
+
+  section('heartbeat', function () {
+    freshSheets();
+    delete scriptProps[STALENESS_HEARTBEAT_PREFIX + 'cropster'];
+    post(body([row()]));
+    check('LAST_INGEST_cropster stamped after an ok post', !!scriptProps[STALENESS_HEARTBEAT_PREFIX + 'cropster']);
+    delete scriptProps[STALENESS_HEARTBEAT_PREFIX + 'cropster'];
+    check('cropster NOT in STALENESS_SOURCES (not yet armed)', STALENESS_SOURCES.indexOf('cropster') === -1);
+  });
 })();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
