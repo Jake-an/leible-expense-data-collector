@@ -189,7 +189,8 @@
     {
       "step": 5,
       "name": "deploy-live",
-      "status": "pending",
+      "status": "blocked",
+      "blocked_reason": "Credential gate (plan step 5 a): cannot confirm INGEST_TOKEN_CROPSTER is in GAS Script Properties and .env, nor CROPSTER_EMAIL/CROPSTER_PASSWORD (or a saved session from `python connectors/playwright/cropster.py --attended --dry-run`). Reading .env was permission-denied in this run and the Script Property cannot be probed before Deploy 1 (fn=roasting is not live yet). Jake: (1) set Script Property INGEST_TOKEN_CROPSTER in the GAS editor (Project Settings > Script Properties); (2) put the same value in .env as INGEST_TOKEN_CROPSTER, plus CROPSTER_EMAIL/CROPSTER_PASSWORD or run the attended login; (3) re-dispatch step 5. Nothing deployed, tagged, registered or posted.",
       "tdd": false,
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "test_cmd": null,
