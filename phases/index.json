@@ -61,7 +61,8 @@
     },
     {
       "dir": "cropster-roasting",
-      "status": "pending"
+      "status": "blocked",
+      "blocked_at": "2026-10-22T14:40:19+0900"
     }
   ]
 }

@@ -171,6 +171,11 @@ def parse_and_reconcile(
         if not name:
             raise ReconcileError(f"profile id {p['id']!r} did not resolve to a name")
         loss = None if p["start"] == 0 else round(100 * (1 - p["end"] / p["start"]), 2)
+        if loss is not None and not 0 <= loss <= 100:
+            # roasted > green is a Cropster data-entry slip; a negative loss would
+            # make the hub refuse the whole payload, so store kg and null the %.
+            print(f"  [cropster] {week_start} profile {p['id']}: loss outside 0..100, stored as null")
+            loss = None
         rows.append(
             {
                 "date": week_start,

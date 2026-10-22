@@ -196,7 +196,13 @@
       "test_cmd": null,
       "covers": [],
       "covers_reason": "Operational deploy + live verification of PRD-23/24/25, staleness arming and task registration; no new feature code.",
-      "started_at": "2026-10-22T14:39:37+0900"
+      "started_at": "2026-10-22T14:39:37+0900",
+      "blocked_at": "2026-10-22T14:40:19+0900",
+      "last_failure": {
+        "step_file_sha256": "c3d836960d0e597efcbbe4750e5b9d33bc7c6377c527b89479dcdba65c33ca11",
+        "model": "sonnet",
+        "at": "2026-10-22T14:40:19+0900"
+      }
     }
   ]
 }

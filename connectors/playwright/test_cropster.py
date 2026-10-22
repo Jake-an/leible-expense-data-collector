@@ -213,6 +213,17 @@ def test_parse_zero_start_weight_gives_null_loss():
     assert row["weight_loss_pct"] is None
 
 
+def test_parse_roasted_above_green_gives_null_loss_not_a_blocked_week():
+    # A data-entry slip (end > start) must not yield a negative loss: the hub
+    # refuses loss outside 0..100, which would block the whole run every week.
+    prof = {"data": [_entry("profile", "pAAAA", 10, 12, 1)]}
+    mach = {"data": [_entry("machine", "mXXXX", 10, 12, 1)]}
+    (row,) = _parse(profile=prof, machine=mach)
+    assert row["weight_loss_pct"] is None
+    assert row["roasted_kg_out"] == 12
+    cropster.CropsterConnector.validate_rows([row])
+
+
 def test_parse_skips_profile_with_no_batches_and_no_weight():
     prof = {
         "data": [
