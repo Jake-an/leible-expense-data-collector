@@ -66,7 +66,7 @@
     {
       "step": 2,
       "name": "gas-read",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -93,7 +93,23 @@
       },
       "tdd_state": "red_done",
       "summary": "Added roastingRead_ (cropster.gs) + doGet fn=roasting dispatch + docs/api.md; test_code.js 3660 passed/0 failed; token-bypass mutation went red and was reverted.",
-      "completed_at": "2026-10-22T14:25:52+0900"
+      "completed_at": "2026-10-22T14:25:52+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 4,
+        "fix_rounds": 0,
+        "result_file": "phases/cropster-roasting/step2-review.json",
+        "checked_at": "2026-10-22T14:27:16+0900",
+        "review_model": "haiku"
+      },
+      "concerns": [
+        "[review] Numeric fields are coerced with bare Number(v): a text cell becomes NaN (serialised as null), and a blank non-key cell becomes 0 silently. A NaN roasted_kg_out also poisons the week's totalKg (line 211 sums it, line 217 rounds it to NaN/null).",
+        "[review] Blank-row skip only tests column 0 (week_start). A row with a week_start but empty kg/batch cells is included with zeros rather than flagged.",
+        "[review] No test covers the `to`-only half-supplied case (only `from`-only is tested, case 4), though the brief lists invalid/inverted dates and docs/api.md promises an error for either half alone.",
+        "[review] Response mixes naming conventions inside one body: rows use snake_case (batch_count, roasted_kg_out) while weeks use camelCase (totalKg, batchCount). Spec-mandated by the brief, so this is noted for consumer awareness only."
+      ]
     },
     {
       "step": 3,
@@ -103,7 +119,8 @@
       "test_cmd": "python -m pytest connectors/playwright -q",
       "covers": [
         "PRD-25"
-      ]
+      ],
+      "started_at": "2026-10-22T14:27:16+0900"
     },
     {
       "step": 4,

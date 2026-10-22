@@ -1,0 +1,33 @@
+{
+  "verdict": "approve",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "connectors/gas/cropster.gs",
+      "line": 207,
+      "summary": "Numeric fields are coerced with bare Number(v): a text cell becomes NaN (serialised as null), and a blank non-key cell becomes 0 silently. A NaN roasted_kg_out also poisons the week's totalKg (line 211 sums it, line 217 rounds it to NaN/null).",
+      "suggestion": "Map non-finite values explicitly (e.g. `typeof v === 'number' && isFinite(v) ? v : null`, or skip/flag the row) so a bad cell cannot silently zero or null a week's total. The write path validates numbers, so this only bites on manual sheet edits; low urgency."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/cropster.gs",
+      "line": 198,
+      "summary": "Blank-row skip only tests column 0 (week_start). A row with a week_start but empty kg/batch cells is included with zeros rather than flagged.",
+      "suggestion": "Acceptable for this step since the upsert never writes such rows; optionally add a test for a partially-blank row so the behaviour is pinned."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/test_code.js",
+      "line": 18520,
+      "summary": "No test covers the `to`-only half-supplied case (only `from`-only is tested, case 4), though the brief lists invalid/inverted dates and docs/api.md promises an error for either half alone.",
+      "suggestion": "Add `{ to: '2026-10-19' }` to the invalid-params case list. Not blocking: the code path is symmetric with the tested `from`-only case."
+    },
+    {
+      "severity": "minor",
+      "file": "connectors/gas/cropster.gs",
+      "line": 217,
+      "summary": "Response mixes naming conventions inside one body: rows use snake_case (batch_count, roasted_kg_out) while weeks use camelCase (totalKg, batchCount). Spec-mandated by the brief, so this is noted for consumer awareness only.",
+      "suggestion": "No change required for this step; the step-5 Summary consumer should read the camelCase keys from `weeks` and the snake_case keys from `rows`."
+    }
+  ]
+}
