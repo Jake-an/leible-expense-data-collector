@@ -13,8 +13,8 @@
   "items": [
     {
       "id": "health-probe",
-      "status": "red",
-      "note": "no token-free health route found"
+      "status": "green",
+      "note": "Accepted by Jake 2026-10-22: no token-free ?health route by design. deploy.sh's tokenless /exec JSON smoke ({result:error,message:unauthorized} proves the web app serves) plus a post-deploy TOKENED fn=<new fn> curl (proves the new code is live) together stand in for the health probe."
     }
   ],
   "checked_at": "2026-10-21T22:46:09.704Z"

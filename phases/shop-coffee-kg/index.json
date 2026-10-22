@@ -276,7 +276,13 @@
       "covers": [],
       "covers_reason": "Operational deploy + live verification of PRD-21/PRD-22; no new feature code.",
       "started_at": "2026-10-22T07:45:39+0900",
-      "blocked_reason": "Readiness gate (agent-autonomy.md (j)): docs/autonomy-readiness.json was missing; refreshed via readiness.cjs write and it records item health-probe = RED (no token-free route returning ok:true + non-empty build; /exec tokenless only returns {result:error,message:unauthorized}, which deploy.sh uses as its load-smoke). Rule: any red item at promote time -> ask Jake. Jake's decision needed: (a) accept deploy.sh's tokenless-JSON smoke as this repo's health probe (mark item green with that note), or (b) add a token-free ?health=1 returning {ok:true,build} (separate code change + its own audit). Nothing deployed, tagged, or written to PROD; 3500 tests pass at HEAD. Not yet done: prod tag, /security-audit, deploy, triggers, pull runs, live checks."
+      "blocked_reason": "Readiness gate (agent-autonomy.md (j)): docs/autonomy-readiness.json was missing; refreshed via readiness.cjs write and it records item health-probe = RED (no token-free route returning ok:true + non-empty build; /exec tokenless only returns {result:error,message:unauthorized}, which deploy.sh uses as its load-smoke). Rule: any red item at promote time -> ask Jake. Jake's decision needed: (a) accept deploy.sh's tokenless-JSON smoke as this repo's health probe (mark item green with that note), or (b) add a token-free ?health=1 returning {ok:true,build} (separate code change + its own audit). Nothing deployed, tagged, or written to PROD; 3500 tests pass at HEAD. Not yet done: prod tag, /security-audit, deploy, triggers, pull runs, live checks.",
+      "blocked_at": "2026-10-22T07:46:31+0900",
+      "last_failure": {
+        "step_file_sha256": "fd1c64d3d5b48dff237acf29001d75a0dd60b9329534093199a41c3a0e44e3af",
+        "model": "sonnet",
+        "at": "2026-10-22T07:46:31+0900"
+      }
     }
   ]
 }

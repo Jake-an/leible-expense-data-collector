@@ -55,7 +55,8 @@
     },
     {
       "dir": "shop-coffee-kg",
-      "status": "pending"
+      "status": "blocked",
+      "blocked_at": "2026-10-22T07:46:31+0900"
     }
   ]
 }
