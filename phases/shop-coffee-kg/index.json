@@ -270,7 +270,7 @@
     {
       "step": 6,
       "name": "deploy-live",
-      "status": "blocked",
+      "status": "completed",
       "tdd": false,
       "tdd_reason": "operational/discovery step - no code logic to test-drive",
       "covers": [],
@@ -282,7 +282,10 @@
         "step_file_sha256": "fd1c64d3d5b48dff237acf29001d75a0dd60b9329534093199a41c3a0e44e3af",
         "model": "sonnet",
         "at": "2026-10-22T07:46:31+0900"
-      }
+      },
+      "completed_at": "2026-10-22T14:18:03+1100",
+      "summary": "Deployed hub @63 (audit approve, tag prod-2026-10-22-shopcoffee, rollback @62); triggers installed (Mon 06:30 shopCoffeePull); dry + real run 12 weeks/48 rows; fn=shopCoffee verified live; see deploy-note.md.",
+      "unblocked_note": "Jake accepted tokenless smoke + tokened fn probe as health probe 2026-10-22."
     }
   ]
 }
