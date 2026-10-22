@@ -18446,5 +18446,128 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
   });
 })();
 
+(function testRoastingDoGet() {
+  console.log('\ncropster: doGet fn=roasting read API (step 2):');
+  check('RG2 roastingRead_ is defined', typeof globalThis.roastingRead_ === 'function');
+
+  const PINNED = '2026-10-26T00:00:00Z'; // a Monday -> last completed week 2026-10-19
+  const TOKEN = 'dummy-read-token-rg2';
+  const savedProps = scriptProps;
+  function get(params) {
+    return withMockNow(PINNED, function () {
+      return JSON.parse(doGet({ parameter: params }).getContent());
+    });
+  }
+  // rows: [week_start (string|Date), profile, green, roasted, loss, batches, pulled_at]
+  function seed(rows) {
+    freshSheets();
+    scriptProps = { API_READ_TOKEN: TOKEN };
+    const sh = ensureSheet(currentSS, 'Roasting', ROASTING_HEADERS);
+    if (rows.length) sh.getRange(2, 1, rows.length, ROASTING_HEADERS.length).setValues(rows);
+    return sh;
+  }
+  const P = '2026-10-26T01:00:00Z';
+  const base = [
+    ['2026-10-12', 'Alpha', 10, 8.5, 15, 2, P],
+    ['2026-10-19', 'Alpha', 20, 17.04, 14.8, 3, P],
+    ['2026-10-19', 'Beta', 5, 4.26, 14.8, 1, P],
+    ['2026-10-26', 'Alpha', 7, 6, 14.3, 1, P]
+  ];
+
+  try {
+    // --- range filter + shape ---
+    seed(base);
+    let r = get({ token: TOKEN, fn: 'roasting', from: '2026-10-12', to: '2026-10-19' });
+    check('RG2 ok:true and fn echoed', r.ok === true && r.fn === 'roasting');
+    eq('RG2 from/to echoed', [r.from, r.to], ['2026-10-12', '2026-10-19']);
+    eq('RG2 range returns only rows inside it (3)', (r.rows || []).length, 3);
+    check('RG2 no 10-26 row leaked', (r.rows || []).every(function (x) { return x.week_start !== '2026-10-26'; }));
+    eq('RG2 row keys are exactly ROASTING_HEADERS', Object.keys((r.rows || [{}])[0]), ROASTING_HEADERS);
+    const b = (r.rows || []).filter(function (x) { return x.profile === 'Beta'; })[0] || {};
+    check('RG2 numeric fields are numbers',
+      ['green_kg_in', 'roasted_kg_out', 'weight_loss_pct', 'batch_count'].every(function (k) { return typeof b[k] === 'number'; }));
+    eq('RG2 Beta values', [b.green_kg_in, b.roasted_kg_out, b.weight_loss_pct, b.batch_count], [5, 4.26, 14.8, 1]);
+
+    // --- weeks aggregate ---
+    eq('RG2 weeks ascending, only weeks with rows, totalKg rounded to 0.1, batchCount summed',
+      r.weeks, [
+        { week_start: '2026-10-12', totalKg: 8.5, batchCount: 2, profiles: 1 },
+        { week_start: '2026-10-19', totalKg: 21.3, batchCount: 4, profiles: 2 }
+      ]);
+
+    // --- default = last completed week only ---
+    r = get({ token: TOKEN, fn: 'roasting' });
+    eq('RG2 default: 2 rows', (r.rows || []).length, 2);
+    check('RG2 default: all rows are the last completed week',
+      (r.rows || []).length > 0 && r.rows.every(function (x) { return x.week_start === '2026-10-19'; }));
+    eq('RG2 default: from=to=last completed week', [r.from, r.to], ['2026-10-19', '2026-10-19']);
+    eq('RG2 default: one week entry', (r.weeks || []).map(function (w) { return w.week_start; }), ['2026-10-19']);
+
+    // --- auth: no token / wrong token ---
+    [{ fn: 'roasting' }, { fn: 'roasting', token: 'wrong' }, { fn: 'roasting', token: '' }].forEach(function (p, i) {
+      const u = get(p);
+      check('RG2 auth case ' + i + ': error, ok not true', u.ok !== true && u.result === 'error');
+      check('RG2 auth case ' + i + ': no row data in body',
+        u.rows === undefined && u.weeks === undefined && JSON.stringify(u).indexOf('Alpha') === -1);
+    });
+
+    // --- invalid params fail closed ---
+    [
+      { from: '2026-10-20', to: '2026-10-12' },
+      { from: 'garbage', to: '2026-10-19' },
+      { from: '2026-10-12', to: 'nope' },
+      { from: '2026-02-31', to: '2026-03-02' },
+      { from: '2026-10-12' }
+    ].forEach(function (p, i) {
+      const q = Object.assign({ token: TOKEN, fn: 'roasting' }, p);
+      let threw = false, e;
+      try { e = get(q); } catch (x) { threw = true; }
+      check('RG2 invalid params case ' + i + ': no throw, error body, no rows',
+        !threw && e && e.ok === false && e.result === 'error' && !!e.message && e.rows === undefined);
+    });
+
+    // --- missing tab ---
+    freshSheets(); scriptProps = { API_READ_TOKEN: TOKEN };
+    r = get({ token: TOKEN, fn: 'roasting', from: '2026-10-12', to: '2026-10-19' });
+    check('RG2 missing tab: ok:true, empty rows+weeks, note',
+      r.ok === true && Array.isArray(r.rows) && r.rows.length === 0 && Array.isArray(r.weeks) && r.weeks.length === 0 &&
+      typeof r.note === 'string' && r.note.length > 0);
+
+    // --- blank padding rows skipped, totals unaffected ---
+    seed([base[1], ['', '', '', '', '', '', ''], base[2], ['', '', '', '', '', '', '']]);
+    r = get({ token: TOKEN, fn: 'roasting' });
+    eq('RG2 blank rows skipped (2 rows)', (r.rows || []).length, 2);
+    eq('RG2 blank rows do not affect totals', r.weeks, [{ week_start: '2026-10-19', totalKg: 21.3, batchCount: 4, profiles: 2 }]);
+
+    // --- Date cells come back as yyyy-MM-dd ---
+    seed([[new Date(2026, 9, 19), 'Alpha', 20, 17.04, 14.8, 3, P]]);
+    r = get({ token: TOKEN, fn: 'roasting' });
+    eq('RG2 Date cell -> 2026-10-19 (no off-by-one)', (r.rows || []).map(function (x) { return x.week_start; }), ['2026-10-19']);
+
+    // --- totalKg rounding of a float sum ---
+    seed([['2026-10-19', 'A', 1, 0.1, 0, 1, P], ['2026-10-19', 'B', 1, 0.2, 0, 1, P]]);
+    r = get({ token: TOKEN, fn: 'roasting' });
+    eq('RG2 totalKg 0.1+0.2 -> 0.3', (r.weeks || [{}])[0].totalKg, 0.3);
+
+    // --- existing fns unaffected ---
+    const unk = get({ token: TOKEN, fn: 'nope' });
+    check('RG2 unknown fn still errors', unk.result === 'error' && /unknown fn/.test(unk.message));
+    const sc = get({ token: TOKEN, fn: 'shopCoffee' });
+    check('RG2 fn=shopCoffee still routes', sc.ok === true && sc.fn === 'shopCoffee');
+
+    // --- reachable only through doGet ---
+    const fs = require('fs'), path = require('path');
+    const callers = fs.readdirSync(__dirname).filter(function (f) { return /\.gs$/.test(f); }).filter(function (f) {
+      return /roastingRead_\(/.test(fs.readFileSync(path.join(__dirname, f), 'utf8').replace(/function roastingRead_\(/g, ''));
+    });
+    eq('RG2 roastingRead_ is called only from Code.gs (doGet dispatch)', callers, ['Code.gs']);
+    check('RG2 doGet dispatch wires fn=roasting',
+      /fn === 'roasting'\)\s*return[^;]*roastingRead_/.test(fs.readFileSync(path.join(__dirname, 'Code.gs'), 'utf8')));
+  } finally {
+    scriptProps = savedProps;
+    freshSheets();
+  }
+})();
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

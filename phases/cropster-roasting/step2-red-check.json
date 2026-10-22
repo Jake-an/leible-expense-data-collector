@@ -1,0 +1,4 @@
+{
+  "red_valid": true,
+  "reason": "All 24 failures are in the 'cropster: doGet fn=roasting read API (step 2)' block (RG2). They fail for the right reason: the implementation is missing. 'RG2 roastingRead_ is defined' fails, so the symbol under test does not exist, and the downstream checks that call it return empty or null values (got [null,null], got 0, got [], got undefined). 'doGet dispatch wires fn=roasting' and 'roastingRead_ is called only from Code.gs' fail because no dispatch exists yet (got []). The invalid-params, missing-tab, blank-row, Date-cell, and totalKg checks fail on the same missing read path. None of the failures point at broken test code, a syntax or import error in the test file, or misconfiguration. The step-1 ingest checks and the auth-case checks pass (3636 passed in total). Caveat: only the output tail was reviewed, not the full log, so the early-run output was not inspected."
+}
