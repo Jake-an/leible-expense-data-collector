@@ -1,40 +1,19 @@
 {
-  "verdict": "revise",
+  "verdict": "approve",
   "findings": [
     {
-      "severity": "important",
+      "severity": "minor",
       "file": "connectors/playwright/cropster.py",
-      "line": 221,
-      "summary": "is_logged_in (the auth-validity predicate the brief requires: 'true only when the report page loaded AND productionSummaries returned 200') has no test; credentials_login (line 233) is also untested. No test in test_cropster.py references either.",
-      "suggestion": "Add pytest cases with a fake page: (a) expect_response yields status 200 -> True; (b) status 401/403 -> False; (c) no productionSummaries response / goto raises -> False; (d) a page with only a cookie and no summaries response -> False. Optionally a credentials_login case where the captcha iframe selector is present -> BlockedError."
+      "line": 239,
+      "summary": "is_logged_in() catches every Exception and returns False, so a network or DNS failure reads as 'logged out' and the cause is lost before auto-login/credentials_login runs.",
+      "suggestion": "Narrow the except to playwright's TimeoutError (plus the 403/non-200 path already handled), or log the exception type name (never the message or headers) so a logged-out result can be told apart from a connectivity failure."
     },
     {
       "severity": "minor",
       "file": "connectors/playwright/cropster.py",
-      "line": 147,
-      "summary": "The range guard in parse_and_reconcile compares the dateFrom/dateTo params of response_url, but read_weeks passes resp.url from a request the connector built itself (line 270-272). Outside a redirect this check cannot fail, so it does not detect a server returning another range. The contract says the range is not echoed in the body, so this is the only range guard.",
-      "suggestion": "Keep the check (it catches redirects that drop params) but confirm in the step-5 live run that the range guard is meaningful, or add a cross-check such as comparing per-week totals against a known anchor. Document in the connector docstring that this guard is a request-integrity check, not a server echo."
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/playwright/cropster.py",
-      "line": 216,
-      "summary": "validate_rows checks only that weight_loss_pct is null or a number. The GAS roasting row gate (connectors/gas/cropster.gs:68-69) also requires 0 <= loss <= 100, and nothing in the connector enforces it. A negative loss from a data error would reach GAS and be refused for the whole batch.",
-      "suggestion": "Mirror the GAS bounds in validate_rows (loss in [0, 100] when not None) so the failure is caught locally with a clear message, and add a test case alongside test_validate_rows_accepts_contract_rows_including_null_loss."
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/playwright/cropster.py",
-      "line": 301,
-      "summary": "_profile_names URL-encodes the comma separator as %2C (quote(..., safe='')). The contract shows a literal comma list in the path, '/api/v2/profiles/<id1>,<id2>,…' (URL-encoded). Whether Cropster decodes %2C in a path segment is unverified here.",
-      "suggestion": "Confirm against a real response in the step-5 live run, or send the commas literally and percent-encode each id individually. Record the result in contract.md."
-    },
-    {
-      "severity": "minor",
-      "file": "connectors/playwright/cropster.py",
-      "line": 378,
-      "summary": "main() catches only BlockedError, ReconcileError and IngestError. A Playwright TimeoutError (expect_request/expect_response at 30s), a resp.json() decode error, or an AttributeError from a malformed entry at line 305 escapes as an unhandled traceback. Nothing is posted and the exit code is 1, so this is safe but untidy, and the brief asks for an explicit abort path.",
-      "suggestion": "Catch Exception around collect() in main(), print '[cropster] ABORTED, nothing posted: <type name>' to stderr, and exit 1. Keep the message free of header or body content."
+      "line": 380,
+      "summary": "--dry-run skips validate_rows(), which only runs inside post(). A dry run can print a summary for rows (e.g. a negative weight_loss_pct from end > start, or a loss outside 0..100) that the real run would reject.",
+      "suggestion": "Call CropsterConnector.validate_rows(rows) in the dry-run branch before printing, so the preview matches what post() would accept."
     }
   ]
 }

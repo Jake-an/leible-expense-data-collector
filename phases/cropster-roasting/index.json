@@ -114,7 +114,7 @@
     {
       "step": 3,
       "name": "connector",
-      "status": "completed",
+      "status": "done_with_concerns",
       "tdd": true,
       "test_cmd": "python -m pytest connectors/playwright -q",
       "covers": [
@@ -141,7 +141,22 @@
       },
       "tdd_state": "red_done",
       "summary": "Base hooks (KIND/validate_rows/extra_payload/LOCKED retry) + cropster.py connector; connectors/playwright 146 passed (baseline 99 + 47 new); MACHINE-reconcile mutation went red.",
-      "completed_at": "2026-10-22T14:33:16+0900"
+      "completed_at": "2026-10-22T14:33:16+0900",
+      "review": {
+        "verdict": "approve",
+        "critical": 0,
+        "important": 0,
+        "minor": 2,
+        "fix_rounds": 1,
+        "result_file": "phases/cropster-roasting/step3-review.json",
+        "checked_at": "2026-10-22T14:37:28+0900",
+        "review_model": "haiku",
+        "rebuttal": "phases/cropster-roasting/step3-review-response-r1.md"
+      },
+      "concerns": [
+        "[review] is_logged_in() catches every Exception and returns False, so a network or DNS failure reads as 'logged out' and the cause is lost before auto-login/credentials_login runs.",
+        "[review] --dry-run skips validate_rows(), which only runs inside post(). A dry run can print a summary for rows (e.g. a negative weight_loss_pct from end > start, or a loss outside 0..100) that the real run would reject."
+      ]
     },
     {
       "step": 4,
@@ -152,7 +167,8 @@
       "test_cmd": null,
       "covers": [
         "PRD-25"
-      ]
+      ],
+      "started_at": "2026-10-22T14:37:28+0900"
     },
     {
       "step": 5,
