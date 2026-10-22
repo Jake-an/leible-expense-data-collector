@@ -317,3 +317,37 @@ GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?token=<TOKEN>&fn=sho
 kg and count fields are numbers; date cells are `yyyy-MM-dd`. A missing tab
 returns `ok:true, rows:[]` plus a `note`. Invalid input returns
 `{"ok":false,"result":"error","message":"..."}`.
+
+## `fn=roasting` — roasted kg per profile per week
+
+Reads the `Roasting` tab (see `docs/schema.md`). Served by `roastingRead_` in
+`connectors/gas/cropster.gs`, dispatched from `doGet` **after** the shared
+`API_READ_TOKEN` check — no token / wrong token returns the usual
+`{"result":"error"}` body with no row data.
+
+| Param | Required | Default | Notes |
+|---|---|---|---|
+| `from`, `to` | both or neither | last completed week | Inclusive `yyyy-MM-dd` bounds on `week_start`. Only one supplied, malformed, non-calendar or `from > to` -> error body, never the whole tab. |
+
+```
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?token=<TOKEN>&fn=roasting&from=2026-10-12&to=2026-10-19
+```
+
+```json
+{
+  "ok": true, "fn": "roasting", "from": "2026-10-12", "to": "2026-10-19",
+  "rows": [
+    {"week_start": "2026-10-19", "profile": "Example A", "green_kg_in": 20,
+     "roasted_kg_out": 17.04, "weight_loss_pct": 14.8, "batch_count": 3,
+     "pulled_at": "2026-10-26T01:00:00.000Z"}
+  ],
+  "weeks": [
+    {"week_start": "2026-10-19", "totalKg": 17, "batchCount": 3, "profiles": 1}
+  ]
+}
+```
+
+`weeks` is ascending and holds only weeks that have rows; `totalKg` is
+Σ `roasted_kg_out` rounded to 0.1. A missing tab returns `ok:true, rows:[],
+weeks:[]` plus a `note`. Invalid input returns
+`{"ok":false,"result":"error","message":"..."}`.

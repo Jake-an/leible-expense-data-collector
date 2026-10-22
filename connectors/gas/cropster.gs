@@ -168,3 +168,53 @@ function roastingUpsert_(sheet, rows, opts) {
   }
   return { rowsAdded: added, rowsUpdated: updated, weeks: weekList.sort() };
 }
+
+/**
+ * Roasting rows with week_start in [from, to] (inclusive) plus a per-week
+ * aggregate. Neither param -> the last completed week. Invalid/inverted/
+ * half-supplied bounds -> error body. Called only from doGet (token checked).
+ * @returns {Object} plain response body (caller wraps with jsonOut_)
+ */
+function roastingRead_(from, to) {
+  if (!from && !to) {
+    var lw = getLastCompletedWeek_(todayStr_());
+    from = lw.start;
+    to = lw.start;
+  }
+  if (!shopCoffeeValidDate_(from) || !shopCoffeeValidDate_(to)) {
+    return { ok: false, result: 'error', message: 'from and to must both be valid yyyy-MM-dd dates' };
+  }
+  if (from > to) return { ok: false, result: 'error', message: 'from must not be after to' };
+
+  var out = { ok: true, fn: 'roasting', from: from, to: to, rows: [], weeks: [] };
+  var sheet = getHubSpreadsheet_().getSheetByName(ROASTING_TAB);
+  if (!sheet) {
+    out.note = 'Roasting tab not found; no rows yet';
+    return out;
+  }
+  var data = sheet.getDataRange().getValues();
+  var byWeek = {};
+  for (var r = 1; r < data.length; r++) {
+    if (data[r][0] === '' || data[r][0] === null || data[r][0] === undefined) continue;
+    var ws = coerceDateStr_(data[r][0]);
+    if (ws < from || ws > to) continue;
+    var obj = {};
+    ROASTING_HEADERS.forEach(function (h, c) {
+      var v = data[r][c];
+      if (h === 'week_start') obj[h] = ws;
+      else if (h === 'profile') obj[h] = String(v);
+      else if (h === 'pulled_at') obj[h] = v instanceof Date ? v.toISOString() : String(v);
+      else obj[h] = Number(v);
+    });
+    out.rows.push(obj);
+    var w = byWeek[ws] || (byWeek[ws] = { week_start: ws, kg: 0, batchCount: 0, profiles: 0 });
+    w.kg += obj.roasted_kg_out;
+    w.batchCount += obj.batch_count;
+    w.profiles++;
+  }
+  out.weeks = Object.keys(byWeek).sort().map(function (k) {
+    var w = byWeek[k];
+    return { week_start: k, totalKg: Math.round(w.kg * 10) / 10, batchCount: w.batchCount, profiles: w.profiles };
+  });
+  return out;
+}
