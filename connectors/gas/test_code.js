@@ -132,6 +132,9 @@ function makeSheet(headers, name, globalWriteLog) {
         return chain;
       },
       setValues(vals) {
+        if (gridMaxRows !== null && row - 1 + vals.length > gridMaxRows) {
+          throw new Error('The coordinates or dimensions of the range are invalid (exceeds grid limits)');
+        }
         vals.forEach((rowVals, ri) => {
           rowVals.forEach((v, ci) => setCell(row - 1 + ri, col - 1 + ci, v));
         });
@@ -142,6 +145,9 @@ function makeSheet(headers, name, globalWriteLog) {
     return chain;
   }
   const frozenRowsCalls = [];
+  // Opt-in grid ceiling (null = unbounded, the historical lenient behaviour).
+  // When set, setValues past it throws like a real Sheet; insertRowsAfter grows it.
+  let gridMaxRows = null;
   // Counts getDataRange() calls so a test can assert a multi-week caller
   // filters an external source sheet once, not once per week (labourWeeklyPull_).
   let dataRangeCallCount = 0;
@@ -171,6 +177,9 @@ function makeSheet(headers, name, globalWriteLog) {
     getRange: (row, col, numRows, numCols) => makeRangeChain(row, col, numRows, numCols),
     getRangeCalls: () => rangeCalls.slice(),
     getLastRow: () => rows.length,
+    getMaxRows: () => (gridMaxRows === null ? rows.length : Math.max(gridMaxRows, rows.length)),
+    setGridMaxRows: (n) => { gridMaxRows = n; },
+    insertRowsAfter: (afterRow, n) => { if (gridMaxRows !== null && afterRow >= gridMaxRows) gridMaxRows += n; },
     // Real Sheet#getName. The mock omitted it, so any production code that
     // names the tab it is writing to (e.g. upsertRows_'s collision log)
     // blew up in the suite while working fine in GAS.
@@ -18396,6 +18405,17 @@ console.log('\nlabour roster — doPost kind=roster (Amendment B1):');
     eq('exactly 50% of stored Σ (40 -> 20) accepted', half.result, 'ok');
     const above = post(body([rowFor(W2, 'Alpha', 60)]), NOW2);
     eq('>=50% case (70 -> 60) accepted', above.result, 'ok');
+  });
+
+  section('grid growth', function () {
+    freshSheets();
+    post(body([rowFor(W2, 'Alpha', 70), rowFor(W2, 'Beta', 30)]), NOW);
+    const sh = currentSS.getSheetByName('Roasting');
+    sh.setGridMaxRows(sh._rows.length);           // grid completely full
+    const r = post(body([rowFor(W1, 'Alpha', 60), rowFor(W1, 'Beta', 40), rowFor(W1, 'Gamma', 10)]), NOW2);
+    eq('post onto a full grid still lands', r.result, 'ok');
+    eq('all 5 rows stored', stored().length, 5);
+    eq('Σ roasted = 70+30+60+40+10', sumOut(), 210);
   });
 
   section('formula injection', function () {

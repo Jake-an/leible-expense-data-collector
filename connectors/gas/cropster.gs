@@ -153,6 +153,10 @@ function roastingUpsert_(sheet, rows, opts) {
     for (var c = 0; c < width; c++) blank.push('');
     out.push(blank);
   }
+  // The grid is fixed (~1000 rows) and rows are never purged: grow it first or
+  // setValues throws "exceeds grid limits" and ingest stops for good.
+  var maxRows = sheet.getMaxRows();
+  if (out.length > maxRows) sheet.insertRowsAfter(maxRows, out.length - maxRows);
   sheet.getRange(1, 1, out.length, width).setValues(out);
 
   var firstBlank = body.length + 2;
