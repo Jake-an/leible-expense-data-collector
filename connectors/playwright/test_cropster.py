@@ -611,3 +611,105 @@ def test_read_weeks_aborts_on_reconcile_failure_without_leaking_secrets(caplog, 
     blob = out.out + out.err + caplog.text + str(exc.value)
     assert SECRET not in blob
     assert "dummy-cookie-abc" not in blob
+
+
+# ---- review round 1: auth predicate, loss bounds, profile URL, abort path ---- #
+
+
+class _AuthExpect:
+    def __init__(self, status=None, raises=False):
+        self.value = type("R", (), {"status": status})()
+        self._raises = raises
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _AuthPage:
+    def __init__(self, status=None, goto_raises=False, expect_raises=False, captcha=False):
+        self.status, self.goto_raises = status, goto_raises
+        self.expect_raises, self.captcha = expect_raises, captcha
+
+    def expect_response(self, *a, **kw):
+        if self.expect_raises:
+            raise TimeoutError("no productionSummaries response")
+        return _AuthExpect(self.status)
+
+    def goto(self, url, **kw):
+        if self.goto_raises:
+            raise RuntimeError("nav failed")
+
+    def query_selector(self, sel):
+        return object() if self.captcha and "captcha" in sel else None
+
+
+def _connector():
+    return cropster.CropsterConnector(exec_url=EXEC_URL)
+
+
+def test_is_logged_in_true_only_on_summaries_200():
+    assert _connector().is_logged_in(_AuthPage(status=200)) is True
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_is_logged_in_false_on_non_200(status):
+    assert _connector().is_logged_in(_AuthPage(status=status)) is False
+
+
+def test_is_logged_in_false_when_no_summaries_response():
+    # cookie present but the report never fetched summaries -> expect_response times out
+    assert _connector().is_logged_in(_AuthPage(expect_raises=True)) is False
+
+
+def test_is_logged_in_false_when_goto_raises():
+    assert _connector().is_logged_in(_AuthPage(status=200, goto_raises=True)) is False
+
+
+def test_credentials_login_captcha_blocks(monkeypatch):
+    monkeypatch.setattr(cropster, "get_credential", lambda k: "dummy")
+    monkeypatch.setattr(cropster, "_form_login", lambda *a, **kw: None)
+    with pytest.raises(b.BlockedError):
+        _connector().credentials_login(_AuthPage(status=200, captcha=True))
+
+
+def test_credentials_login_returns_is_logged_in_result(monkeypatch):
+    monkeypatch.setattr(cropster, "get_credential", lambda k: "dummy")
+    monkeypatch.setattr(cropster, "_form_login", lambda *a, **kw: None)
+    assert _connector().credentials_login(_AuthPage(status=200)) is True
+    assert _connector().credentials_login(_AuthPage(status=401)) is False
+
+
+@pytest.mark.parametrize("loss", [-0.01, 100.01])
+def test_validate_rows_rejects_loss_outside_0_100(loss):
+    with pytest.raises(b.IngestError):
+        cropster.CropsterConnector.validate_rows([_row(weight_loss_pct=loss)])
+
+
+@pytest.mark.parametrize("loss", [0, 100, 15.5])
+def test_validate_rows_accepts_loss_bounds(loss):
+    cropster.CropsterConnector.validate_rows([_row(weight_loss_pct=loss)])
+
+
+def test_profile_names_url_uses_literal_commas():
+    page = _FakePage()
+    _connector()._profile_names(page, ["p1", "p2"], {})
+    assert page.gets[0][0].endswith("/api/v2/profiles/p1,p2")
+
+
+def test_main_aborts_tidily_on_unexpected_error(monkeypatch, capsys):
+    def boom(self, attended, weeks):
+        raise TimeoutError("secret-body-content")
+
+    monkeypatch.setattr(cropster.CropsterConnector, "collect", boom)
+    monkeypatch.setattr(
+        cropster.CropsterConnector, "post", lambda self, rows: pytest.fail("must not post")
+    )
+    with pytest.raises(SystemExit) as exc:
+        cropster.main(["--dry-run"])
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "ABORTED, nothing posted: TimeoutError" in err
+    assert "secret-body-content" not in err

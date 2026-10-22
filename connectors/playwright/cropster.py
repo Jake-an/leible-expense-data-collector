@@ -143,7 +143,12 @@ def parse_and_reconcile(
     requested_to_ms: int,
     response_url: str,
 ) -> list[dict]:
-    """Validate one week and return row-contract rows, or raise ReconcileError."""
+    """Validate one week and return row-contract rows, or raise ReconcileError.
+
+    The range check below is a request-integrity check (it catches a redirect that
+    drops or rewrites the date params), NOT a server echo: the response body does not
+    echo the range, and `response_url` is the URL of the request we built ourselves.
+    """
     q = parse_qs(urlparse(response_url).query)
     got_from = q.get("filter[productionSummaries][dateFrom]", [None])[0]
     got_to = q.get("filter[productionSummaries][dateTo]", [None])[0]
@@ -212,10 +217,14 @@ class CropsterConnector(BaseConnector):
                 raise IngestError(f"row {i} has no profile name. Nothing was posted.")
             for field in ("green_kg_in", "roasted_kg_out", "batch_count"):
                 if not _num(row[field]):
-                    raise IngestError(f"row {i} {field} is not a finite number. Nothing was posted.")
+                    raise IngestError(
+                        f"row {i} {field} is not a finite number. Nothing was posted."
+                    )
             loss = row["weight_loss_pct"]
             if loss is not None and not _num(loss):
                 raise IngestError(f"row {i} weight_loss_pct is not a number or null.")
+            if loss is not None and not 0 <= loss <= 100:
+                raise IngestError(f"row {i} weight_loss_pct is outside 0..100. Nothing was posted.")
 
     # ---- auth ------------------------------------------------------------ #
     def is_logged_in(self, page: Page) -> bool:
@@ -253,9 +262,7 @@ class CropsterConnector(BaseConnector):
             return []
         first = weeks[0]
         last_day = first + timedelta(days=6)
-        with page.expect_request(
-            lambda r: "productionSummaries" in r.url, timeout=30000
-        ) as info:
+        with page.expect_request(lambda r: "productionSummaries" in r.url, timeout=30000) as info:
             page.goto(
                 f"{self.LOGIN_URL}?dateFrom={first.isoformat()}&dateTo={last_day.isoformat()}"
             )
@@ -298,7 +305,8 @@ class CropsterConnector(BaseConnector):
     def _profile_names(self, page: Page, ids: list[str], headers: dict) -> dict[str, str]:
         if not ids:
             return {}
-        url = f"{BASE_URL}/api/v2/profiles/{quote(','.join(ids), safe='')}"
+        # Literal commas between ids (per contract); each id percent-encoded alone.
+        url = f"{BASE_URL}/api/v2/profiles/{','.join(quote(i, safe='') for i in ids)}"
         _, payload = self._get_json(page, url, headers, "profile names")
         names = {}
         for e in payload.get("data", []):
@@ -379,6 +387,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(2)
     except (ReconcileError, IngestError) as err:
         print(f"[cropster] ABORTED, nothing posted: {err}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as err:  # noqa: BLE001 - timeouts / decode errors: abort tidily
+        # Type name only: never header or body content.
+        print(f"[cropster] ABORTED, nothing posted: {type(err).__name__}", file=sys.stderr)
         sys.exit(1)
 
 
