@@ -24,7 +24,8 @@
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
         "PRD-23"
-      ]
+      ],
+      "started_at": "2026-10-22T14:06:45+0900"
     },
     {
       "step": 2,
