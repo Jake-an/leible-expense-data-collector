@@ -58,6 +58,10 @@
       "status": "completed",
       "blocked_at": "2026-10-22T07:46:31+0900",
       "completed_at": "2026-10-22T14:18:03+1100"
+    },
+    {
+      "dir": "cropster-roasting",
+      "status": "pending"
     }
   ]
 }
