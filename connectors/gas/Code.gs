@@ -249,7 +249,10 @@ var INGEST_SOURCES_ = {
   // Amendment B (ADR-008): the weekly BrightHR roster CSV, posted by
   // tools/roster/. Its ONLY kind is 'roster', which writes the Labour Sheet
   // (CLOCK_RAW), never the hub — see INGEST_SOURCE_KINDS_ and labour_roster.gs.
-  brighthr_roster: 'INGEST_TOKEN_BRIGHTHR_ROSTER'
+  brighthr_roster: 'INGEST_TOKEN_BRIGHTHR_ROSTER',
+  // cropster-roasting (PRD-23): the weekly Cropster Production Report, posted
+  // by the Playwright connector. Its ONLY kind is 'roasting' (cropster.gs).
+  cropster: 'INGEST_TOKEN_CROPSTER'
 };
 
 /**
@@ -302,7 +305,11 @@ var INGEST_SOURCE_DEPARTMENTS_ = {
   coffee_order_app: 'Roastery',
   // null: roster rows carry NO department (it comes from LOCATIONS at costing
   // time), so any `department` key on a roster row is rejected.
-  brighthr_roster: null
+  brighthr_roster: null,
+  // null: the Roasting tab is kg only with no department column; null (not
+  // 'Roastery') so doPost injects nothing after validateIngest_ and a
+  // caller-sent department is rejected.
+  cropster: null
 };
 
 /**
@@ -334,7 +341,8 @@ var INGEST_SOURCE_KINDS_ = {
   // RB2: the roster token may write the roster kind and nothing else, so a
   // leaked roster token cannot touch Suppliers/Revenue/ShopSpend; and no other
   // source's token may post kind='roster' into the Labour Sheet.
-  brighthr_roster: ['roster']
+  brighthr_roster: ['roster'],
+  cropster: ['roasting']
 };
 
 /**
@@ -565,6 +573,9 @@ function doPost(e) {
         return ingestShopSpendRows(body.source, body.rows, body.extracted_at, tabs.data, tabs.pulls, body.pull,
           body.weeks_complete, body.weeks_verified_empty);
       }
+      if (kind === 'roasting') {
+        return roastingIngest_(body);
+      }
       if (kind === 'revenue') {
         var revSheet = ensureSheet(ss, REVENUE_TAB, REVENUE_HEADERS);
         return ingestRevenueRows(body.source, body.rows, body.extracted_at, revSheet);
@@ -664,7 +675,7 @@ function validateIngest_(body) {
   // absent, or hostile — is accepted and ignored (M-stamp).
 
   var kind = body.kind || 'suppliers';
-  if (kind !== 'suppliers' && kind !== 'revenue' && kind !== 'shopspend' && kind !== 'roster') {
+  if (kind !== 'suppliers' && kind !== 'revenue' && kind !== 'shopspend' && kind !== 'roster' && kind !== 'roasting') {
     return { ok: false, message: 'unknown kind: ' + kind };
   }
 
@@ -719,6 +730,11 @@ function validateIngest_(body) {
     if (body.rows.length > MAX_ROSTER_ROWS_) {
       return { ok: false, message: 'roster_too_large: ' + body.rows.length + ' rows (at most ' + MAX_ROSTER_ROWS_ + ' per post)' };
     }
+  }
+
+  if (kind === 'roasting') {
+    var roastingPayloadMsg = roastingPayloadRefusal_(body);
+    if (roastingPayloadMsg) return { ok: false, message: roastingPayloadMsg };
   }
 
   if (body.weeks_complete !== undefined && !isValidWeekLabelArray_(body.weeks_complete)) {
@@ -788,7 +804,10 @@ function validateIngest_(body) {
       }
     }
 
-    if (kind === 'roster') {
+    if (kind === 'roasting') {
+      var roastingRefusal = roastingRowRefusal_(r);
+      if (roastingRefusal) return { ok: false, message: 'row ' + i + ' ' + roastingRefusal };
+    } else if (kind === 'roster') {
       var rosterRefusal = labourRosterRowRefusal_(r);
       if (rosterRefusal) return { ok: false, message: 'row ' + i + ' ' + rosterRefusal };
     } else if (kind === 'shopspend') {
@@ -851,6 +870,10 @@ function validateIngest_(body) {
       var supplierRefusal = supplierClaimRefusal_(body.source, r.supplier);
       if (supplierRefusal) return { ok: false, message: 'row ' + i + ' ' + supplierRefusal };
     }
+  }
+  if (kind === 'roasting') {
+    var roastingSetMsg = roastingRowsetRefusal_(body.rows);
+    if (roastingSetMsg) return { ok: false, message: roastingSetMsg };
   }
   return { ok: true };
 }

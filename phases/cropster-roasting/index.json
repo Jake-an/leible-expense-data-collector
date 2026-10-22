@@ -19,7 +19,7 @@
     {
       "step": 1,
       "name": "gas-ingest",
-      "status": "pending",
+      "status": "completed",
       "tdd": true,
       "test_cmd": "node connectors/gas/test_code.js",
       "covers": [
@@ -38,7 +38,9 @@
           "at": "2026-10-22T14:10:47+0900"
         }
       },
-      "tdd_state": "red_done"
+      "tdd_state": "red_done",
+      "completed_at": "2026-10-22T16:20:00+1100",
+      "summary": "cropster.gs + Code.gs wiring (3 tables, lock branch, validateIngest_ roasting rules); week-scoped atomic Roasting upsert with 50% shrink guard; cropster NOT_YET_ARMED; docs updated; test_code.js 3619 passed, 0 failed."
     },
     {
       "step": 2,

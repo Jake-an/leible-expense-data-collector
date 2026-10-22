@@ -82,6 +82,7 @@ var STALENESS_THRESHOLD_OVERRIDES = {
 //   above is deliberately kept as pre-staged config (not dead config) so
 //   re-arming cannot trade "unwatched" for "cries wolf daily".
 //   RE-ADD 'recurring' when RECUR_RENT_ROASTERY / RECUR_SHOPIFY are set and installRecurringTrigger() has run
+//   cropster: arm (add to STALENESS_SOURCES + override 192h) only after the first clean live pull stamps LAST_INGEST_cropster — phases/cropster-roasting step 5
 //   Both stay in STAMPS_HEARTBEAT (test_code.js) under NOT_YET_ARMED, whose
 //   guard requires each RE-ADD line above to appear here VERBATIM — so arming
 //   either feed without re-adding it to this array reds the suite.

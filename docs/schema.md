@@ -304,6 +304,26 @@ sort breaks across a year boundary, e.g. `2026-W5` vs `2026-W31` vs `2027-W1`).
 `week_start`/`week_end` values shown are passed through from `ShopSpend` as
 pulled from the API — this report never recomputes week boundaries.
 
+## Tab `Roasting` (Cropster green-in / roasted-out kg per profile per week — kg only)
+
+Written by `doPost` `{source:'cropster', kind:'roasting', token, rows, allow_shrink?}` (PRD-23, `cropster.gs`). **No `department` column and no dollars** — the `cropster` source is bound to `null` in `INGEST_SOURCE_DEPARTMENTS_`, so a `department` on a row is rejected.
+
+| Column | Notes |
+|---|---|
+| `week_start` | Sydney Monday `YYYY-MM-DD` |
+| `profile` | roast profile name (non-empty, ≤200 chars) |
+| `green_kg_in` | kg, number in [0, 100000] |
+| `roasted_kg_out` | kg, number in [0, 100000] |
+| `weight_loss_pct` | number in [0, 100] or blank (null) |
+| `batch_count` | integer ≥ 0 |
+| `pulled_at` | server-stamped (`ingestServerStamp_()`); a client value is refused |
+
+Each posted row is exactly `{date, week_start, profile, green_kg_in, roasted_kg_out, weight_loss_pct, batch_count}` with `date === week_start`; any other field is refused. A payload is refused whole (never truncated) for: >500 rows, >13 distinct weeks, a duplicate `week_start||profile`, a week after the current Sydney week or more than 16 weeks before it, or a non-boolean `allow_shrink`.
+
+**Key `week_start||profile`; week-scoped replace.** A post replaces *every* row of each week it carries (a renamed profile leaves no orphan); weeks not in the post are untouched. The new tab body is built in memory and written in one `setValues`, then trailing blank rows are trimmed best-effort.
+
+**Shrink guard.** If a week's new Σ `roasted_kg_out` is below 50% of the stored Σ, the whole payload is refused (nothing written) naming the week(s), unless `allow_shrink:true`.
+
 ## Tab `ShopCoffee` (coffee kg per shop per week — kg only, no dollars)
 
 Written by `shopCoffeePull` (`connectors/gas/shopcoffee.gs`) from the Order app's
