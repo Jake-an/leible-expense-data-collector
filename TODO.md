@@ -1417,6 +1417,9 @@ new branch off trunk (`feat/two-tab-foundation`) AFTER the two in-flight PRs lan
 - [labour] Weeks 2026-09-21, 09-28, 10-05 have NO Labour rows in Summary (Onboarding has no BrightHR pull trigger). Jake 2026-10-19: "don't worry about the data … as long as it present correct figure for moving forward" — accepted gap, no backfill.
 - [cropster] /grill + plan the Playwright Production-Report connector — `connectors/playwright/` (new cropster connector), `phases/cropster-roasting/`, `connectors/gas/cropster.gs` (planned, not written)
 - [cropster] GM monitor E2: `fetchRoasting` + real 'LEIBLE roasted kg (total)' line, after fn=roasting contract lands — `LEIBLE_GM_COST_MONITOR/ExpenseAPI.gs`, `ReportBuilder.gs`
+- [security Medium M3] connectors/gas/Code.gs:489 — Anonymous quota exhaustion on the only ingest path (re-verified, unchanged at HEAD fc4f62d). (audit 2026-10-22)
+- [security Medium M2] docs/api.md:15 — API_READ_TOKEN still travels as a URL query parameter (now also for fn=roasting) with no rotation/revocation procedure in docs/api. (audit 2026-10-22)
+- [security Medium (none)] C:/Users/mioja/.claude/hooks/git-backup.ps1:29 — An unattended daemon stages, commits and pushes everything not gitignored, with no secret scan on that path - this is the mechanism by which a credential file could still reach origin even though . (audit 2026-10-22)
 <!-- Work spotted but not done. Append DURING the session, one line each, always naming
      the file/area it touches. Source for the Next batches block at "lets stop here"
      (~/.claude/docs/todo-hygiene.md). -->
